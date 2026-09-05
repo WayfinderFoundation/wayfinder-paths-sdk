@@ -70,6 +70,44 @@ For each candidate:
 - Edit only its named bundle and optional `search_space.json`.
 - Prefer existing research helpers and starter cases over new indicator code.
 - Declare `execution_params.warmup_bars` for the longest lookback plus buffer.
+- `ctx.bar_index` is the length of the bounded view and is constant once warm:
+  never store it in `strategy_state` or subtract it to measure an age,
+  cooldown, refractory period or expiry (every age reads 0 and the state
+  machine never fires). Stamp `ctx.bar_ordinal` and measure with
+  `ctx.bars_since(stamp)`; gate cadence with `ctx.every_n_bars(n)`.
+- If `candidate.json` carries `signal_refs`, the entry trigger is that
+  validated or replicated signal via `library_signal_on_bars` on its
+  timeframe (the `how_to_use` recipe); declare `warmup_bars >=
+  warmup_bars_required`. A `scope: regime` ref fires only inside its labelled
+  regime (the recipe names the feature and code to declare and gate on); a
+  `passive_only` or `mechanism_required` ref enters with a post-only resting
+  limit per its recipe, never at the close. A `library: population` ref
+  carries `expression`: build it with `compile_signal_expression` from
+  `wayfinder_paths.jobs.signal_library` and pass the def object to
+  `library_signal_on_bars`. Exits, stops and sizing are yours; the trigger
+  is not.
+- If `candidate.json` carries `mechanism_refs`, implement exactly that grid
+  row: a post-only resting entry at `entry_offset_atr` ATR beyond the signal
+  close with `expires_after_bars = entry_ttl_bars`, a passive reduce-only
+  take-profit at `target_atr` ATR from the fill, a fill-relative stop at
+  `stop_atr` ATR, and a market exit after `hold_bars` bars (reference:
+  `jobs/strategies/hype_passive_rsi.py`). The grid is a screen; the screen,
+  full development and holdout certify the row in the real engine.
+- Every trade must capture at least the hurdle multiple of the round-trip
+  cost gross (the work order states both in bps); `gross_bps_per_trade` is
+  the number a repair has to move. A book that pays to trade is rejected
+  before its slices are read.
+- Passive execution is a lever, not a detail: an intent with `limit_price`,
+  `time_in_force="ALO"` and `expires_after_bars=N` rests a post-only order
+  that fills only when a later bar trades through the price (one bar of life
+  at N=1), pays the maker fee and no slippage, and a reduce-only ALO
+  take-profit exits the same way; a stop keeps same-bar precedence over a
+  passive target. A fast signal whose move is real but smaller than the taker
+  round trip is monetized this way (reference:
+  `jobs/strategies/hype_passive_rsi.py`), not by taking the close.
+- Put `metadata={"exit_reason": ...}` on every reduce-only intent (close,
+  take-profit, stop) so the postmortem's exit summary can name why the book
+  exits; the engine labels only its own bracket stops.
 - Keep indicator work bounded or incremental; never recompute full history in
   `decide()`.
 - Call `wayfinder_core_jobs` with `action="evolution_evaluate"` and continue when
@@ -77,7 +115,11 @@ For each candidate:
   artifacts.
 - On a repair turn, read the named compact deterministic postmortem and change
   the causal mechanism in response. Keep the family and evidence target fixed.
-- A candidate receives at most three attempts in this session. Do not prepare a
+- Follow the repair work order: its diagnosis states the numbers, its
+  admissible repairs are the only changes that count as a repair, and its
+  fills/day budget is a hard ceiling. A change outside them is a new idea
+  wearing the old family's name.
+- A candidate receives at most the attempts the prompt states. Do not prepare a
   new idea; the controller retires this session when the slot closes.
 
 When the prompt says the campaign is draining or complete, stop immediately.

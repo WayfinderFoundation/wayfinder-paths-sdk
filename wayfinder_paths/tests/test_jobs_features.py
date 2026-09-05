@@ -351,3 +351,300 @@ def test_feature_coverage_metadata_and_summary_note(tmp_path: Path) -> None:
     payload["dataset"] = dict(dataset.metadata)
     summary = summarize_backtest_payload(payload)
     assert "feature_coverage_note" not in summary
+
+
+def test_feature_accessor_default_covers_missing_history_not_missing_columns() -> None:
+    view = CompletedBarsView.from_rows(_bars(2))
+    merged = merge_features(
+        view,
+        {"macro_regime": pd.DataFrame(columns=["timestamp", "value", "symbol"])},
+        [FeatureSpec(name="macro_regime")],
+    )
+    # A declared column with no history yet takes the default (the macro
+    # label needs 28 days of closes before its first row).
+    assert merged.feature("macro_regime", default=0.0) == 0.0
+    with pytest.raises(ValueError, match="No values yet"):
+        merged.feature("macro_regime")
+    # An undeclared column is a contract error, default or not.
+    with pytest.raises(ValueError, match="No feature column"):
+        view.feature("macro_regime", default=0.0)
+
+
+def test_driver_queues_bars_only_and_shadows_merge_their_own_declared_feature(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live driver -> queued probation view -> shadow lane, incumbent and
+    candidate both declaring `sentiment`: the queue carries bars only (no
+    incumbent column to collide with or to leak) and the candidate reads the
+    values its own declaration merges."""
+    import asyncio
+
+    from wayfinder_paths.jobs import background
+    from wayfinder_paths.jobs.candidate_shadow import run_candidate_shadows
+    from wayfinder_paths.jobs.gating import compute_workspace_revision
+    from wayfinder_paths.jobs.probation import (
+        PROBATION_VIEW_PATH,
+        stage_evolution_probation,
+    )
+
+    store, job, root = _feature_job(tmp_path)
+    (root / "workspace" / "src" / "strategy.py").write_text(
+        "def decide(ctx):\n"
+        "    sentiment = ctx.view.feature('sentiment', default=0.0)\n"
+        "    if sentiment not in (0.0, 0.9, -0.9):\n"
+        "        raise ValueError('a column collided or leaked')\n"
+        "    if str(ctx.timestamp) >= '2026-01-01T00:25' and sentiment != -0.9:\n"
+        "        raise ValueError('the candidate never saw its declared feature')\n"
+        "    return []\n",
+        encoding="utf-8",
+    )
+    stage_evolution_probation(
+        store,
+        job.id,
+        candidate_id="candidate-1",
+        candidate_root=root,
+        revision=compute_workspace_revision(root),
+        source="evolution_campaign",
+        family="feature-aware",
+        evidence={"objective": {"candidate": {"trade_count": 12}}},
+        now=pd.Timestamp("2025-12-31T23:00:00Z").to_pydatetime(),
+    )
+    monkeypatch.setattr(background, "spawn_detached_op", lambda *a, **k: None)
+    bars = _bars(6)
+
+    async def _drive() -> None:
+        broker = PaperBroker(capabilities=PERP_CAPS)
+        for count in range(1, len(bars) + 1):
+            view = CompletedBarsView.from_rows(bars[:count])
+            await tick_job(
+                job,
+                root,
+                "paper",
+                store=store,
+                adapters={"hyperliquid": FakeAdapter(view, broker)},
+                now=_now(view),
+            )
+
+    asyncio.run(_drive())
+    queued = json.loads((root / PROBATION_VIEW_PATH).read_text(encoding="utf-8"))
+    assert queued["rows"] and all("sentiment" not in row for row in queued["rows"])
+
+    rows = asyncio.run(run_candidate_shadows(store, job.id))
+    candidate = [row for row in rows if row["role"] == "candidate"]
+    assert candidate and not any(row["skipped"] for row in candidate)
+    assert max(row["bar_timestamp"] for row in candidate) >= "2026-01-01T00:25"
+
+
+def test_feature_paths_are_contained_to_the_job_store_or_workspace(
+    tmp_path: Path,
+) -> None:
+    from wayfinder_paths.jobs.execution.features import DEFAULT_FEATURES_PATH
+
+    assert FeatureSpec.from_dict({"name": "x"}).path == DEFAULT_FEATURES_PATH
+    assert (
+        FeatureSpec.from_dict({"name": "x", "path": "workspace/data/x.jsonl"}).path
+        == "workspace/data/x.jsonl"
+    )
+    for bad in (
+        "/etc/passwd",
+        "../other-job/state/features.jsonl",
+        "workspace/../../x.jsonl",
+        "state/custom.jsonl",
+        "results/x.jsonl",
+    ):
+        with pytest.raises(ValueError, match="path must be"):
+            FeatureSpec.from_dict({"name": "x", "path": bad})
+
+    # A symlink under workspace/ that points out of the root is refused by
+    # the loader even though its declared path is well-formed.
+    root = tmp_path / "job"
+    (root / "workspace").mkdir(parents=True)
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(
+        '{"timestamp": "2026-01-01T00:00:00Z", "name": "x", "value": 1}\n'
+    )
+    (root / "workspace" / "link.jsonl").symlink_to(outside)
+    with pytest.raises(ValueError, match="escapes its root"):
+        load_feature_rows(
+            [root],
+            [FeatureSpec.from_dict({"name": "x", "path": "workspace/link.jsonl"})],
+        )
+
+
+def test_validation_refuses_the_skip_policy_until_backtests_replay_freshness(
+    tmp_path: Path,
+) -> None:
+    from wayfinder_paths.jobs.execution.validation import _feature_checks
+
+    root = tmp_path / "job"
+    (root / "state").mkdir(parents=True)
+    (root / "state" / "features.jsonl").write_text(
+        '{"timestamp": "2026-01-01T00:00:00Z", "name": "x", "value": 1}\n'
+    )
+    spec = ExecutionSpec.from_dict(
+        {
+            "data_contract": {
+                "bar_interval": "5m",
+                "symbols": ["BTC"],
+                "features": [
+                    {"name": "x", "max_age_seconds": 60, "stale_policy": "skip"}
+                ],
+            }
+        }
+    )
+    failed = [check for check in _feature_checks(root, spec) if not check["passed"]]
+    assert [check["name"] for check in failed] == ["feature_policy_replayable"]
+    assert failed[0]["blocking"] is True and "decide_anyway" in failed[0]["hint"]
+    spec.data_contract["features"][0]["stale_policy"] = "decide_anyway"
+    assert all(check["passed"] for check in _feature_checks(root, spec))
+
+
+async def test_stale_feature_skip_does_not_run_precompute_over_the_missing_column(
+    tmp_path: Path,
+) -> None:
+    """precompute() consuming the declared column used to raise KeyError on
+    a skipped tick, because the merge was omitted but the hook still ran."""
+    store, job, root = _feature_job(tmp_path)
+    (root / "workspace" / "src" / "strategy.py").write_text(
+        "def precompute(frames):\n"
+        "    return {\n"
+        "        symbol: frame[['sentiment']].rename(columns={'sentiment': 'sentiment_copy'})\n"
+        "        for symbol, frame in frames.items()\n"
+        "    }\n\n"
+        "def decide(ctx):\n"
+        "    return []\n",
+        encoding="utf-8",
+    )
+    spec = ExecutionSpec.from_dict(job.execution_spec)
+    spec.data_contract["features"] = [
+        {"name": "sentiment", "max_age_seconds": 60, "stale_policy": "skip"}
+    ]
+    job.execution_spec = spec.to_dict()
+    store.save(job)
+    view = CompletedBarsView.from_rows(_bars(2))
+    result = await tick_job(
+        job,
+        root,
+        "paper",
+        store=store,
+        adapters={
+            "hyperliquid": FakeAdapter(view, PaperBroker(capabilities=PERP_CAPS))
+        },
+        now=_now(view) + pd.Timedelta(hours=6),
+    )
+    assert result["skipped"] is True and result["skip_reason"] == "stale_feature"
+
+
+def _row(stamp: str, name: str, value: float) -> str:
+    return (
+        json.dumps({"timestamp": stamp, "name": name, "value": value, "symbol": None})
+        + "\n"
+    )
+
+
+def test_feature_roots_are_owned_by_path_class(tmp_path: Path) -> None:
+    """(bundle, protected_root): the store is read from the protected root
+    even when the bundle carries one; a workspace/ file is read from the
+    bundle even when the job's own workspace has one."""
+    from wayfinder_paths.jobs.execution.features import DEFAULT_FEATURES_PATH
+
+    job, bundle = tmp_path / "job", tmp_path / "bundle"
+    for base in (job, bundle):
+        (base / "state").mkdir(parents=True)
+        (base / "workspace" / "data").mkdir(parents=True)
+    (job / DEFAULT_FEATURES_PATH).write_text(_row("2026-01-01T00:00:00Z", "store", 1.0))
+    (bundle / DEFAULT_FEATURES_PATH).write_text(
+        _row("2026-01-01T00:00:00Z", "store", 9.0)
+    )
+    (job / "workspace/data/sig.jsonl").write_text(
+        _row("2026-01-01T00:00:00Z", "sig", 1.0)
+    )
+    specs = [
+        FeatureSpec.from_dict({"name": "store"}),
+        FeatureSpec.from_dict({"name": "sig", "path": "workspace/data/sig.jsonl"}),
+    ]
+    frames = load_feature_rows([bundle, job], specs)
+    assert frames["store"]["value"].tolist() == [1.0]
+    assert frames["sig"].empty  # the job's workspace file is not the bundle's
+    (bundle / "workspace/data/sig.jsonl").write_text(
+        _row("2026-01-01T00:00:00Z", "sig", 7.0)
+    )
+    assert load_feature_rows([bundle, job], specs)["sig"]["value"].tolist() == [7.0]
+    single = load_feature_rows([job], specs)
+    assert single["store"]["value"].tolist() == [1.0]
+    assert single["sig"]["value"].tolist() == [1.0]
+
+
+def test_load_dataset_merges_bundle_workspace_features_with_the_protected_store(
+    tmp_path: Path,
+) -> None:
+    """The choke point every gating lane calls: the bundle's workspace file and
+    the protected root's store land on the same bars."""
+    store, job, root = _feature_job(tmp_path)
+    bars = _bars(6)
+    (root / "results" / "backtest").mkdir(parents=True, exist_ok=True)
+    (root / "results" / "backtest" / "input_bars.json").write_text(
+        json.dumps(bars), encoding="utf-8"
+    )
+    bundle = tmp_path / "bundle"
+    (bundle / "workspace" / "data").mkdir(parents=True)
+    (bundle / "workspace/data/sig.jsonl").write_text(
+        _row(bars[2]["timestamp"], "sig", 1.0)
+    )
+    spec = ExecutionSpec.from_dict(job.execution_spec)
+    spec.data_contract["features"] = [
+        {"name": "sentiment"},
+        {"name": "sig", "source": "file", "path": "workspace/data/sig.jsonl"},
+    ]
+    dataset = _load_dataset(root, spec, job.to_dict(), feature_roots=(bundle, root))
+    frame = dataset.bars.to_frame()
+    assert frame["sentiment"].notna().any()
+    assert frame["sig"].notna().any()
+
+
+def test_validation_reports_an_escaping_feature_file_instead_of_raising(
+    tmp_path: Path,
+) -> None:
+    from wayfinder_paths.jobs.execution.validation import validate_execution_job
+
+    store, job, root = _feature_job(tmp_path)
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(_row("2026-01-01T00:00:00Z", "sig", 1.0))
+    (root / "workspace" / "data").mkdir(parents=True, exist_ok=True)
+    (root / "workspace" / "data" / "link.jsonl").symlink_to(outside)
+    spec = ExecutionSpec.from_dict(job.execution_spec)
+    spec.data_contract["features"] = [
+        {"name": "sig", "source": "file", "path": "workspace/data/link.jsonl"}
+    ]
+    job.execution_spec = spec.to_dict()
+    store.save(job)
+    report = validate_execution_job(job.id, store=store)
+    failed = [c for c in report["checks"] if c["name"] == "declared_features_valid"]
+    assert failed and failed[0]["passed"] is False
+    assert "escapes its root" in failed[0]["error"]
+
+
+def test_validation_flags_feature_reads_the_spec_does_not_declare(
+    tmp_path: Path,
+) -> None:
+    from wayfinder_paths.jobs.execution.validation import validate_execution_job
+
+    store, job, root = _feature_job(tmp_path)
+
+    def check(report: dict) -> dict:
+        return next(
+            c for c in report["checks"] if c["name"] == "undeclared_feature_read"
+        )
+
+    assert check(validate_execution_job(job.id, store=store))["passed"] is True
+    (root / "workspace" / "src" / "strategy.py").write_text(
+        "def decide(ctx):\n"
+        "    ctx.view.feature('sentiment')\n"
+        "    ctx.view.feature('leader_state', default=0.0)\n"
+        "    ctx.view.feature(name='macro_regime')\n"
+        "    return []\n",
+        encoding="utf-8",
+    )
+    flagged = check(validate_execution_job(job.id, store=store))
+    assert flagged["passed"] is False and flagged["blocking"] is True
+    assert flagged["details"] == ["leader_state", "macro_regime"]

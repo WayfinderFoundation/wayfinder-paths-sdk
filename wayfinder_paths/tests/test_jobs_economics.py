@@ -4,6 +4,7 @@ loading, enforcement, promotion verdicts, and the evolution ledger."""
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -146,6 +147,53 @@ def test_readiness_passes_and_each_reason_blocks() -> None:
 
     unavailable = {"status": "insufficient_history", "detail": "too few bars"}
     assert evaluate_economic_readiness(unavailable, constitution)["ready"] is False
+
+
+def test_regime_specialist_gate_uses_target_edge_and_bounds_outside_loss() -> None:
+    constitution = json.loads(json.dumps(DEFAULT_CONSTITUTION))
+    report = _ok_report(
+        regime_contract={
+            "enabled": True,
+            "target_regimes": ["up_highvol"],
+            "objective": {
+                "candidate": {
+                    # A transition strategy can enter before the target cell;
+                    # whole-strategy activity, not in-cell entries, is binding.
+                    "target": {"trade_count": 0, "day_count": 12},
+                    "target_utility": 0.04,
+                    "outside": {"loss_pct": 0.01},
+                }
+            },
+            "paired_target_delta": {
+                "estimate": 0.03,
+                "lcb": 0.005,
+                "confidence": 0.9,
+            },
+            "audit": {
+                "candidate": {
+                    "target_utility": 0.01,
+                    "outside": {"loss_pct": 0.005},
+                },
+                "delta_utility": 0.002,
+            },
+        }
+    )
+
+    assert evaluate_economic_readiness(report, constitution)["ready"] is True
+    report["regime_contract"]["objective"]["candidate"]["outside"]["loss_pct"] = 0.03
+    result = evaluate_economic_readiness(report, constitution)
+    assert result["ready"] is False
+    assert any("out-of-regime loss" in reason for reason in result["reasons"])
+
+    # In-regime edge never licenses replacing a better whole-strategy incumbent.
+    inferior = _ok_report(
+        regime_contract=report["regime_contract"],
+        paired_incumbent_delta={"estimate": -0.01, "lcb": -0.02, "confidence": 0.9},
+    )
+    inferior["regime_contract"]["objective"]["candidate"]["outside"]["loss_pct"] = 0.01
+    result = evaluate_economic_readiness(inferior, constitution)
+    assert result["ready"] is False
+    assert any("inferior overall" in reason for reason in result["reasons"])
 
 
 def test_constitution_defaults_file_and_broken(tmp_path: Path) -> None:
@@ -426,3 +474,67 @@ def test_benchmark_constitution_profile_loads_strict() -> None:
     assert profile["promotion"]["probation_requires_lcb"] is True
     assert profile["verdict"]["maximum_days"] == 30.0
     assert profile["revision"]
+
+
+def test_chained_fold_equity_removes_restart_artifacts() -> None:
+    from wayfinder_paths.jobs.economics import _chain_fold_equity
+
+    def fold(values: list[float], start_day: int) -> list[dict[str, object]]:
+        return [
+            {
+                "timestamp": f"2026-01-{start_day + index:02d}T00:00:00+00:00",
+                "equity": v,
+            }
+            for index, v in enumerate(values)
+        ]
+
+    fold_a = fold([10_000.0, 12_000.0], start_day=1)
+    fold_b = fold([10_000.0, 12_000.0], start_day=3)
+    naive = objective_vector([*fold_a, *fold_b], trades=[])
+    # Today's artifacts: the restart reads as a loss and a carried drawdown.
+    assert naive["max_drawdown_pct"] == pytest.approx(1 / 6)
+    assert naive["net_log_growth"] == pytest.approx(math.log(1.2))
+    pool: list[dict[str, object]] = []
+    for piece in (fold_a, fold_b):
+        pool.extend(_chain_fold_equity(pool, piece))
+    chained = objective_vector(pool, trades=[])
+    assert chained["max_drawdown_pct"] == pytest.approx(0.0)
+    assert chained["net_log_growth"] == pytest.approx(2 * math.log(1.2))
+    assert pool[-1]["equity"] == pytest.approx(14_400.0)
+    assert _chain_fold_equity([], fold_a) == fold_a
+
+
+def test_readiness_applies_the_trial_haircut_outside_probation() -> None:
+    from wayfinder_paths.jobs.gating import _gate_haircut
+
+    constitution = json.loads(json.dumps(DEFAULT_CONSTITUTION))
+    below = {"trials": 21, "t_stat": 1.1, "expected_max_t": 1.9, "cleared": False}
+    result = evaluate_economic_readiness(_ok_report(), constitution, haircut=below)
+    assert (
+        result["ready"] is False and "21-trial expected maximum" in result["reasons"][0]
+    )
+    # Probation is the forward certificate: the haircut is recorded, not binding.
+    assert (
+        evaluate_economic_readiness(
+            _ok_report(), constitution, probation=True, haircut=below
+        )["ready"]
+        is True
+    )
+    unknown = {"trials": 21, "t_stat": None, "expected_max_t": 1.9, "cleared": None}
+    assert (
+        evaluate_economic_readiness(_ok_report(), constitution, haircut=unknown)[
+            "ready"
+        ]
+        is True
+    )
+    assert _gate_haircut({"status": "ok"}, None) is None
+    cleared = _gate_haircut(
+        {"status": "ok", "paired_incumbent_delta": {"t_stat": 2.5}}, 21
+    )
+    assert cleared["cleared"] is True and cleared["trials"] == 21
+    assert (
+        _gate_haircut({"status": "ok", "paired_incumbent_delta": {"t_stat": 1.0}}, 21)[
+            "cleared"
+        ]
+        is False
+    )

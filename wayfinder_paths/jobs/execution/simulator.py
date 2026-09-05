@@ -16,6 +16,7 @@ from typing import Any
 
 import pandas as pd
 
+from wayfinder_paths.jobs.defense import add_defense_features
 from wayfinder_paths.jobs.execution.engine import (
     EngineState,
     LiquidationConfig,
@@ -54,6 +55,12 @@ from wayfinder_paths.jobs.execution.venues import (
     MarketEvent,
     VenueCapabilities,
     VenueState,
+)
+from wayfinder_paths.jobs.regime import (
+    add_portfolio_regime_feature,
+    declared_regimes,
+    partition_regime_returns,
+    portfolio_regime_labels,
 )
 
 
@@ -411,6 +418,7 @@ def simulate_execution(
     dataset: PreparedExecutionDataset,
     execution_spec: ExecutionSpec | Mapping[str, Any] | None = None,
     params: Mapping[str, Any] | None = None,
+    record_strategy_state: bool = False,
 ) -> ExecutionBacktestResult:
     spec = ExecutionSpec.coerce(execution_spec)
     params_data = dict(params) if params else {}
@@ -419,8 +427,10 @@ def simulate_execution(
     # `precompute` hook — see features.apply_precompute). Runs on the (already
     # quick_bars-truncated, feature-merged) dataset, so the replay's per-bar
     # decide() just reads columns instead of re-deriving indicators.
+    defense_bars = add_defense_features(dataset.bars, params_data)
+    regime_bars = add_portfolio_regime_feature(defense_bars, params_data)
     dataset = PreparedExecutionDataset(
-        apply_precompute(strategy, dataset.bars),
+        apply_precompute(strategy, regime_bars),
         dict(dataset.metadata),
         list(dataset.market_events),
     )
@@ -510,6 +520,7 @@ def simulate_execution(
                 trace=trace,
                 liquidation=liquidation,
                 events=events_by_timestamp.get(timestamp_iso, []),
+                record_strategy_state=record_strategy_state,
             )
             tick_ms.append((time.perf_counter() - tick_start) * 1000.0)
             if total_bars and (index + 1) % progress_every == 0:
@@ -570,6 +581,21 @@ def simulate_execution(
     stats["gate_diagnostics"] = summarize_gate_diagnostics(
         trace.runs, equity_curve, positions
     )
+    target_regimes = declared_regimes(params_data)
+    if target_regimes:
+        regime_stats = partition_regime_returns(
+            equity_curve,
+            trades,
+            labels=portfolio_regime_labels(dataset.bars),
+            target_regimes=target_regimes,
+        )
+        stats["regime"] = {
+            "target_regimes": list(target_regimes),
+            **regime_stats,
+        }
+        stats["regime_score"] = float(regime_stats["target_net_return"]) - float(
+            regime_stats["outside_loss_pct"]
+        )
     drawdown_curve = _drawdown_curve(equity_curve)
     visualization = {
         "schema_version": "1.0",
@@ -622,6 +648,7 @@ GRID_RANK_KEYS = frozenset(
         "sortino",
         "calmar",
         "cagr",
+        "regime_score",
     }
 )
 

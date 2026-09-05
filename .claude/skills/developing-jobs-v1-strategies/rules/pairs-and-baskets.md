@@ -99,6 +99,8 @@ def decide(ctx):
     # epoch-aligned every_n_bars — NEVER on bar_index % n (constant in live's
     # sliding window) and NEVER on tick counters in strategy_state (a state
     # reset re-warms them and the job goes dark for a full warmup period).
+    # Ages, cooldowns and expiries: stamp ctx.bar_ordinal, measure with
+    # ctx.bars_since(stamp) — never a stored bar_index (it never advances).
     if ctx.bar_index < warmup_bars or not ctx.every_n_bars(REBALANCE_BARS):
         return []
     # Rankings/vols are precompute columns; read only the LAST row per symbol.

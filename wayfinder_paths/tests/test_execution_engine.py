@@ -133,7 +133,7 @@ async def _tick(strategy, view, *, spec=None, timestamp=None, **kwargs):
         brokers=kwargs.pop("brokers", {"*": FakeBroker()}),
         state=kwargs.pop("state", EngineState()),
         spec=spec,
-        params={},
+        params=kwargs.pop("params", {}),
         timestamp=timestamp or view.timestamps[-1],
         **kwargs,
     )
@@ -213,6 +213,134 @@ async def test_symbol_block_and_risk_halt_preserve_semantic_close() -> None:
     assert broker.placed == [close]
     assert result.intents == [close]
     assert not any(event["kind"] == "intent_rejected" for event in result.guard_events)
+
+
+async def test_semantic_stop_without_reduce_only_arms_defense_stand_down() -> None:
+    class SemanticCloseBroker(FakeBroker):
+        async def place(
+            self, intent: OrderIntent, *, timestamp: str, price: float | None = None
+        ) -> FillEvent:
+            self.placed.append(intent)
+            return FillEvent(
+                status="filled",
+                venue=intent.venue,
+                symbol=intent.symbol,
+                side="sell_close",
+                filled_size=1.0,
+                avg_price=float(price or 1.0),
+                reduce_only=False,
+                raw={
+                    "intent_action": intent.action,
+                    "intent_metadata": intent.metadata,
+                },
+                timestamp=timestamp,
+            )
+
+    state = EngineState()
+    state.ledger.positions["SNX"] = PositionRecord(
+        symbol="SNX", side="long", size=1.0, avg_price=10.0
+    )
+    stop = OrderIntent(
+        action="STOP_LOSS",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="short",
+        size=1.0,
+        reduce_only=False,
+    )
+
+    result = await _tick(
+        _strategy([stop]),
+        _view([10.0, 9.0]),
+        brokers={"hyperliquid": SemanticCloseBroker()},
+        state=state,
+        params={"defense_overlay": {"stop_loss_streak": 1}},
+    )
+
+    assert "SNX" in state.defense_state["stand_downs"]
+    assert any(
+        event["kind"] == "loss_streak_symbol_stand_down"
+        for event in result.guard_events
+    )
+
+
+async def test_regime_contract_reports_target_without_blocking_entries() -> None:
+    broker = FakeBroker()
+    state = EngineState()
+    state.ledger.positions["SNX"] = PositionRecord(
+        symbol="SNX", side="long", size=1.0, avg_price=10.0
+    )
+    view = _view([10.0, 10.5])
+    frame = view.to_frame()
+    frame["__wf_portfolio_regime"] = "down_highvol"
+    entry = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="long",
+        size=1.0,
+    )
+    close = OrderIntent(
+        action="CLOSE",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="short",
+        size=1.0,
+        reduce_only=False,
+    )
+
+    result = await _tick(
+        _strategy([entry, close]),
+        CompletedBarsView(frame),
+        brokers={"hyperliquid": broker},
+        state=state,
+        params={"symbols": ["SNX"], "target_regimes": ["up_lowvol"]},
+    )
+
+    assert broker.placed == [entry, close]
+    assert result.gates["portfolio_regime"] == {
+        "current": "down_highvol",
+        "target": ["up_lowvol"],
+        "in_target_regime": False,
+    }
+    assert not any(event["kind"] == "intent_rejected" for event in result.guard_events)
+
+
+async def test_ood_overlay_scales_entries_but_preserves_semantic_close() -> None:
+    broker = FakeBroker()
+    state = EngineState()
+    state.ledger.positions["SNX"] = PositionRecord(
+        symbol="SNX", side="long", size=2.0, avg_price=10.0
+    )
+    view = _view([10.0, 10.5])
+    frame = view.to_frame()
+    frame["__wf_ood_entry_scale"] = 0.25
+    entry = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="long",
+        notional=100.0,
+    )
+    close = OrderIntent(
+        action="STOP_LOSS",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="short",
+        size=2.0,
+        reduce_only=False,
+    )
+
+    await _tick(
+        _strategy([entry, close]),
+        CompletedBarsView(frame),
+        brokers={"hyperliquid": broker},
+        state=state,
+        params={"defense_overlay": {}},
+    )
+
+    assert broker.placed[0].notional == pytest.approx(25.0)
+    assert broker.placed[1].size == pytest.approx(2.0)
 
 
 async def test_daily_notional_cap_accumulates_across_ticks() -> None:
@@ -1202,3 +1330,36 @@ def test_engine_state_round_trip(tmp_path) -> None:
     assert restored.last_processed_bar_ts == state.last_processed_bar_ts
     assert restored.daily_notional == {"2026-01-01": 20.0}
     assert restored.revision == "abc123"
+
+
+async def test_run_tick_records_strategy_state_digest_only_when_asked() -> None:
+    from wayfinder_paths.jobs.execution.primitives import ExecutionTrace
+
+    def decide(ctx):
+        ctx.strategy_state["n"] = int(ctx.strategy_state.get("n") or 0) + 1
+        ctx.strategy_state["fixed"] = "x"
+        return []
+
+    state = EngineState()
+    plain = ExecutionTrace(execution_spec=_spec().to_dict())
+    await _tick(decide, _view([10.0, 10.5]), state=state, trace=plain)
+    assert "strategy_state_digest" not in plain.runs[-1]
+
+    recorded = ExecutionTrace(execution_spec=_spec().to_dict())
+    await _tick(
+        decide,
+        _view([10.0, 10.5, 11.0]),
+        state=state,
+        trace=recorded,
+        record_strategy_state=True,
+    )
+    await _tick(
+        decide,
+        _view([10.0, 10.5, 11.0, 11.5]),
+        state=state,
+        trace=recorded,
+        record_strategy_state=True,
+    )
+    first, second = (row["strategy_state_digest"] for row in recorded.runs[-2:])
+    assert set(first) == {"n", "fixed"}
+    assert first["n"] != second["n"] and first["fixed"] == second["fixed"]

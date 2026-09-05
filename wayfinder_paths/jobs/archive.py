@@ -9,6 +9,7 @@ Entries are never silently deleted; status flips are the only mutation.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from wayfinder_paths.jobs.compute_lock import job_state_lock
@@ -24,6 +25,7 @@ ARCHIVE_STATUSES = {
     "quick_complete",
     "invalid",
     "low_fidelity_rejected",
+    "awaiting_regime",
     "dev_frontier",
     "audit_rejected",
     "paper_probation",
@@ -273,10 +275,11 @@ def set_candidate_status(
     status: str,
     *,
     evidence: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     with job_state_lock(store.repo_root, job_id, name="archive"):
         return _set_candidate_status(
-            store, job_id, candidate_id, status, evidence=evidence
+            store, job_id, candidate_id, status, evidence=evidence, metadata=metadata
         )
 
 
@@ -287,6 +290,7 @@ def _set_candidate_status(
     status: str,
     *,
     evidence: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if status not in ARCHIVE_STATUSES:
         raise ValueError(f"status must be one of {sorted(ARCHIVE_STATUSES)}")
@@ -297,6 +301,10 @@ def _set_candidate_status(
     entry["status"] = status
     if evidence:
         entry["evidence"] = evidence
+    if metadata:
+        # A verdict's numbers (forward effect, trades, days) ride with the
+        # status so the next campaign reads evidence, not a sentence.
+        entry["metadata"] = {**(entry.get("metadata") or {}), **dict(metadata)}
     entry["updated_at"] = utc_now_iso()
     _refresh_frontier(doc)
     store.write_json(job_id, ARCHIVE_PATH, doc)
@@ -391,11 +399,25 @@ def evolution_lessons_block(
         )
         if validation:
             lesson["validation_result"] = validation
+        validation_block = dev.get("validation") if isinstance(dev, dict) else None
+        if isinstance(validation_block, dict):
+            exits = validation_block.get("exits")
+            if isinstance(exits, dict) and exits.get("closes"):
+                lesson["validation_exits"] = _lesson_exits(exits)
+            forensics = validation_block.get("forensics")
+            if isinstance(forensics, dict) and forensics.get("by_exit_reason"):
+                lesson["validation_forensics"] = _lesson_forensics(forensics)
+        if isinstance(metadata.get("forward"), dict):
+            lesson["forward"] = metadata["forward"]
         tuning = metadata.get("tuning") or {}
         if isinstance(tuning, dict) and tuning.get("trials") is not None:
             lesson["optuna_trials"] = tuning["trials"]
         if isinstance(metadata.get("latest_postmortem"), dict):
             lesson["postmortem"] = metadata["latest_postmortem"]
+        if isinstance(metadata.get("gate"), dict):
+            lesson["gate"] = metadata["gate"]
+        if isinstance(metadata.get("risk_normalization"), dict):
+            lesson["risk_normalization"] = metadata["risk_normalization"]
         if status in _EVOLUTION_REJECTION_STATUSES and entry.get("evidence"):
             lesson["rejection_reason"] = str(entry["evidence"])[:240]
         lessons.append(lesson)
@@ -409,6 +431,35 @@ def evolution_lessons_block(
             "materially different mechanism or new forward evidence. A quick pass "
             "is not independent validation."
         ),
+    }
+
+
+_LESSON_EXIT_REASONS = 4
+_LESSON_FORENSICS_KEYS = (
+    "count",
+    "avg_realized_bps",
+    "avg_hold_mae_bps",
+    "avg_hold_mfe_bps",
+    "stop_survival_rate",
+)
+
+
+def _lesson_exits(exits: dict[str, Any]) -> dict[str, Any]:
+    by_reason = exits.get("by_reason") or {}
+    return {
+        "closes": exits.get("closes"),
+        "stop_share": exits.get("stop_share"),
+        "by_reason": dict(list(by_reason.items())[:_LESSON_EXIT_REASONS]),
+    }
+
+
+def _lesson_forensics(forensics: dict[str, Any]) -> dict[str, Any]:
+    return {
+        reason: {key: cell.get(key) for key in _LESSON_FORENSICS_KEYS if key in cell}
+        for reason, cell in list(forensics["by_exit_reason"].items())[
+            :_LESSON_EXIT_REASONS
+        ]
+        if isinstance(cell, dict)
     }
 
 

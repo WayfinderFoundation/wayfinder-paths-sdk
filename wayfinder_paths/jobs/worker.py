@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -382,6 +383,22 @@ _IDEATION_PATH = "research/ideation/latest.json"
 _IDEATION_SEEN_PATH = "research/ideation/last_seen.json"
 
 
+def _benchmark_mode() -> bool:
+    return os.getenv("WAYFINDER_BENCHMARK") == "1"
+
+
+def _wake_now() -> dt.datetime:
+    """The bench harness replays wakes under a frozen virtual clock; stamp
+    checks against the real clock would never come due on replay."""
+    frozen = os.getenv("WAYFINDER_BENCHMARK_NOW", "").strip()
+    if not (_benchmark_mode() and frozen):
+        return dt.datetime.now(dt.UTC)
+    stamp = dt.datetime.fromisoformat(frozen.replace("Z", "+00:00"))
+    if stamp.tzinfo is None:
+        return stamp.replace(tzinfo=dt.UTC)
+    return stamp.astimezone(dt.UTC)
+
+
 def _ideation_thresholds(root: Path) -> tuple[int, int]:
     """(due_s, overdue_s) from the active improver spec — daily expedition,
     stamp-gated under the wake rhythm (20h, not 24h, so a 30m cadence cannot
@@ -390,6 +407,76 @@ def _ideation_thresholds(root: Path) -> tuple[int, int]:
 
     spec = ImproverSpec.load(root)
     return spec.ideation_due_s, spec.ideation_overdue_s
+
+
+_IDEATION_BUCKETS = frozenset({"testable", "starved", "refuted"})
+_IDEATION_MIN_SOURCES = 3
+_IDEATION_MIN_HYPOTHESES = 3
+
+
+def validate_ideation_artifact(
+    doc: Mapping[str, Any], *, expected_clock: str | None = None
+) -> dict[str, Any]:
+    """Mechanical check of research/ideation/latest.json against the contract
+    the directive states: an ISO timestamp (equal to the wake clock when one
+    is expected), three consulted sources with tool and takeaway, three
+    hypotheses each with title, thesis, next_step and an honest bucket. The
+    problems list is what the next directive quotes back."""
+    problems: list[str] = []
+    generated_at = str(doc.get("generated_at") or "")
+    stamp: dt.datetime | None = None
+    try:
+        stamp = dt.datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+    except ValueError:
+        problems.append("generated_at is not an ISO8601 timestamp")
+    if stamp is not None and expected_clock:
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=dt.UTC)
+        clock = dt.datetime.fromisoformat(expected_clock.replace("Z", "+00:00"))
+        if clock.tzinfo is None:
+            clock = clock.replace(tzinfo=dt.UTC)
+        if abs((stamp - clock).total_seconds()) > 60:
+            problems.append(f"generated_at must equal the wake clock {expected_clock}")
+    sources = [
+        row for row in doc.get("sources_consulted") or [] if isinstance(row, Mapping)
+    ]
+    complete_sources = [
+        row for row in sources if row.get("tool") and row.get("takeaway")
+    ]
+    if len(complete_sources) < _IDEATION_MIN_SOURCES:
+        problems.append(
+            f"sources_consulted has {len(complete_sources)} complete entries "
+            f"(tool + takeaway); need {_IDEATION_MIN_SOURCES}"
+        )
+    hypotheses = [
+        row for row in doc.get("hypotheses") or [] if isinstance(row, Mapping)
+    ]
+    buckets: dict[str, int] = {}
+    complete_hypotheses = 0
+    for row in hypotheses:
+        bucket = str(row.get("bucket") or "unbucketed")
+        buckets[bucket] = buckets.get(bucket, 0) + 1
+        if (
+            row.get("title")
+            and row.get("thesis")
+            and row.get("next_step")
+            and bucket in _IDEATION_BUCKETS
+        ):
+            complete_hypotheses += 1
+    if complete_hypotheses < _IDEATION_MIN_HYPOTHESES:
+        problems.append(
+            f"hypotheses has {complete_hypotheses} complete entries (title, thesis, "
+            f"next_step, bucket in {sorted(_IDEATION_BUCKETS)}); "
+            f"need {_IDEATION_MIN_HYPOTHESES}"
+        )
+    return {
+        "valid": not problems,
+        "problems": problems[:6],
+        "generated_at": generated_at,
+        "sources": len(complete_sources),
+        "hypotheses": complete_hypotheses,
+        "buckets": buckets,
+    }
 
 
 def _ideation_age_s(root: Path) -> float | None:
@@ -401,9 +488,65 @@ def _ideation_age_s(root: Path) -> float | None:
         stamp = dt.datetime.fromisoformat(str(doc.get("generated_at")))
     except (ValueError, TypeError):
         return None
+    # An artifact that fails the contract was not delivered: the expedition
+    # stays due, and the directive quotes what was missing.
+    if not isinstance(doc, dict) or not validate_ideation_artifact(doc)["valid"]:
+        return None
     if stamp.tzinfo is None:
         stamp = stamp.replace(tzinfo=dt.UTC)
-    return (dt.datetime.now(dt.UTC) - stamp).total_seconds()
+    return (_wake_now() - stamp).total_seconds()
+
+
+def _benchmark_ideation_directive(age_desc: str) -> str:
+    """Sandboxed replay: no research/web/market tools exist and any network
+    fetch would leak future bars, so the expedition consults checked-in
+    evidence instead. Same artifact shape as the production directive."""
+    wake_clock = _wake_now().isoformat()
+    return (
+        "IDEATION SESSION — this wake is a research EXPEDITION, not a "
+        "routine review.\n"
+        f"The research artifact ({_IDEATION_PATH}) is {age_desc}; "
+        "the contract is one expedition per day.\n"
+        f"BENCHMARK MODE — the wake clock is {wake_clock}. External research "
+        "tools (research_*, web search/fetch, live market data) are "
+        "UNAVAILABLE in this environment and no network fetch may happen.\n"
+        "Give routine ops ONE glance (act only if something is red), then:\n"
+        "1. Consult at least 3 DISTINCT internal evidence artifacts instead "
+        "of external sources: checked-in results under results/research/ "
+        "(attribution.json, regime_health.json, signal_scan/...), "
+        "results/forward/summary.json, results/backtest/trade_forensics.json, "
+        "research/evolution/** (previous campaigns, probation verdicts), or "
+        "the read-only core_jobs actions status|report|regime_health|"
+        "attribution|signal_check|signal_scan|backtest_diagnose|"
+        "holdout_check. Record each as a sources_consulted entry with tool "
+        "= the file path or action name.\n"
+        "2. Look at what the incumbent's own evidence says about the next "
+        "1-2 weeks: regime drift, attribution decay, probation verdicts, "
+        "signals the scans already rank but nobody has tested.\n"
+        "3. Write research/ideation/latest.json with exactly this shape: "
+        '{"generated_at": "<UTC ISO8601>", "sources_consulted": [{"tool": '
+        '..., "query": ..., "takeaway": ...}], "hypotheses": [{"title": '
+        '..., "thesis": ..., "bucket": "testable"|"starved"|"refuted", '
+        '"next_step": ...}]} — generated_at MUST equal the wake clock '
+        f"{wake_clock}; hypotheses ranked best-first, at least 3, every one "
+        "bucketed honestly:\n"
+        "   - testable: next_step names the exact scan/SignalDef/feature "
+        "run to do NOW with data you already have.\n"
+        "   - starved: next_step names the unlock condition — the data or "
+        "feature that must exist first. Naming missing data is a VALID and "
+        "valuable outcome, not a failure.\n"
+        "   - refuted: next_step names the disqualifying evidence.\n"
+        "4. Fold the artifact into research/agenda.md (curated + compact, "
+        "as usual).\n"
+        "5. When one hypothesis is testable AND backed by a checked-in result "
+        "under results/research/, you MAY check in exactly one research seed "
+        'via core_jobs(action="evolution_submit_seed", ...). Never more than '
+        "one per expedition.\n"
+        "A 'nothing actionable' expedition is valid ONLY if "
+        "sources_consulted proves you looked. The artifact is checked "
+        "mechanically each wake; a missing or stale artifact is journaled "
+        "as ideation_incomplete for the owner to see.\n\n"
+    )
 
 
 def _ideation_bookkeeping(store: JobStore, job_id: str) -> None:
@@ -425,22 +568,27 @@ def _ideation_bookkeeping(store: JobStore, job_id: str) -> None:
             doc = None
     generated_at = str((doc or {}).get("generated_at") or "")
     if doc and generated_at and generated_at != str(seen.get("generated_at") or ""):
-        hypotheses = [h for h in doc.get("hypotheses") or [] if isinstance(h, dict)]
-        buckets: dict[str, int] = {}
-        for h in hypotheses:
-            bucket = str(h.get("bucket") or "unbucketed")
-            buckets[bucket] = buckets.get(bucket, 0) + 1
+        report = validate_ideation_artifact(doc)
         store.append_journal(
             job_id,
             {
-                "type": "ideation_artifact",
+                "type": "ideation_artifact" if report["valid"] else "ideation_invalid",
                 "generated_at": generated_at,
-                "sources": len(doc.get("sources_consulted") or []),
-                "hypotheses": len(hypotheses),
-                "buckets": buckets,
+                "sources": report["sources"],
+                "hypotheses": report["hypotheses"],
+                "buckets": report["buckets"],
+                "problems": report["problems"],
             },
         )
-        store.write_json(job_id, _IDEATION_SEEN_PATH, {"generated_at": generated_at})
+        store.write_json(
+            job_id,
+            _IDEATION_SEEN_PATH,
+            {
+                "generated_at": generated_at,
+                "valid": report["valid"],
+                "problems": report["problems"],
+            },
+        )
         return
     age = _ideation_age_s(root)
     overdue = age is None or age > _ideation_thresholds(root)[1]
@@ -1323,8 +1471,9 @@ def _build_worker_prompt_sections(
             "trades in band -> propose full size) and a kill criterion "
             "(auto-disable gate param) — paper forward IS the holdout, that "
             "is why this tier exists. Max 2 concurrent probation legs. "
-            "Regime-conditional legs gate live via enabled_regimes and a "
-            "regime FLIP is a first-class kill trigger. recency_trend="
+            "Regime-conditional legs declare target_regimes for causal "
+            "evaluation; the declaration does not block anticipatory entries. "
+            "A regime FLIP is a first-class kill trigger. recency_trend="
             "'decaying' on a deployed leg's signal is a diagnosis; "
             "'strengthening' near-misses are prime probation material. "
             "Graduation uses FORWARD trades only — never re-scan history "
@@ -1429,6 +1578,10 @@ def _build_worker_prompt_sections(
     # were actually blocked for 28 hours (2026-08-12).
     gate_alert = ""
     gate_state = snapshot.get("gate") or {}
+    if _benchmark_mode():
+        # The sandbox installs a world (bars + incumbent), not the gate
+        # reports; a red gate there is structural, not a wake's job to fix.
+        gate_state = {}
     if gate_state and gate_state.get("live_ready") is False:
         gate_reasons = "; ".join(str(r) for r in (gate_state.get("reasons") or [])[:4])
         gate_alert = (
@@ -1520,18 +1673,30 @@ def _build_worker_prompt_sections(
     ideation_task_line = ""
     ideation_age = _ideation_age_s(root)
     ideation_due = ideation_age is None or ideation_age > _ideation_thresholds(root)[0]
-    if (
+    gate_red = bool(gate_state and gate_state.get("live_ready") is False)
+    # One predicate for the work order AND the directive: a wake told to run
+    # an expedition without the block that names the artifact wrote its
+    # findings elsewhere. A benchmark sandbox's gate is structurally red (no
+    # validation/backtest/preflight reports are installed), so it never
+    # suppresses ideation there.
+    ideation_session = bool(
         ideation_due
         and mode == "intervene"
         and apply_proposal_id is None
         and not restage_tasks
-        and not (gate_state and gate_state.get("live_ready") is False)
-    ):
+        and (_benchmark_mode() or not gate_red)
+    )
+    if ideation_session:
         age_desc = (
             "missing (no expedition has ever produced one)"
             if ideation_age is None
             else f"{ideation_age / 3600:.0f}h old"
         )
+        last_seen = store.read_json(job_id, _IDEATION_SEEN_PATH) or {}
+        if last_seen.get("valid") is False and last_seen.get("problems"):
+            age_desc += "; the last artifact was REJECTED mechanically: " + "; ".join(
+                str(problem) for problem in last_seen["problems"]
+            )
         ideation_directive = (
             "IDEATION SESSION — this wake is a research EXPEDITION, not a "
             "routine review.\n"
@@ -1566,6 +1731,8 @@ def _build_worker_prompt_sections(
             "mechanically each wake; a missing or stale artifact is journaled "
             "as ideation_incomplete for the owner to see.\n\n"
         )
+        if _benchmark_mode():
+            ideation_directive = _benchmark_ideation_directive(age_desc)
         ideation_task_line = (
             "- This wake is an IDEATION SESSION: execute the IDEATION SESSION "
             "block above the snapshot, including writing "
@@ -1628,8 +1795,8 @@ def _build_worker_prompt_sections(
         maintenance_ready=maintenance_ready,
         remediation_overrides=bool(remediation_overrides),
         restage_tasks=list(restage_tasks or []),
-        ideation_due=bool(ideation_due),
-        gate_red=bool(gate_state and gate_state.get("live_ready") is False),
+        ideation_due=ideation_session,
+        gate_red=gate_red,
     )
     lane = str(work_order["lane"])
     if lane == "remediation":
@@ -1747,8 +1914,15 @@ def prepare_job_worker_prompt(
     # because THIS wake's scans are their consumer — a one-time backfill
     # otherwise goes silently stale (btc_trend froze for 4 days while
     # merging cleanly into every scan frame). Stamp-gated hourly; never
-    # raises.
-    refresh_derived_features_if_stale(job.id, store=store)
+    # raises. Skipped under the bench sandbox: build_live_dataset would
+    # append bars from beyond the virtual clock.
+    if _benchmark_mode():
+        store.append_journal(
+            job.id,
+            {"type": "derived_features_refresh_skipped", "reason": "benchmark_mode"},
+        )
+    else:
+        refresh_derived_features_if_stale(job.id, store=store)
 
     # Portfolio regime/incumbent health consumes the fresh compact market
     # artifact above plus forward PnL. On alert it refreshes attribution before
@@ -2170,6 +2344,15 @@ def build_evolution_stage_prompt(
     prior_stage_text = (
         _canonical_json(prior_handoff, max_chars=1_500) if prior_handoff else "null"
     )
+    repair_work_order = campaign_payload.pop("repair_work_order", None)
+    campaign_payload.pop("focus", None)
+    work_order_text = (
+        "Repair work order (deterministic, authoritative):\n"
+        + _canonical_json(repair_work_order, max_chars=1_500)
+        + "\n\n"
+        if isinstance(repair_work_order, dict) and repair_work_order
+        else ""
+    )
     candidate_outcomes = list(reversed(campaign_payload.pop("candidate_outcomes", [])))
     outcomes_text = _canonical_json(
         {"order": "newest_first", "candidates": candidate_outcomes[:3]},
@@ -2178,6 +2361,10 @@ def build_evolution_stage_prompt(
     lane = (
         "evolution_design"
         if session_stage == "design"
+        else "evolution_compose"
+        if session_stage == "compose"
+        else "evolution_redesign"
+        if session_stage == "redesign"
         else "evolution_finalize"
         if session_stage == "finalize"
         else "evolution_repair"
@@ -2187,6 +2374,10 @@ def build_evolution_stage_prompt(
     action = (
         "submit_campaign_design"
         if session_stage == "design"
+        else "submit_signal_proposals"
+        if session_stage == "compose"
+        else "submit_campaign_redesign"
+        if session_stage == "redesign"
         else "launch_finalize"
         if session_stage == "finalize"
         else "repair_and_launch_evaluation"
@@ -2204,6 +2395,12 @@ def build_evolution_stage_prompt(
         objective=(
             "Design and submit the campaign's bounded hypothesis/slot allocation."
             if session_stage == "design"
+            else "Propose signal definitions for the harness to scan; survivors "
+            "become citable evidence for the design stage."
+            if session_stage == "compose"
+            else "Read every screen once; abandon falsified slots, keep fixable "
+            "ones, add replacements, and set the focus set."
+            if session_stage == "redesign"
             else "Launch deterministic campaign finalization and end the stage."
             if session_stage == "finalize"
             else "Change the assigned candidate mechanism and launch exactly one detached evaluation."
@@ -2219,6 +2416,11 @@ def build_evolution_stage_prompt(
         completion=(
             "Call evolution_design once and end."
             if session_stage == "design"
+            else "Call evolution_compose once (a list, or an empty list to end "
+            "composition) and end."
+            if session_stage == "compose"
+            else "Call evolution_redesign once and end."
+            if session_stage == "redesign"
             else "Call evolution_finalize with background=true and end."
             if session_stage == "finalize"
             else "Call evolution_evaluate with background=true and end without waiting."
@@ -2258,6 +2460,7 @@ def build_evolution_stage_prompt(
         "Perform exactly this next action, then end the stage:\n"
         f"{campaign_payload.get('next_action')}\n\n"
         f"Prior stage handoff:\n{prior_stage_text}\n\n"
+        f"{work_order_text}"
         f"Persisted candidate outcomes:\n{outcomes_text}\n\n"
         "Campaign control state:\n" + _canonical_json(control_state, max_chars=2_000)
     )

@@ -20,13 +20,15 @@ permission:
 
   write: allow
   edit:
-    # The governance plane (owner targets, hard constraints, audit policy)
-    # is capability-protected: outside the job tree AND explicitly denied.
+    # ORDER IS LOAD-BEARING (last-match-wins, see external_directory below):
+    # the catch-all deny comes FIRST so the job-tree allow overrides it; the
+    # governance plane (owner targets, hard constraints, audit policy) stays
+    # LAST so it wins over any overlapping allow ever added above.
+    "*": deny
+    ".wayfinder_runs/**": ask
+    ".wayfinder/jobs/**": allow
     "governance/**": deny
     "audit/**": deny
-    ".wayfinder/jobs/**": allow
-    ".wayfinder_runs/**": ask
-    "*": deny
 
   # opencode 1.18+ resolves symlinks and classifies vault writes
   # (.wayfinder -> /wf/user_vault/wayfinder, .wayfinder_runs ->
@@ -79,11 +81,14 @@ permission:
     "python -m py_compile .wayfinder/jobs/**": allow
     "python3 -m py_compile .wayfinder/jobs/**": allow
 
+  # ORDER IS LOAD-BEARING: the broad MCP deny must precede the narrow allows
+  # (last-match-wins); with the deny last, core_jobs resolved to deny and the
+  # worker had no MCP tool at all.
+  wayfinder_*: deny
   wayfinder_core_jobs: allow
   wayfinder_core_run_script: ask
   wayfinder_core_runner: ask
   wayfinder_research_*: allow
-  wayfinder_*: deny
 
   wayfinder_onchain_swap: deny
   wayfinder_onchain_send: deny
@@ -293,9 +298,13 @@ conclusions, anything) into a strategy is structured feature rows:
 `poetry run wayfinder job feature append <job_id> --name <feature> --value <v>
 [--symbol S] [--timestamp ISO]` (append-only — NEVER truncate or rewrite
 `state/features.jsonl`; back-dated timestamps corrupt replay). The strategy
-reads them purely via `ctx.view.feature(name)` with identical backtest/live
+reads them purely via `ctx.view.feature(name, default=...)` (the default covers bars before the column's first value; an undeclared column raises) with identical backtest/live
 semantics. The feature SCHEMA lives in `execution_spec.data_contract.features`
-and is revision-bound — schema changes must ride a proposal. Model artifacts
+and is revision-bound — schema changes must ride a proposal. A declared `path` is
+relative and has two homes: the job store `state/features.jsonl` (job-owned,
+refreshed) or a file under `workspace/` (candidate-owned, copied and hashed into
+the revision); anything else fails validation. `stale_policy: skip` is not
+replayable in backtests and fails validation — declare `decide_anyway`. Model artifacts
 belong in `workspace/models/` (see `wayfinder_paths.jobs.strategies.models`)
 and also ship via proposals.
 

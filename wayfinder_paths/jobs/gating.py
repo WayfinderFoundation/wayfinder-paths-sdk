@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 
 from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.multiple_testing import expected_max_sharpe
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.runner.monitor_state import atomic_write_json
 
@@ -58,6 +59,17 @@ def clamp_leverage(
     if ceiling > 0 and requested > ceiling:
         return ceiling, ceiling
     return requested, None
+
+
+def clamp_size_scale(value: Any) -> float:
+    """Range-check the agent-writable size_scale knob: None means unscaled;
+    anything else must be a number in (0, 1]."""
+    if value is None:
+        return 1.0
+    scale = float(value)
+    if not 0 < scale <= 1:
+        raise ValueError("execution_params.size_scale must be in (0, 1]")
+    return scale
 
 
 def compute_workspace_revision(
@@ -335,6 +347,7 @@ def evaluate_economic_gate(
     store: JobStore | None = None,
     probation: bool = False,
     dataset_root: str | Path | None = None,
+    trials: int | None = None,
 ) -> dict[str, Any]:
     """Independent economic acceptance: paired candidate-vs-incumbent replay
     on identical OOS folds under the owner constitution. Computed by gate
@@ -415,7 +428,10 @@ def evaluate_economic_gate(
                 protected_dataset_root or candidate_root,
                 spec,
                 candidate_yaml,
-                feature_roots=(protected_dataset_root,)
+                # Bundle-owned workspace/ features from the candidate, the
+                # store from the protected root — the same pair the fold key
+                # fingerprint already hashes.
+                feature_roots=(candidate_root, protected_dataset_root)
                 if protected_dataset_root is not None
                 else None,
             )
@@ -459,13 +475,15 @@ def evaluate_economic_gate(
             )
         except OSError:
             pass  # persistence is an optimization, never a gate failure
+    gate_haircut = _gate_haircut(evaluation, trials)
     readiness = evaluate_economic_readiness(
-        evaluation, constitution, probation=probation
+        evaluation, constitution, probation=probation, haircut=gate_haircut
     )
     return {
         "ready": readiness["ready"],
         "reasons": readiness["reasons"],
         "probation": probation,
+        "haircut": gate_haircut,
         "enforcement": constitution["enforcement"],
         "constitution_revision": constitution.get("revision"),
         "objective": (
@@ -524,6 +542,24 @@ def _reusable_paired_evaluation(
     if readiness.get("ready") is not True:
         return None
     return evaluation
+
+
+def _gate_haircut(
+    evaluation: Mapping[str, Any], trials: int | None
+) -> dict[str, Any] | None:
+    """The paired delta's t-statistic against the expected maximum of the
+    campaign's trials; None when the gate was not told how many there were."""
+    if trials is None or evaluation.get("status") != "ok":
+        return None
+    delta = evaluation.get("paired_incumbent_delta") or {}
+    t_stat = delta.get("t_stat")
+    expected = expected_max_sharpe(int(trials))
+    return {
+        "trials": max(1, int(trials)),
+        "t_stat": t_stat,
+        "expected_max_t": round(expected, 4),
+        "cleared": (float(t_stat) >= expected) if t_stat is not None else None,
+    }
 
 
 def _audit_summary(audit: dict[str, Any] | None) -> dict[str, Any] | None:

@@ -52,8 +52,10 @@ For every iteration:
 
 - The strategy lives in `workspace/src/`; only `workspace/` and `job.yaml` are
   versioned and proposable.
-- Use `ctx.bar_index` for warmup and `ctx.every_n_bars(n)` for cadence. Do not
-  keep tick counters in strategy state or use `bar_index % n`.
+- Use `ctx.bar_index` for warmup, `ctx.every_n_bars(n)` for cadence, and
+  `ctx.bar_ordinal` / `ctx.bars_since(stamp)` for any age, cooldown or expiry.
+  Do not keep tick counters in strategy state, use `bar_index % n`, or store
+  `bar_index` as a clock — it is the bounded view length and is constant live.
 - `precompute` must be causal: rolling, lagged, expanding, or EWM transforms
   only. No future shifts, centered windows, or full-sample normalization.
 - Name observable gates `gate_*` and attach the exact gate column consumed by

@@ -1,4 +1,4 @@
-"""One-hour cross-asset momentum rank, rebalanced daily at 12:00 UTC."""
+"""Configurable cross-asset momentum ranking strategy."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from wayfinder_paths.jobs.execution.primitives import ExecutionContext
 from wayfinder_paths.jobs.strategies._starter_utils import (
     RANKING_STOP_DEFAULTS,
     add_stop_atr,
+    bounded_span,
     current_feature_values,
     merge_params,
     ranked_weights,
@@ -24,6 +25,7 @@ class MixedMomentumRankStrategy:
         "symbols": ["BTC", "SOL", "xyz:XYZ100", "xyz:TSLA"],
         "venue": "hyperliquid",
         "momentum_bars": 336,
+        "rank_legs": None,
         "rebalance_bars": 24,
         "rebalance_offset": 12,
         "weight_per_leg": 0.25,
@@ -35,7 +37,21 @@ class MixedMomentumRankStrategy:
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         self.params = merge_params(self.default_params, params)
-        self.warmup_bars = int(self.params["momentum_bars"]) + 4
+        rank_legs = self.params.get("rank_legs")
+        if rank_legs is not None:
+            ranked_weights(
+                dict.fromkeys(self.params["symbols"], 0.0),
+                weight_per_leg=0.0,
+                legs=rank_legs,
+            )
+            self.params["rank_legs"] = int(rank_legs)
+        self.warmup_bars = (
+            max(
+                int(self.params["momentum_bars"]),
+                bounded_span(int(self.params["stop_atr_period"])),
+            )
+            + 4
+        )
 
     def precompute(self, frames: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
         lookback = int(self.params["momentum_bars"])
@@ -56,7 +72,13 @@ class MixedMomentumRankStrategy:
         if scores is None:
             return []
         weights = ranked_weights(
-            scores, weight_per_leg=float(self.params["weight_per_leg"])
+            scores,
+            weight_per_leg=float(self.params["weight_per_leg"]),
+            legs=(
+                int(self.params["rank_legs"])
+                if self.params.get("rank_legs") is not None
+                else None
+            ),
         )
         return target_weights_to_intents(
             ctx,

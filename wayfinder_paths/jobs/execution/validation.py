@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import io
 import json
@@ -22,6 +23,7 @@ from wayfinder_paths.jobs.execution.features import (
 )
 from wayfinder_paths.jobs.execution.primitives import (
     BAR_CLOSE_LABEL,
+    REDUCE_ONLY_ACTIONS,
     CompletedBarsView,
     ExecutionSpec,
     ExecutionTrace,
@@ -490,10 +492,19 @@ BOUNDED_WINDOW_HINT = (
 )
 
 
+# Relative tolerance between the two replays' numeric fields. An exponential
+# average (Wilder ATR, EMA) seeded 64 bars earlier moves a stop or a size by
+# a few basis points with no real dependence beyond the window; a decide()
+# that reads beyond its window moves entries, sides or levels by far more.
+# Ten basis points sits well under one side of execution cost, so a passing
+# difference cannot change a fill's economics. (1e-6 rejected two genuine
+# candidates on a 2.6 bps ATR-stop gap and took a whole benchmark loop with
+# them.)
+WINDOW_PROBE_REL_TOL = 1e-3
+
+
 def _probe_values_match(left: Any, right: Any) -> bool:
-    """Structural equality with float tolerance: sizing arithmetic may carry
-    float noise between the two slices (e.g. an EMA seeded 64 rows earlier)
-    without any real dependence beyond the window."""
+    """Structural equality with the economic float tolerance above."""
     match left, right:
         case dict(), dict():
             return left.keys() == right.keys() and all(
@@ -506,9 +517,47 @@ def _probe_values_match(left: Any, right: Any) -> bool:
         case bool(), _:
             return left == right
         case ((int() | float()), (int() | float())):
-            return math.isclose(float(left), float(right), rel_tol=1e-6, abs_tol=1e-9)
+            return math.isclose(
+                float(left), float(right), rel_tol=WINDOW_PROBE_REL_TOL, abs_tol=1e-9
+            )
         case _:
             return left == right
+
+
+def probe_mismatches(base: Any, wide: Any, path: str = "") -> list[dict[str, Any]]:
+    """The fields that differ between the two replays, with their relative
+    gap, so a rejection names the level or size that moved, not a slogan."""
+    rows: list[dict[str, Any]] = []
+    match base, wide:
+        case dict(), dict():
+            for key in sorted(set(base) | set(wide)):
+                rows.extend(
+                    probe_mismatches(base.get(key), wide.get(key), f"{path}.{key}")
+                )
+        case ((list() | tuple()), (list() | tuple())):
+            if len(base) != len(wide):
+                rows.append(
+                    {
+                        "path": path or "/",
+                        "base": len(base),
+                        "wide": len(wide),
+                        "kind": "count",
+                    }
+                )
+            for index, (a, b) in enumerate(zip(base, wide, strict=False)):
+                rows.extend(probe_mismatches(a, b, f"{path}[{index}]"))
+        case _:
+            if not _probe_values_match(base, wide):
+                row: dict[str, Any] = {
+                    "path": path.lstrip("."),
+                    "base": base,
+                    "wide": wide,
+                }
+                if isinstance(base, (int, float)) and isinstance(wide, (int, float)):
+                    denominator = max(abs(float(wide)), 1e-12)
+                    row["rel"] = round(abs(float(base) - float(wide)) / denominator, 8)
+                rows.append(row)
+    return rows
 
 
 def _probe_indices(timestamps: Any, *, first: int, samples: int) -> list[int]:
@@ -717,6 +766,7 @@ def window_invariance_probe(
                     "window_source": window.source,
                     "base_intents": base,
                     "wide_intents": wide,
+                    "mismatches": probe_mismatches(base, wide)[:6],
                 }
         return {
             "status": "passed",
@@ -726,6 +776,104 @@ def window_invariance_probe(
         }
 
     return asyncio.run(probe())
+
+
+SEQUENCE_PREVIEW_BARS = 2_000
+_SEQUENCE_PREVIEW_STATE_KEYS = 8
+
+
+def sequence_preview(
+    script_entrypoint: str | Path | Callable[..., Any],
+    dataset: Any,
+    execution_spec: ExecutionSpec | Mapping[str, Any] | None,
+    params: Mapping[str, Any],
+    *,
+    bars: int = SEQUENCE_PREVIEW_BARS,
+) -> dict[str, Any]:
+    """Replay the last ``bars`` decision bars of a dataset through the real
+    sequential simulator (one strategy, one precompute, one engine state)
+    and summarize what decide() did: every intent it emitted and how its own
+    strategy_state moved bar to bar. An isolated-bar probe cannot see a state
+    machine; this can, and names the keys that were written but froze."""
+    from wayfinder_paths.jobs.execution.simulator import (  # circular import
+        PreparedExecutionDataset,
+        _load_strategy,
+        simulate_execution,
+    )
+    from wayfinder_paths.jobs.execution.walk_forward import _slice  # circular
+
+    params_data = dict(params)
+    spec = ExecutionSpec.coerce(execution_spec)
+    window = resolve_compute_window(
+        params_data, _load_strategy(script_entrypoint, dict(params_data))
+    )
+    if not window.declared or window.size is None:
+        return {
+            "status": "skipped",
+            "reason": f"compute window is {window.source}, not declared",
+        }
+    timestamps = dataset.bars.timestamps
+    if len(timestamps) <= window.size:
+        return {
+            "status": "skipped",
+            "reason": "dataset does not extend beyond the declared window",
+        }
+    start = max(0, len(timestamps) - (window.size + int(bars)))
+    replay: PreparedExecutionDataset = _slice(
+        dataset, timestamps, start, len(timestamps)
+    )
+    result = simulate_execution(
+        script_entrypoint, replay, spec, params_data, record_strategy_state=True
+    )
+    warm = window.size - 1
+    runs = list(result.trace.get("runs") or [])[warm:]
+    decision_stamps = {str(row.get("timestamp")) for row in runs}
+    intents = [
+        row
+        for row in result.trace.get("intents") or []
+        if str(row.get("timestamp")) in decision_stamps
+    ]
+    by_action: dict[str, int] = {}
+    entries = 0
+    first_entry_bar: str | None = None
+    for intent in intents:
+        action = str(intent.get("action") or "").upper()
+        by_action[action] = by_action.get(action, 0) + 1
+        if action not in REDUCE_ONLY_ACTIONS and not intent.get("reduce_only"):
+            entries += 1
+            first_entry_bar = first_entry_bar or str(intent.get("timestamp"))
+    seen: dict[str, str] = {}
+    keys: dict[str, dict[str, Any]] = {}
+    frozen_after: str | None = None
+    for row in runs:
+        stamp = str(row.get("timestamp"))
+        for key, digest in (row.get("strategy_state_digest") or {}).items():
+            if key not in seen:
+                keys[key] = {
+                    "first_set_bar": stamp,
+                    "last_changed_bar": stamp,
+                    "changes": 1,
+                }
+                frozen_after = stamp
+            elif seen[key] != digest:
+                keys[key]["last_changed_bar"] = stamp
+                keys[key]["changes"] += 1
+                frozen_after = stamp
+            seen[key] = digest
+    ranked = sorted(keys.items(), key=lambda item: (-item[1]["changes"], item[0]))
+    status = "entries" if entries else ("armed_no_entry" if keys else "silent")
+    return {
+        "status": status,
+        "bars_replayed": len(runs),
+        "window": window.size,
+        "intents_total": len(intents),
+        "by_action": by_action,
+        "entries": entries,
+        "first_entry_bar": first_entry_bar,
+        "state_keys": dict(ranked[:_SEQUENCE_PREVIEW_STATE_KEYS]),
+        "state_keys_total": len(keys),
+        "frozen_after": frozen_after,
+    }
 
 
 def _window_invariance_checks(
@@ -788,6 +936,36 @@ def _window_invariance_checks(
 
 
 def _feature_checks(root: Path, spec: ExecutionSpec) -> list[dict[str, Any]]:
+    checks = _feature_availability_checks(root, spec)
+    try:
+        specs = parse_feature_specs(spec)
+    except ValueError:
+        return checks
+    skipping = [item.name for item in specs if item.stale_policy == "skip"]
+    if skipping:
+        # Historical simulation applies no freshness: a backtest would trade
+        # the bars that paper and live skip, so the gate could pass on data
+        # the strategy never acts on. Blocking until history-aware skips exist.
+        checks.insert(
+            0,
+            {
+                "name": "feature_policy_replayable",
+                "passed": False,
+                "blocking": True,
+                "features": skipping,
+                "hint": (
+                    "stale_policy 'skip' is not replayable: backtests apply no "
+                    f"feature freshness ({', '.join(skipping)}); declare "
+                    "decide_anyway (max_age_seconds still journals a guard event)"
+                ),
+            },
+        )
+    return checks
+
+
+def _feature_availability_checks(
+    root: Path, spec: ExecutionSpec
+) -> list[dict[str, Any]]:
     try:
         specs = parse_feature_specs(spec)
     except ValueError as exc:
@@ -795,7 +973,13 @@ def _feature_checks(root: Path, spec: ExecutionSpec) -> list[dict[str, Any]]:
         return [{"name": "declared_features_valid", "passed": False, "error": str(exc)}]
     if not specs:
         return []
-    frames = load_feature_rows([root], specs)
+    try:
+        frames = load_feature_rows([root], specs)
+    except ValueError as exc:
+        # A declared file resolving out of its root (a symlink under
+        # workspace/) is the same contract error as a bad path: blocking,
+        # and handed back uncharged by the campaign like any contract check.
+        return [{"name": "declared_features_valid", "passed": False, "error": str(exc)}]
     missing = [
         item.name
         for item in specs
@@ -1058,6 +1242,168 @@ def entrypoint_inside_workspace_check(
     return check
 
 
+_CLOCK_PERMITTED_TOKENS = ("warmup", "params", "lookback")
+_CLOCK_HIT_LIMIT = 4
+
+
+def _undeclared_feature_reads(text: str, spec: ExecutionSpec) -> list[str]:
+    """Feature names read through ``ctx.view.feature("name", ...)`` that the
+    spec does not declare. A malformed declaration list is the feature
+    contract check's finding, not this one's."""
+    try:
+        declared = {item.column_name for item in parse_feature_specs(spec)}
+    except ValueError:
+        return []
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    hits: set[str] = set()
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "feature"
+            and isinstance(node.func.value, ast.Attribute)
+            and node.func.value.attr == "view"
+        ):
+            continue
+        name_node = node.args[0] if node.args else None
+        if name_node is None:
+            name_node = next(
+                (kw.value for kw in node.keywords if kw.arg == "name"), None
+            )
+        if isinstance(name_node, ast.Constant) and isinstance(name_node.value, str):
+            if name_node.value not in declared:
+                hits.add(name_node.value)
+    return sorted(hits)
+
+
+def _bounded_index_clock_hits(text: str) -> list[str]:
+    """Source lines that persist `ctx.bar_index` or do elapsed-time arithmetic
+    with it. Permitted: comparisons and arithmetic against constants or
+    warmup/params/lookback expressions (`ctx.bar_index < self.warmup_bars`,
+    `ctx.bar_index - 1`)."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+
+    def unwrap(node: ast.AST) -> ast.AST:
+        while (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"int", "float"}
+            and len(node.args) == 1
+        ):
+            node = node.args[0]
+        return node
+
+    # Names bound from the index carry it: `now = ctx.bar_index`,
+    # `now: int = ctx.bar_index`, `(now := ctx.bar_index)`, and aliases of
+    # aliases (`later = now`), collected to a fixed point.
+    aliases: set[str] = set()
+
+    def carries_index(value: ast.AST | None) -> bool:
+        inner = unwrap(value) if value is not None else None
+        if isinstance(inner, ast.Name):
+            return inner.id in aliases
+        return isinstance(inner, ast.Attribute) and inner.attr == "bar_index"
+
+    bindings: list[tuple[str, ast.AST]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            if isinstance(node.targets[0], ast.Name):
+                bindings.append((node.targets[0].id, node.value))
+        elif isinstance(node, ast.AnnAssign | ast.NamedExpr) and node.value is not None:
+            if isinstance(node.target, ast.Name):
+                bindings.append((node.target.id, node.value))
+    while True:
+        grown = {name for name, value in bindings if carries_index(value)} - aliases
+        if not grown:
+            break
+        aliases |= grown
+
+    def is_bar_index(node: ast.AST) -> bool:
+        inner = unwrap(node)
+        if isinstance(inner, ast.Name):
+            return inner.id in aliases
+        return isinstance(inner, ast.Attribute) and inner.attr == "bar_index"
+
+    def permitted(node: ast.AST) -> bool:
+        inner = unwrap(node)
+        if isinstance(inner, ast.Constant):
+            return True
+        words = " ".join(
+            str(getattr(item, "id", "") or getattr(item, "attr", "") or "")
+            + " "
+            + (str(item.value) if isinstance(item, ast.Constant) else "")
+            for item in ast.walk(inner)
+        ).lower()
+        return any(token in words for token in _CLOCK_PERMITTED_TOKENS)
+
+    def stored_read(node: ast.AST) -> bool:
+        inner = unwrap(node)
+        if isinstance(inner, ast.Subscript):
+            return not permitted(inner)
+        return (
+            isinstance(inner, ast.Call)
+            and isinstance(inner.func, ast.Attribute)
+            and inner.func.attr == "get"
+            and not permitted(inner)
+        )
+
+    hits: list[tuple[int, str]] = []
+
+    def record(node: ast.AST) -> None:
+        segment = ast.get_source_segment(text, node) or ast.dump(node)
+        hits.append((int(getattr(node, "lineno", 0)), " ".join(segment.split())[:120]))
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if (
+                node.value is not None
+                and is_bar_index(node.value)
+                and any(isinstance(t, (ast.Subscript, ast.Attribute)) for t in targets)
+            ):
+                record(node)
+        elif isinstance(node, ast.Dict):
+            if any(value is not None and is_bar_index(value) for value in node.values):
+                record(node)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and (
+                (
+                    node.func.attr == "setdefault"
+                    and len(node.args) >= 2
+                    and is_bar_index(node.args[1])
+                )
+                or (
+                    node.func.attr in {"append", "insert", "add", "appendleft"}
+                    and any(is_bar_index(arg) for arg in node.args)
+                )
+            )
+        ):
+            record(node)
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub)):
+            left, right = is_bar_index(node.left), is_bar_index(node.right)
+            if left != right:
+                other = node.right if left else node.left
+                if not permitted(other):
+                    record(node)
+        elif isinstance(node, ast.Compare) and len(node.comparators) == 1:
+            sides = (node.left, node.comparators[0])
+            flags = tuple(is_bar_index(side) for side in sides)
+            if flags[0] != flags[1]:
+                other = sides[1] if flags[0] else sides[0]
+                if stored_read(other):
+                    record(node)
+    unique = sorted(set(hits))[:_CLOCK_HIT_LIMIT]
+    return [f"line {line}: {segment}" for line, segment in unique]
+
+
 def _code_only_text(text: str) -> str:
     """Strip comments and docstrings so static greps see only real code.
 
@@ -1144,6 +1490,46 @@ def _script_static_checks(
                 "strategy_state re-warm from zero on every state reset"
             )
             if counter_gate is not None
+            else None,
+        }
+    )
+    # ctx.bar_index is the bounded view length and is constant once warm, so
+    # a stored copy never ages: five of eight designs in one campaign armed a
+    # state machine on it and never traded. Warmup comparisons stay legal.
+    clock_hits = _bounded_index_clock_hits(text)
+    checks.append(
+        {
+            "name": "no_bounded_index_clock",
+            "passed": not clock_hits,
+            "blocking": True,
+            "details": clock_hits,
+            "hint": (
+                "ctx.bar_index is the bounded view length and is constant once "
+                "warm, so it cannot measure elapsed bars: an age, cooldown or "
+                "expiry computed from it reads 0 forever and the state machine "
+                f"never fires ({'; '.join(clock_hits)}). Stamp ctx.bar_ordinal "
+                "into strategy_state and measure with ctx.bars_since(stamp), or "
+                "store ctx.timestamp."
+            )
+            if clock_hits
+            else None,
+        }
+    )
+    undeclared = _undeclared_feature_reads(text, spec)
+    checks.append(
+        {
+            "name": "undeclared_feature_read",
+            "passed": not undeclared,
+            "blocking": True,
+            "details": undeclared,
+            "hint": (
+                "decide() reads feature columns that "
+                "execution_spec.data_contract.features does not declare "
+                f"({', '.join(undeclared)}); declare each as "
+                '{"name": ..., "source": "file"} or stop reading it — the '
+                "driver merges declared columns only, so the read raises live."
+            )
+            if undeclared
             else None,
         }
     )

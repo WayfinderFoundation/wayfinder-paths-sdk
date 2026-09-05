@@ -40,7 +40,8 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -50,6 +51,7 @@ from wayfinder_paths.jobs.signal_library import (
     SIGNAL_LIBRARY,
     SignalDef,
     build_signal_frame,
+    missing_feeds,
     signal_defs,
     wilder_atr,
 )
@@ -894,6 +896,85 @@ def _fold_stability(
     return deltas, agreeing, True
 
 
+def _library_of(spec: SignalDef, extra_names: Collection[str]) -> str:
+    """Where a scanned def came from: the canonical library, the mechanical
+    population, or a workspace/proposal def."""
+    if spec.name not in extra_names:
+        return "canonical"
+    return "population" if spec.family == "population" else "workspace"
+
+
+def _resolve_signal_def(signal: str | SignalDef) -> SignalDef:
+    from wayfinder_paths.jobs.signal_library import signal_defs
+
+    if isinstance(signal, SignalDef):
+        return signal
+    spec = signal_defs().get(signal)
+    if spec is None:
+        raise ValueError(f"unknown library signal {signal!r}")
+    return spec
+
+
+def library_signal_on_bars(
+    frame: pd.DataFrame,
+    signal: str | SignalDef,
+    timeframe: str,
+    *,
+    bar_seconds: int,
+) -> pd.Series:
+    """One library trigger, computed on a causal ``timeframe`` resample and
+    aligned back to the base bars: the value at base bar t is the signal of
+    the last COMPLETED higher-timeframe bar closing at or before t.
+
+    This is how a de-novo strategy consumes a validated signal in
+    ``precompute()`` without re-implementing the resample or the trigger.
+    """
+    from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
+    from wayfinder_paths.jobs.signal_library import build_signal_frame
+
+    spec = _resolve_signal_def(signal)
+    rule_seconds = bar_interval_seconds(timeframe)
+    if not rule_seconds or rule_seconds < bar_seconds or rule_seconds % bar_seconds:
+        raise ValueError(f"timeframe {timeframe!r} is not a multiple of the base bar")
+    base = frame.reset_index(drop=True)
+    if "symbol" not in base.columns:
+        base = base.assign(symbol="")
+    stamps = pd.to_datetime(base["timestamp"], utc=True)
+    bars = resample_ohlcv(base, rule_seconds, bar_seconds=bar_seconds)
+    signals = build_signal_frame(
+        bars, include_canonical=False, canonical_signals=(spec,)
+    )
+    if spec.name not in signals.columns:
+        return pd.Series(False, index=base.index, dtype=bool)
+    higher = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(bars["timestamp"], utc=True),
+            "value": signals[spec.name].astype(bool).to_numpy(),
+        }
+    ).sort_values("timestamp")
+    aligned = pd.merge_asof(
+        pd.DataFrame({"timestamp": stamps}).sort_values("timestamp"),
+        higher,
+        on="timestamp",
+        direction="backward",
+    )
+    values = aligned["value"].astype("boolean").fillna(False).astype(bool)
+    values.index = base.index
+    return values
+
+
+def library_signal_warmup_bars(
+    signal: str | SignalDef, timeframe: str, *, bar_seconds: int
+) -> int:
+    """Base bars a strategy must declare to compute the signal exactly."""
+    from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
+
+    spec = _resolve_signal_def(signal)
+    rule_seconds = bar_interval_seconds(timeframe) or bar_seconds
+    ratio = max(1, int(rule_seconds // bar_seconds))
+    return (int(spec.min_bars) + 2) * ratio
+
+
 def scan_signals(
     frame: pd.DataFrame,
     horizons: list[int] | None = None,
@@ -913,6 +994,7 @@ def scan_signals(
     canonical_signals: Sequence[SignalDef] = (),
     required_horizons: Mapping[str, Sequence[int]] | None = None,
     condition_regime: bool = False,
+    condition_features: Mapping[str, Mapping[float, str]] | None = None,
     min_family_size: int = MIN_BH_FAMILY_SIZE,
 ) -> dict[str, Any]:
     """Event-study EVERY canonical library trigger against one symbol's bars
@@ -978,6 +1060,18 @@ def scan_signals(
         from wayfinder_paths.jobs.indicators import REGIME_LABELS
 
         regime_labels = tuple(REGIME_LABELS)
+    # Store-feature conditioning (macro_regime, leader_state, ...): each named
+    # column present on the frame labels its bars by the code map and adds one
+    # masked row per label to the same family as the base row. An edge that
+    # exists only in bear or only during a broad selloff is invisible
+    # unconditionally and is exactly what a gated book can use.
+    feature_conditions: dict[str, dict[float, str]] = {
+        str(column): {float(code): str(label) for code, label in mapping.items()}
+        for column, mapping in (condition_features or {}).items()
+        if column in frame.columns
+    }
+    feature_arrays: dict[str, dict[str, Any]] = {}
+    feature_now: dict[str, str] = {}
 
     def _record_unmeasured(
         spec: SignalDef,
@@ -992,7 +1086,7 @@ def scan_signals(
             {
                 "signal": spec.name,
                 "family": spec.family,
-                "library": ("workspace" if spec.name in extra_names else "canonical"),
+                "library": _library_of(spec, extra_names),
                 "timeframe": timeframe,
                 "horizon": horizon,
                 "regime": regime,
@@ -1022,6 +1116,20 @@ def scan_signals(
             tail = labels.dropna()
             if regime_now is None and len(tail):
                 regime_now = str(tail.iloc[-1])
+        if feature_conditions:
+            per_column: dict[str, Any] = {}
+            for column, mapping in feature_conditions.items():
+                codes = pd.to_numeric(bars[column], errors="coerce")
+                labelled = codes.map(
+                    lambda value, table=mapping: (
+                        table.get(float(value)) if pd.notna(value) else None
+                    )
+                )
+                per_column[column] = labelled.to_numpy(dtype=object)
+                known = labelled.dropna()
+                if column not in feature_now and len(known):
+                    feature_now[column] = str(known.iloc[-1])
+            feature_arrays[tf_name] = per_column
         close = bars["close"].astype(float).to_numpy()
         n = len(close)
         signals = build_signal_frame(
@@ -1030,6 +1138,13 @@ def scan_signals(
             include_canonical=include_canonical,
             canonical_signals=selected_canonical,
         )
+        # Feed-backed signals on a frame without the feed are all False by
+        # construction: report them as unmeasured, never as a dead trigger.
+        feedless = {
+            spec.name: missing_feeds(bars, spec)
+            for spec in signal_specs
+            if missing_feeds(bars, spec)
+        }
         tf_horizon_set = (
             {int(h) for h in horizons}
             if horizons
@@ -1157,9 +1272,7 @@ def scan_signals(
                 return {
                     "signal": spec.name,
                     "family": spec.family,
-                    "library": (
-                        "workspace" if spec.name in extra_names else "canonical"
-                    ),
+                    "library": _library_of(spec, extra_names),
                     "description": spec.description,
                     "timeframe": tf_name,
                     "horizon": h,
@@ -1186,6 +1299,25 @@ def scan_signals(
             # frame has only workspace columns, so scoring the canonical
             # library against it would KeyError (hit live 2026-07-26).
             for spec in signal_specs:
+                if spec.name in feedless:
+                    reason = "feed_not_declared:" + ",".join(feedless[spec.name])
+                    _record_unmeasured(
+                        spec,
+                        timeframe=tf_name,
+                        horizon=h,
+                        status="missing_feed",
+                        reason=reason,
+                    )
+                    for label in regime_labels:
+                        _record_unmeasured(
+                            spec,
+                            timeframe=tf_name,
+                            horizon=h,
+                            status="missing_feed",
+                            reason=reason,
+                            regime=label,
+                        )
+                    continue
                 sig = signals[spec.name].to_numpy()
                 events = _decimate_events(sig[: n - h], h)
                 n_raw = int(sig[: n - h].sum())
@@ -1237,6 +1369,40 @@ def scan_signals(
                             continue
                         tests_run += 1
                         rows.append(r_row)
+                for column, mapping in feature_conditions.items():
+                    labels_arr = feature_arrays.get(tf_name, {}).get(column)
+                    if labels_arr is None:
+                        continue
+                    for label in mapping.values():
+                        cell = f"{column}={label}"
+                        mask = labels_arr[: n - h] == label
+                        f_events = _decimate_events(sig[: n - h] & mask, h)
+                        f_row = _stats_row(
+                            f_events,
+                            spec,
+                            cell_min_events=max(15, min_events // 2),
+                            extra={
+                                "regime": cell,
+                                "regime_source": column,
+                                "in_current_regime": feature_now.get(column) == label,
+                            },
+                        )
+                        if f_row is None:
+                            _record_unmeasured(
+                                spec,
+                                timeframe=tf_name,
+                                horizon=h,
+                                status="underpowered",
+                                reason=(
+                                    "zero_variance_returns"
+                                    if int(f_events.sum()) >= max(15, min_events // 2)
+                                    else "insufficient_events"
+                                ),
+                                regime=cell,
+                            )
+                            continue
+                        tests_run += 1
+                        rows.append(f_row)
     apply_bh_verdicts(
         rows,
         q_threshold=q_threshold,
@@ -1280,6 +1446,7 @@ def scan_signals(
         "tests_run": tests_run,
         "tests_skipped_insufficient_data": tests_skipped,
         "current_regime": regime_now,
+        "condition_features": sorted(feature_conditions),
         "expected_lucky_passes": expected_lucky,
         "bh_family": {
             "size": len(rows),
@@ -1381,11 +1548,13 @@ def rank_ic(
         if h <= 0:
             continue
         ics: list[float] = []
-        # union of timestamps, evaluated cross-sectionally
+        # union of timestamps, evaluated cross-sectionally at horizon
+        # spacing: adjacent h-bar forward windows share h-1 bars, and a
+        # sqrt(n) t-stat over overlapping observations is inflated by about
+        # sqrt(h) — a null panel at h=168 read as edge in half the trials.
         index = sorted(set().union(*(set(f.index) for f in aligned.values())))
-        for i, ts in enumerate(index):
-            if i + h >= len(index):
-                break
+        for i in range(0, len(index) - h, h):
+            ts = index[i]
             fwd_ts = index[i + h]
             scores: list[float] = []
             fwd: list[float] = []
@@ -1806,6 +1975,29 @@ def pair_check_job(
     return report
 
 
+def campaign_dataset_root(store: Any, job_id: str) -> Path:
+    """Where a research tool reads bars from. While an evolution campaign
+    certifies on a protected chronological tail, every model-facing tool
+    reads the campaign's discovery snapshot (the same job layout, cut at the
+    discovery cutoff) instead of the job's canonical dataset, so the tail the
+    certificate depends on stays unseen. Read through the store to keep this
+    module free of the campaign module's imports."""
+    root = Path(store.job_dir(job_id))
+    state = store.read_json(job_id, "state/evolution_campaign.json", default={}) or {}
+    plan = state.get("evaluation_plan") or {}
+    if state.get("status") in {"active", "finalizing"} and plan.get("protected"):
+        campaign_id = str(state.get("campaign_id") or "")
+        snapshot = (
+            root / "research" / "evolution" / "campaigns" / campaign_id / "dataset"
+        )
+        if (
+            campaign_id
+            and (snapshot / "results" / "backtest" / "input_bars.json").is_file()
+        ):
+            return snapshot
+    return root
+
+
 def signal_check_job(
     job_id: str,
     *,
@@ -1837,7 +2029,12 @@ def signal_check_job(
     params = dict(job_data.get("execution_params") or {})
     script = store.resolve_script_entrypoint(job_id, job_data)
     strategy = _load_strategy(script, params)
-    dataset = _load_dataset(root, spec, job_data, include_store_features=True)
+    dataset = _load_dataset(
+        campaign_dataset_root(store, job_id),
+        spec,
+        job_data,
+        include_store_features=True,
+    )
     view = apply_precompute(strategy, dataset.bars)
     frame = view.to_frame()
     results: dict[str, Any] = {}
@@ -2096,7 +2293,12 @@ def signal_scan_job(
     bar_seconds = bar_interval_seconds(spec.data_contract.get("bar_interval")) or 3600
     fee_bps = float(params.get("fee_bps") or 5.0)
     slippage_bps = float(params.get("slippage_bps") or 3.5)
-    dataset = _load_dataset(root, spec, job_data, include_store_features=True)
+    dataset = _load_dataset(
+        campaign_dataset_root(store, job_id),
+        spec,
+        job_data,
+        include_store_features=True,
+    )
     frame = dataset.bars.to_frame()
     available = sorted(frame["symbol"].astype(str).unique())
     requested_targets = [str(s) for s in symbols] if symbols else available
@@ -2525,7 +2727,12 @@ def holdout_check_job(
     tf_seconds = bar_interval_seconds(tf_name)
     if not tf_seconds:
         raise ValueError(f"unparseable timeframe {tf_name!r}")
-    dataset = _load_dataset(root, spec, job_data, include_store_features=True)
+    dataset = _load_dataset(
+        campaign_dataset_root(store, job_id),
+        spec,
+        job_data,
+        include_store_features=True,
+    )
     frame = dataset.bars.to_frame()
     available = sorted(frame["symbol"].astype(str).unique())
     targets = [str(s) for s in symbols] if symbols else available
@@ -2663,7 +2870,12 @@ def rank_check_job(
     params = dict(job_data.get("execution_params") or {})
     script = store.resolve_script_entrypoint(job_id, job_data)
     strategy = _load_strategy(script, params)
-    dataset = _load_dataset(root, spec, job_data, include_store_features=True)
+    dataset = _load_dataset(
+        campaign_dataset_root(store, job_id),
+        spec,
+        job_data,
+        include_store_features=True,
+    )
     view = apply_precompute(strategy, dataset.bars)
     frame = view.to_frame()
     symbols = sorted(frame["symbol"].astype(str).unique())

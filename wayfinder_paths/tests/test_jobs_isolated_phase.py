@@ -25,6 +25,16 @@ def _child_transient_failure() -> dict[str, int]:
     raise TransientInfrastructureError("box is saturated")
 
 
+def _child_contract_failure_worded_like_infrastructure() -> dict[str, int]:
+    raise ValueError(
+        "window-invariance probe failed: carry long memory as incremental state"
+    )
+
+
+def _child_crash_worded_like_infrastructure() -> dict[str, int]:
+    raise OSError("connection reset while reading bars")
+
+
 def _sleeping_child(seconds: float) -> dict[str, bool]:
     time.sleep(seconds)
     return {"complete": True}
@@ -46,6 +56,17 @@ def test_isolated_phase_preserves_candidate_failure_as_evidence() -> None:
 def test_isolated_phase_preserves_transient_failure_for_retry() -> None:
     with pytest.raises(TransientInfrastructureError, match="box is saturated"):
         run_isolated_phase(_child_transient_failure, timeout_s=10)
+
+
+def test_candidate_contract_failure_stays_evidence_whatever_its_wording() -> None:
+    # The probe's hint mentions "memory"; the string classifier alone would
+    # call that infrastructure and the finalize would die on the candidate.
+    with pytest.raises(RuntimeError, match="window-invariance probe failed"):
+        run_isolated_phase(
+            _child_contract_failure_worded_like_infrastructure, timeout_s=10
+        )
+    with pytest.raises(TransientInfrastructureError, match="connection reset"):
+        run_isolated_phase(_child_crash_worded_like_infrastructure, timeout_s=10)
 
 
 def test_heavy_child_registration_is_atomic_and_pid_specific(

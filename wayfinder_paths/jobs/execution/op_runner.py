@@ -143,6 +143,21 @@ def _run_op(op: str, kwargs: dict[str, Any]) -> Any:
         from wayfinder_paths.jobs.store import JobStore
 
         return submit_campaign_design(JobStore(), kwargs.pop("job_id"), **kwargs)
+    if op == "evolution_compose":
+        from wayfinder_paths.jobs.evolution_campaign import submit_signal_proposals
+        from wayfinder_paths.jobs.store import JobStore
+
+        return submit_signal_proposals(JobStore(), kwargs.pop("job_id"), **kwargs)
+    if op == "evolution_redesign":
+        from wayfinder_paths.jobs.evolution_campaign import submit_campaign_redesign
+        from wayfinder_paths.jobs.store import JobStore
+
+        return submit_campaign_redesign(JobStore(), kwargs.pop("job_id"), **kwargs)
+    if op == "evolution_mechanism_grid":
+        from wayfinder_paths.jobs.evolution_campaign import mechanism_grid
+        from wayfinder_paths.jobs.store import JobStore
+
+        return mechanism_grid(JobStore(), kwargs.pop("job_id"), **kwargs)
     if op == "evolution_submit_seed":
         from pathlib import Path
 
@@ -263,7 +278,13 @@ def _lower_priority() -> None:
         pass
 
 
-_NUDGE_OPS = {"evolution_start", "evolution_design", "evolution_evaluate"}
+_NUDGE_OPS = {
+    "evolution_start",
+    "evolution_design",
+    "evolution_compose",
+    "evolution_redesign",
+    "evolution_evaluate",
+}
 _EVOLUTION_ACTIVITY_OPS = _NUDGE_OPS | {"evolution_finalize"}
 
 
@@ -284,7 +305,7 @@ def _nudge_evolution(op: str, kwargs: dict[str, Any]) -> None:
         # designer session has returned from its final tool call. Give only
         # this stage transition a short bounded retry window; evaluations are
         # long enough that their worker is already idle at completion.
-        for _ in range(10 if op == "evolution_design" else 0):
+        for _ in range(10 if op in {"evolution_design", "evolution_redesign"} else 0):
             if not isinstance(result, dict) or not (
                 result.get("transition_pending") or result.get("busy")
             ):

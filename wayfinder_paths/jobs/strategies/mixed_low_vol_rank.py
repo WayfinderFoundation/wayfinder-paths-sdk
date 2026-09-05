@@ -11,6 +11,7 @@ from wayfinder_paths.jobs.execution.primitives import ExecutionContext
 from wayfinder_paths.jobs.strategies._starter_utils import (
     RANKING_STOP_DEFAULTS,
     add_stop_atr,
+    bounded_span,
     current_feature_values,
     merge_params,
     ranked_weights,
@@ -35,7 +36,13 @@ class MixedLowVolRankStrategy:
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         self.params = merge_params(self.default_params, params)
-        self.warmup_bars = int(self.params["volatility_bars"]) + 4
+        self.warmup_bars = (
+            max(
+                int(self.params["volatility_bars"]),
+                bounded_span(int(self.params["stop_atr_period"])),
+            )
+            + 4
+        )
 
     def precompute(self, frames: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
         lookback = int(self.params["volatility_bars"])

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import json
 from pathlib import Path
 
@@ -20,8 +21,11 @@ from wayfinder_paths.jobs.worker import (
     DYNAMIC_CONTEXT_MARKER,
     STABLE_PREFIX_END_MARKER,
     _build_worker_prompt_sections,
+    _ideation_age_s,
     _ideation_bookkeeping,
+    prepare_job_worker_prompt,
     run_job_worker,
+    validate_ideation_artifact,
 )
 
 
@@ -1454,7 +1458,13 @@ def test_worker_prompt_hoists_red_gate_out_of_snapshot(tmp_path: Path) -> None:
     assert "GATE STATUS: RED" not in green["dynamic_context"]
 
 
-def _write_ideation_artifact(store: JobStore, job_id: str, *, age_hours: float) -> None:
+def _write_ideation_artifact(
+    store: JobStore,
+    job_id: str,
+    *,
+    age_hours: float = 0,
+    generated_at: str | None = None,
+) -> None:
     import datetime as dt
 
     path = store.job_dir(job_id) / "research" / "ideation" / "latest.json"
@@ -1463,7 +1473,7 @@ def _write_ideation_artifact(store: JobStore, job_id: str, *, age_hours: float) 
     path.write_text(
         json.dumps(
             {
-                "generated_at": stamp.isoformat(),
+                "generated_at": generated_at or stamp.isoformat(),
                 "sources_consulted": [
                     {
                         "tool": "research_search_alpha",
@@ -1682,3 +1692,251 @@ def test_ideation_bookkeeping_journals_artifacts_and_overdue(tmp_path: Path) -> 
     _write_ideation_artifact(store, job.id, age_hours=0)
     _ideation_bookkeeping(store, job.id)
     assert journal_types().count("ideation_artifact") == 2
+
+
+_BENCHMARK_NOW = "2026-08-10T15:25:00+00:00"
+
+
+def _ideation_job(store: JobStore, name: str) -> WayfinderJob:
+    job = WayfinderJob.new(
+        name,
+        goal="Find edges.",
+        script="workspace/src/loop.py",
+        agent_mode="intervene",
+    )
+    store.save(job)
+    return job
+
+
+def test_benchmark_ideation_directive_uses_internal_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bench sandbox has no research/web tools and must not fetch, so the
+    expedition consults checked-in evidence, stamps the virtual wake clock,
+    and may check in one research seed. Production text is untouched."""
+    store = JobStore(repo_root=tmp_path)
+    job = _ideation_job(store, "ideation-bench-demo")
+    production = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
+    )["dynamic_context"]
+    assert (
+        "1. Consult at least 3 DISTINCT external sources via named research "
+        "tool calls — research_search_alpha, research_crypto_sentiment, "
+        "research_social_x_search, research_search_perp, web search/fetch."
+    ) in production
+    assert "BENCHMARK MODE" not in production
+
+    monkeypatch.setenv("WAYFINDER_BENCHMARK", "1")
+    monkeypatch.setenv("WAYFINDER_BENCHMARK_NOW", _BENCHMARK_NOW)
+    bench = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
+    )["dynamic_context"]
+    assert "IDEATION SESSION — this wake is a research EXPEDITION" in bench
+    assert "at least 3 DISTINCT external sources" not in bench
+    assert "at least 3 DISTINCT internal evidence artifacts" in bench
+    assert "UNAVAILABLE in this environment and no network fetch" in bench
+    assert "results/research/ (attribution.json, regime_health.json" in bench
+    assert "status|report|regime_health|attribution|signal_check" in bench
+    assert f"generated_at MUST equal the wake clock {_BENCHMARK_NOW}" in bench
+    assert 'core_jobs(action="evolution_submit_seed", ...)' in bench
+    assert '"testable"|"starved"|"refuted"' in bench
+    assert "This wake is an IDEATION SESSION" in bench
+
+
+def test_ideation_due_uses_the_benchmark_virtual_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replayed wakes run weeks after the artifacts they read; due-ness must
+    follow the frozen campaign clock or later replay wakes are never due."""
+    import datetime as dt
+
+    monkeypatch.setenv("WAYFINDER_BENCHMARK", "1")
+    monkeypatch.setenv("WAYFINDER_BENCHMARK_NOW", _BENCHMARK_NOW)
+    virtual_now = dt.datetime.fromisoformat(_BENCHMARK_NOW)
+    assert abs((dt.datetime.now(dt.UTC) - virtual_now).days) > 7
+    store = JobStore(repo_root=tmp_path)
+    job = _ideation_job(store, "ideation-clock-demo")
+    root = store.job_dir(job.id)
+
+    def dynamic() -> str:
+        return _build_worker_prompt_sections(
+            store=store,
+            job_id=job.id,
+            mode="intervene",
+            snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
+        )["dynamic_context"]
+
+    # 2h before the virtual clock: fresh on the virtual clock, weeks stale on
+    # the real one.
+    _write_ideation_artifact(
+        store, job.id, generated_at=(virtual_now - dt.timedelta(hours=2)).isoformat()
+    )
+    assert _ideation_age_s(root) == pytest.approx(2 * 3600)
+    assert "IDEATION SESSION — this wake is a research EXPEDITION" not in dynamic()
+
+    _write_ideation_artifact(
+        store, job.id, generated_at=(virtual_now - dt.timedelta(days=2)).isoformat()
+    )
+    assert _ideation_age_s(root) == pytest.approx(48 * 3600)
+    due = dynamic()
+    assert "IDEATION SESSION — this wake is a research EXPEDITION" in due
+    assert "48h old" in due
+
+
+def test_benchmark_wake_skips_derived_feature_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Derived-feature refresh can rebuild the live dataset and append bars
+    from beyond the virtual clock — under the bench it is skipped and
+    journaled."""
+    monkeypatch.setenv("WAYFINDER_BENCHMARK", "1")
+    monkeypatch.setenv("WAYFINDER_BENCHMARK_NOW", _BENCHMARK_NOW)
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise AssertionError("refresh_derived_features_if_stale must not run")
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.refresh_derived_features_if_stale", boom
+    )
+    store = JobStore(repo_root=tmp_path)
+    job = _ideation_job(store, "ideation-skip-refresh-demo")
+
+    sections = prepare_job_worker_prompt(store=store, job_id=job.id, mode="intervene")
+
+    assert sections["job_id"] == job.id
+    journal = store.job_dir(job.id) / "journal.jsonl"
+    events = [
+        json.loads(line)
+        for line in journal.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    skipped = [e for e in events if e["type"] == "derived_features_refresh_skipped"]
+    assert len(skipped) == 1
+    assert skipped[0]["reason"] == "benchmark_mode"
+
+
+def test_red_gate_defers_ideation_in_production_but_not_in_the_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The work order and the directive must agree: a wake told to complete
+    an expedition without the block naming research/ideation/latest.json
+    wrote its findings elsewhere (first recurrence pilot). Production defers
+    ideation behind a red gate; the sandbox's gate is structurally red."""
+    store = JobStore(repo_root=tmp_path)
+    job = _ideation_job(store, "ideation-gate-demo")
+    red = _worker_snapshot(
+        job,
+        scorecard={"health": "green"},
+        gate={"live_ready": False, "reasons": ["no validation report"]},
+    )
+
+    production = _build_worker_prompt_sections(
+        store=store, job_id=job.id, mode="intervene", snapshot=red
+    )
+    assert (
+        "IDEATION SESSION — this wake is a research EXPEDITION"
+        not in production["dynamic_context"]
+    )
+    assert '"action": "advance_red_gate"' in production["dynamic_context"]
+    assert "GATE STATUS: RED" in production["dynamic_context"]
+
+    monkeypatch.setenv("WAYFINDER_BENCHMARK", "1")
+    monkeypatch.setenv("WAYFINDER_BENCHMARK_NOW", _BENCHMARK_NOW)
+    bench = _build_worker_prompt_sections(
+        store=store, job_id=job.id, mode="intervene", snapshot=red
+    )
+    assert (
+        "IDEATION SESSION — this wake is a research EXPEDITION"
+        in bench["dynamic_context"]
+    )
+    assert "Write research/ideation/latest.json" in bench["dynamic_context"]
+    assert '"action": "complete_research_expedition"' in bench["dynamic_context"]
+    assert "GATE STATUS: RED" not in bench["dynamic_context"]
+
+
+def _valid_ideation_doc(generated_at: str) -> dict:
+    return {
+        "generated_at": generated_at,
+        "sources_consulted": [
+            {
+                "tool": "results/research/attribution.json",
+                "query": "q",
+                "takeaway": "a",
+            },
+            {
+                "tool": "results/research/regime_health.json",
+                "query": "q",
+                "takeaway": "b",
+            },
+            {"tool": "core_jobs:signal_scan", "query": "q", "takeaway": "c"},
+        ],
+        "hypotheses": [
+            {"title": "T1", "thesis": "x", "bucket": "testable", "next_step": "scan"},
+            {"title": "T2", "thesis": "y", "bucket": "starved", "next_step": "unlock"},
+            {
+                "title": "T3",
+                "thesis": "z",
+                "bucket": "refuted",
+                "next_step": "evidence",
+            },
+        ],
+    }
+
+
+def test_validate_ideation_artifact_names_each_gap() -> None:
+    good = validate_ideation_artifact(_valid_ideation_doc(_BENCHMARK_NOW))
+    assert good["valid"] is True and good["problems"] == []
+    assert good["buckets"] == {"testable": 1, "starved": 1, "refuted": 1}
+    clocked = validate_ideation_artifact(
+        _valid_ideation_doc("2026-08-09T15:25:00+00:00"), expected_clock=_BENCHMARK_NOW
+    )
+    assert clocked["problems"] == [
+        f"generated_at must equal the wake clock {_BENCHMARK_NOW}"
+    ]
+    bad = validate_ideation_artifact(
+        {
+            "generated_at": "yesterday",
+            "sources_consulted": [{"tool": "x"}],
+            "hypotheses": [{"title": "only", "thesis": "t", "bucket": "maybe"}],
+        }
+    )
+    assert bad["valid"] is False
+    assert bad["problems"][0] == "generated_at is not an ISO8601 timestamp"
+    assert "sources_consulted has 0 complete entries" in bad["problems"][1]
+    assert "hypotheses has 0 complete entries" in bad["problems"][2]
+
+
+def test_invalid_ideation_artifact_stays_due_and_is_quoted_back(tmp_path: Path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = _ideation_job(store, "ideation-invalid-demo")
+    doc = _valid_ideation_doc(dt.datetime.now(dt.UTC).isoformat())
+    doc["sources_consulted"] = doc["sources_consulted"][:1]
+    path = store.job_dir(job.id) / "research" / "ideation" / "latest.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+    assert _ideation_age_s(store.job_dir(job.id)) is None
+    _ideation_bookkeeping(store, job.id)
+
+    journal = [
+        json.loads(line)
+        for line in (store.job_dir(job.id) / "journal.jsonl").read_text().splitlines()
+    ]
+    invalid = next(row for row in journal if row["type"] == "ideation_invalid")
+    assert invalid["problems"] == [
+        "sources_consulted has 1 complete entries (tool + takeaway); need 3"
+    ]
+    prompt = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
+    )["dynamic_context"]
+    assert "IDEATION SESSION — this wake is a research EXPEDITION" in prompt
+    assert "REJECTED mechanically: sources_consulted has 1 complete entries" in prompt

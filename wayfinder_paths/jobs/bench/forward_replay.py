@@ -13,10 +13,15 @@ from typing import Any
 import pandas as pd
 
 from wayfinder_paths.jobs.bench.env import atomic_json, git_sha, sha256_json
-from wayfinder_paths.jobs.bench.world import load_world
+from wayfinder_paths.jobs.bench.world import execution_identity_sha256, load_world
 from wayfinder_paths.jobs.bundles import resolve_bundle_script_entrypoint
 from wayfinder_paths.jobs.candidate_shadow import run_candidate_shadows
 from wayfinder_paths.jobs.economics import block_bootstrap_lcb
+from wayfinder_paths.jobs.execution.features import (
+    load_feature_rows,
+    merge_features,
+    parse_feature_specs,
+)
 from wayfinder_paths.jobs.execution.job import _load_job_yaml
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
@@ -33,6 +38,13 @@ from wayfinder_paths.jobs.execution.validation import (
 from wayfinder_paths.jobs.execution.walk_forward import _test_window_stats
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.probation import load_probation, maybe_adjudicate_probation
+from wayfinder_paths.jobs.regime import (
+    classify_portfolio_regimes,
+    declared_regimes,
+    partition_regime_returns,
+    regime_universe,
+    utc_timestamp,
+)
 from wayfinder_paths.jobs.store import JobStore
 
 PARTICIPATION_FLOOR = 10
@@ -46,8 +58,11 @@ def race_bundles(
     world_dir: Path,
     sealed_dir: Path,
     output_dir: Path | None = None,
+    feature_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Evaluate A and B on identical frozen rows and pre-written rules."""
+    """Evaluate A and B on identical frozen rows and pre-written rules.
+    ``feature_root`` is the job whose feature store (derived columns such as
+    the macro regime) both bundles may declare and read."""
     world = load_world(world_dir, sealed_dir)
     cutoff = _parse(world["manifest"]["generation_cutoff"])
     rows = [
@@ -55,15 +70,24 @@ def race_bundles(
         *(world["holdout"].get("bars") or []),
     ]
     environment = dict(world["manifest"].get("execution_environment") or {})
-    a = evaluate_bundle(a_bundle, rows=rows, cutoff=cutoff, environment=environment)
-    b = evaluate_bundle(b_bundle, rows=rows, cutoff=cutoff, environment=environment)
+    a = evaluate_bundle(
+        a_bundle,
+        rows=rows,
+        cutoff=cutoff,
+        environment=environment,
+        feature_root=feature_root,
+    )
+    b = evaluate_bundle(
+        b_bundle,
+        rows=rows,
+        cutoff=cutoff,
+        environment=environment,
+        feature_root=feature_root,
+    )
     days = sorted(set(a["daily_pnl"]) & set(b["daily_pnl"]))
-    deltas = [
-        math.log1p(a["daily_pnl"][day] / 10_000.0)
-        - math.log1p(b["daily_pnl"][day] / 10_000.0)
-        for day in days
-        if a["daily_pnl"][day] > -10_000 and b["daily_pnl"][day] > -10_000
-    ]
+    deltas = paired_daily_utility_deltas(
+        a["daily_pnl"], b["daily_pnl"], capital=environment_capital(environment)
+    )
     estimate = sum(deltas)
     lcb = block_bootstrap_lcb(
         deltas, block_len=5, iterations=500, confidence=CONFIDENCE
@@ -130,12 +154,35 @@ def race_bundles(
     return compare
 
 
+def paired_daily_utility_deltas(
+    a_daily: Mapping[str, float],
+    b_daily: Mapping[str, float],
+    *,
+    capital: float = 10_000.0,
+) -> list[float]:
+    """Per paired ISO day, log-growth utility of A minus B on the book's
+    capital — the same quantity probation adjudicates on."""
+    days = sorted(set(a_daily) & set(b_daily))
+    return [
+        math.log1p(float(a_daily[day]) / capital)
+        - math.log1p(float(b_daily[day]) / capital)
+        for day in days
+        if float(a_daily[day]) > -capital and float(b_daily[day]) > -capital
+    ]
+
+
+def environment_capital(environment: Mapping[str, Any] | None) -> float:
+    params = (environment or {}).get("params") or {}
+    return float(params.get("initial_capital") or 10_000.0)
+
+
 def evaluate_bundle(
     bundle: Path,
     *,
     rows: Sequence[Mapping[str, Any]],
     cutoff: datetime,
     environment: dict[str, Any] | None = None,
+    feature_root: Path | None = None,
 ) -> dict[str, Any]:
     bundle = bundle.resolve()
     before = compute_workspace_revision(bundle)
@@ -146,13 +193,18 @@ def evaluate_bundle(
     spec = ExecutionSpec.from_dict(spec_data)
     params = dict(job_data.get("execution_params") or {})
     environment = environment or {}
-    expected_spec = environment.get("spec_sha256")
-    spec_matches = not expected_spec or sha256_json(spec.to_dict()) == expected_spec
+    spec_matches = _spec_matches_environment(spec, environment)
     params.update(dict(environment.get("params") or {}))
     script = resolve_bundle_script_entrypoint(bundle, job_data)
     dataset = PreparedExecutionDataset.from_rows(
         list(rows), {"source": "sealed_benchmark_world"}
     )
+    if feature_root is not None:
+        dataset = PreparedExecutionDataset(
+            merge_store_features(dataset.bars, feature_root, spec=spec, bundle=bundle),
+            dict(dataset.metadata),
+            list(dataset.market_events),
+        )
     probe = window_invariance_probe(script, dataset.bars, spec, params)
     result = simulate_execution(script, dataset, spec, params)
     stats = _test_window_stats(result, pd.Timestamp(cutoff), spec, params)
@@ -161,6 +213,24 @@ def evaluate_bundle(
         for trade in result.trades
         if _trade_timestamp(trade) > pd.Timestamp(cutoff)
     ]
+    target_regimes = declared_regimes(params)
+    if target_regimes:
+        classified = classify_portfolio_regimes(
+            dataset.bars.to_frame(),
+            universe=regime_universe(params, dataset.bars.symbols),
+        )
+        labels = {
+            utc_timestamp(stamp): str(label) for stamp, label in classified.items()
+        }
+        stats["regime"] = {
+            "target_regimes": list(target_regimes),
+            **partition_regime_returns(
+                _equity_window(result.equity_curve, cutoff=cutoff),
+                trades,
+                labels=labels,
+                target_regimes=target_regimes,
+            ),
+        }
     after = compute_workspace_revision(bundle)
     return {
         "revision_before": before,
@@ -177,12 +247,51 @@ def evaluate_bundle(
         },
         "validation": result.validation,
         "stats": stats,
-        "daily_pnl": _daily_pnl(result.equity_curve, cutoff=cutoff),
+        "daily_pnl": _daily_pnl(
+            result.equity_curve,
+            cutoff=cutoff,
+            capital=environment_capital(environment),
+        ),
         "trades": trades,
         "per_symbol_direction": _per_symbol_direction(trades),
         "profile": result.profile,
         "equity_curve": result.equity_curve,
     }
+
+
+def _spec_matches_environment(
+    spec: ExecutionSpec, environment: Mapping[str, Any]
+) -> bool:
+    """New manifests carry the feature-stripped identity; worlds frozen before
+    it carry only the full-spec hash, which keeps its original meaning."""
+    expected_identity = environment.get("execution_identity_sha256")
+    if expected_identity:
+        return execution_identity_sha256(spec) == expected_identity
+    expected_spec = environment.get("spec_sha256")
+    if expected_spec:
+        return sha256_json(spec.to_dict()) == expected_spec
+    return True
+
+
+def merge_store_features(
+    view: CompletedBarsView,
+    root: Path,
+    *,
+    spec: ExecutionSpec,
+    bundle: Path | None = None,
+) -> CompletedBarsView:
+    """Merge the features ``spec`` declares onto a replay view, the way the
+    live driver does for the incumbent: the declared specs themselves (their
+    paths and column mappings), resolved from the candidate bundle first and
+    the job store second, with an absent file yielding an empty column so a
+    defaulted read carries. Replays build their bars from frozen rows, not
+    the driver, so nothing else puts the columns there; and only declared
+    columns are merged, so an undeclared read fails here, not first live."""
+    specs = parse_feature_specs(spec)
+    if not specs:
+        return view
+    roots = [bundle, root] if bundle is not None else [root]
+    return merge_features(view, load_feature_rows(roots, specs), specs)
 
 
 def replay_probation(
@@ -192,32 +301,57 @@ def replay_probation(
     development_rows: list[dict[str, Any]],
     holdout_rows: list[dict[str, Any]],
     generation_cutoff: datetime,
+    campaign_id: str | None = None,
 ) -> dict[str, Any]:
-    """Replay a staged trial through the real burn-in/day-7/day-14 code."""
+    """Replay staged trials through the real burn-in/day-7/day-14 code.
+
+    ``campaign_id`` names the trial rebased to ``generation_cutoff``. Open
+    trials from earlier loops keep their cursors and continue over the new
+    window alongside it; their ids are returned as ``carried``.
+    """
     cutoff = _aware(generation_cutoff)
     doc = load_probation(store, job_id)
-    runnable = [
+    open_trials = [
         trial
         for trial in doc.get("trials") or []
         if trial.get("status") in {"queued", "burn_in", "active"}
     ]
-    if not runnable:
-        return {
-            "available": False,
-            "reason": "campaign staged no probation candidate",
-            "paired_daily_delta": [],
-        }
-    trial = runnable[0]
-    _rebase_trial(trial, cutoff=cutoff)
-    store.write_json(job_id, "probation.json", doc)
+    trial = next(
+        (
+            row
+            for row in open_trials
+            if campaign_id is None or row.get("campaign_id") == campaign_id
+        ),
+        None,
+    )
+    carried = [
+        str(row["trial_id"])
+        for row in open_trials
+        if trial is None or row["trial_id"] != trial["trial_id"]
+    ]
+    unavailable = {
+        "available": False,
+        "reason": "campaign staged no probation candidate",
+        "carried": carried,
+        "paired_daily_delta": [],
+    }
+    if trial is None and not carried:
+        return unavailable
+    if trial is not None:
+        _rebase_trial(trial, cutoff=cutoff)
+        store.write_json(job_id, "probation.json", doc)
     warmup_rows = [
         row for row in development_rows if _row_timestamp(row) <= pd.Timestamp(cutoff)
     ][-2_000:]
     replay_rows: list[Mapping[str, Any]] = [*warmup_rows, *holdout_rows]
+    # Bars only: each shadow target merges the features its own spec
+    # declares from the sandbox store, exactly as the live lane does.
     view = CompletedBarsView.from_rows(replay_rows)
     end = max(view.timestamps)
     asyncio.run(run_candidate_shadows(store, job_id, view=view, now=end))
     maybe_adjudicate_probation(store, job_id, now=end.to_pydatetime())
+    if trial is None:
+        return unavailable
     updated = next(
         row
         for row in load_probation(store, job_id)["trials"]
@@ -232,6 +366,7 @@ def replay_probation(
         "phase": updated.get("phase"),
         "burn_in": updated.get("burn_in"),
         "forward": updated.get("forward"),
+        "carried": carried,
         "paired_daily_delta": metrics.get("daily_deltas") or [],
     }
 
@@ -265,13 +400,16 @@ def _rebase_trial(trial: dict[str, Any], *, cutoff: datetime) -> None:
 
 
 def _daily_pnl(
-    equity_curve: list[dict[str, Any]], *, cutoff: datetime
+    equity_curve: list[dict[str, Any]],
+    *,
+    cutoff: datetime,
+    capital: float = 10_000.0,
 ) -> dict[str, float]:
     cutoff_stamp = pd.Timestamp(cutoff)
     prior = [
         row for row in equity_curve if pd.Timestamp(row["timestamp"]) <= cutoff_stamp
     ]
-    anchor = float(prior[-1]["equity"]) if prior else 10_000.0
+    anchor = float(prior[-1]["equity"]) if prior else capital
     last_by_day: dict[str, float] = {}
     for row in equity_curve:
         stamp = pd.Timestamp(row["timestamp"])
@@ -283,6 +421,20 @@ def _daily_pnl(
         daily[day] = value - anchor
         anchor = value
     return daily
+
+
+def _equity_window(
+    equity_curve: list[dict[str, Any]], *, cutoff: datetime
+) -> list[dict[str, Any]]:
+    """Holdout equity plus its last development anchor for first-bar returns."""
+    cutoff_stamp = pd.Timestamp(cutoff)
+    before = [
+        row for row in equity_curve if pd.Timestamp(row["timestamp"]) <= cutoff_stamp
+    ]
+    after = [
+        row for row in equity_curve if pd.Timestamp(row["timestamp"]) > cutoff_stamp
+    ]
+    return [*(before[-1:] if before else []), *after]
 
 
 def _trade_timestamp(trade: dict[str, Any]) -> pd.Timestamp:
@@ -306,7 +458,9 @@ def _per_symbol_direction(trades: list[dict[str, Any]]) -> dict[str, Any]:
 def _behavior_distance(
     a: list[dict[str, Any]], b: list[dict[str, Any]]
 ) -> dict[str, Any]:
-    def signatures(rows: list[dict[str, Any]]) -> set[tuple[str, str, str]]:
+    def decision_signatures(
+        rows: list[dict[str, Any]],
+    ) -> set[tuple[str, str, str]]:
         return {
             (
                 str(row.get("timestamp") or row.get("filled_at")),
@@ -316,11 +470,31 @@ def _behavior_distance(
             for row in rows
         }
 
-    left, right = signatures(a), signatures(b)
-    union = left | right
+    def economic_signatures(
+        rows: list[dict[str, Any]],
+    ) -> set[tuple[str, str, str, float]]:
+        return {
+            (
+                str(row.get("timestamp") or row.get("filled_at")),
+                str(row.get("symbol")),
+                str(row.get("side") or row.get("action")),
+                round(float(row.get("filled_size") or row.get("size") or 0.0), 12),
+            )
+            for row in rows
+        }
+
+    left_decisions = decision_signatures(a)
+    right_decisions = decision_signatures(b)
+    left_economic = economic_signatures(a)
+    right_economic = economic_signatures(b)
+    changed_decisions = len(left_decisions ^ right_decisions)
+    changed_fills = len(left_economic ^ right_economic)
+    union = left_economic | right_economic
     return {
-        "changed_decisions": len(left ^ right),
-        "jaccard_distance": round(len(left ^ right) / len(union), 6) if union else 0.0,
+        "behavior_changed": bool(changed_decisions or changed_fills),
+        "changed_decisions": changed_decisions,
+        "changed_fill_records": changed_fills,
+        "jaccard_distance": (round(changed_fills / len(union), 6) if union else 0.0),
     }
 
 

@@ -418,3 +418,112 @@ def test_refresh_extends_stale_dataset_with_recorded_provenance(
         job.id, store=store, derive=healthy, refresh_dataset=False
     )
     assert len(fetches) == 1
+
+
+def test_macro_set_writes_the_regime_a_strategy_can_read(tmp_path: Path) -> None:
+    store, job_id = _make_job(tmp_path)
+    # Thirty-one days of 5m bars: the 28-day window is covered for three days.
+    (store.job_dir(job_id) / "results" / "backtest" / "input_bars.json").write_text(
+        json.dumps(_panel_frame(count=288 * 31)), encoding="utf-8"
+    )
+
+    result = derive_features_job(job_id, sets=("macro",), store=store)
+
+    assert {"macro_ret_7d", "macro_ret_28d", "macro_regime"} <= set(
+        result["per_feature"]
+    )
+    rows = [
+        json.loads(line)
+        for line in (store.job_dir(job_id) / "state" / "features.jsonl")
+        .read_text()
+        .splitlines()
+    ]
+    codes = {row["value"] for row in rows if row["name"] == "macro_regime"}
+    assert codes <= {-1.0, 0.0, 1.0}
+    assert {row["symbol"] for row in rows if row["name"] == "macro_regime"} == {
+        "LIT",
+        "SOL",
+    }
+
+
+def _rally_fetch(coin: str, start_ms: int, end_ms: int) -> pd.Series:
+    stamps = pd.date_range(
+        pd.Timestamp(start_ms, unit="ms", tz="UTC"),
+        pd.Timestamp(end_ms, unit="ms", tz="UTC"),
+        freq="5min",
+    )
+    # +0.01% a bar: about +22% over seven days, a broad rally.
+    base = 50_000.0 if coin == "BTC" else 3_000.0
+    return pd.Series(
+        [base * 1.0001**i for i in range(len(stamps))], index=stamps, dtype=float
+    )
+
+
+def test_leaders_set_writes_leader_returns_and_state_from_a_fake_fetch(
+    tmp_path: Path,
+) -> None:
+    store, job_id = _make_job(tmp_path)
+    (store.job_dir(job_id) / "results" / "backtest" / "input_bars.json").write_text(
+        json.dumps(_panel_frame(count=288 * 31)), encoding="utf-8"
+    )
+    calls: list[str] = []
+
+    def fetch(coin: str, start_ms: int, end_ms: int) -> pd.Series:
+        calls.append(coin)
+        return _rally_fetch(coin, start_ms, end_ms)
+
+    result = derive_features_job(
+        job_id, sets=("leaders",), store=store, fetch_closes=fetch
+    )
+
+    assert calls == ["BTC", "ETH"]
+    assert {
+        "leader_state",
+        "leader_ret_7d",
+        "leader_ret_28d",
+        "btc_ret_7d",
+        "eth_ret_7d",
+        "btc_close",
+        "eth_close",
+    } <= set(result["per_feature"])
+    rows = [
+        json.loads(line)
+        for line in (store.job_dir(job_id) / "state" / "features.jsonl")
+        .read_text()
+        .splitlines()
+    ]
+    states = [row for row in rows if row["name"] == "leader_state"]
+    assert {row["value"] for row in states} == {1.0}
+    assert {row["symbol"] for row in states} == {"LIT", "SOL"}
+
+
+def test_leaders_set_warms_from_its_own_stored_closes(tmp_path: Path) -> None:
+    from wayfinder_paths.jobs.derived_features import _FETCH_WARMUP_BARS
+
+    store, job_id = _make_job(tmp_path)
+    (store.job_dir(job_id) / "results" / "backtest" / "input_bars.json").write_text(
+        json.dumps(_panel_frame(count=288 * 31)), encoding="utf-8"
+    )
+    # Macro rows already in the store: the global newest stamp is set, which
+    # used to narrow every exogenous fetch to eight hours.
+    derive_features_job(job_id, sets=("macro",), store=store)
+    spans: list[tuple[str, int, int]] = []
+
+    def fetch(coin: str, start_ms: int, end_ms: int) -> pd.Series:
+        spans.append((coin, start_ms, end_ms))
+        return _rally_fetch(coin, start_ms, end_ms)
+
+    first = derive_features_job(
+        job_id, sets=("leaders",), store=store, fetch_closes=fetch
+    )
+    assert first["per_feature"].get("leader_ret_7d", 0) > 0
+    full_span_ms = spans[0][2] - spans[0][1]
+    assert full_span_ms > 20 * 86_400_000  # the whole month, not a tail
+
+    spans.clear()
+    again = derive_features_job(
+        job_id, sets=("leaders",), store=store, fetch_closes=fetch
+    )
+    assert again["rows_appended"] == 0
+    tail_ms = spans[0][2] - spans[0][1]
+    assert tail_ms <= (_FETCH_WARMUP_BARS + 24) * 300_000

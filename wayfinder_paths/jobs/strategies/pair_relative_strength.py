@@ -11,6 +11,7 @@ from wayfinder_paths.jobs.execution.primitives import ExecutionContext
 from wayfinder_paths.jobs.strategies._starter_utils import (
     PAIR_PROTECTION_DEFAULTS,
     add_stop_atr,
+    bounded_span,
     current_rows,
     merge_params,
     stop_brackets,
@@ -51,6 +52,7 @@ class PairRelativeStrengthStrategy:
             max(
                 int(self.params["momentum_bars"]),
                 int(self.params["volatility_bars"]),
+                bounded_span(int(self.params["stop_atr_period"])),
             )
             + 4
         )

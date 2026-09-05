@@ -109,8 +109,78 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         # compatibility name consumed by v1 campaign manifests and activity.
         "generated_programs": 8,
         "investigation_design_enabled": True,
+        # Candidates may declare one or two engine-owned portfolio regime
+        # cells, and campaign design must then include the current cell's
+        # opposite.  Off until the bench A/B certifies it; the canary job
+        # enables it through its own improver policy.
+        "regime_specialist_enabled": False,
         "max_attempts_per_idea": 3,
         "max_quick_attempts": 24,
+        # Screen every slot once, then spend the remaining fixed budget on the
+        # few candidates showing causal progress.  ``screen_before_repair``
+        # False restores the depth-first order for the bench control arm.
+        "screen_before_repair": True,
+        "focus_candidates": 3,
+        "focus_attempts_per_candidate": 6,
+        # Cost-bleed diagnosis: fees per 30 days above the incumbent's rate
+        # times this multiple, or above the absolute floor, on a losing screen.
+        "cost_bleed_fee_multiple": 3.0,
+        "cost_bleed_fee_pct_of_capital_30d": 0.10,
+        "max_fills_per_day_multiple": 3.0,
+        # Cost arithmetic first: a trade must capture this multiple of the
+        # round-trip cost gross, and the cadence ceiling is the fills/day that
+        # keep fees plus slippage under this share of capital per 30 days.
+        "cost_hurdle_multiple": 1.5,
+        "max_cost_pct_of_capital_30d": 0.02,
+        # Quick screen generalization: two disjoint train slices, each must be
+        # positive with a paired block-bootstrap LCB > 0 at a confidence that
+        # rises with every repair (each repair is another look at the slice).
+        "screen_slices": 2,
+        "screen_slice_days": 35,
+        "screen_confidence_base": 0.70,
+        "screen_slice_max_loss": 0.02,
+        # A campaign that finds nothing while the incumbent lost to cash
+        # recommends retiring it to cash (the bench applies, production
+        # proposes to the owner).
+        "retire_to_flat_when_incumbent_negative": True,
+        # No escalation: the screen filters, full development certifies.
+        "screen_confidence_step": 0.0,
+        # Incumbent failure modes (two bounded sims at campaign start) point the
+        # design at the days and regimes where the incumbent loses.
+        "incumbent_failure_modes": True,
+        # Deterministic local search around the incumbent for parameter slots
+        # (probe live knobs, tune on the recent slice, verify on the earlier).
+        # Off in production until prepare-time cost is measured on a box.
+        "incumbent_neighborhood_search": False,
+        "incumbent_neighborhood_trials": 6,
+        "incumbent_neighborhood_timeout_seconds": 180,
+        "incumbent_neighborhood_span": 0.3,
+        # Complexity budget: comparisons (gates) may not exceed the larger of
+        # the floor and the multiple of the incumbent's own count.
+        "complexity_floor_comparisons": 24,
+        "complexity_multiple": 1.5,
+        # Signal-first seeding: library event studies on the two screen slices;
+        # signals significant on both feed the design prompt. An A/B arm
+        # variable: off by default, on in the treatment arm.
+        # On by default: grounded free-form slots must build on what survives.
+        "signal_first_seeding": True,
+        "signal_first_limit": 10,
+        "signal_first_min_t_net": 2.0,
+        # Power and family-corrected significance, not cadence: a per-day
+        # density floor rejected every slow horizon.
+        "signal_first_min_events": 40,
+        "signal_first_max_q": 0.20,
+        "signal_first_slice_min_t": 1.0,
+        "signal_first_condition_features": ["macro_regime", "leader_state"],
+        "signal_population_search": True,
+        "signal_population_limit": 300,
+        "signal_composition_rounds": 2,
+        "signal_first_extra_horizons": {"1h": [72, 168], "4h": [42, 84]},
+        "signal_scan_min_events": 30,
+        "policy_scan_enabled": True,
+        "policy_scan_limit": 6,
+        "redesign_checkpoint": True,
+        "redesign_slots": 3,
         "wildcard_slots": 2,
         "elite_min_validation_trades": 8,
         "elite_participation_target_trades": 12,
@@ -125,10 +195,36 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         # production until its full-process A/B measures both compute saved
         # and any false rejection of useful sparse behavior.
         "behavior_preview_enabled": False,
+        # Sequential replay of the quick window's tail with persistent state
+        # for structural candidates: diagnostic on a first attempt, the gate
+        # for a no-trade repair (the replay must move before another screen).
+        "sequence_preview_enabled": True,
+        "sequence_preview_bars": 2_000,
         "inner_optuna_train_bars": 10_000,
         "inner_optuna_timeout_seconds": 1_800,
         "proposal_finalists": 1,
+        "finalist_risk_normalization": True,
+        "finalist_risk_margin": 0.9,
         "split": {"train": 0.80, "validation": 0.20},
+        # Opt-in while the local recurrence bench establishes that the
+        # broader chronological certificate admits robust starters without
+        # weakening the final paired economic gate.  Legacy and already-open
+        # campaigns keep the single validation window above.
+        "protected_fold_certification": {
+            "enabled": False,
+            "discovery_fraction": 0.60,
+            "folds": 4,
+            "required_positive_folds": 3,
+            "max_fold_loss_pct": 0.05,
+            "minimum_fold_bars": 8,
+            # A fold inside this band counts neither for nor against the
+            # positive-fold requirement; the loss bound still applies.
+            "fold_neutral_band_pct": 0.01,
+            # Below these the campaign records short_history and certifies
+            # on the legacy single window instead of four folds of noise.
+            "min_discovery_days": 90,
+            "min_certification_days": 84,
+        },
         "parent_mix": {
             "incumbent": 0.30,
             "qd_elite": 0.30,
@@ -154,6 +250,8 @@ DEFAULT_IMPROVER: dict[str, Any] = {
             "min_paired_days": 7,
             "max_paired_days": 14,
             "confidence": 0.90,
+            "min_effect_utility": 0.001,
+            "min_candidate_trades": 3,
         },
         "research_seed_slots": 2,
     },

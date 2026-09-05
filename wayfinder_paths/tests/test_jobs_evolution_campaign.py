@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import shutil
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
+import pandas as pd
 import pytest
 import yaml
 
@@ -21,17 +23,45 @@ from wayfinder_paths.jobs.archive import (
 from wayfinder_paths.jobs.compute_lock import ComputeLockBusy
 from wayfinder_paths.jobs.evolution_campaign import (
     _archive_campaign_candidate,
+    _attempt_cap,
+    _candidate_handoff,
+    _certification_fold_bounds,
     _claim_full_dev,
     _commit_designed_attempt,
     _commit_full_dev,
+    _complexity_budget,
+    _economic_gate_child,
+    _failure_mode_summary,
+    _focus_rank,
+    _freeze_research_context,
+    _gate_summary,
     _isolated_full_dev,
+    _load_candidate_search_space,
     _materialize_candidate_seed,
+    _min_fills_per_day,
+    _neighborhood_dimension,
+    _numeric_tunables,
+    _objective,
     _parameter_tuning_preview,
     _parent_source,
     _persist_executable_bundle,
+    _plateau_select,
+    _pooled_fold_stats,
+    _protected_fold_verdict,
+    _prune_risky_trials,
+    _research_context_instruction,
+    _risk_ceiling_scale,
     _same_family_nonwins,
+    _screen_confidence,
+    _screen_slice_report,
+    _screen_slices,
+    _screen_verdict,
     _select_full_dev_candidate,
     _select_parent_plan,
+    _select_validated_rows,
+    _slice_route,
+    _starter_compatibility,
+    _verified_protected_dataset_root,
     _write_timeseries_prefix,
     campaign_due,
     campaign_prompt_block,
@@ -47,9 +77,17 @@ from wayfinder_paths.jobs.evolution_campaign import (
     submit_campaign_design,
     submit_research_seed,
 )
+from wayfinder_paths.jobs.evolution_diagnostics import (
+    REPAIR_REMEDIES,
+    build_repair_work_order,
+    compact_postmortem,
+)
 from wayfinder_paths.jobs.execution.op_process import op_runner_command
 from wayfinder_paths.jobs.execution.op_runner import _nudge_evolution
-from wayfinder_paths.jobs.execution.primitives import DEFAULT_WARMUP_BARS
+from wayfinder_paths.jobs.execution.primitives import (
+    DEFAULT_WARMUP_BARS,
+    bar_interval_seconds,
+)
 from wayfinder_paths.jobs.failures import TransientInfrastructureError
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import WayfinderJob
@@ -60,10 +98,12 @@ from wayfinder_paths.jobs.starter_casebook import (
 )
 from wayfinder_paths.jobs.starters import (
     STARTER_DEFINITIONS,
+    STARTER_LOOKBACK_MARGIN_BARS,
     starter_lookback_bars,
     starter_warmup_bars,
 )
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.synthetic.strategies import CHURNER
 from wayfinder_paths.jobs.worker import (
     _queue_evolution_worker,
     nudge_evolution_session,
@@ -135,6 +175,9 @@ def _investigative_job(tmp_path) -> tuple[JobStore, str]:
                     "max_attempts_per_idea": 3,
                     "max_quick_attempts": 24,
                     "wildcard_slots": 2,
+                    # Depth-first compatibility coverage; screen-then-focus
+                    # allocation has dedicated tests below.
+                    "screen_before_repair": False,
                 }
             }
         ),
@@ -179,6 +222,26 @@ def _campaign_design() -> dict[str, Any]:
             }
         )
     return {"hypotheses": hypotheses, "slots": slots}
+
+
+def _regime_bars(count: int = 560) -> list[dict[str, Any]]:
+    started = datetime(2026, 7, 1, tzinfo=UTC)
+    rows: list[dict[str, Any]] = []
+    for index in range(count):
+        for symbol_index, symbol in enumerate(("SOL", "XRP", "POL", "HYPE")):
+            close = 100.0 + symbol_index * 10 + index * 0.05
+            rows.append(
+                {
+                    "timestamp": (started + timedelta(minutes=5 * index)).isoformat(),
+                    "symbol": symbol,
+                    "open": close - 0.02,
+                    "high": close + 0.1,
+                    "low": close - 0.1,
+                    "close": close,
+                    "volume": 1_000.0,
+                }
+            )
+    return rows
 
 
 def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
@@ -236,6 +299,7 @@ def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
         "finalist_requires_24h_operational_burn_in": True,
         "starter_seed_evidence_resets": True,
         "refuted_family_matching": "exact_free_form_family_v1",
+        "trials_so_far": 0,
     }
     assert len(load_starter_casebook()) > len(block["cases"])
 
@@ -258,6 +322,7 @@ def test_investigative_campaign_requires_and_freezes_one_design_turn(tmp_path) -
     assert prompt["constraints"]["idea_slots"] == 8
     assert prompt["constraints"]["wildcards"] == 2
     assert prompt["constraints"]["research_parent_required"] is False
+    assert prompt["constraints"]["cost_budget"] is None
     assert (
         "Do not allocate a decorative research_seed/research_context"
         in prompt["next_action"]
@@ -310,6 +375,786 @@ def test_investigative_campaign_requires_and_freezes_one_design_turn(tmp_path) -
     assert candidate["starter_seed_id"] == selected_starter
     assert candidate["evidence_refs"] == ["/baseline/reason"]
     assert candidate["reference_bundle"]
+    # A starter seed is screened against the incumbent, not against itself.
+    from wayfinder_paths.jobs.gating import compute_workspace_revision as _revision
+
+    root = store.job_dir(job_id)
+    incumbent = root / "research/evolution/campaigns" / state["campaign_id"] / "source"
+    assert _revision(root / candidate["reference_bundle"]) == _revision(incumbent)
+    assert candidate["reference_revision"] == _revision(incumbent)
+    assert candidate["reference_revision"] != candidate["seed_revision"]
+
+
+def _screen_outcome(
+    candidate_root, *, net: float, primary: str = "negative_after_costs", **extra
+) -> dict[str, Any]:
+    revision = compute_workspace_revision(candidate_root)
+    codes = [primary] + list(extra.pop("codes", []))
+    postmortem = {
+        "viable": False,
+        "primary_failure": primary,
+        "failure_codes": codes,
+        "behavior_diff": {"material_change": True},
+        **extra,
+    }
+    return {
+        "status": "low_fidelity_rejected",
+        "evidence": "attempt receipt",
+        "revision": revision,
+        "quick": {"stats": {"trade_count": 40, "net_return": net}},
+        "objective": {
+            "net_log_growth": net,
+            "downside_deviation": 0.0,
+            "tail_loss": 0.0,
+            "max_drawdown_pct": 0.0,
+        },
+        "attempt_receipt": {
+            "revision": revision,
+            "execution_valid": True,
+            "stats": {"trade_count": 40, "net_return": net},
+            "objective": {"net_log_growth": net},
+            "behavior": {},
+            "trades": [],
+        },
+        "postmortem": postmortem,
+    }
+
+
+def test_screen_then_focus_allocation_serves_ranked_candidates(tmp_path) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    improver_path = store.job_dir(job_id) / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"].update(
+        {
+            "screen_before_repair": True,
+            "focus_candidates": 1,
+            "focus_attempts_per_candidate": 3,
+            # The mechanical focus ranking under test is the path the
+            # redesign checkpoint replaces; keep the checkpoint off here.
+            "redesign_checkpoint": False,
+        }
+    )
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    submit_campaign_design(store, job_id, campaign_design=_campaign_design())
+
+    def commit(index: int, **kwargs: Any) -> dict[str, Any]:
+        state = campaign_status(store, job_id)
+        candidate = state["candidates"][index - 1]
+        root = store.job_dir(job_id) / candidate["bundle"]
+        _commit_designed_attempt(
+            store,
+            job_id,
+            state=state,
+            candidate=candidate,
+            outcome=_screen_outcome(root, **kwargs),
+        )
+        store.write_json(job_id, "state/evolution_campaign.json", state)
+        return candidate
+
+    prepare_candidate(store, job_id, now=started + timedelta(minutes=1))
+    first = commit(1, net=-0.01)
+    assert first["status"] == "repair_pending"
+    block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=2))
+    # Screen phase: the next slot is prepared before any repair is served.
+    assert block and block["artifact_key"] == "candidate-02-attempt-01"
+    assert block["focus"]["phase"] == "screen"
+
+    for slot in range(2, 9):
+        prepare_candidate(store, job_id, now=started + timedelta(minutes=slot))
+        if slot == 3:
+            commit(
+                slot,
+                net=-0.5,
+                primary="cost_bleed",
+                codes=["negative_after_costs", "fees_erased_edge"],
+                economics={
+                    "candidate": {"fills_per_day": 59.0, "fee_pct_of_capital": 0.29},
+                    "incumbent": {"fills_per_day": 2.7},
+                },
+            )
+        else:
+            commit(slot, net=-0.01 * slot)
+    state = campaign_status(store, job_id)
+    assert [item["status"] for item in state["candidates"]] == ["repair_pending"] * 8
+    assert state["counts"]["quick_attempts"] == 8 and state["counts"]["repairs"] == 0
+
+    # Focus phase: the fixable cost-bleed churner outranks the mildly negative
+    # siblings, and only it is served.
+    block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=20))
+    assert block and block["artifact_key"] == "candidate-03-attempt-02"
+    focus_id = state["candidates"][2]["candidate_id"]
+    assert block["focus"] == {
+        "phase": "focus",
+        "candidate_ids": [focus_id],
+        "computed_at": state["focus"]["computed_at"],
+    }
+    assert block["repair_work_order"]["primary_failure"] == "cost_bleed"
+    assert "59.0 fills/day vs incumbent 2.7" in block["next_action"]
+    assert "at most 3" in block["next_action"]
+    policy = store.read_json(job_id, str(state["manifest"]))["policy"]
+    assert _attempt_cap(state, state["candidates"][2], policy) == 3
+    assert _attempt_cap(state, state["candidates"][7], policy) == 1
+    outcome = next(
+        item for item in block["candidate_outcomes"] if item["candidate_id"] == focus_id
+    )
+    assert outcome["trajectory"] == [
+        {
+            "attempt": 1,
+            "primary_failure": "cost_bleed",
+            "net_return": -0.5,
+            "fills_per_day": 59.0,
+            "fee_pct_of_capital": 0.29,
+        }
+    ]
+
+    # A repair without causal progress closes the candidate; the budget moves
+    # to the next-ranked parked candidate instead of a fresh free attempt.
+    closed = commit(3, net=-0.5, primary="cost_bleed")
+    assert closed["status"] == "low_fidelity_rejected"
+    state = campaign_status(store, job_id)
+    assert state["counts"]["repairs"] == 1
+    block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=30))
+    assert block and block["artifact_key"] == "candidate-01-attempt-02"
+    assert state["candidates"][7]["status"] == "repair_pending"
+
+
+def test_design_prompt_carries_cost_budget_from_baseline(tmp_path) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    baseline = store.job_dir(job_id) / "results" / "backtest" / "baseline.json"
+    baseline.write_text(
+        json.dumps(
+            {
+                "scope": {
+                    "bars": 28_513,
+                    "start": "2026-05-03T15:25:00+00:00",
+                    "end": "2026-08-10T15:25:00+00:00",
+                },
+                "result": {
+                    "params": {
+                        "initial_capital": 100.0,
+                        "fee_bps": 4.5,
+                        "slippage_bps": 3.5,
+                    },
+                    "stats": {
+                        "net_return": 0.148,
+                        "trade_count": 271,
+                        "total_fees": 11.22,
+                        "total_turnover_usd": 22_441.0,
+                        "exposure_pct": 0.106,
+                        "avg_trade_duration_s": 7_160.0,
+                        "max_drawdown_pct": -0.065,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert prompt
+    risk = prompt["constraints"]["risk_budget"]
+    assert risk["max_drawdown_pct"] == 0.25 and risk["max_tail_loss"] == 0.15
+    assert risk["incumbent_max_drawdown_pct"] == pytest.approx(0.065)
+    assert risk["prior_risk_ceiling"] == []
+    assert "Risk budget: OOS max drawdown <= 25%" in prompt["next_action"]
+    assert "the incumbent runs at" in prompt["next_action"]
+    assert "never a search dimension" in prompt["next_action"]
+    budget = prompt["constraints"]["cost_budget"]
+    assert budget["incumbent_fills_per_day"] == pytest.approx(2.74, abs=0.01)
+    assert budget["round_trip_cost_bps"] == 16.0
+    assert budget["cost_hurdle_multiple"] == 1.5
+    # The ceiling is cost arithmetic at the incumbent's notional per fill, not
+    # a multiple of its habit.
+    economics = prompt["constraints"]["cost_budget"]
+    assert budget["basis"] == "cost_budget"
+    pack_economics = store.read_json(job_id, str(state["diagnostic_pack"]))["baseline"][
+        "economics"
+    ]
+    notional_per_fill = pack_economics["turnover_multiple"] / (
+        pack_economics["fills_per_day"] * pack_economics["window_days"]
+    )
+    expected = (0.02 / 30.0) / (notional_per_fill * 16.0 / 2.0 / 1e4)
+    assert budget["max_fills_per_day"] == pytest.approx(expected, abs=0.05)
+    assert budget["max_fills_per_day"] < 8.2
+    assert (
+        "at ~16 bps round trip a trade must capture at least 1.5x"
+        in prompt["next_action"]
+    )
+    assert "the incumbent trades 2.7 fills/day" in prompt["next_action"]
+    del economics
+    # This fixture freezes no bars, so there is no macro regime to state.
+    assert prompt["constraints"]["macro_regime"] is None
+    assert "Macro regime" not in prompt["next_action"]
+    # The fixture freezes no bars, so the cadence floor has no window to use.
+    assert "min_fills_per_day" not in budget
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]))
+    assert pack["baseline"]["economics"]["fee_pct_of_capital"] == pytest.approx(0.1122)
+    assert "/baseline/economics/fills_per_day" in prompt["valid_evidence_pointers"]
+    # Cash is the first bar the designer reads.
+    vs_cash = pack["baseline"]["vs_cash"]
+    assert vs_cash["beats_cash"] == (vs_cash["net_return"] > 0)
+    assert "/baseline/vs_cash/beats_cash" in prompt["valid_evidence_pointers"]
+    assert "cite /baseline/vs_cash" in prompt["next_action"]
+
+
+def test_screen_slices_are_disjoint_and_fall_back_when_short() -> None:
+    from wayfinder_paths.jobs.execution.simulator import PreparedExecutionDataset
+
+    def dataset(count: int) -> PreparedExecutionDataset:
+        rows = []
+        for index in range(count):
+            stamp = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(hours=index)
+            rows.append(
+                {
+                    "timestamp": stamp.isoformat(),
+                    "symbol": "IMX",
+                    "open": 10.0,
+                    "high": 10.1,
+                    "low": 9.9,
+                    "close": 10.0,
+                    "volume": 1.0,
+                }
+            )
+        return PreparedExecutionDataset.from_rows(rows, {})
+
+    slices = _screen_slices(dataset(15_000), bars=10_000)
+    assert [label for label, _ in slices] == ["recent", "earlier"]
+    recent = slices[0][1].bars.timestamps
+    earlier = slices[1][1].bars.timestamps
+    assert len(recent) == 10_000 and len(earlier) == 5_000
+    assert earlier[-1] < recent[0]
+    assert [label for label, _ in _screen_slices(dataset(11_000), bars=10_000)] == [
+        "recent"
+    ]
+    assert [label for label, _ in _screen_slices(dataset(60), bars=10_000)] == [
+        "recent"
+    ]
+
+
+def test_screen_verdict_names_regime_dependence_and_noise_fit() -> None:
+    assert _screen_confidence(1) == 0.7
+    assert _screen_confidence(3) == 0.9
+    assert _screen_confidence(9) == 0.9
+
+    both = {
+        "recent": {"net_return": 0.03, "trade_count": 30, "lcb": 0.004},
+        "earlier": {"net_return": 0.02, "trade_count": 28, "lcb": 0.001},
+    }
+    assert _screen_verdict(both, min_trades=12)["passed"] is True
+
+    # All-weather: a slice that gives a little back is fine when the book as a
+    # whole is positive and significant; one that bleeds past the bound is not.
+    mixed = {**both, "earlier": {"net_return": -0.02, "trade_count": 28, "lcb": -0.01}}
+    verdict = _screen_verdict(mixed, min_trades=12, pooled_lcb=0.003)
+    assert verdict["passed"] is True and verdict["code"] is None
+    assert verdict["combined_net_return"] == pytest.approx(1.03 * 0.98 - 1)
+    bleeding = {
+        **both,
+        "earlier": {"net_return": -0.05, "trade_count": 28, "lcb": -0.04},
+    }
+    verdict = _screen_verdict(bleeding, min_trades=12, pooled_lcb=0.003)
+    assert verdict["passed"] is False and verdict["code"] == "screen_slice_loss_bound"
+    assert verdict["overdrawn"] == ["earlier"]
+    # Flipping off in a regime is allowed: zero trades, zero return, passes.
+    aside = {**both, "earlier": {"net_return": 0.0, "trade_count": 0, "lcb": None}}
+    assert _screen_verdict(aside, min_trades=12, pooled_lcb=0.003)["passed"] is True
+
+    # Significance is recorded, not required: the screen filters and full
+    # development certifies against the campaign's trial count.
+    noisy = {**both, "recent": {"net_return": 0.03, "trade_count": 30, "lcb": -0.002}}
+    verdict = _screen_verdict(noisy, min_trades=12)
+    assert verdict["passed"] is True and verdict["code"] is None
+    assert verdict["edge_significant"] is False
+    assert _screen_verdict(both, min_trades=12)["edge_significant"] is True
+
+    # The activity floor applies to the book across the slices, not per slice.
+    sparse = {
+        "recent": {"net_return": 0.03, "trade_count": 5, "lcb": 0.004},
+        "earlier": {"net_return": 0.02, "trade_count": 5, "lcb": 0.001},
+    }
+    assert _screen_verdict(sparse, min_trades=12)["code"] == "activity_below_floor"
+
+    # Negative everywhere is plain failure: the postmortem's own code stands.
+    losing = {
+        "recent": {"net_return": -0.01, "trade_count": 30, "lcb": None},
+        "earlier": {"net_return": -0.02, "trade_count": 28, "lcb": None},
+    }
+    verdict = _screen_verdict(losing, min_trades=12)
+    assert verdict["passed"] is False and verdict["code"] is None
+    # Too few days for a bootstrap: a positive point estimate still passes.
+    tiny = {"recent": {"net_return": 0.01, "trade_count": 3, "lcb": None}}
+    assert _screen_verdict(tiny, min_trades=1)["passed"] is True
+
+
+def test_screen_report_splits_the_reference_losing_days() -> None:
+    from types import SimpleNamespace
+
+    days = [
+        datetime(2026, 6, 1, tzinfo=UTC) + timedelta(days=index) for index in range(12)
+    ]
+    # Reference loses on days 3-6 and earns elsewhere; the candidate repairs
+    # exactly those days and matches the reference on the rest.
+    reference_returns = [
+        0.01,
+        0.01,
+        -0.02,
+        -0.02,
+        -0.02,
+        -0.02,
+        0.01,
+        0.01,
+        0.01,
+        0.01,
+        0.01,
+    ]
+    candidate_returns = [
+        0.01,
+        0.01,
+        0.005,
+        0.005,
+        0.005,
+        0.005,
+        0.01,
+        0.01,
+        0.01,
+        0.01,
+        0.01,
+    ]
+
+    def curve(returns):
+        equity, rows = 100.0, [{"timestamp": days[0].isoformat(), "equity": 100.0}]
+        for stamp, value in zip(days[1:], returns, strict=True):
+            equity *= 1 + value
+            rows.append({"timestamp": stamp.isoformat(), "equity": equity})
+        return rows
+
+    from wayfinder_paths.jobs.economics import daily_log_returns
+
+    reference_daily = daily_log_returns(curve(reference_returns))
+    result = SimpleNamespace(
+        equity_curve=curve(candidate_returns),
+        stats={"net_return": 0.06, "trade_count": 30, "max_drawdown_pct": -0.05},
+    )
+    report = _screen_slice_report(result, reference_daily, confidence=0.7)
+    # The ceiling's convention, so a slice reads against the 0.25 budget.
+    assert report["max_drawdown_pct"] == 0.05
+    mode = report["failure_mode"]
+    assert mode["losing_days"] == 4 and mode["winning_days"] == 7
+    assert mode["losing_delta"] > 0.09 and abs(mode["winning_delta"]) < 1e-9
+    assert _slice_route(report) in {"failure_mode", "global"}
+    verdict = _screen_verdict({"recent": report, "earlier": report}, min_trades=12)
+    assert verdict["passed"] is True
+    assert verdict["slices"]["recent"]["route"] in {"failure_mode", "global"}
+
+    # Repairing the losing days at the cost of the winning days is not a repair.
+    hurt = {**report, "lcb": -0.01, "failure_mode": {**mode, "winning_delta": -0.02}}
+    assert _slice_route(hurt) is None
+    # Significance is recorded, not required at the screen.
+    hurt_verdict = _screen_verdict({"recent": hurt}, min_trades=12)
+    assert hurt_verdict["code"] is None and hurt_verdict["edge_significant"] is False
+
+
+def test_failure_mode_summary_names_worst_days_and_regime() -> None:
+    daily = [
+        ("2026-06-01", 0.01),
+        ("2026-06-02", -0.03),
+        ("2026-06-03", -0.01),
+        ("2026-06-04", 0.02),
+        ("2026-06-05", -0.005),
+    ]
+    labels = {
+        "2026-06-01": "up_lowvol",
+        "2026-06-02": "down_highvol",
+        "2026-06-03": "down_highvol",
+        "2026-06-04": "up_lowvol",
+    }
+    summary = _failure_mode_summary(daily, labels)
+    assert summary["days"] == 5 and summary["losing_days"] == 3
+    assert summary["worst_days"][0] == {
+        "day": "2026-06-02",
+        "return": -0.03,
+        "regime": "down_highvol",
+    }
+    assert summary["worst_regime"] == "down_highvol"
+    assert summary["by_regime"]["mixed"]["days"] == 1
+    assert summary["losing_return"] == pytest.approx(math.exp(-0.045) - 1, abs=1e-6)
+
+
+def test_strategy_complexity_budget_scales_with_the_incumbent() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import strategy_complexity
+
+    source = (
+        "def decide(ctx):\n"
+        "    if ctx.rsi < 30 and ctx.atr > 0.5:\n"
+        "        return [1]\n"
+        "    if ctx.close >= ctx.sma:\n"
+        "        return []\n"
+        "    return [0.25]\n"
+    )
+    size = strategy_complexity(source)
+    assert size["comparisons"] == 3
+    assert size["numeric_literals"] == 4
+    assert _complexity_budget({}, {"comparisons": 32}) == 48
+    assert _complexity_budget({}, {"comparisons": 4}) == 24
+    assert _complexity_budget({"complexity_multiple": 2.0}, {"comparisons": 20}) == 40
+    assert strategy_complexity("def broken(:")["comparisons"] == 0
+
+
+def test_plateau_selection_prefers_a_robust_neighborhood_over_a_lone_peak() -> None:
+    from types import SimpleNamespace
+
+    runs = [
+        {"trial": 0, "params": {"lookback": 20}, "net_return": 0.10},
+        {"trial": 1, "params": {"lookback": 22}, "net_return": 0.02},
+        {"trial": 2, "params": {"lookback": 18}, "net_return": 0.01},
+        {"trial": 3, "params": {"lookback": 60}, "net_return": 0.06},
+        {"trial": 4, "params": {"lookback": 63}, "net_return": 0.058},
+        {"trial": 5, "params": {"lookback": 57}, "net_return": 0.062},
+    ]
+    grid = SimpleNamespace(runs=runs, ranked=[runs[0]], rank_by="net_return")
+    selected, plateau = _plateau_select(grid, ["lookback"], "net_return")
+    assert selected["trial"] == 3 and plateau["selected_by"] == "plateau"
+    assert plateau["neighbors_of_best"] == 2 and plateau["ratio"] < 0.5
+
+    runs[1]["net_return"], runs[2]["net_return"] = 0.09, 0.08
+    selected, plateau = _plateau_select(grid, ["lookback"], "net_return")
+    assert selected["trial"] == 0 and plateau["selected_by"] == "peak"
+    bare = SimpleNamespace(ranked=[{"params": {"lookback": 30}}])
+    selected, plateau = _plateau_select(bare, ["lookback"], "net_return")
+    assert (
+        selected == {"params": {"lookback": 30}} and plateau["selected_by"] == "ranked"
+    )
+
+
+def test_incumbent_neighborhood_tunables_and_dimensions() -> None:
+    tunables = _numeric_tunables(
+        {"stop_pct": 0.03, "hold_bars": 24, "enabled": True, "zero": 0},
+        {"fee_bps": 4.5, "symbols": ["A"], "warmup_bars": 400, "leverage": 3.0},
+    )
+    assert tunables == {"hold_bars": 24.0, "stop_pct": 0.03}
+    assert _neighborhood_dimension(24.0, 0.3) == {"type": "int", "low": 16, "high": 32}
+    assert _neighborhood_dimension(0.03, 0.3) == {
+        "type": "float",
+        "low": 0.021,
+        "high": 0.039,
+    }
+
+
+def test_library_signal_aligns_causally_to_base_bars() -> None:
+    from wayfinder_paths.jobs.research import (
+        library_signal_on_bars,
+        library_signal_warmup_bars,
+        resample_ohlcv,
+    )
+    from wayfinder_paths.jobs.signal_library import build_signal_frame, signal_defs
+
+    start = datetime(2026, 6, 1, tzinfo=UTC)
+    rows = []
+    price = 100.0
+    for index in range(600):
+        price *= 1 + ((index * 7919) % 11 - 5) / 1_000
+        rows.append(
+            {
+                "timestamp": (start + timedelta(minutes=5 * (index + 1))).isoformat(),
+                "symbol": "HYPE",
+                "open": price,
+                "high": price * 1.001,
+                "low": price * 0.999,
+                "close": price,
+                "volume": 10.0,
+            }
+        )
+    frame = pd.DataFrame(rows)
+    signal = "new_low_5"
+    aligned = library_signal_on_bars(frame, signal, "1h", bar_seconds=300)
+    assert aligned.dtype == bool and len(aligned) == 600
+    hourly = resample_ohlcv(frame, 3600, bar_seconds=300)
+    spec = signal_defs()[signal]
+    hourly_signal = build_signal_frame(
+        hourly, include_canonical=False, canonical_signals=(spec,)
+    )[signal]
+    hourly_stamps = pd.to_datetime(hourly["timestamp"], utc=True)
+    base_stamps = pd.to_datetime(frame["timestamp"], utc=True)
+    for index in (120, 300, 599):
+        completed = hourly_stamps <= base_stamps.iloc[index]
+        expected = bool(hourly_signal[completed].iloc[-1]) if completed.any() else False
+        assert bool(aligned.iloc[index]) == expected
+    assert library_signal_warmup_bars(signal, "1h", bar_seconds=300) == (7 + 2) * 12
+
+
+def test_cadence_floor_follows_the_elite_participation_floor() -> None:
+    policy = {
+        "split": {"train": 0.8, "validation": 0.2},
+        "elite_min_validation_trades": 8,
+    }
+    assert _min_fills_per_day(policy, {"days": 99.0}) == pytest.approx(0.404)
+    assert _min_fills_per_day(policy, {}) is None
+    assert _min_fills_per_day({"split": {}}, {"days": 99.0}) is None
+
+
+def test_candidate_search_space_accepts_shorthand_and_names_untyped_keys(
+    tmp_path,
+) -> None:
+    root = tmp_path / "candidate"
+    root.mkdir()
+    (root / "search_space.json").write_text(
+        json.dumps({"lookback": [12, 96], "threshold": {"low": 0.5, "high": 5.0}}),
+        encoding="utf-8",
+    )
+    loaded = _load_candidate_search_space(root, required=True)
+    assert loaded == {
+        "lookback": {"type": "int", "low": 12, "high": 96},
+        "threshold": {"type": "float", "low": 0.5, "high": 5.0},
+    }
+
+    (root / "search_space.json").write_text(
+        json.dumps({"lookback": [1, 2, 3], "mode": "fast"}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"keys \['lookback'\]"):
+        _load_candidate_search_space(root, required=True)
+
+
+def test_starter_seeds_are_stamped_with_universe_compatibility(tmp_path) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    job_path = store.job_dir(job_id) / "job.yaml"
+    job_data = yaml.safe_load(job_path.read_text(encoding="utf-8"))
+    job_data["execution_params"] = {"symbols": ["ETH", "SOL", "HYPE"], "fee_bps": 4.5}
+    job_path.write_text(yaml.safe_dump(job_data, sort_keys=False), encoding="utf-8")
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    starters = {item["starter_id"]: item for item in manifest["starter_seeds"]}
+
+    # The pair starter adapts to any two target symbols, so only the count
+    # blocks it here; the sleeve starter embeds symbol literals in params.
+    pair = starters["btc-eth-relative-strength-1d"]
+    assert pair["compatible"] is False
+    assert pair["missing_symbols"] == []
+    assert "exactly two symbols" in pair["incompatibility_reason"]
+    sleeves = starters["mixed-sleeve-momentum-15m"]
+    assert sleeves["compatible"] is False and "xyz:COIN" in sleeves["missing_symbols"]
+    # The pilot's failure shape: no target symbols, so the starter's own list
+    # survives install and must fit the frozen universe.
+    pair_definition = next(
+        item
+        for item in STARTER_DEFINITIONS
+        if item.id == "btc-eth-relative-strength-1d"
+    )
+    unoverridden = _starter_compatibility(
+        pair_definition,
+        {"HYPE", "SOL", "XRP", "POL"},
+        target_overrides_symbols=False,
+    )
+    assert unoverridden["compatible"] is False
+    assert unoverridden["missing_symbols"] == ["BTC", "ETH"]
+    compatible_ids = [
+        starter_id for starter_id, item in starters.items() if item["compatible"]
+    ]
+    assert compatible_ids
+
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert prompt and "btc-eth-relative-strength-1d" not in prompt["next_action"]
+    plan = _select_parent_plan(
+        manifest, requested_source="starter_seed", slot=1, candidates=[]
+    )
+    assert plan["source"] == "starter_seed"
+    assert plan["starter"]["compatible"] is True
+
+    design = _campaign_design()
+    design["slots"][0]["starter_seed_id"] = "mixed-sleeve-momentum-15m"
+    with pytest.raises(ValueError, match="requires symbols"):
+        submit_campaign_design(store, job_id, campaign_design=design)
+
+    with pytest.raises(ValueError, match="requires symbols"):
+        _materialize_candidate_seed(
+            store,
+            job_id,
+            campaign_id=state["campaign_id"],
+            candidate_root=tmp_path / "never-created",
+            plan={"source": "starter_seed", "starter": sleeves},
+        )
+    assert not (tmp_path / "never-created").exists()
+
+
+def test_design_prompt_offers_validated_signals_when_seeding_is_on(tmp_path) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    improver_path = store.job_dir(job_id) / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"]["signal_first_seeding"] = True
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    pack_path = str(state["diagnostic_pack"])
+    pack = store.read_json(job_id, pack_path)
+    # The fixture freezes no bars: the scan is unavailable and the prompt is
+    # silent about signals.
+    assert pack["validated_signals"]["available"] is False
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert prompt and prompt["constraints"]["validated_signals"] is None
+    assert "Validated signals" not in prompt["next_action"]
+
+    pack["validated_signals"] = {
+        "available": True,
+        "signals": [
+            {
+                "symbol": "HYPE",
+                "signal": "new_low_5",
+                "timeframe": "1h",
+                "horizon": 4,
+                "direction": "long",
+                "events_per_day": 0.8,
+                "how_to_use": "in precompute(): library_signal_on_bars(...)",
+            }
+        ],
+        "near_misses": [],
+    }
+    store.write_json(job_id, pack_path, pack)
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=2))
+    assert prompt and prompt["constraints"]["validated_signals"] == [
+        "HYPE:new_low_5:1h:4"
+    ]
+    assert "new_low_5 long HYPE 1h x4" in prompt["next_action"]
+    assert "must cite one of these" in prompt["next_action"]
+    assert "library_signal_on_bars" in prompt["next_action"]
+    assert (
+        "/validated_signals/signals/0/how_to_use" in prompt["valid_evidence_pointers"]
+    )
+    # A grounded free-form slot that cites no validated signal is rejected.
+    design = _campaign_design()
+    with pytest.raises(ValueError, match="must build on a validated signal"):
+        submit_campaign_design(store, job_id, campaign_design=design)
+    # A citation resolves to the recipe the worker's candidate.json carries.
+    from wayfinder_paths.jobs.evolution_campaign import _cited_signals
+
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    assert _cited_signals(
+        store,
+        job_id,
+        manifest,
+        ["/baseline/reason", "/validated_signals/signals/0/how_to_use"],
+    ) == [
+        {
+            "pointer": "/validated_signals/signals/0",
+            "tier": "validated",
+            "symbol": "HYPE",
+            "signal": "new_low_5",
+            "timeframe": "1h",
+            "horizon": 4,
+            "direction": "long",
+            "how_to_use": "in precompute(): library_signal_on_bars(...)",
+        }
+    ]
+    assert _cited_signals(store, job_id, manifest, ["/baseline/reason"]) == []
+
+    # With nothing validated, the replicated tier feeds the designer with the
+    # cost decomposition, and a grounded slot must build on one of its rows.
+    pack["validated_signals"] = {
+        "available": True,
+        "tests": 2687,
+        "expected_lucky_passes": 134.4,
+        "signals": [],
+        "replicated": [
+            {
+                "symbol": "HYPE",
+                "signal": "rsi14_le_30",
+                "timeframe": "300s",
+                "horizon": 2,
+                "direction": "long",
+                "t_stat": 3.28,
+                "q_value": 0.685,
+                "events": 1811,
+                "gross_edge_bps": 4.4,
+                "taker_round_trip_bps": 24.0,
+                "maker_round_trip_bps": 3.0,
+                "execution_hint": "passive_only",
+                "how_to_use": "post-only resting limit",
+            }
+        ],
+        "near_misses": [],
+        "funnel": {
+            "tests": 2687,
+            "directional_fold_stable": 74,
+            "cost_positive": 8,
+            "t_net_at_floor": 0,
+            "q_at_threshold": 0,
+            "powered": 0,
+            "non_inferior": 0,
+            "replicated": 1,
+            "passive_only": 1,
+            "mechanism_required": 0,
+            "regime_tests": 0,
+        },
+    }
+    store.write_json(job_id, pack_path, pack)
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=3))
+    assert prompt and prompt["constraints"]["validated_signals"] == []
+    assert prompt["constraints"]["replicated_signals"] == ["HYPE:rsi14_le_30:300s:2"]
+    assert "Replicated signals" in prompt["next_action"]
+    assert (
+        "gross +4.4 bps vs taker 24 / maker 3 bps: passive_only"
+        in (prompt["next_action"])
+    )
+    assert "1 replicated regardless of cost" in prompt["next_action"]
+    assert "must cite one of these" in prompt["next_action"]
+    with pytest.raises(ValueError, match="must build on a replicated signal"):
+        submit_campaign_design(store, job_id, campaign_design=_campaign_design())
+    cited = _cited_signals(store, job_id, manifest, ["/validated_signals/replicated/0"])
+    assert cited[0]["pointer"] == "/validated_signals/replicated/0"
+    assert cited[0]["tier"] == "replicated"
+    assert cited[0]["execution_hint"] == "passive_only"
+
+
+def test_regime_design_requires_counter_cell_and_stamps_candidate(tmp_path) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    root = store.job_dir(job_id)
+    improver_path = root / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"]["regime_specialist_enabled"] = True
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    (root / "results/backtest/input_bars.json").write_text(
+        json.dumps({"metadata": {"days": 2}, "bars": _regime_bars()}),
+        encoding="utf-8",
+    )
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    regime = manifest["regime_context"]
+
+    assert regime["available"] is True
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert prompt and prompt["constraints"]["regime_specialist_design"] is True
+    assert "target_regimes" in prompt["next_action"]
+    # The macro regime (a 28% drift over the frozen 46 hours reads as bull at
+    # every horizon) is frozen beside the specialist cells and said in words.
+    assert manifest["regime_context"]["macro"]["recent"]["7d"]["label"] == "bull"
+    assert prompt["constraints"]["macro_regime"]["recent"]["7d"]["label"] == "bull"
+    assert "Macro regime: last 7 days universe-median +" in prompt["next_action"]
+
+    design = _campaign_design()
+    for slot in design["slots"]:
+        slot["target_regimes"] = [regime["primary_regime"]]
+    alternate = next(
+        cell
+        for cell in ("up_lowvol", "up_highvol", "down_lowvol", "down_highvol")
+        if cell not in {regime["primary_regime"], regime["counter_regime"]}
+    )
+    design["slots"][-1]["target_regimes"] = [alternate]
+    with pytest.raises(ValueError, match="counter-regime slot"):
+        submit_campaign_design(store, job_id, campaign_design=design)
+
+    design["slots"][0]["target_regimes"] = [regime["counter_regime"]]
+    submit_campaign_design(store, job_id, campaign_design=design)
+    candidate = prepare_candidate(store, job_id, now=started + timedelta(minutes=2))
+    job_data = yaml.safe_load(
+        (root / candidate["bundle"] / "job.yaml").read_text(encoding="utf-8")
+    )
+
+    assert candidate["target_regimes"] == [regime["counter_regime"]]
+    assert job_data["execution_params"]["target_regimes"] == [regime["counter_regime"]]
 
 
 def test_investigative_attempts_repair_failures_but_close_viable_ideas(
@@ -1331,6 +2176,8 @@ def test_parameter_preview_is_seeded_bounded_and_compact(monkeypatch) -> None:
     assert captured["objectives"] == ["net_return", "max_drawdown_pct"]
     assert preview == {
         "status": "complete",
+        "risk_pruned": 0,
+        "max_drawdown_pct": None,
         "trials": 3,
         "valid_trials": 1,
         "bars": 2_000,
@@ -1550,6 +2397,7 @@ def test_finalize_enforces_stage_budgets_and_isolates_candidate_failure(
         "passed": 3,
         "rejected": 1,
         "running": 0,
+        "awaiting_regime": 0,
     }
     assert completed["funnel"]["finalist_gate"]["advanced_to_paper"] == 1
 
@@ -1755,6 +2603,316 @@ def test_jsonl_features_are_frozen_at_the_campaign_cutoff(tmp_path) -> None:
     )
     rows = [json.loads(line) for line in destination.read_text().splitlines()]
     assert [row["value"] for row in rows] == [0, 1]
+
+
+def _enable_protected_folds(store: JobStore, job_id: str, *, bars: int = 1_000) -> None:
+    root = store.job_dir(job_id)
+    (root / "results/backtest/input_bars.json").write_text(
+        json.dumps({"metadata": {"days": bars / 24}, "bars": _hourly_bars(bars)}),
+        encoding="utf-8",
+    )
+    improver_path = root / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"].update(
+        {
+            "incumbent_failure_modes": False,
+            "policy_scan_enabled": False,
+            "signal_first_seeding": False,
+            "protected_fold_certification": {
+                "enabled": True,
+                "discovery_fraction": 0.60,
+                "folds": 4,
+                "required_positive_folds": 3,
+                "max_fold_loss_pct": 0.05,
+                "minimum_fold_bars": 8,
+                # The fixtures are weeks of hourly bars: keep the day floors
+                # below them so protected mode stays on.
+                "min_discovery_days": 1,
+                "min_certification_days": 1,
+            },
+            "screen_slice_days": 3,
+        }
+    )
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+
+
+def test_protected_fold_snapshot_hides_tail_and_aligns_json_and_jsonl(
+    tmp_path,
+) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    _enable_protected_folds(store, job_id)
+    root = store.job_dir(job_id)
+    job = yaml.safe_load((root / "job.yaml").read_text(encoding="utf-8"))
+    job["execution_spec"]["data_contract"]["features"] = [
+        {"name": "workspace_signal", "path": "workspace/features.json"}
+    ]
+    (root / "job.yaml").write_text(
+        yaml.safe_dump(job, sort_keys=False), encoding="utf-8"
+    )
+    feature_rows = [
+        {
+            "timestamp": row["timestamp"],
+            "name": "workspace_signal",
+            "value": index,
+            "symbol": "IMX",
+        }
+        for index, row in enumerate(_hourly_bars(1_000))
+    ]
+    (root / "workspace/features.json").write_text(
+        json.dumps({"features": feature_rows}), encoding="utf-8"
+    )
+    (root / "state").mkdir(exist_ok=True)
+    (root / "state/features.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in feature_rows), encoding="utf-8"
+    )
+
+    state = start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    campaign_root = root / "research/evolution/campaigns" / state["campaign_id"]
+    visible = json.loads(
+        (campaign_root / manifest["dataset"]["path"]).read_text(encoding="utf-8")
+    )
+    visible_stamps = sorted({row["timestamp"] for row in visible["bars"]})
+    assert len(visible_stamps) == 600
+    plan = manifest["evaluation_plan"]
+    assert plan["mode"] == "protected_chronological_folds_v1"
+    assert plan["discovery"]["bars"] == 600
+    assert plan["certification"]["bars"] == 232
+    assert plan["audit"]["bars"] == 168
+    assert plan["discovery"]["end"] < plan["certification"]["start"]
+    assert plan["certification"]["end"] < plan["audit"]["start"]
+    # The readable manifest proves the snapshot exists without revealing the
+    # audit-plane location to the campaign worker.
+    serialized = json.dumps(manifest)
+    assert str(tmp_path / "audit") not in serialized
+
+    protected = (
+        tmp_path
+        / "audit"
+        / job_id
+        / "evolution/campaigns"
+        / state["campaign_id"]
+        / "dataset"
+    )
+    full = json.loads(
+        (protected / "results/backtest/input_bars.json").read_text(encoding="utf-8")
+    )
+    assert len({row["timestamp"] for row in full["bars"]}) == 1_000
+    visible_json = json.loads(
+        (campaign_root / "dataset/workspace/features.json").read_text(encoding="utf-8")
+    )
+    protected_json = json.loads(
+        (protected / "workspace/features.json").read_text(encoding="utf-8")
+    )
+    assert len(visible_json["features"]) == 600
+    assert len(protected_json["features"]) == 1_000
+    visible_jsonl = (
+        (campaign_root / "dataset/state/features.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    protected_jsonl = (
+        (protected / "state/features.jsonl").read_text(encoding="utf-8").splitlines()
+    )
+    assert len(visible_jsonl) == 600
+    assert len(protected_jsonl) == 1_000
+    assert plan["protected_snapshot"]["files"] == 3
+
+    timestamps = [
+        pd.Timestamp(row) for row in sorted({r["timestamp"] for r in full["bars"]})
+    ]
+    bounds, error = _certification_fold_bounds(
+        timestamps, plan, folds=4, minimum_bars=8
+    )
+    assert error is None
+    assert [end - start for start, end in bounds] == [58, 58, 58, 58]
+    assert all(
+        left[1] == right[0] for left, right in zip(bounds, bounds[1:], strict=False)
+    )
+    assert str(timestamps[bounds[-1][1]]) == str(pd.Timestamp(plan["audit"]["start"]))
+
+    protected_json["features"][0]["value"] = -1
+    (protected / "workspace/features.json").write_text(
+        json.dumps(protected_json), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="snapshot revision mismatch"):
+        _verified_protected_dataset_root(
+            store,
+            job_id,
+            str(state["campaign_id"]),
+            manifest=manifest,
+        )
+
+
+@pytest.mark.parametrize(
+    ("returns", "pooled", "stress", "valid", "expected"),
+    [
+        ((0.02, 0.01, 0.03, -0.04), 0.02, 0.01, True, None),
+        ((0.02, 0.01, -0.01, -0.04), 0.02, 0.01, True, "insufficient_positive_folds"),
+        ((0.02, 0.01, 0.03, -0.051), 0.02, 0.01, True, "fold_loss_bound"),
+        ((0.02, 0.01, 0.03, -0.04), -0.01, 0.01, True, "negative_after_costs"),
+        ((0.02, 0.01, 0.03, -0.04), 0.02, -0.01, True, "negative_under_stress"),
+        ((0.02, 0.01, 0.03, -0.04), 0.02, 0.01, False, "invalid_execution"),
+    ],
+)
+def test_protected_fold_verdict_contract(
+    returns: tuple[float, ...],
+    pooled: float,
+    stress: float,
+    valid: bool,
+    expected: str | None,
+) -> None:
+    folds = [
+        {
+            "fold": index,
+            "base_return": value,
+            "stress_return": value,
+            "positive": value > 0,
+        }
+        for index, value in enumerate(returns)
+    ]
+    verdict = _protected_fold_verdict(
+        folds,
+        valid=valid,
+        validation_trades=12,
+        minimum_validation_trades=8,
+        pooled_return=pooled,
+        pooled_stress_return=stress,
+        train_return=0.02,
+        specialized=False,
+        target_days=0,
+        min_target_days=10,
+        outside_loss_ok=True,
+        base_vector={"max_drawdown_pct": 0.04, "tail_loss": 0.01},
+        stress_vector={"max_drawdown_pct": 0.05, "tail_loss": 0.02},
+        hard_constraints={"max_drawdown_pct": 0.25, "max_tail_loss": 0.15},
+        required_positive_folds=3,
+        max_fold_loss_pct=0.05,
+        audit_passed=True,
+        haircut_cleared=True,
+    )
+    if expected is None:
+        assert verdict["status"] == "dev_frontier"
+    else:
+        assert expected in verdict["failure_codes"]
+
+
+def test_protected_full_dev_tail_is_not_cumulative_with_trade_count() -> None:
+    pooled = _pooled_fold_stats(
+        [
+            {
+                "trade_count": 100,
+                "worst_trade_pnl": -100.0,
+                "avg_trade_duration_s": 60.0,
+                "avg_drawdown": -0.01,
+            },
+            {
+                "trade_count": 100,
+                "worst_trade_pnl": -80.0,
+                "avg_trade_duration_s": 120.0,
+                "avg_drawdown": -0.03,
+            },
+        ],
+        {
+            "net_log_growth": 0.10,
+            "max_drawdown_pct": 0.05,
+        },
+        {},
+    )
+
+    objective = _objective(pooled, {"initial_capital": 10_000.0})
+
+    assert pooled["trade_count"] == 200
+    assert pooled["worst_trade_pnl"] == -100.0
+    assert objective["tail_loss"] == 0.01
+    assert objective["downside_deviation"] == 0.02
+
+
+def test_protected_fold_layout_rejects_insufficient_history() -> None:
+    timestamps = list(pd.date_range("2026-01-01", periods=40, freq="h", tz="UTC"))
+    bounds, error = _certification_fold_bounds(
+        timestamps,
+        {
+            "certification": {"start": str(timestamps[8])},
+            "audit": {"start": str(timestamps[32])},
+        },
+        folds=4,
+        minimum_bars=8,
+    )
+    assert bounds == []
+    assert error and "needs at least 32" in error
+
+
+def test_protected_fold_full_dev_runs_real_bars_and_persists_fold_metadata(
+    tmp_path,
+) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    _enable_protected_folds(store, job_id)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="hourly_round_trip",
+        summary="exercise the protected certificate",
+        now=started + timedelta(hours=1),
+    )
+    script = store.job_dir(job_id) / candidate["bundle"] / "workspace/src/strategy.py"
+    script.write_text(CHURNER, encoding="utf-8")
+
+    outcome = _isolated_full_dev(store, job_id, candidate, tune=False)
+
+    assert outcome["status"] in {"dev_frontier", "low_fidelity_rejected"}
+    plan = outcome["evaluation_plan"]
+    assert plan["mode"] == "protected_chronological_folds_v1"
+    assert plan["locked_revision"] == outcome["revision"]
+    assert len(plan["folds"]) == 4
+    assert len(outcome["dev"]["validation"]["folds"]) == 4
+    assert all(
+        row["test"]["end"] < state["evaluation_plan"]["audit"]["start"]
+        for row in outcome["dev"]["validation"]["folds"]
+    )
+    assert (tmp_path / "audit" / job_id / "evidence_access.jsonl").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_protected_campaign_routes_final_economic_gate_to_canonical_snapshot(
+    tmp_path, monkeypatch
+) -> None:
+    import wayfinder_paths.jobs.evolution_campaign as campaign_module
+
+    store, job_id = _evaluatable_job(tmp_path)
+    _enable_protected_folds(store, job_id)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="gate_probe",
+        summary="prove the final gate sees protected bars",
+        now=started + timedelta(hours=1),
+    )
+    captured: dict[str, Any] = {}
+
+    def fake_gate(job: str, **kwargs: Any) -> dict[str, Any]:
+        captured.update({"job_id": job, **kwargs})
+        return {"economic": {"ready": False}}
+
+    monkeypatch.setattr(campaign_module, "evaluate_economic_gate", fake_gate)
+
+    _economic_gate_child(
+        store.repo_root,
+        job_id,
+        candidate,
+        str(state["campaign_id"]),
+    )
+
+    dataset_root = captured["dataset_root"]
+    assert dataset_root.is_relative_to(tmp_path / "audit" / job_id)
+    assert captured["probation"] is True
+    assert captured["trials"] == 1
+    assert (dataset_root / "results/backtest/input_bars.json").is_file()
 
 
 def test_next_action_isolates_one_candidate_per_stage_session(tmp_path) -> None:
@@ -2879,14 +4037,20 @@ def test_evaluate_rejects_parameter_candidate_without_typed_search_space(
 
     result = evaluate_candidate(store, job_id, parameter["candidate_id"])
 
-    assert result["status"] == "invalid"
-    assert "requires search_space.json" in json.dumps(result["evidence"])
+    # A deterministic authoring mistake: nothing ran, nothing was charged.
+    assert result["status"] == "prepared"
+    assert "requires search_space.json" in result["submission_rejection"]["error"]
+    assert result["submission_rejection"]["attempt_charged"] is False
+    assert not result.get("attempts") and int(result.get("attempt_count") or 0) == 0
+    assert int(campaign_status(store, job_id)["counts"].get("quick_attempts") or 0) == 0
     entry = next(
         row
         for row in load_archive(store, job_id)["candidates"]
         if row["candidate_id"] == parameter["candidate_id"]
     )
-    assert entry["status"] == "invalid"
+    assert entry["status"] == "generated"
+    handoff = _candidate_handoff(result)
+    assert "resubmit" in handoff["submission_rejection"]["instruction"]
 
 
 def test_evaluate_rejects_oversized_candidate_search_space(tmp_path) -> None:
@@ -2908,8 +4072,35 @@ def test_evaluate_rejects_oversized_candidate_search_space(tmp_path) -> None:
 
     result = evaluate_candidate(store, job_id, parameter["candidate_id"])
 
-    assert result["status"] == "invalid"
-    assert "three-dimension evolution budget" in json.dumps(result["evidence"])
+    assert result["status"] == "prepared"
+    assert "three-dimension evolution budget" in result["submission_rejection"]["error"]
+
+
+def test_evaluate_rejects_sizing_dimensions_without_charging(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    candidates = _prepare_campaign_candidates(store, job_id, started)
+    parameter = candidates[-1]
+    bundle = store.job_dir(job_id) / parameter["bundle"]
+    (bundle / "search_space.json").write_text(
+        json.dumps(
+            {
+                "hold_hours": {"type": "int", "low": 4, "high": 24},
+                "notional_fraction": {"type": "float", "low": 0.5, "high": 1.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = evaluate_candidate(store, job_id, parameter["candidate_id"])
+
+    assert result["status"] == "prepared"
+    assert (
+        "sizing dimensions are not search dimensions"
+        in (result["submission_rejection"]["error"])
+    )
+    assert "notional_fraction" in result["submission_rejection"]["error"]
 
 
 def test_behavior_preview_rejects_noop_parameter_before_simulation(
@@ -3065,6 +4256,14 @@ def test_full_dev_runs_real_small_simulations_in_disposable_child(tmp_path) -> N
     resources = store.read_json(job_id, "reports/evolution/resources.json")
     assert resources["latest"]["phase"] == "full_dev"
     assert resources["latest"]["candidate_id"] == candidate["candidate_id"]
+    # The validation window records how the candidate's positions ended and
+    # the same path forensics the incumbent gets, never an error.
+    validation = outcome["dev"]["validation"]
+    forensics = validation["forensics"]
+    assert "error" not in forensics and set(forensics) == {"closes", "by_exit_reason"}
+    exits = validation["exits"]
+    assert exits is None or set(exits) == {"closes", "stop_share", "by_reason"}
+    assert (exits or {}).get("closes", 0) == forensics["closes"]
 
 
 def test_full_dev_optuna_uses_bounded_train_tail_and_timeout(
@@ -3122,7 +4321,10 @@ def test_full_dev_optuna_uses_bounded_train_tail_and_timeout(
     assert captured["seed"] == 42
     assert captured["timeout"] == 17
     assert outcome["tuning"] == {
+        "plateau": {"neighbors_of_best": 0, "ratio": None, "selected_by": "ranked"},
         "status": "complete",
+        "risk_pruned": 0,
+        "max_drawdown_pct": 0.2,
         "trials": 5,
         "valid_trials": 4,
         "bars": 20,
@@ -3209,3 +4411,3212 @@ def test_cli_evolution_start_nudges_the_session(monkeypatch, tmp_path) -> None:
     assert outcome.exit_code == 0, outcome.output
     assert calls == [("nudge", "job-nudge-demo")]
     assert '"queued": true' in outcome.output
+
+
+def test_risk_ceiling_scale_only_for_risk_only_rejections_with_edge() -> None:
+    economic = {
+        "status": "ok",
+        "ready": False,
+        "reasons": ["OOS max drawdown 0.319 exceeds ceiling 0.25"],
+        "objective": {
+            "candidate": {
+                "max_drawdown_pct": 0.319,
+                "tail_loss": 0.074,
+                "net_log_growth": 0.11,
+            }
+        },
+        "paired_incumbent_delta": {"estimate": 0.07, "lcb": -0.1},
+    }
+    hard = {"max_drawdown_pct": 0.25, "max_tail_loss": 0.15}
+    scale, before = _risk_ceiling_scale(economic, hard, margin=0.9)
+    assert scale == pytest.approx(0.9 * 0.25 / 0.319, abs=1e-3)
+    assert before["ceiling_max_drawdown_pct"] == 0.25
+    summary = _gate_summary(economic, hard, {"scale": scale})
+    assert summary["class"] == "risk_ceiling" and summary["implied_scale"] == scale
+    assert summary["observed_max_drawdown_pct"] == 0.319
+    mixed = {
+        **economic,
+        "reasons": [*economic["reasons"], "paired utility estimate not > 0"],
+    }
+    assert _risk_ceiling_scale(mixed, hard, margin=0.9) is None
+    assert _gate_summary(mixed, hard, None)["class"] == "no_edge"
+    flat = {**economic, "paired_incumbent_delta": {"estimate": -0.01}}
+    assert _risk_ceiling_scale(flat, hard, margin=0.9) is None
+    assert (
+        _gate_summary({**economic, "ready": True, "reasons": []}, hard, None)["class"]
+        == "staged"
+    )
+
+
+def _finalist_fixture(tmp_path, monkeypatch, gate_results):
+    from wayfinder_paths.jobs import evolution_campaign as campaign_module
+
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    prepare_candidate(
+        store,
+        job_id,
+        family="trend-hold",
+        summary="edge with too much size",
+        now=started.replace(hour=13),
+    )
+    state = campaign_status(store, job_id)
+    state["candidates"][0].update(
+        {
+            "status": "quick_complete",
+            "objective": {
+                "net_log_growth": 0.1,
+                "downside_deviation": 0.01,
+                "tail_loss": 0.01,
+                "max_drawdown_pct": 0.05,
+            },
+        }
+    )
+    state["counts"]["quick_evaluated"] = 1
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+    bundle = store.job_dir(job_id) / state["candidates"][0]["bundle"]
+    monkeypatch.setattr(
+        campaign_module,
+        "_isolated_full_dev",
+        lambda *args, **kwargs: {
+            "status": "dev_frontier",
+            "evidence": "passed",
+            "revision": compute_workspace_revision(bundle),
+        },
+    )
+    calls: list[dict[str, Any]] = []
+
+    def fake_gate(store_, job_id_, candidate, *, campaign_id):
+        calls.append(dict(candidate))
+        return dict(gate_results[min(len(calls) - 1, len(gate_results) - 1)])
+
+    monkeypatch.setattr(campaign_module, "_isolated_economic_gate", fake_gate)
+    staged: dict[str, Any] = {}
+
+    def fake_stage(store_, job_id_, **kwargs):
+        staged.update(kwargs)
+        return {"status": "burn_in", "trial_id": "trial-1"}
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.probation.stage_evolution_probation", fake_stage
+    )
+    return store, job_id, calls, staged
+
+
+_RISK_ONLY_REJECTION = {
+    "status": "ok",
+    "ready": False,
+    "reasons": ["OOS max drawdown 0.319 exceeds ceiling 0.25"],
+    "objective": {
+        "candidate": {
+            "max_drawdown_pct": 0.319,
+            "tail_loss": 0.074,
+            "net_log_growth": 0.11,
+            "trade_count": 12,
+        }
+    },
+    "paired_incumbent_delta": {"estimate": 0.07, "lcb": -0.1},
+}
+_SIZED_READY = {
+    "status": "ok",
+    "ready": True,
+    "reasons": [],
+    "objective": {
+        "candidate": {
+            "max_drawdown_pct": 0.2,
+            "tail_loss": 0.05,
+            "net_log_growth": 0.09,
+            "trade_count": 12,
+        }
+    },
+    "paired_incumbent_delta": {"estimate": 0.06, "lcb": -0.05},
+}
+
+
+def test_finalize_sizes_a_risk_only_rejection_to_the_ceiling(
+    tmp_path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs.archive import find_candidate
+
+    store, job_id, calls, staged = _finalist_fixture(
+        tmp_path, monkeypatch, [_RISK_ONLY_REJECTION, _SIZED_READY]
+    )
+
+    result = finalize_campaign(store, job_id)
+
+    candidate = result["candidates"][0]
+    assert candidate["status"] == "probation"
+    assert len(calls) == 2
+    bundle = store.job_dir(job_id) / candidate["bundle"]
+    job_yaml = yaml.safe_load((bundle / "job.yaml").read_text(encoding="utf-8"))
+    assert job_yaml["execution_params"]["size_scale"] == pytest.approx(
+        0.9 * 0.25 / 0.319, abs=1e-3
+    )
+    assert candidate["revision"] == compute_workspace_revision(bundle)
+    assert candidate["revision"] != calls[0]["revision"]
+    assert calls[1]["revision"] == candidate["revision"]
+    assert staged["revision"] == candidate["revision"]
+    normalization = candidate["risk_normalization"]
+    assert normalization["applied"] is True and normalization["class"] == "risk_ceiling"
+    assert normalization["before"]["max_drawdown_pct"] == 0.319
+    assert normalization["after"]["max_drawdown_pct"] == 0.2
+    assert candidate["gate"]["class"] == "staged"
+    entry = find_candidate(store, job_id, candidate["candidate_id"])
+    assert entry["metadata"]["gate"]["class"] == "staged"
+    assert entry["metadata"]["risk_normalization"]["scale"] == normalization["scale"]
+
+
+def test_finalize_records_no_edge_rejections_without_resizing(
+    tmp_path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs.archive import find_candidate
+
+    mixed = {
+        **_RISK_ONLY_REJECTION,
+        "reasons": [
+            *_RISK_ONLY_REJECTION["reasons"],
+            "paired utility estimate not > 0",
+        ],
+    }
+    store, job_id, calls, staged = _finalist_fixture(tmp_path, monkeypatch, [mixed])
+
+    result = finalize_campaign(store, job_id)
+
+    candidate = result["candidates"][0]
+    assert candidate["status"] == "proposal_rejected" and len(calls) == 1
+    assert not staged
+    bundle = store.job_dir(job_id) / candidate["bundle"]
+    job_yaml = yaml.safe_load((bundle / "job.yaml").read_text(encoding="utf-8"))
+    assert "size_scale" not in job_yaml["execution_params"]
+    assert candidate["gate"]["class"] == "no_edge"
+    assert "risk_normalization" not in candidate
+    assert (
+        find_candidate(store, job_id, candidate["candidate_id"])["metadata"]["gate"][
+            "class"
+        ]
+        == "no_edge"
+    )
+
+
+def test_finalize_keeps_a_design_below_the_size_floor_rejected(
+    tmp_path, monkeypatch
+) -> None:
+    hopeless = {
+        **_RISK_ONLY_REJECTION,
+        "reasons": ["OOS max drawdown 1.500 exceeds ceiling 0.25"],
+        "objective": {
+            "candidate": {
+                **_RISK_ONLY_REJECTION["objective"]["candidate"],
+                "max_drawdown_pct": 1.5,
+            }
+        },
+    }
+    store, job_id, calls, staged = _finalist_fixture(tmp_path, monkeypatch, [hopeless])
+
+    result = finalize_campaign(store, job_id)
+
+    candidate = result["candidates"][0]
+    assert candidate["status"] == "proposal_rejected" and len(calls) == 1
+    assert candidate["risk_normalization"]["applied"] is False
+    assert candidate["risk_normalization"]["reason"] == "scale_below_floor"
+    assert candidate["gate"]["class"] == "risk_ceiling"
+
+
+def test_research_context_files_risk_ceiling_rejections_as_validated_edge(
+    tmp_path,
+) -> None:
+    from wayfinder_paths.jobs.archive import evolution_lessons_block, record_candidate
+
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    record_candidate(
+        store,
+        job_id,
+        candidate_id="sized",
+        family="trend-hold",
+        summary="proven edge, too much size",
+        status="proposal_rejected",
+        objective=None,
+        evidence="OOS max drawdown 0.319 exceeds ceiling 0.25",
+        metadata={
+            "campaign_id": "c1",
+            "gate": {
+                "class": "risk_ceiling",
+                "oos_net_log_growth": 0.11,
+                "paired_estimate": 0.07,
+                "observed_max_drawdown_pct": 0.319,
+                "ceiling_max_drawdown_pct": 0.25,
+                "implied_scale": 0.705,
+            },
+        },
+    )
+    record_candidate(
+        store,
+        job_id,
+        candidate_id="flat",
+        family="noise",
+        summary="no edge",
+        status="proposal_rejected",
+        objective=None,
+        evidence="paired utility estimate not > 0",
+        metadata={"campaign_id": "c1", "gate": {"class": "no_edge"}},
+    )
+    record_candidate(
+        store,
+        job_id,
+        candidate_id="killed",
+        family="mean-revert",
+        summary="killed in probation",
+        status="refuted",
+        objective=None,
+        evidence="paired utility UCB < 0",
+        metadata={
+            "campaign_id": "c1",
+            "forward": {
+                "verdict": "killed",
+                "reason": "paired utility UCB < 0",
+                "paired_days": 7,
+                "overall_estimate": -0.00012,
+                "lcb": -0.0003,
+                "ucb": -0.00001,
+                "candidate_trade_count": 4,
+                "reference_trade_count": 9,
+                "daily_deltas": [0.0, -0.0001],
+            },
+        },
+    )
+
+    context = _freeze_research_context(store, job_id)
+
+    assert [row["family"] for row in context["refuted_families"]] == [
+        "noise",
+        "mean-revert",
+    ]
+    killed = context["refuted_families"][1]
+    assert killed["forward"] == {
+        "verdict": "killed",
+        "paired_days": 7,
+        "overall_estimate": -0.00012,
+        "lcb": -0.0003,
+        "ucb": -0.00001,
+        "candidate_trade_count": 4,
+    }
+    positive = next(
+        row
+        for row in context["validated_positives"]
+        if row["source"] == "gate_edge_risk_ceiling"
+    )
+    assert positive["family"] == "trend-hold" and positive["implied_scale"] == 0.705
+    assert "size <= 0.705x" in positive["evidence"]
+    assert "sized (edge proven, size <= 0.705x)" in _research_context_instruction(
+        context
+    )
+    lessons = {
+        row["candidate_id"]: row
+        for row in evolution_lessons_block(store, job_id)["outcomes"]
+    }
+    assert lessons["sized"]["gate"]["class"] == "risk_ceiling"
+    assert lessons["killed"]["forward"]["candidate_trade_count"] == 4
+    assert lessons["flat"]["gate"]["class"] == "no_edge"
+    state = {
+        "candidates": [
+            {
+                "family": "trend-hold",
+                "status": "proposal_rejected",
+                "gate": {"class": "risk_ceiling"},
+            },
+            {"family": "trend-hold", "status": "low_fidelity_rejected"},
+        ]
+    }
+    assert _same_family_nonwins(state, "trend-hold", 2) is False
+
+
+def test_focus_rank_keeps_incumbent_parameter_slots_out_of_focus() -> None:
+    def candidate(source: str, slot: int) -> dict[str, Any]:
+        return {
+            "parent_source": source,
+            "slot": slot,
+            "attempts": [
+                {
+                    "execution_valid": True,
+                    "outcome": {},
+                    "postmortem": {
+                        "primary_failure": "cost_bleed",
+                        "failure_codes": ["cost_bleed", "fees_erased_edge"],
+                    },
+                }
+            ],
+        }
+
+    assert _focus_rank(candidate("de_novo", 5)) > _focus_rank(candidate("incumbent", 1))
+    assert _focus_rank(candidate("starter_seed", 5)) > _focus_rank(
+        candidate("incumbent", 1)
+    )
+
+
+def test_plateau_selection_rejects_an_isolated_peak_when_neighborhoods_exist() -> None:
+    from types import SimpleNamespace
+
+    runs = [
+        {"trial": 0, "params": {"lookback": 20}, "net_return": 0.10},
+        {"trial": 1, "params": {"lookback": 60}, "net_return": 0.06},
+        {"trial": 2, "params": {"lookback": 63}, "net_return": 0.058},
+        {"trial": 3, "params": {"lookback": 57}, "net_return": 0.062},
+    ]
+    grid = SimpleNamespace(runs=runs, ranked=[runs[0]], rank_by="net_return")
+    selected, plateau = _plateau_select(grid, ["lookback"], "net_return")
+    assert selected["trial"] in {1, 2, 3}
+    assert plateau["selected_by"] == "plateau"
+    assert plateau["isolated_peak_rejected"] is True and plateau["isolated"] is False
+    lonely = SimpleNamespace(runs=runs[:1], ranked=[runs[0]], rank_by="net_return")
+    selected, plateau = _plateau_select(lonely, ["lookback"], "net_return")
+    assert selected["trial"] == 0 and plateau["isolated"] is True
+
+
+def test_tuning_prune_drops_trials_past_the_drawdown_ceiling() -> None:
+    from wayfinder_paths.jobs.execution.simulator import ExecutionGridResult
+
+    rows = [
+        {"trial": 0, "params": {"k": 1}, "net_return": 0.3, "max_drawdown_pct": -0.3},
+        {"trial": 1, "params": {"k": 2}, "net_return": 0.1, "max_drawdown_pct": -0.1},
+        {"trial": 2, "params": {"k": 3}, "net_return": 0.2},
+    ]
+    grid = ExecutionGridResult(
+        grid_id="g",
+        rank_by="net_return",
+        runs=rows,
+        ranked=[rows[0], rows[2], rows[1]],
+        invalid=[],
+    )
+    pruned, dropped = _prune_risky_trials(grid, 0.2)
+    assert dropped == 1
+    assert [row["trial"] for row in pruned.ranked] == [2, 1]
+    assert pruned.invalid[0]["invalid_reason"] == "drawdown_over_tuning_ceiling"
+    assert _prune_risky_trials(grid, 0.5)[1] == 0
+
+
+def _ideation_artifact(store, job_id, *, sources: int = 3) -> None:
+    doc = {
+        "generated_at": "2099-08-25T12:00:00+00:00",
+        "sources_consulted": [
+            {
+                "tool": f"results/research/file{index}.json",
+                "query": "q",
+                "takeaway": "t",
+            }
+            for index in range(sources)
+        ],
+        "hypotheses": [
+            {
+                "title": "Starved idea",
+                "thesis": "needs data",
+                "bucket": "starved",
+                "next_step": "unlock",
+            },
+            {
+                "title": "Fade the shakeout",
+                "thesis": "x",
+                "bucket": "testable",
+                "next_step": "scan",
+            },
+            {
+                "title": "Dead idea",
+                "thesis": "y",
+                "bucket": "refuted",
+                "next_step": "evidence",
+            },
+        ],
+    }
+    path = store.job_dir(job_id) / "research" / "ideation" / "latest.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+
+def test_campaign_freezes_researcher_hypotheses_into_the_pack(tmp_path) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    _ideation_artifact(store, job_id)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]))
+    block = pack["research_ideation"]
+    assert block["valid"] is True
+    # Testable first, so the designer's pointer /research_ideation/hypotheses/0
+    # is the one worth building on.
+    assert [row["bucket"] for row in block["hypotheses"]] == [
+        "testable",
+        "starved",
+        "refuted",
+    ]
+    assert block["hypotheses"][0]["title"] == "Fade the shakeout"
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    assert (
+        manifest["research_ideation"]["hypotheses"][0]["title"] == "Fade the shakeout"
+    )
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert prompt
+    assert prompt["constraints"]["research_ideation"] == ["Fade the shakeout"]
+    assert "Researcher hypotheses from the latest expedition" in prompt["next_action"]
+    assert "[0] Fade the shakeout" in prompt["next_action"]
+    assert "/research_ideation/hypotheses/0/title" in prompt["valid_evidence_pointers"]
+
+
+def test_campaign_flags_an_invalid_researcher_artifact_instead_of_offering_it(
+    tmp_path,
+) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    _ideation_artifact(store, job_id, sources=1)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]))
+    assert pack["research_ideation"]["valid"] is False
+    assert "hypotheses" not in pack["research_ideation"]
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert prompt and prompt["constraints"]["research_ideation"] is None
+    assert "failed its contract (sources_consulted has 1" in prompt["next_action"]
+
+
+def test_attempt_trajectory_row_carries_drawdown_and_stop_share() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import _attempt_trajectory_row
+
+    row = _attempt_trajectory_row(
+        {
+            "attempt": 2,
+            "outcome": {
+                "quick": {"stats": {"net_return": 0.01, "max_drawdown_pct": -0.08}}
+            },
+            "postmortem": {
+                "primary_failure": None,
+                "economics": {
+                    "candidate": {"fills_per_day": 1.5, "fee_pct_of_capital": 0.01}
+                },
+                "exits": {"candidate": {"closes": 4, "stop_share": 0.25}},
+            },
+        }
+    )
+
+    assert row == {
+        "attempt": 2,
+        "primary_failure": None,
+        "net_return": 0.01,
+        "fills_per_day": 1.5,
+        "fee_pct_of_capital": 0.01,
+        "max_drawdown_pct": 0.08,
+        "stop_share": 0.25,
+    }
+    bare = _attempt_trajectory_row({"attempt": 1, "outcome": {}, "postmortem": {}})
+    assert "max_drawdown_pct" not in bare and "stop_share" not in bare
+
+
+def test_screen_slices_prefer_an_earlier_window_from_another_macro_regime() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import _slice_macro_regime
+    from wayfinder_paths.jobs.execution.simulator import PreparedExecutionDataset
+
+    def dataset(closes: list[float]) -> PreparedExecutionDataset:
+        rows = []
+        for index, close in enumerate(closes):
+            stamp = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(hours=index)
+            rows.append(
+                {
+                    "timestamp": stamp.isoformat(),
+                    "symbol": "IMX",
+                    "open": close,
+                    "high": close * 1.001,
+                    "low": close * 0.999,
+                    "close": close,
+                    "volume": 1.0,
+                }
+            )
+        return PreparedExecutionDataset.from_rows(rows, {})
+
+    # A bull leg (10 -> 20 over the first 12k bars), then 18k bars of chop.
+    bull = [10.0 + 10.0 * index / 12_000 for index in range(12_000)]
+    chop = [20.0 + 0.05 * ((index % 7) - 3) for index in range(18_000)]
+    slices = dict(_screen_slices(dataset(bull + chop), bars=10_000))
+    assert _slice_macro_regime(slices["recent"])["label"] == "chop"
+    earlier = slices["earlier"]
+    assert _slice_macro_regime(earlier)["label"] == "bull"
+    assert earlier.bars.timestamps[-1] < slices["recent"].bars.timestamps[0]
+    assert len(earlier.bars.timestamps) == 10_000
+
+    # One regime only: the adjacent window, as before.
+    flat = dict(_screen_slices(dataset([10.0] * 30_000), bars=10_000))
+    assert flat["earlier"].bars.timestamps[-1] == slices["recent"].bars.timestamps[
+        0
+    ] - timedelta(hours=1)
+
+
+def test_campaign_carries_the_feature_store_and_tells_the_designer_to_read_it(
+    tmp_path,
+) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    root = store.job_dir(job_id)
+    bars = _regime_bars()
+    (root / "results/backtest/input_bars.json").write_text(
+        json.dumps({"metadata": {"days": 2}, "bars": bars}), encoding="utf-8"
+    )
+    # The incumbent declares no features; the store still holds the macro
+    # label a candidate may declare.
+    stamps = sorted({row["timestamp"] for row in bars})
+    store_rows = [
+        {"timestamp": stamp, "name": name, "value": value, "symbol": symbol}
+        for stamp in stamps[::60]
+        for symbol in ("SOL", "XRP", "POL", "HYPE")
+        for name, value in (
+            ("macro_regime", 1.0),
+            ("macro_ret_28d", 0.12),
+            ("leader_state", 1.0),
+            ("leader_ret_7d", 0.12),
+            ("leader_ret_28d", 0.30),
+            ("btc_ret_7d", 0.13),
+            ("eth_ret_7d", 0.11),
+        )
+    ]
+    (root / "state").mkdir(exist_ok=True)
+    (root / "state/features.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in store_rows), encoding="utf-8"
+    )
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    manifest = store.read_json(job_id, str(state["manifest"]))
+
+    copied = [f for f in manifest["features"] if f.get("declared") is False]
+    assert copied and copied[0]["path"].endswith("dataset/state/features.jsonl")
+    assert (
+        root
+        / "research/evolution/campaigns"
+        / state["campaign_id"]
+        / "dataset/state/features.jsonl"
+    ).exists()
+    runtime = manifest["regime_context"]["macro"]["runtime_feature"]
+    assert runtime["available"] is True and runtime["codes"] == {
+        "bull": 1,
+        "chop": 0,
+        "bear": -1,
+    }
+    leaders = manifest["regime_context"]["macro"]["leaders"]
+    assert leaders["state"] == "rally" and leaders["ret_7d"]["BTC"] == 0.13
+    assert leaders["ret_28d"]["median"] == 0.30
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert "ctx.view.feature('macro_regime', default=0.0)" in prompt["next_action"]
+    assert "execution_spec.data_contract.features" in prompt["next_action"]
+    assert (
+        "leaders BTC +13%, ETH +11% over 7 days (broad rally)" in prompt["next_action"]
+    )
+    assert "ctx.view.feature('leader_state', default=0.0)" in prompt["next_action"]
+    assert prompt["constraints"]["macro_regime"]["leaders"]["state"] == "rally"
+
+
+def test_bounded_index_clock_candidate_is_rejected_without_charge(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    candidates = _prepare_campaign_candidates(store, job_id, started)
+    structural = next(c for c in candidates if c["mutation_kind"] == "structural")
+    script = store.job_dir(job_id) / structural["bundle"] / "workspace/src/strategy.py"
+    script.write_text(
+        script.read_text(encoding="utf-8") + "\n\ndef _armed_age(ctx):\n"
+        "    state = ctx.strategy_state\n"
+        "    state.setdefault('arm_bar', ctx.bar_index)\n"
+        "    return ctx.bar_index - state['arm_bar']\n",
+        encoding="utf-8",
+    )
+
+    result = evaluate_candidate(store, job_id, structural["candidate_id"])
+
+    assert result["status"] == "prepared"
+    assert "bar_ordinal" in result["submission_rejection"]["error"]
+    assert result["submission_rejection"]["attempt_charged"] is False
+    assert int(result.get("attempt_count") or 0) == 0
+    assert int(campaign_status(store, job_id)["counts"].get("quick_attempts") or 0) == 0
+
+
+def _stuck_clock_free_no_trade_strategy() -> str:
+    # Writes state every bar with the correct primitive but never enters:
+    # a state machine the sequence preview can see moving.
+    return (
+        "\n\ndef decide(ctx):\n"
+        "    ctx.strategy_state['seen'] = ctx.bar_ordinal\n"
+        "    return []\n"
+    )
+
+
+def _windowed_candidate(store, job_id, *, summary: str, extra_source: str):
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="breakout",
+        summary=summary,
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
+    )
+    bundle = store.job_dir(job_id) / candidate["bundle"]
+    job_yaml = yaml.safe_load((bundle / "job.yaml").read_text(encoding="utf-8"))
+    job_yaml["execution_params"]["warmup_bars"] = 20
+    (bundle / "job.yaml").write_text(
+        yaml.safe_dump(job_yaml, sort_keys=False), encoding="utf-8"
+    )
+    script = bundle / "workspace/src/strategy.py"
+    script.write_text(
+        script.read_text(encoding="utf-8") + extra_source, encoding="utf-8"
+    )
+    return candidate
+
+
+def test_no_trade_structural_candidate_carries_sequence_preview_into_work_order(
+    tmp_path,
+) -> None:
+    store, job_id = _evaluatable_job(tmp_path, source_params={"warmup_bars": 20})
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    candidate = _windowed_candidate(
+        store, job_id, summary="silent structural probe", extra_source="\nPROBE = 1\n"
+    )
+
+    result = evaluate_candidate(store, job_id, candidate["candidate_id"])
+
+    assert result["evidence"] == "quick screen produced no closed trades"
+    assert result["sequence_preview"]["status"] == "silent"
+    assert result["sequence_preview"]["bars_replayed"] > 0
+    postmortem = result["postmortem"]
+    assert postmortem["repair_context"]["sequence_preview"]["status"] == "silent"
+    order = build_repair_work_order(postmortem)
+    assert "sequence preview saw no intents" in order["diagnosis"]
+    assert order["admissible_repairs"] == REPAIR_REMEDIES["no_trades"]["admissible"]
+
+
+def test_no_trade_repair_without_preview_progress_skips_the_quick_simulation(
+    tmp_path, monkeypatch
+) -> None:
+    import wayfinder_paths.jobs.evolution_campaign as campaign_module
+
+    store, job_id = _evaluatable_job(tmp_path, source_params={"warmup_bars": 20})
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    candidate = _windowed_candidate(
+        store,
+        job_id,
+        summary="state moves, never enters",
+        extra_source=_stuck_clock_free_no_trade_strategy(),
+    )
+    first = evaluate_candidate(store, job_id, candidate["candidate_id"])
+    assert first["sequence_preview"]["status"] == "armed_no_entry"
+    assert first["sequence_preview"]["state_keys"]["seen"]["changes"] > 1
+
+    # Re-open the candidate as a no-trade repair carrying its first preview,
+    # then resubmit the same state machine: only the 10k screen is
+    # intercepted, the preview replays through its own import.
+    state = campaign_status(store, job_id)
+    row = next(
+        c for c in state["candidates"] if c["candidate_id"] == candidate["candidate_id"]
+    )
+    row["status"] = "repair_pending"
+    row["attempts"] = [
+        {
+            "attempt": 1,
+            "outcome": {"sequence_preview": first["sequence_preview"]},
+            "postmortem": {"failure_codes": ["activity_below_floor", "no_trades"]},
+        }
+    ]
+    campaign_module._save_campaign(store, job_id, state)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("quick simulation must not run")
+
+    monkeypatch.setattr(campaign_module, "simulate_execution", boom)
+    second = evaluate_candidate(store, job_id, candidate["candidate_id"])
+
+    assert second["status"] == "low_fidelity_rejected"
+    assert second["quick_simulation_ran"] is False
+    postmortem = second["postmortem"]
+    assert postmortem["primary_failure"] == "no_progress_preview"
+    assert postmortem["failure_codes"] == ["no_progress_preview", "no_trades"]
+    assert (
+        postmortem["repair_context"]["previous_preview"]["status"] == "armed_no_entry"
+    )
+    assert (
+        "changed nothing the replay can see"
+        in build_repair_work_order(postmortem)["diagnosis"]
+    )
+
+
+def test_leader_attribution_shares_losses_between_rally_and_selloff_days() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import _leader_attribution
+
+    daily = [
+        ("2026-08-01", 0.01),
+        ("2026-08-02", -0.03),
+        ("2026-08-03", -0.01),
+        ("2026-08-04", 0.02),
+        ("2026-08-05", -0.005),
+    ]
+    states = {"2026-08-01": 1, "2026-08-02": 1, "2026-08-03": -1}
+
+    out = _leader_attribution(daily, states)
+
+    assert out["days"] == 5 and out["labelled_days"] == 3
+    assert out["rally"]["days"] == 2 and out["rally"]["day_share"] == 0.4
+    assert abs(out["rally"]["loss_share"] - 0.03 / 0.045) < 1e-3
+    assert abs(out["selloff"]["loss_share"] - 0.01 / 0.045) < 1e-3
+    assert _leader_attribution(daily, {}) is None
+    assert (
+        _leader_attribution([("2026-08-01", 0.01)], states)["rally"]["loss_share"]
+        == 0.0
+    )
+
+
+def test_screen_slices_carry_leader_attribution(tmp_path) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import _apply_screen_verdict
+
+    def curve(returns):
+        stamp = datetime(2026, 8, 1, tzinfo=UTC)
+        equity, rows = 100.0, [{"timestamp": stamp.isoformat(), "equity": 100.0}]
+        for index, value in enumerate(returns, start=1):
+            equity *= 1 + value
+            rows.append(
+                {
+                    "timestamp": (stamp + timedelta(days=index)).isoformat(),
+                    "equity": equity,
+                }
+            )
+        return rows
+
+    # Losses on Aug 2 and Aug 3; Aug 2 is a broad-rally day.
+    result = SimpleNamespace(
+        equity_curve=curve([-0.04, -0.01, 0.02, 0.01]),
+        stats={"net_return": -0.02, "trade_count": 12, "max_drawdown_pct": -0.05},
+    )
+    postmortem = {"failure_codes": [], "primary_failure": None, "viable": True}
+    _apply_screen_verdict(
+        postmortem,
+        {"recent": result},
+        {"slices": {}},
+        attempt_index=1,
+        policy={},
+        manifest={},
+        leader_days={
+            "2026-08-02": 1,
+            "2026-08-03": 0,
+            "2026-08-04": 0,
+            "2026-08-05": 0,
+        },
+    )
+
+    attribution = postmortem["screen"]["slices"]["recent"]["leader_attribution"]
+    assert (
+        attribution["rally"]["days"] == 1 and attribution["rally"]["loss_share"] > 0.75
+    )
+    assert compact_postmortem(postmortem)["screen"]["slices"]["recent"][
+        "leader_attribution"
+    ]
+
+
+def test_feature_path_outside_the_contract_is_rejected_without_charge(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    candidates = _prepare_campaign_candidates(store, job_id, started)
+    structural = next(c for c in candidates if c["mutation_kind"] == "structural")
+    bundle = store.job_dir(job_id) / structural["bundle"]
+    job_data = yaml.safe_load((bundle / "job.yaml").read_text(encoding="utf-8"))
+    spec_data = dict(job_data.get("execution_spec") or {})
+    if not spec_data and (bundle / "execution_spec.json").exists():
+        spec_data = json.loads(
+            (bundle / "execution_spec.json").read_text(encoding="utf-8")
+        )
+    spec_data.setdefault("data_contract", {})["features"] = [
+        {
+            "name": "macro_regime",
+            "source": "file",
+            "path": "../other/state/features.jsonl",
+        }
+    ]
+    if "execution_spec" in job_data:
+        job_data["execution_spec"] = spec_data
+        (bundle / "job.yaml").write_text(yaml.safe_dump(job_data), encoding="utf-8")
+    if (bundle / "execution_spec.json").exists():
+        (bundle / "execution_spec.json").write_text(
+            json.dumps(spec_data), encoding="utf-8"
+        )
+
+    result = evaluate_candidate(store, job_id, structural["candidate_id"])
+
+    assert result["status"] == "prepared"
+    assert "path must be" in result["submission_rejection"]["error"]
+    assert result["submission_rejection"]["attempt_charged"] is False
+    assert int(result.get("attempt_count") or 0) == 0
+
+
+def _declare_bundle_feature(bundle, feature: dict) -> None:
+    job_data = yaml.safe_load((bundle / "job.yaml").read_text(encoding="utf-8"))
+    spec_data = dict(job_data.get("execution_spec") or {})
+    if not spec_data and (bundle / "execution_spec.json").exists():
+        spec_data = json.loads(
+            (bundle / "execution_spec.json").read_text(encoding="utf-8")
+        )
+    spec_data.setdefault("data_contract", {})["features"] = [feature]
+    if "execution_spec" in job_data:
+        job_data["execution_spec"] = spec_data
+        (bundle / "job.yaml").write_text(yaml.safe_dump(job_data), encoding="utf-8")
+    if (bundle / "execution_spec.json").exists():
+        (bundle / "execution_spec.json").write_text(
+            json.dumps(spec_data), encoding="utf-8"
+        )
+
+
+_SIGNAL_STRATEGY = (
+    "\n\ndef decide(ctx):\n"
+    "    state = ctx.strategy_state\n"
+    "    if ctx.ledger.positions:\n"
+    "        if ctx.bars_since(state['opened']) >= 3:\n"
+    "            return [{'action': 'CLOSE', 'venue': 'hyperliquid', 'symbol': 'IMX',"
+    " 'side': 'sell', 'size': 1, 'reduce_only': True,"
+    " 'metadata': {'exit_reason': 'hold_done'}}]\n"
+    "        return []\n"
+    "    if ctx.view.feature('signal', default=0.0) == 1.0 and not state.get('done'):\n"
+    "        state['opened'] = ctx.bar_ordinal\n"
+    "        state['done'] = True\n"
+    "        return [{'action': 'OPEN', 'venue': 'hyperliquid', 'symbol': 'IMX',"
+    " 'side': 'buy', 'size': 1, 'metadata': {'entry_reason': 'signal'}}]\n"
+    "    return []\n"
+)
+
+
+def test_bundle_owned_feature_is_gated_and_reaches_probation_the_same_way(
+    tmp_path,
+) -> None:
+    """Evolution → probation parity for a candidate-owned workspace/ feature:
+    the quick screen trades on the bundle's file (it is gated), validation
+    sees it, and the probation shadow lane fills on the same bar."""
+    import asyncio
+
+    import pandas as pd
+
+    from wayfinder_paths.jobs.candidate_shadow import run_candidate_shadows
+    from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
+    from wayfinder_paths.jobs.execution.validation import validate_execution_job
+    from wayfinder_paths.jobs.gating import compute_workspace_revision
+    from wayfinder_paths.jobs.probation import stage_evolution_probation
+
+    store, job_id = _evaluatable_job(tmp_path, source_params={"warmup_bars": 20})
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    candidate = _windowed_candidate(
+        store, job_id, summary="signal-gated long", extra_source=_SIGNAL_STRATEGY
+    )
+    bundle = store.job_dir(job_id) / candidate["bundle"]
+    bars = _hourly_bars(60)
+    turned = bars[40]["timestamp"]
+    (bundle / "workspace" / "data").mkdir(parents=True, exist_ok=True)
+    (bundle / "workspace" / "data" / "signal.jsonl").write_text(
+        json.dumps(
+            {"timestamp": turned, "name": "signal", "value": 1.0, "symbol": None}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _declare_bundle_feature(
+        bundle,
+        {"name": "signal", "source": "file", "path": "workspace/data/signal.jsonl"},
+    )
+    assert not (store.job_dir(job_id) / "workspace" / "data" / "signal.jsonl").exists()
+
+    validation = validate_execution_job(job_id, candidate_dir=bundle, store=store)
+    available = next(
+        c for c in validation["checks"] if c["name"] == "declared_features_available"
+    )
+    assert available["passed"] is True
+
+    result = evaluate_candidate(store, job_id, candidate["candidate_id"])
+    assert result.get("evidence") != "quick screen produced no closed trades"
+    entry = next(
+        row
+        for row in load_archive(store, job_id)["candidates"]
+        if row["candidate_id"] == candidate["candidate_id"]
+    )
+    assert entry["metadata"]["quick"]["stats"]["trade_count"] >= 1
+    receipt = result["attempt_receipt"]
+    quick_entry = next(t for t in receipt["trades"] if not t.get("reduce_only"))
+
+    stage_evolution_probation(
+        store,
+        job_id,
+        candidate_id=candidate["candidate_id"],
+        candidate_root=bundle,
+        revision=compute_workspace_revision(bundle),
+        source="evolution_campaign",
+        family="signal",
+        evidence={"objective": {"candidate": {"trade_count": 1}}},
+        now=datetime(2026, 7, 31, 23, tzinfo=UTC),
+    )
+    rows = asyncio.run(
+        run_candidate_shadows(
+            store,
+            job_id,
+            view=CompletedBarsView.from_rows(bars),
+            now=pd.Timestamp("2026-08-04T00:00:00Z"),
+        )
+    )
+    shadow_fill = next(
+        row for row in rows if row["role"] == "candidate" and row["fills"] >= 1
+    )
+    assert shadow_fill["bar_timestamp"] == quick_entry["timestamp"]
+
+
+def test_escaping_feature_file_is_rejected_without_charge(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    candidates = _prepare_campaign_candidates(store, job_id, started)
+    structural = next(c for c in candidates if c["mutation_kind"] == "structural")
+    bundle = store.job_dir(job_id) / structural["bundle"]
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(
+        '{"timestamp": "2026-08-01T00:00:00Z", "name": "sig", "value": 1}\n'
+    )
+    (bundle / "workspace" / "data").mkdir(parents=True, exist_ok=True)
+    (bundle / "workspace" / "data" / "link.jsonl").symlink_to(outside)
+    _declare_bundle_feature(
+        bundle, {"name": "sig", "source": "file", "path": "workspace/data/link.jsonl"}
+    )
+
+    result = evaluate_candidate(store, job_id, structural["candidate_id"])
+
+    assert result["status"] == "prepared"
+    assert "escapes its root" in result["submission_rejection"]["error"]
+    assert result["submission_rejection"]["attempt_charged"] is False
+    assert int(result.get("attempt_count") or 0) == 0
+
+
+def test_screen_progress_follows_the_previously_worst_slice_lower_bound() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import _stamp_screen_progress
+    from wayfinder_paths.jobs.evolution_diagnostics import attempt_made_progress
+
+    previous = {
+        "screen": {"slices": {"earlier": {"lcb": -0.10}, "recent": {"lcb": -0.07}}}
+    }
+    noise = {
+        "behavior_diff": {"material_change": True},
+        "progress_from_previous": {"net_return_delta": 0.002},
+        "screen": {"slices": {"earlier": {"lcb": -0.099}, "recent": {"lcb": -0.06}}},
+    }
+    _stamp_screen_progress(noise, previous)
+    assert noise["progress_from_previous"]["screen_lcb_slice"] == "earlier"
+    assert noise["progress_from_previous"]["screen_lcb_delta"] == pytest.approx(0.001)
+    assert (
+        attempt_made_progress(noise) is False
+    )  # a hairline net delta no longer counts
+
+    real = {
+        "behavior_diff": {"material_change": True},
+        "screen": {"slices": {"earlier": {"lcb": -0.05}, "recent": {"lcb": -0.08}}},
+    }
+    _stamp_screen_progress(real, previous)
+    assert real["progress_from_previous"]["screen_lcb_delta"] == pytest.approx(0.05)
+    assert attempt_made_progress(real) is True
+
+    unscreened = {"behavior_diff": {"material_change": True}}
+    _stamp_screen_progress(unscreened, {"screen": {}})
+    assert "progress_from_previous" not in unscreened
+
+
+def test_undeclared_feature_read_is_rejected_without_charge(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path, source_params={"warmup_bars": 20})
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    candidate = _windowed_candidate(
+        store,
+        job_id,
+        summary="reads the regime without declaring it",
+        extra_source=(
+            "\n\ndef decide(ctx):\n"
+            "    if ctx.view.feature('macro_regime', default=0.0) == 1.0:\n"
+            "        return []\n"
+            "    return []\n"
+        ),
+    )
+
+    result = evaluate_candidate(store, job_id, candidate["candidate_id"])
+
+    assert result["status"] == "prepared"
+    assert "macro_regime" in result["submission_rejection"]["error"]
+    assert result["submission_rejection"]["attempt_charged"] is False
+    assert int(result.get("attempt_count") or 0) == 0
+
+
+def test_regime_conditioned_books_get_a_complexity_budget_per_branch(tmp_path) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _complexity_budget,
+        _regime_branches,
+    )
+
+    policy = {"complexity_multiple": 1.5, "complexity_floor_comparisons": 24}
+    assert _complexity_budget(policy, {"comparisons": 32}) == 48
+    assert _complexity_budget(policy, {"comparisons": 32}, regime_branches=2) == 96
+
+    store, job_id = _evaluatable_job(tmp_path, source_params={"warmup_bars": 20})
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    candidate = _windowed_candidate(
+        store,
+        job_id,
+        summary="bear book with a chop book",
+        extra_source=(
+            "\n\ndef decide(ctx):\n"
+            "    if ctx.view.feature('macro_regime', default=0.0) == -1.0:\n"
+            "        return []\n"
+            "    return []\n"
+        ),
+    )
+    bundle = store.job_dir(job_id) / candidate["bundle"]
+    # Reads the column but has not declared it: still one book.
+    assert _regime_branches(store, job_id, bundle) == 1
+    _declare_bundle_feature(bundle, {"name": "macro_regime", "source": "file"})
+    assert _regime_branches(store, job_id, bundle) == 2
+
+
+def test_screen_rejects_a_book_that_does_not_cover_its_costs() -> None:
+    both = {
+        "recent": {"net_return": 0.03, "trade_count": 30, "lcb": 0.004},
+        "earlier": {"net_return": 0.02, "trade_count": 28, "lcb": 0.001},
+    }
+    verdict = _screen_verdict(both, min_trades=12, pooled_lcb=0.003, cost_coverage=0.8)
+    assert verdict["passed"] is False and verdict["code"] == "cost_not_covered"
+    assert verdict["cost_coverage"] == 0.8 and verdict["cost_hurdle"] == 1.5
+    assert verdict["cost_basis"] is None
+    assert (
+        _screen_verdict(
+            both,
+            min_trades=12,
+            pooled_lcb=0.003,
+            cost_coverage=0.8,
+            cost_basis="realized",
+        )["cost_basis"]
+        == "realized"
+    )
+    assert (
+        _screen_verdict(both, min_trades=12, pooled_lcb=0.003, cost_coverage=2.0)[
+            "passed"
+        ]
+        is True
+    )
+    # Unknown coverage (no round-trip cost on the receipt) does not block.
+    assert _screen_verdict(both, min_trades=12, pooled_lcb=0.003)["passed"] is True
+
+
+def test_cost_budget_ceiling_follows_the_cost_budget_not_the_incumbent() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import _cost_budget
+
+    baseline = {
+        "round_trip_cost_bps": 17.0,
+        "economics": {
+            "window_days": 341.0,
+            "fills_per_day": 2.6,
+            "fee_pct_of_capital_30d": 0.018,
+            "turnover_multiple": 411.2,
+            "gross_bps_per_trade": -11.4,
+            "cost_coverage": -0.67,
+        },
+    }
+    budget = _cost_budget(baseline, {}, {"days": 341.0})
+    # 46% of capital per fill at 8.5 bps a side: the 2%/30d budget allows ~1.7
+    # fills/day, not the 7.8 the incumbent multiple gave.
+    assert budget["basis"] == "cost_budget"
+    assert budget["max_fills_per_day"] == pytest.approx(1.7, abs=0.05)
+    assert budget["incumbent_gross_bps_per_trade"] == -11.4
+    assert budget["cost_hurdle_multiple"] == 1.5
+    fallback = _cost_budget({"economics": {"fills_per_day": 2.6}}, {}, None)
+    assert fallback["basis"] == "incumbent_multiple"
+    assert fallback["max_fills_per_day"] == pytest.approx(7.8)
+
+
+def test_validated_signal_selection_tiers_and_decomposes_cost() -> None:
+    def row(**overrides):
+        base = {
+            "symbol": "HYPE",
+            "signal": "new_low_5",
+            "family": "exhaustion",
+            "description": "close makes a 5-bar low",
+            "timeframe": "4h",
+            "horizon": 3,
+            "direction": "long",
+            "t_stat_vs_drift": 2.6,
+            "t_net": 2.2,
+            "edge_net_bps": 18.0,
+            "round_trip_cost_bps": 24.0,
+            "fold_stable": True,
+            "folds_agreeing": 3,
+            "n": 52,
+            "q_value": 0.12,
+            "verdict": "promote",
+        }
+        base.update(overrides)
+        return base
+
+    key = ("HYPE", "new_low_5", "4h", 3)
+    slices = {
+        "recent": {key: {"t_stat_vs_drift": 0.4}},  # flat for the signal: fine
+        "earlier": {key: {"t_stat_vs_drift": 1.1}},
+    }
+    kwargs = {
+        "days": 292.0,
+        "min_events": 40,
+        "max_q": 0.20,
+        "slice_min_t": 1.0,
+        "min_t_net": 2.0,
+        "taker_round_trip_bps": 24.0,
+        "maker_round_trip_bps": 3.0,
+    }
+    validated, replicated, near, funnel = _select_validated_rows(
+        [row()], slices, **kwargs
+    )
+    assert len(validated) == 1 and not replicated and not near
+    entry = validated[0]
+    assert entry["tier"] == "validated" and entry["execution_hint"] == "taker_ok"
+    assert entry["scope"] == "base" and entry["events"] == 52
+    assert entry["gross_edge_bps"] == 42.0 and entry["edge_net_maker_bps"] == 39.0
+    assert funnel["validated"] == 1 and funnel["replicated"] == 0
+    assert funnel["non_inferior"] == 1 and funnel["regime_tests"] == 0
+    # The old per-day density floor would have called 52 events over 292
+    # days sparse; the power floor does not.
+    assert entry["events_per_day"] < 0.3
+    # Under power or against a slice is a near miss, never silence.
+    _, _, near, _ = _select_validated_rows([row(n=25)], slices, **kwargs)
+    assert near[0]["shortfall"] == "underpowered"
+    against = {**slices, "recent": {key: {"t_stat_vs_drift": -1.4}}}
+    _, _, near, _ = _select_validated_rows([row()], against, **kwargs)
+    assert near[0]["shortfall"] == "slice_against"
+    # q and the t_net floor tier the row; they do not hide it.
+    _, replicated, near, _ = _select_validated_rows(
+        [row(q_value=0.35)], slices, **kwargs
+    )
+    assert not near and replicated[0]["tier"] == "replicated"
+    assert replicated[0]["shortfall"] == "q_above_threshold"
+    _, replicated, _, funnel = _select_validated_rows(
+        [row(t_net=1.5)], slices, **kwargs
+    )
+    assert replicated[0]["shortfall"] == "t_net_below_floor"
+    assert funnel["cost_positive"] == 1 and funnel["t_net_at_floor"] == 0
+    # The HYPE 5m seed row as the 2026-09-04 replay measured it: a real
+    # 4.4 bps ten-minute move that no taker book carries, fed with the cost
+    # decomposition instead of dropped.
+    hype = row(
+        symbol="HYPE",
+        signal="rsi14_le_30",
+        timeframe="300s",
+        horizon=2,
+        t_stat_vs_drift=3.28,
+        t_net=-15.10,
+        edge_net_bps=-19.6,
+        n=1811,
+        q_value=0.685,
+        folds_agreeing=4,
+        verdict=None,
+    )
+    hype_key = ("HYPE", "rsi14_le_30", "300s", 2)
+    hype_slices = {
+        "recent": {hype_key: {"t_stat_vs_drift": 0.9}},
+        "earlier": {hype_key: {"t_stat_vs_drift": 1.6}},
+    }
+    _, replicated, near, funnel = _select_validated_rows([hype], hype_slices, **kwargs)
+    assert not near and len(replicated) == 1
+    entry = replicated[0]
+    assert entry["execution_hint"] == "passive_only"
+    assert entry["gross_edge_bps"] == pytest.approx(4.4)
+    assert entry["edge_net_maker_bps"] == pytest.approx(1.4)
+    assert entry["t_net_maker"] == pytest.approx(0.98, abs=0.02)
+    assert funnel["passive_only"] == 1 and funnel["cost_positive"] == 0
+    # A regime-conditioned row gates itself: no slice check, scope recorded.
+    bear = row(regime="macro_regime=bear", regime_source="macro_regime")
+    validated, _, _, funnel = _select_validated_rows(
+        [bear], {"recent": {}, "earlier": {}}, **kwargs
+    )
+    assert validated[0]["scope"] == "regime" and validated[0]["t_stat_by_slice"] == {}
+    assert funnel["regime_tests"] == 1 and funnel["regime_survivors"] == 1
+    # A cell holding every event of its base row says nothing about the
+    # condition: skipped, not offered twice.
+    validated, replicated, _, funnel = _select_validated_rows(
+        [row(), bear], slices, **kwargs
+    )
+    assert len(validated) == 1 and validated[0]["scope"] == "base" and not replicated
+    assert funnel["regime_tests"] == 1 and funnel["regime_survivors"] == 0
+    # The offered list is one row per (symbol, signal, timeframe), strongest
+    # first; the funnel still counts every variant.
+    from wayfinder_paths.jobs.evolution_campaign import _diverse_signal_rows
+
+    variants = [
+        row(horizon=2, t_stat_vs_drift=3.1, q_value=0.9),
+        row(horizon=3, t_stat_vs_drift=3.4, q_value=0.9),
+        row(
+            horizon=3,
+            t_stat_vs_drift=2.9,
+            q_value=0.9,
+            regime="macro_regime=chop",
+            n=30,
+        ),
+    ]
+    _, replicated, _, funnel = _select_validated_rows(variants, slices, **kwargs)
+    assert funnel["replicated"] == 2 and [r["horizon"] for r in replicated] == [3, 2]
+    assert [r["horizon"] for r in _diverse_signal_rows(replicated, 10)] == [3]
+
+
+def test_retire_to_flat_verdict_and_flat_bundle(tmp_path) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        flat_bundle,
+        retire_to_flat_verdict,
+    )
+    from wayfinder_paths.jobs.execution.validation import validate_execution_job
+
+    store, job_id = _evaluatable_job(tmp_path, source_params={"warmup_bars": 20})
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    pack_path = str(state["diagnostic_pack"])
+    pack = store.read_json(job_id, pack_path)
+    # No baseline backtest in this fixture: nothing to retire against.
+    assert retire_to_flat_verdict(store, job_id)["recommended"] is False
+    pack.setdefault("baseline", {})["vs_cash"] = {
+        "net_return": -0.44,
+        "window_days": 341.0,
+        "fee_pct_of_capital": 0.206,
+        "beats_cash": False,
+    }
+    store.write_json(job_id, pack_path, pack)
+    verdict = retire_to_flat_verdict(store, job_id)
+    assert verdict["recommended"] is True and "lost 44.0%" in verdict["reason"]
+    # A candidate still on probation blocks the retirement.
+    state = campaign_status(store, job_id)
+    state["candidates"].append({"candidate_id": "c-live", "status": "probation"})
+    blocked = retire_to_flat_verdict(store, job_id, state=state)
+    assert blocked["recommended"] is False and "in flight" in blocked["reason"]
+    pack["baseline"]["vs_cash"]["beats_cash"] = True
+    store.write_json(job_id, pack_path, pack)
+    assert "beats cash" in retire_to_flat_verdict(store, job_id)["reason"]
+
+    flat = flat_bundle(store, job_id, tmp_path / "flat")
+    report = validate_execution_job(job_id, candidate_dir=flat, store=store)
+    assert all(check["passed"] for check in report["checks"] if check.get("blocking"))
+    assert "return []" in (flat / "workspace" / "src" / "strategy.py").read_text()
+
+
+def test_cost_budget_carries_the_maker_round_trip() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import _cost_budget
+
+    budget = _cost_budget(
+        {
+            "economics": {"fills_per_day": 2.0},
+            "round_trip_cost_bps": 24.0,
+            "maker_round_trip_bps": 3.0,
+        },
+        {},
+    )
+    assert budget["round_trip_cost_bps"] == 24.0
+    assert budget["maker_round_trip_bps"] == 3.0
+
+
+def test_campaign_scan_frames_carry_store_columns_and_condition(tmp_path) -> None:
+    import numpy as np
+
+    from wayfinder_paths.jobs.evolution_campaign import _campaign_scan_frames
+
+    store, job_id = _evaluatable_job(tmp_path)
+    root = store.job_dir(job_id)
+    bars = _hourly_bars(600)
+    for index, row in enumerate(bars):
+        close = (
+            10.0 + 0.8 * float(np.sin(index / 7.0)) + 0.3 * float(np.sin(index / 23.0))
+        )
+        row.update(open=close, high=close * 1.01, low=close * 0.99, close=close)
+    (root / "results/backtest/input_bars.json").write_text(
+        json.dumps({"metadata": {"days": 25}, "bars": bars}), encoding="utf-8"
+    )
+    stamps = [row["timestamp"] for row in bars]
+    half = stamps[len(stamps) // 2]
+    rows = [
+        {
+            "timestamp": stamp,
+            "name": "macro_regime",
+            "value": -1.0 if stamp < half else 1.0,
+        }
+        for stamp in stamps[::24]
+    ]
+    rows.append({"timestamp": stamps[0], "name": "leader_state", "value": 0.0})
+    (root / "state").mkdir(exist_ok=True)
+    (root / "state/features.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
+    improver_path = root / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"]["signal_first_seeding"] = True
+    improver["evolution"]["investigation_design_enabled"] = True
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    state = start_campaign(store, job_id, now=datetime(2099, 8, 25, 12, tzinfo=UTC))
+    campaign_root = (root / str(state["manifest"])).parent
+    frames = _campaign_scan_frames(store, job_id, campaign_root, policy={})
+    assert set(frames["train"]) == {"IMX"}
+    assert {"macro_regime", "leader_state"} <= set(frames["feature_columns"])
+    assert set(frames["condition_features"]) == {"macro_regime", "leader_state"}
+    assert frames["condition_features"]["macro_regime"] == {
+        1.0: "bull",
+        0.0: "chop",
+        -1.0: "bear",
+    }
+    imx = frames["train"]["IMX"]
+    assert {"macro_regime", "leader_state"} <= set(imx.columns)
+    assert sorted(imx["macro_regime"].dropna().unique()) == [-1.0, 1.0]
+    assert frames["timeframes"] == ["3600s", "4h"]
+    assert frames["maker_round_trip_bps"] == 3.0
+    assert "recent" in frames["slices"] and set(frames["slices"]["recent"]) == {"IMX"}
+    # The start-time scan ran on the same frames, conditioned on both store
+    # labels, and recorded the cost decomposition inputs beside the tiers.
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]))
+    block = pack["validated_signals"]
+    assert block["available"] is True, block
+    assert block["condition_features"] == ["leader_state", "macro_regime"]
+    assert block["maker_round_trip_bps"] == 3.0
+    assert block["funnel"]["regime_tests"] > 0
+    assert block["funnel"]["population_tests"] > 0
+    # Slow horizons reach the scan on the hour frame; the panel is one
+    # symbol, so the cross-sectional side reports why it stood down.
+    assert frames["scan_kwargs"]["required_horizons"] == {
+        "1h": [72, 168],
+        "4h": [42, 84],
+    }
+    assert block["horizons_required"] == {"1h": [72, 168], "4h": [42, 84]}
+    assert block["cross_sectional"]["available"] is False
+    assert "at least 4 symbols" in block["cross_sectional"]["reason"]
+    assert "replicated" in block
+    composed = [
+        row
+        for row in [*block["signals"], *block["replicated"]]
+        if row.get("library") == "population"
+    ]
+    for row in composed:
+        assert (
+            row["expression"]
+            and row["min_bars"]
+            and "compile_signal_expression" in (row["how_to_use"])
+        )
+
+
+def _composable_job(tmp_path) -> tuple[JobStore, str]:
+    """An evaluatable job whose bars carry a planted 3-bar-low bounce (the
+    population test's cycle), store labels, and composition rounds."""
+    store, job_id = _evaluatable_job(tmp_path)
+    root = store.job_dir(job_id)
+    cycle = [
+        100.0,
+        102.0,
+        104.0,
+        103.0,
+        101.5,
+        104.0,
+        104.0,
+        104.0,
+        104.0,
+        104.0,
+        99.0,
+        99.0,
+    ]
+    bars = _hourly_bars(600)
+    for index, row in enumerate(bars):
+        close = cycle[index % 12]
+        row.update(open=close, high=close * 1.01, low=close * 0.99, close=close)
+    (root / "results/backtest/input_bars.json").write_text(
+        json.dumps({"metadata": {"days": 25}, "bars": bars}), encoding="utf-8"
+    )
+    stamps = [row["timestamp"] for row in bars]
+    half = stamps[len(stamps) // 2]
+    rows = [
+        {
+            "timestamp": stamp,
+            "name": "macro_regime",
+            "value": -1.0 if stamp < half else 1.0,
+        }
+        for stamp in stamps[::24]
+    ]
+    rows.append({"timestamp": stamps[0], "name": "leader_state", "value": 0.0})
+    (root / "state").mkdir(exist_ok=True)
+    (root / "state/features.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
+    improver_path = root / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"].update(
+        {
+            "signal_first_seeding": True,
+            "investigation_design_enabled": True,
+            "signal_composition_rounds": 2,
+        }
+    )
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    return store, job_id
+
+
+def test_compose_stage_scans_proposals_and_feeds_the_design(tmp_path) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _active_campaign,
+        _cited_signals,
+        _file_hash,
+        submit_signal_proposals,
+    )
+
+    store, job_id = _composable_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    assert state["stage"] == "compose"
+    assert state["composition"] == {
+        "rounds_max": 2,
+        "rounds_used": 0,
+        "history": [],
+        "problems": None,
+        "names": {},
+    }
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert prompt and prompt["session_stage"] == "compose"
+    assert prompt["artifact_key"] == "compose-01"
+    assert prompt["agent_name"] == "wayfinder-evolution-designer"
+    assert "evolution_compose" in prompt["next_action"]
+    assert (
+        "macro_regime" in prompt["next_action"]
+        and "rsi_extreme" in prompt["next_action"]
+    )
+    assert "Funnel so far" in prompt["next_action"]
+    assert prompt["constraints"]["composition"]["round"] == 1
+    assert prompt["constraints"]["composition"]["cap"] == 12
+    # No candidate before the design stage.
+    with pytest.raises(ValueError):
+        prepare_candidate(store, job_id, family="f", summary="s", now=started)
+    # A non-causal proposal is rejected with the problem quoted back; the
+    # round is not consumed.
+    rejected = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_peek",
+                "family": "test",
+                "description": "peeks at the next bar",
+                "min_bars": 3,
+                "expression": "close(f) > close(f).shift(-1)",
+            }
+        ],
+    )
+    assert rejected["status"] == "rejected" and rejected["round"] == 1
+    assert any("non-causal" in problem for problem in rejected["problems"])
+    state = _active_campaign(store, job_id)
+    assert state["stage"] == "compose" and state["composition"]["rounds_used"] == 0
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=2))
+    assert "the round was not consumed" in prompt["next_action"]
+    assert "ws_peek" in prompt["next_action"]
+    bad = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {"name": "new_low_5", "expression": "close(f) > 0", "min_bars": 2},
+            {"name": "Bad-Name", "expression": "close(f) > 0", "min_bars": 2},
+            {"name": "ws_broken", "expression": "close(f) >", "min_bars": 2},
+        ],
+    )
+    assert bad["status"] == "rejected" and len(bad["problems"]) == 3
+    # Real proposals: the planted 3-bar-low bounce survives as validated.
+    report = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_dip_3",
+                "family": "breakout",
+                "description": "close below the prior 3 closes",
+                "min_bars": 5,
+                "expression": "new_extreme(f, 3, -1)",
+            },
+            {
+                "name": "ws_dip_3_bear",
+                "family": "breakout",
+                "description": "the same dip while the macro label is bear",
+                "min_bars": 5,
+                "expression": "new_extreme(f, 3, -1) & (f['macro_regime'] == -1.0)",
+            },
+            {
+                "name": "ws_dip_3_twin",
+                "family": "breakout",
+                "description": "the same events again",
+                "min_bars": 5,
+                "expression": "new_extreme(f, 3, -1) & (close(f) > 0)",
+            },
+        ],
+    )
+    assert report["status"] == "scanned" and report["round"] == 1
+    assert report["stage"] == "compose" and report["rounds_max"] == 2
+    by_name = {row["name"]: row for row in report["proposals"]}
+    assert by_name["ws_dip_3"]["tier"] == "validated"
+    assert by_name["ws_dip_3"]["best"]["t_stat"] > 5
+    assert by_name["ws_dip_3"]["best"]["gross_edge_bps"] > 100
+    assert by_name["ws_dip_3"]["best"]["execution_hint"] == "taker_ok"
+    assert by_name["ws_dip_3_bear"]["tests"] > 0
+    survivor = next(row for row in report["survivors"] if row["name"] == "ws_dip_3")
+    assert survivor["tier"] == "validated"
+    assert survivor["pointer"].startswith("/validated_signals/signals/")
+    # Two survivors in one tier get their own pointers, each resolving to
+    # its own row.
+    twin = next(row for row in report["survivors"] if row["name"] == "ws_dip_3_twin")
+    assert twin["tier"] == "validated" and twin["pointer"] != survivor["pointer"]
+    state = _active_campaign(store, job_id)
+    assert state["composition"]["rounds_used"] == 1
+    assert "ws_dip_3" in state["composition"]["history"][0]["survivors"]
+    assert state["composition"]["history"][0]["family_size"] == report["family_size"]
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]))
+    for row in (survivor, twin):
+        index = int(row["pointer"].rsplit("/", 1)[-1])
+        assert pack["validated_signals"]["signals"][index]["signal"] == row["name"]
+    first = pack["validated_signals"]["signals"][0]
+    assert first["signal"] == "ws_dip_3" and first["source"] == "compose:round1"
+    assert first["expression"] == "new_extreme(f, 3, -1)"
+    assert first["library"] == "workspace" and first["min_bars"] == 5
+    assert "compile_signal_expression" in first["how_to_use"]
+    assert pack["validated_signals"]["composition"]["survivors"] >= 1
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    assert manifest["diagnostic_pack"]["sha256"] == _file_hash(
+        store.job_dir(job_id) / str(state["diagnostic_pack"])
+    )
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=3))
+    assert prompt["artifact_key"] == "compose-02"
+    assert "Round 1: 3 proposals scanned" in prompt["next_action"]
+    assert "ws_dip_3: validated" in prompt["next_action"]
+    # An empty list ends composition; the design stage offers the survivor
+    # and a citation resolves it with its source and expression.
+    ended = submit_signal_proposals(store, job_id, signal_proposals=[])
+    assert ended == {"status": "ended", "round": 2, "stage": "design"}
+    with pytest.raises(ValueError, match="not in the compose stage"):
+        submit_signal_proposals(store, job_id, signal_proposals=[])
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=4))
+    assert prompt["session_stage"] == "design"
+    assert "ws_dip_3 long IMX" in prompt["next_action"]
+    cited = _cited_signals(store, job_id, manifest, ["/validated_signals/signals/0"])
+    assert cited[0]["signal"] == "ws_dip_3" and cited[0]["source"] == "compose:round1"
+    assert cited[0]["expression"] == "new_extreme(f, 3, -1)"
+
+
+def test_compose_stage_is_skipped_without_a_scan_and_finalizes_past_deadline(
+    tmp_path,
+) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    # The fixture freezes no bars: nothing to compose on, straight to design.
+    assert state["stage"] == "design"
+    assert state["composition"]["rounds_max"] == 2
+
+    store2, job2 = _composable_job(tmp_path / "second")
+    state = start_campaign(store2, job2, now=started)
+    assert state["stage"] == "compose"
+    late = campaign_prompt_block(store2, job2, now=started + timedelta(days=30))
+    assert late and late["session_stage"] == "finalize" and late["stage"] == "compose"
+
+
+_MECHANISM_BLOCK = [
+    (100.0, 100.5, 99.5, 100.0),
+    (100.0, 100.5, 99.5, 100.0),
+    (100.0, 100.5, 99.5, 100.0),
+    (100.0, 100.5, 99.5, 100.0),
+    (100.0, 100.5, 99.5, 100.0),
+    (99.6, 99.7, 98.4, 98.8),
+    (98.7, 98.9, 96.0, 97.4),
+    (97.6, 100.0, 97.5, 99.8),
+    (99.9, 101.6, 99.8, 101.2),
+    (101.0, 101.2, 100.2, 100.4),
+    (100.3, 100.6, 99.8, 100.4),
+    (100.0, 100.5, 99.5, 100.2),
+]
+
+
+def _mechanism_job(tmp_path) -> tuple[JobStore, str]:
+    """Bars with a dip-and-rebound after a run of five flat closes: a resting
+    bid below the close fills on the dip and a passive target fills on the
+    rebound (the shape the HYPE maker starter was found in)."""
+    store, job_id = _evaluatable_job(tmp_path)
+    root = store.job_dir(job_id)
+    bars = _hourly_bars(1200)
+    for index, row in enumerate(bars):
+        open_, high, low, close = _MECHANISM_BLOCK[index % 12]
+        row.update(open=open_, high=high, low=low, close=close)
+    (root / "results/backtest/input_bars.json").write_text(
+        json.dumps({"metadata": {"days": 50}, "bars": bars}), encoding="utf-8"
+    )
+    improver_path = root / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"].update(
+        {
+            "signal_first_seeding": True,
+            "investigation_design_enabled": True,
+            "signal_composition_rounds": 1,
+            "generated_programs": 4,
+            "wildcard_slots": 1,
+        }
+    )
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    return store, job_id
+
+
+def test_mechanism_grid_sweeps_a_signal_and_the_chosen_row_reaches_the_candidate(
+    tmp_path,
+) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _active_campaign,
+        _cited_mechanisms,
+        _file_hash,
+        mechanism_grid,
+        submit_signal_proposals,
+    )
+
+    store, job_id = _mechanism_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    assert state["stage"] == "compose"
+    # The signal: the fifth flat close after a non-flat one (the block's
+    # signal bar). It replicates on some horizon and enters the pack.
+    report = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_spring",
+                "family": "mean_reversion",
+                "description": "five flat closes",
+                "min_bars": 8,
+                "expression": (
+                    "(close(f) == 100.0) & (close(f).shift(1) == 100.0) & "
+                    "(close(f).shift(2) == 100.0) & (close(f).shift(3) == 100.0) & "
+                    "(close(f).shift(4) == 100.0) & (close(f).shift(5) != 100.0)"
+                ),
+            }
+        ],
+    )
+    assert report["status"] == "scanned" and report["survivors"]
+    pointer = report["survivors"][0]["pointer"]
+    assert state["composition"]["rounds_max"] == 1
+    state = _active_campaign(store, job_id)
+    assert state["stage"] == "design"
+    with pytest.raises(ValueError, match="does not resolve"):
+        mechanism_grid(store, job_id, signal_ref="/validated_signals/signals/99")
+    with pytest.raises(ValueError, match="signal_ref must point"):
+        mechanism_grid(store, job_id, signal_ref="/baseline/reason")
+    record = mechanism_grid(store, job_id, signal_ref=pointer, side="long")
+    assert record["pointer"] == "/mechanism_grids/0" and record["cached"] is False
+    assert record["evaluated"] == 1875 and record["viable"] > 0
+    assert record["side"] == "long" and record["signal"] == "ws_spring"
+    assert record["costs"]["maker_fee_bps"] == 1.5
+    best = record["top"][0]
+    assert best["score"] > 0 and best["train"]["win_rate"] == 1.0
+    assert (best["entry_offset_atr"], best["stop_atr"]) != (0.5, 2.0)
+    assert not any(
+        (row["entry_offset_atr"], row["stop_atr"]) == (0.5, 2.0)
+        for row in record["top"]
+    )
+    # Persisted with its provenance; the manifest hash follows the pack.
+    state = _active_campaign(store, job_id)
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]))
+    assert pack["mechanism_grids"][0]["signal_ref"] == pointer
+    assert pack["mechanism_grids"][0]["top"][0] == best
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    assert manifest["diagnostic_pack"]["sha256"] == _file_hash(
+        store.job_dir(job_id) / str(state["diagnostic_pack"])
+    )
+    again = mechanism_grid(store, job_id, signal_ref=pointer, side="long")
+    assert again["cached"] is True and again["pointer"] == "/mechanism_grids/0"
+    assert (
+        len(store.read_json(job_id, str(state["diagnostic_pack"]))["mechanism_grids"])
+        == 1
+    )
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=5))
+    assert prompt["session_stage"] == "design"
+    assert (
+        "Existing grids: /mechanism_grids/0 ws_spring long IMX" in prompt["next_action"]
+    )
+    assert "/mechanism_grids/0/top/0" in prompt["next_action"]
+    # A design citing the row hands the exact mechanism to the worker.
+    hypotheses = [
+        {
+            "id": f"h{index}",
+            "family": f"spring-{index}",
+            "causal_mechanism": "rest a bid below the run of flat closes",
+            "falsifier": "the dip does not fill or the rebound does not reach",
+            "evidence_refs": [pointer, "/mechanism_grids/0/top/0"],
+        }
+        for index in range(1, 4)
+    ]
+    slots = [
+        {
+            "slot_id": "s01",
+            "wildcard": False,
+            "hypothesis_id": "h1",
+            "parent_source": "de_novo",
+            "mutation_kind": "structural",
+            "family": "spring-1",
+            "summary": "resting bid, passive target",
+        },
+        {
+            "slot_id": "s02",
+            "wildcard": False,
+            "hypothesis_id": "h2",
+            "parent_source": "starter_seed",
+            "mutation_kind": "structural",
+            "family": "spring-2",
+            "summary": "starter variant",
+        },
+        {
+            "slot_id": "s03",
+            "wildcard": False,
+            "hypothesis_id": "h3",
+            "parent_source": "de_novo",
+            "mutation_kind": "structural",
+            "family": "spring-3",
+            "summary": "wider stop",
+        },
+        {
+            "slot_id": "s04",
+            "wildcard": True,
+            "hypothesis_id": None,
+            "parent_source": "de_novo",
+            "mutation_kind": "structural",
+            "family": "wild",
+            "summary": "free",
+        },
+    ]
+    submit_campaign_design(
+        store, job_id, campaign_design={"hypotheses": hypotheses, "slots": slots}
+    )
+    cited = _cited_mechanisms(store, job_id, manifest, ["/mechanism_grids/0/top/0"])
+    assert cited[0]["pointer"] == "/mechanism_grids/0/top/0"
+    assert cited[0]["signal_ref"] == pointer and cited[0]["side"] == "long"
+    assert cited[0]["hold_bars"] == best["hold_bars"]
+    candidate = prepare_candidate(
+        store, job_id, family="spring-1", summary="resting bid", now=started
+    )
+    assert (
+        candidate["mechanism_refs"][0]["entry_offset_atr"] == best["entry_offset_atr"]
+    )
+    assert candidate["mechanism_refs"][0]["stop_atr"] == best["stop_atr"]
+    assert candidate["signal_refs"][0]["signal"] == "ws_spring"
+
+
+def test_screen_slices_size_by_days_from_the_bar_interval() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import _screen_slices
+    from wayfinder_paths.jobs.execution.simulator import PreparedExecutionDataset
+
+    def dataset(count: int, *, seconds: int) -> PreparedExecutionDataset:
+        started = datetime(2026, 1, 1, tzinfo=UTC)
+        rows = [
+            {
+                "timestamp": (started + timedelta(seconds=seconds * index)).isoformat(),
+                "symbol": "IMX",
+                "open": 10.0,
+                "high": 10.1,
+                "low": 9.9,
+                "close": 10.0 + 0.001 * (index % 7),
+                "volume": 1.0,
+            }
+            for index in range(count)
+        ]
+        return PreparedExecutionDataset.from_rows(
+            rows, {"days": count * seconds / 86_400}
+        )
+
+    five_minute = _screen_slices(dataset(30_000, seconds=300), days=35)
+    assert [label for label, _ in five_minute] == ["recent", "earlier"]
+    assert len(five_minute[0][1].bars.timestamps) == 10_080
+    four_hour = _screen_slices(dataset(3_000, seconds=14_400), days=35)
+    assert [label for label, _ in four_hour] == ["recent", "earlier"]
+    assert len(four_hour[0][1].bars.timestamps) == 210
+    assert len(four_hour[1][1].bars.timestamps) == 210
+    # Without days the historical bar count rules: one 10,000-bar window.
+    assert [label for label, _ in _screen_slices(dataset(3_000, seconds=14_400))] == [
+        "recent"
+    ]
+
+
+def test_cross_sectional_block_ranks_a_persistent_momentum_panel() -> None:
+    import numpy as np
+
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _cross_sectional_block,
+        _cross_sectional_instruction,
+    )
+
+    # Five symbols with distinct constant drifts: trailing strength orders
+    # forward returns, so ret_7d carries rank IC; a leader frame joins the
+    # panel by name.
+    started = pd.Timestamp("2026-01-01", tz="UTC")
+    stamps = pd.date_range(started, periods=1_500, freq="1h")
+    rng = np.random.default_rng(3)
+    frames: dict[str, pd.DataFrame] = {}
+    drifts = [-0.0006, -0.0003, 0.0, 0.0003, 0.0006]
+    for index, drift in enumerate(drifts):
+        close = 100.0 * np.exp(np.cumsum(drift + rng.normal(0, 0.003, len(stamps))))
+        frames[f"S{index}"] = pd.DataFrame(
+            {
+                "timestamp": stamps,
+                "symbol": f"S{index}",
+                "open": close,
+                "high": close * 1.001,
+                "low": close * 0.999,
+                "close": close,
+                "volume": 1.0,
+            }
+        )
+    leader = pd.DataFrame(
+        {
+            "BTC": 50_000.0
+            * np.exp(np.cumsum(0.0009 + rng.normal(0, 0.0004, len(stamps))))
+        },
+        index=stamps,
+    )
+    block = _cross_sectional_block(frames, bar_seconds=3600, leaders=leader)
+    assert block["available"] is True and block["timeframe"] == "3600s"
+    assert block["symbols"] == ["BTC", "S0", "S1", "S2", "S3", "S4"]
+    assert block["leaders"] == ["BTC"] and block["horizons"] == [24, 168]
+    by_column = {column["column"]: column for column in block["columns"]}
+    assert set(by_column) == {"ret_7d", "rsi14", "dist_sma20"}
+    assert by_column["ret_7d"]["has_edge"] is True
+    assert all(row["mean_ic"] > 0.3 for row in by_column["ret_7d"]["horizons"])
+    assert any(
+        row["t_stat"] > 2 and row["edge"] for row in by_column["ret_7d"]["horizons"]
+    )
+    text = _cross_sectional_instruction(block)
+    assert "ret_7d (rank IC" in text and "rotation slot" in text
+    assert "/validated_signals/cross_sectional/columns/0" in text
+    assert _cross_sectional_instruction({"available": False}) == ""
+    # A three-symbol panel cannot be ranked.
+    small = {name: frames[name] for name in ("S0", "S1", "S2")}
+    assert _cross_sectional_block(small, bar_seconds=3600)["available"] is False
+
+
+def test_compose_and_grid_yield_to_the_compute_budget_and_stale_state(
+    tmp_path, monkeypatch
+) -> None:
+    from contextlib import contextmanager
+
+    from wayfinder_paths.jobs import evolution_campaign as campaign_module
+    from wayfinder_paths.jobs.compute_lock import ComputeLockBusy
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _active_campaign,
+        _save_campaign,
+        mechanism_grid,
+        submit_signal_proposals,
+    )
+
+    store, job_id = _composable_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    proposal = {
+        "name": "ws_dip_3",
+        "family": "breakout",
+        "description": "close below the prior 3 closes",
+        "min_bars": 5,
+        "expression": "new_extreme(f, 3, -1)",
+    }
+    labels: list[str] = []
+
+    @contextmanager
+    def busy(store_, job_id_, *, label, **kwargs):
+        labels.append(label)
+        raise ComputeLockBusy("evolution routine compute duty exhausted")
+        yield
+
+    monkeypatch.setattr(campaign_module, "experiment_compute_lock", busy)
+    result = submit_signal_proposals(store, job_id, signal_proposals=[proposal])
+    assert result["status"] == "busy" and "duty exhausted" in result["reason"]
+    assert labels == [f"evolution-compose:{job_id}"]
+    state = _active_campaign(store, job_id)
+    assert state["stage"] == "compose" and state["composition"]["rounds_used"] == 0
+    # Malformed lists are still refused before any compute is claimed.
+    labels.clear()
+    bad = submit_signal_proposals(
+        store, job_id, signal_proposals=[{"name": "Bad-Name", "expression": "1"}]
+    )
+    assert bad["status"] == "rejected" and labels == []
+
+    @contextmanager
+    def pass_through(store_, job_id_, *, label, **kwargs):
+        labels.append(label)
+        yield {"used_seconds": 0.0}
+
+    monkeypatch.setattr(campaign_module, "experiment_compute_lock", pass_through)
+    scanned = submit_signal_proposals(store, job_id, signal_proposals=[proposal])
+    assert scanned["status"] == "scanned" and scanned["survivors"]
+    assert labels == [f"evolution-compose:{job_id}"]
+    pointer = scanned["survivors"][0]["pointer"]
+    # The grid runs under the same lock and yields the same way.
+    labels.clear()
+    monkeypatch.setattr(campaign_module, "experiment_compute_lock", busy)
+    grid = mechanism_grid(store, job_id, signal_ref=pointer, side="long")
+    assert grid["status"] == "busy" and labels == [f"evolution-mechanism-grid:{job_id}"]
+    assert "mechanism_grids" not in store.read_json(
+        job_id, str(state["diagnostic_pack"])
+    )
+    # A round whose scan outlived a state change is not committed.
+    monkeypatch.setattr(campaign_module, "experiment_compute_lock", pass_through)
+    original = campaign_module._scan_signal_proposals
+
+    def bump_then_scan(*args, **kwargs):
+        current = _active_campaign(store, job_id)
+        current["composition"]["rounds_used"] += 1
+        _save_campaign(store, job_id, current)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(campaign_module, "_scan_signal_proposals", bump_then_scan)
+    stale = submit_signal_proposals(
+        store, job_id, signal_proposals=[{**proposal, "name": "ws_dip_3_late"}]
+    )
+    assert stale["status"] == "stale"
+    state = _active_campaign(store, job_id)
+    assert not any(
+        "ws_dip_3_late" in (item.get("survivors") or [])
+        for item in state["composition"]["history"]
+    )
+
+
+def test_candidate_and_reference_screen_windows_match_on_a_slow_lane(tmp_path) -> None:
+    """The candidate's recent screen and the reference it is paired against
+    are the same policy-sized slice: on a 4-hour lane with 1,000 bars both
+    see the 210-bar (35-day) window, not a 10,000-bar tail for one and 210
+    bars for the other."""
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _candidate_reference_receipt,
+        _latest_attempt_receipt,
+        campaign_status,
+        evaluate_candidate,
+    )
+
+    store, job_id = _evaluatable_job(tmp_path)
+    root = store.job_dir(job_id)
+    job_yaml = yaml.safe_load((root / "job.yaml").read_text(encoding="utf-8"))
+    job_yaml["execution_spec"]["data_contract"]["bar_interval"] = "4h"
+    (root / "job.yaml").write_text(yaml.safe_dump(job_yaml), encoding="utf-8")
+    bars = []
+    for index in range(1_000):
+        price = 10.0 + 0.01 * (index % 13)
+        stamp = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(hours=4 * index)
+        bars.append(
+            {
+                "timestamp": stamp.isoformat(),
+                "symbol": "IMX",
+                "open": price,
+                "high": price * 1.01,
+                "low": price * 0.99,
+                "close": price,
+                "volume": 100.0,
+            }
+        )
+    (root / "results/backtest/input_bars.json").write_text(
+        json.dumps({"metadata": {"days": 167}, "bars": bars}), encoding="utf-8"
+    )
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    candidate = prepare_candidate(
+        store, job_id, family="flat", summary="window parity", now=started
+    )
+    bundle = root / candidate["bundle"]
+    script = bundle / "workspace/src/strategy.py"
+    script.write_text(script.read_text(encoding="utf-8") + "\n# window parity\n")
+    evaluate_candidate(store, job_id, candidate["candidate_id"])
+    state = campaign_status(store, job_id)
+    stored = next(
+        item
+        for item in state["candidates"]
+        if item["candidate_id"] == candidate["candidate_id"]
+    )
+    receipt = _latest_attempt_receipt(store, job_id, stored) or stored.get(
+        "attempt_receipt"
+    )
+    assert receipt is not None, stored
+    reference = _candidate_reference_receipt(
+        store, job_id, stored, campaign_id=str(state["campaign_id"])
+    )
+    assert receipt["window"]["bars"] == 210
+    assert reference["window"]["bars"] == 210
+
+
+def test_compose_merge_keeps_the_pack_inside_its_budget(tmp_path) -> None:
+    """Sixty survivors across both tiers with fat recipes (loop 0,
+    2026-09-04) must not push the pack into its fail-closed shape: the
+    strongest row per signal and timeframe is merged up to the limit, the
+    fitter trims what the budget cannot hold, and every pointer the round
+    reports resolves to that survivor in the persisted pack while the rest
+    are reported as not merged."""
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _active_campaign,
+        _cited_signals,
+        _merge_compose_survivors,
+    )
+    from wayfinder_paths.jobs.evolution_diagnostics import (
+        DIAGNOSTIC_PACK_MAX_BYTES,
+        pack_bytes,
+    )
+
+    store, job_id = _composable_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    before = store.read_json(job_id, str(state["diagnostic_pack"]))
+    assert "pack_truncated" not in before
+    survivors = []
+    for index in range(60):
+        survivors.append(
+            {
+                "symbol": "IMX",
+                "signal": f"ws_{index % 30}",
+                "timeframe": "3600s" if index % 2 else "4h",
+                "horizon": 1 + index % 5,
+                "direction": "long",
+                "tier": "validated" if index % 3 else "replicated",
+                "t_stat": 3.0 + index / 100.0,
+                "t_net": 2.5,
+                "q_value": 0.01,
+                "events": 80,
+                "gross_edge_bps": 40.0,
+                "execution_hint": "taker_ok",
+                "library": "workspace",
+                "expression": "new_extreme(f, 3, -1)",
+                "min_bars": 5,
+                "how_to_use": "x" * 1_500,
+            }
+        )
+    pointers = _merge_compose_survivors(
+        store, job_id, state, manifest, survivors, 1, limit=10
+    )
+    merged = [pointer for pointer in pointers if pointer is not None]
+    assert 0 < len(merged) < 20 and len(merged) == len(set(merged))
+    after = store.read_json(job_id, str(state["diagnostic_pack"]))
+    assert "pack_truncated" not in after
+    # The budget is on the file as written, not on compact JSON.
+    pack_path = store.job_dir(job_id) / str(state["diagnostic_pack"])
+    assert pack_path.stat().st_size <= DIAGNOSTIC_PACK_MAX_BYTES
+    assert pack_bytes(after) == pack_path.stat().st_size
+    block = after["validated_signals"]
+    assert block["trimmed"]["reason"] == "diagnostic_pack_byte_budget"
+    # Every reported pointer resolves to that survivor; every survivor the
+    # budget trimmed is reported as not merged, never pointed at.
+    for survivor, pointer in zip(survivors, pointers, strict=True):
+        if pointer is None:
+            continue
+        tier, index = pointer.rsplit("/", 2)[-2:]
+        row = block[tier][int(index)]
+        assert row["signal"] == survivor["signal"]
+        assert row["signal_id"] == survivor["signal_id"]
+        assert row["horizon"] == survivor["horizon"]
+    assert block["composition"] == {
+        "rounds": 1,
+        "survivors": len(merged),
+        "scanned_survivors": 60,
+    }
+    cited = _cited_signals(store, job_id, manifest, [merged[0]])
+    tier, index = merged[0].rsplit("/", 2)[-2:]
+    assert cited[0]["signal_id"] == block[tier][int(index)]["signal_id"]
+    assert cited[0]["taker_round_trip_bps"] == block["taker_round_trip_bps"]
+    assert _active_campaign(store, job_id)["stage"] == "compose"
+
+
+def test_compose_merge_failure_is_a_rejection_that_keeps_the_round(
+    tmp_path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs import evolution_campaign as campaign_module
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _active_campaign,
+        submit_signal_proposals,
+    )
+
+    store, job_id = _composable_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    before = store.read_json(job_id, str(state["diagnostic_pack"]))
+    monkeypatch.setattr(
+        campaign_module,
+        "fit_diagnostic_pack",
+        lambda pack: {**pack, "pack_truncated": True},
+    )
+    result = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_dip_3",
+                "family": "breakout",
+                "description": "3-bar low",
+                "min_bars": 5,
+                "expression": "new_extreme(f, 3, -1)",
+            }
+        ],
+    )
+    assert result["status"] == "rejected"
+    assert "past its byte budget" in result["problems"][0]
+    assert result["proposals"] and result["stage"] == "compose"
+    state = _active_campaign(store, job_id)
+    assert state["stage"] == "compose"
+    assert state["composition"]["rounds_used"] == 0
+    assert state["composition"]["history"] == []
+    assert "past its byte budget" in state["composition"]["problems"][0]
+    assert store.read_json(job_id, str(state["diagnostic_pack"])) == before
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert "the round was not consumed" in prompt["next_action"]
+
+
+def test_signal_ids_survive_a_second_round_and_guard_the_grid(
+    tmp_path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs import evolution_campaign as campaign_module
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _active_campaign,
+        _cited_signals,
+        mechanism_grid,
+        submit_signal_proposals,
+    )
+
+    store, job_id = _composable_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    first = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_dip_3",
+                "family": "breakout",
+                "description": "3-bar low",
+                "min_bars": 5,
+                "expression": "new_extreme(f, 3, -1)",
+            }
+        ],
+    )
+    dip = next(row for row in first["survivors"] if row["merged"])
+    assert dip["pointer"].endswith("/0") and dip["signal_id"]
+    second = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_dip_3_twin",
+                "family": "breakout",
+                "description": "the same events",
+                "min_bars": 5,
+                "expression": "new_extreme(f, 3, -1) & (close(f) > 0)",
+            }
+        ],
+    )
+    twin = next(row for row in second["survivors"] if row["merged"])
+    # The second round prepends: the first survivor's positional pointer
+    # moved, its id did not, and a citation by the new position carries it.
+    assert twin["pointer"] == dip["pointer"]
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]))
+    tier = dip["pointer"].split("/")[2]
+    moved = next(
+        index
+        for index, row in enumerate(pack["validated_signals"][tier])
+        if row["signal_id"] == dip["signal_id"]
+    )
+    assert moved > 0
+    cited = _cited_signals(
+        store, job_id, manifest, [f"/validated_signals/{tier}/{moved}"]
+    )
+    assert (
+        cited[0]["signal"] == "ws_dip_3" and cited[0]["signal_id"] == dip["signal_id"]
+    )
+    assert _active_campaign(store, job_id)["stage"] == "design"
+
+    # A grid whose fit would drop the row it cites is not persisted.
+    def dropping_fit(pack):
+        pack = dict(pack)
+        block = dict(pack["validated_signals"])
+        block[tier] = []
+        pack["validated_signals"] = block
+        return pack
+
+    monkeypatch.setattr(campaign_module, "fit_diagnostic_pack", dropping_fit)
+    refused = mechanism_grid(
+        store, job_id, signal_ref=f"/validated_signals/{tier}/{moved}"
+    )
+    assert refused["status"] == "rejected"
+    assert "drop the signal it cites" in refused["reason"]
+    assert "mechanism_grids" not in store.read_json(
+        job_id, str(state["diagnostic_pack"])
+    )
+    monkeypatch.setattr(campaign_module, "fit_diagnostic_pack", lambda pack: pack)
+    record = mechanism_grid(
+        store, job_id, signal_ref=f"/validated_signals/{tier}/{moved}"
+    )
+    assert record["status"] == "ok" and record["signal_id"] == dip["signal_id"]
+
+
+def test_grid_cache_keys_on_signal_identity_across_a_prepending_round(
+    tmp_path, monkeypatch
+) -> None:
+    """A grid computed for signal A before round two must not be handed to
+    signal B, which round two prepends into A's old position."""
+    from wayfinder_paths.jobs import evolution_campaign as campaign_module
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _active_campaign,
+        mechanism_grid,
+        submit_signal_proposals,
+    )
+
+    store, job_id = _composable_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    first = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_dip_3",
+                "family": "breakout",
+                "description": "3-bar low",
+                "min_bars": 5,
+                "expression": "new_extreme(f, 3, -1)",
+            }
+        ],
+    )
+    a = next(row for row in first["survivors"] if row["merged"])
+    assert a["pointer"].endswith("/0")
+    grid_a = mechanism_grid(store, job_id, signal_ref=a["pointer"], side="long")
+    assert grid_a["status"] == "ok" and grid_a["cached"] is False
+    assert grid_a["signal_id"] == a["signal_id"]
+    second = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_dip_3_twin",
+                "family": "breakout",
+                "description": "the same events",
+                "min_bars": 5,
+                "expression": "new_extreme(f, 3, -1) & (close(f) > 0)",
+            }
+        ],
+    )
+    b = next(row for row in second["survivors"] if row["merged"])
+    assert b["pointer"] == a["pointer"]  # B now sits where A sat
+    assert b["signal_id"] != a["signal_id"]
+    sweeps: list[str] = []
+    original = campaign_module._sweep_signal_mechanism
+
+    def counting_sweep(store_, job_id_, campaign_root, entry, **kwargs):
+        sweeps.append(str(entry["signal"]))
+        return original(store_, job_id_, campaign_root, entry, **kwargs)
+
+    monkeypatch.setattr(campaign_module, "_sweep_signal_mechanism", counting_sweep)
+    grid_b = mechanism_grid(store, job_id, signal_ref=b["pointer"], side="long")
+    assert grid_b["cached"] is False and grid_b["signal_id"] == b["signal_id"]
+    assert grid_b["signal"] == "ws_dip_3_twin" and sweeps == ["ws_dip_3_twin"]
+    assert grid_b["pointer"] == "/mechanism_grids/1"
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]))
+    tier = a["pointer"].split("/")[2]
+    moved = next(
+        index
+        for index, row in enumerate(pack["validated_signals"][tier])
+        if row["signal_id"] == a["signal_id"]
+    )
+    again = mechanism_grid(
+        store, job_id, signal_ref=f"/validated_signals/{tier}/{moved}", side="long"
+    )
+    assert again["cached"] is True and again["pointer"] == "/mechanism_grids/0"
+    assert again["signal_ref"] == f"/validated_signals/{tier}/{moved}"
+    assert sweeps == ["ws_dip_3_twin"]
+    assert len(pack["mechanism_grids"]) == 2
+    assert _active_campaign(store, job_id)["stage"] == "design"
+
+
+def test_proposal_names_are_immutable_within_a_campaign(tmp_path) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _active_campaign,
+        _signal_id,
+        submit_signal_proposals,
+    )
+
+    store, job_id = _composable_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    proposal = {
+        "name": "ws_dip_3",
+        "family": "breakout",
+        "description": "3-bar low",
+        "min_bars": 5,
+        "expression": "new_extreme(f, 3, -1)",
+    }
+    first = submit_signal_proposals(store, job_id, signal_proposals=[proposal])
+    assert first["status"] == "scanned"
+    state = _active_campaign(store, job_id)
+    assert state["composition"]["names"] == {
+        "ws_dip_3": {"expression": "new_extreme(f, 3, -1)", "min_bars": 5}
+    }
+    altered = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[{**proposal, "expression": "new_extreme(f, 5, -1)"}],
+    )
+    assert altered["status"] == "rejected"
+    assert "immutable" in altered["problems"][0]
+    # A changed warmup under the same name is a changed definition too.
+    rewarmed = submit_signal_proposals(
+        store, job_id, signal_proposals=[{**proposal, "min_bars": 9}]
+    )
+    assert rewarmed["status"] == "rejected" and "min_bars" in rewarmed["problems"][0]
+    assert _active_campaign(store, job_id)["composition"]["rounds_used"] == 1
+    # The same name with the same definition is the same row, and the
+    # identity hash separates a changed definition or side regardless.
+    same = submit_signal_proposals(store, job_id, signal_proposals=[proposal])
+    assert same["status"] == "scanned"
+    row = {
+        "signal": "x",
+        "symbol": "IMX",
+        "timeframe": "1h",
+        "horizon": 1,
+        "regime": None,
+    }
+    assert _signal_id({**row, "direction": "long"}) != _signal_id(
+        {**row, "direction": "short"}
+    )
+    assert _signal_id({**row, "expression": "a"}) != _signal_id(
+        {**row, "expression": "b"}
+    )
+    assert _signal_id({**row, "min_bars": 5}) != _signal_id({**row, "min_bars": 9})
+
+
+def test_cited_mechanisms_export_the_signal_where_it_sits_now(tmp_path) -> None:
+    """A grid computed before a prepending round exports its source at the
+    source's current pointer, resolved from the id, not the pointer stored
+    when the grid ran (which now names a different signal)."""
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _cited_mechanisms,
+        _cited_signals,
+        mechanism_grid,
+        submit_signal_proposals,
+    )
+
+    store, job_id = _mechanism_job(tmp_path)
+    root = store.job_dir(job_id)
+    improver_path = root / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"]["signal_composition_rounds"] = 2
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    spring = (
+        "(close(f) == 100.0) & (close(f).shift(1) == 100.0) & "
+        "(close(f).shift(2) == 100.0) & (close(f).shift(3) == 100.0) & "
+        "(close(f).shift(4) == 100.0) & (close(f).shift(5) != 100.0)"
+    )
+    first = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_spring",
+                "family": "mean_reversion",
+                "description": "five flat closes",
+                "min_bars": 8,
+                "expression": spring,
+            }
+        ],
+    )
+    a = next(row for row in first["survivors"] if row["merged"])
+    grid = mechanism_grid(store, job_id, signal_ref=a["pointer"], side="long")
+    assert grid["status"] == "ok" and grid["top"], grid
+    assert grid["signal_ref"] == a["pointer"]
+    second = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_spring_twin",
+                "family": "mean_reversion",
+                "description": "the same events",
+                "min_bars": 8,
+                "expression": f"({spring}) & (close(f) > 0)",
+            }
+        ],
+    )
+    b = next(row for row in second["survivors"] if row["merged"])
+    assert b["pointer"] == a["pointer"]
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    cited = _cited_mechanisms(store, job_id, manifest, ["/mechanism_grids/0/top/0"])
+    assert cited[0]["signal_id"] == a["signal_id"]
+    assert cited[0]["signal_ref"] != a["pointer"]
+    source = _cited_signals(store, job_id, manifest, [cited[0]["signal_ref"]])
+    assert source[0]["signal"] == "ws_spring"
+    assert source[0]["signal_id"] == a["signal_id"]
+    wrong = _cited_signals(store, job_id, manifest, [a["pointer"]])
+    assert wrong[0]["signal"] == "ws_spring_twin"
+
+
+def test_policy_scan_survivors_feed_the_design_and_count_as_evidence(tmp_path) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    improver_path = store.job_dir(job_id) / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"]["signal_first_seeding"] = True
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    pack_path = str(state["diagnostic_pack"])
+    pack = store.read_json(job_id, pack_path)
+    # No frozen bars: the scan reports why it is unavailable and the prompt
+    # stays silent about policies.
+    assert pack["policy_scan"]["available"] is False
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert prompt and "Policy scan (" not in prompt["next_action"]
+
+    pack["validated_signals"] = {
+        "available": True,
+        "signals": [
+            {
+                "symbol": "HYPE",
+                "signal": "new_low_5",
+                "timeframe": "1h",
+                "horizon": 4,
+                "direction": "long",
+                "events_per_day": 0.8,
+                "how_to_use": "in precompute(): library_signal_on_bars(...)",
+            }
+        ],
+        "near_misses": [],
+    }
+    pack["policy_scan"] = {
+        "available": True,
+        "configs": 1797,
+        "symbols": ["AAA", "BBB", "CCC", "PAXG"],
+        "families": [
+            {"name": "cross_sectional_rank", "verdict": "survivor"},
+            {"name": "donchian_breakout", "verdict": "falsified"},
+        ],
+        "falsified": ["donchian_breakout"],
+        "survivors": [
+            {
+                "pointer": "/policy_scan/survivors/0",
+                "policy_id": "abc123abc123",
+                "family": "cross_sectional_rank",
+                "kernel": "wayfinder_paths.jobs.strategies.mixed_momentum_rank",
+                "rank": {"return": 0.29, "sharpe": 2.9},
+                "report": {"return": 0.17, "sharpe": 3.9},
+                "full": {
+                    "return": 0.5,
+                    "sharpe": 3.1,
+                    "max_drawdown": -0.1,
+                    "rebalances": 378,
+                },
+                "by_regime": {"bear": 0.32, "chop": 0.21},
+                "recipe": {
+                    "module": "wayfinder_paths.jobs.strategies.mixed_momentum_rank",
+                    "build": "build_strategy",
+                    "params": {"momentum_bars": 1920, "rank_legs": 1},
+                },
+            }
+        ],
+    }
+    store.write_json(job_id, pack_path, pack)
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=2))
+    assert prompt
+    text = prompt["next_action"]
+    assert "Policy scan (1797 portfolio configurations" in text
+    assert "cross_sectional_rank via mixed_momentum_rank" in text
+    assert "cite /policy_scan/survivors/0" in text
+    assert "bear +32.0%" in text
+    assert "Falsified on this panel" in text and "donchian_breakout" in text
+    # A grounded slot citing only the baseline is rejected, and the message
+    # names both kinds of evidence the pack offers.
+    with pytest.raises(
+        ValueError, match="must build on a validated signal or a policy-scan survivor"
+    ):
+        submit_campaign_design(store, job_id, campaign_design=_campaign_design())
+    design = _campaign_design()
+    for hypothesis in design["hypotheses"]:
+        hypothesis["evidence_refs"] = ["/policy_scan/survivors/0"]
+    try:
+        submit_campaign_design(store, job_id, campaign_design=design)
+    except ValueError as exc:
+        assert "must build on" not in str(exc)
+
+
+def _policy_survivor_row(symbols: list[str]) -> dict[str, Any]:
+    return {
+        "pointer": "/policy_scan/survivors/0",
+        "policy_id": "feedfacefeed",
+        "family": "cross_sectional_rank",
+        "kernel": "wayfinder_paths.jobs.strategies.mixed_momentum_rank",
+        "rank": {"return": 0.2, "sharpe": 2.5},
+        "report": {"return": 0.1, "sharpe": 2.0},
+        "full": {"return": 0.3, "sharpe": 2.2, "max_drawdown": -0.1, "rebalances": 40},
+        "by_regime": {},
+        "recipe": {
+            "module": "wayfinder_paths.jobs.strategies.mixed_momentum_rank",
+            "build": "build_strategy",
+            "params": {
+                "symbols": list(symbols),
+                "momentum_bars": 4,
+                "rank_legs": 1,
+                "weight_per_leg": 0.5,
+                "rebalance_bars": 2,
+                "rebalance_offset": 0,
+            },
+        },
+    }
+
+
+def test_policy_kernel_slot_materializes_the_survivor_without_new_code(
+    tmp_path,
+) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _materialize_candidate_seed,
+        _policy_survivor_from_pack,
+        _select_parent_plan,
+    )
+
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    job_path = store.job_dir(job_id) / "job.yaml"
+    job_data = yaml.safe_load(job_path.read_text(encoding="utf-8"))
+    job_data["execution_params"] = {
+        "symbols": ["BTC", "ETH"],
+        "fee_bps": 4.5,
+        "slippage_bps": 3.5,
+    }
+    job_path.write_text(yaml.safe_dump(job_data, sort_keys=False), encoding="utf-8")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    survivor = _policy_survivor_row(["BTC", "ETH"])
+    pack = {"policy_scan": {"available": True, "survivors": [survivor]}}
+    assert _policy_survivor_from_pack(pack, "/policy_scan/survivors/0") == survivor
+    assert _policy_survivor_from_pack(pack, "/policy_scan/survivors/1") is None
+    assert _policy_survivor_from_pack(pack, "/validated_signals/signals/0") is None
+    assert _policy_survivor_from_pack({}, "/policy_scan/survivors/0") is None
+
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    plan = _select_parent_plan(
+        manifest,
+        requested_source="policy_kernel",
+        requested_policy=survivor,
+        slot=3,
+        candidates=[],
+    )
+    assert (
+        plan["source"] == "policy_kernel"
+        and plan["policy"]["policy_id"] == "feedfacefeed"
+    )
+    fallback = _select_parent_plan(
+        manifest, requested_source="policy_kernel", slot=3, candidates=[]
+    )
+    assert (
+        fallback["source"] == "de_novo" and fallback["fallback_from"] == "policy_kernel"
+    )
+
+    bundle = tmp_path / "policy-bundle"
+    _materialize_candidate_seed(
+        store,
+        job_id,
+        campaign_id=state["campaign_id"],
+        candidate_root=bundle,
+        plan=plan,
+    )
+    script = (bundle / "workspace" / "src" / "strategy.py").read_text(encoding="utf-8")
+    assert (
+        script
+        == "from wayfinder_paths.jobs.strategies.mixed_momentum_rank import build_strategy\n"
+    )
+    params = yaml.safe_load((bundle / "job.yaml").read_text(encoding="utf-8"))[
+        "execution_params"
+    ]
+    assert params["momentum_bars"] == 4 and params["rank_legs"] == 1
+    assert params["symbols"] == ["BTC", "ETH"] and params["fee_bps"] == 4.5
+    assert params["warmup_bars"] > 0
+    assert params["lookback_bars"] == params["warmup_bars"] + 20
+    with pytest.raises(ValueError, match="jobs strategy module"):
+        _materialize_candidate_seed(
+            store,
+            job_id,
+            campaign_id=state["campaign_id"],
+            candidate_root=tmp_path / "bad-bundle",
+            plan={
+                "source": "policy_kernel",
+                "policy": {"recipe": {"module": "os.path"}},
+            },
+        )
+
+
+def test_design_policy_kernel_slot_needs_a_real_survivor(tmp_path) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    pack_path = str(state["diagnostic_pack"])
+    pack = store.read_json(job_id, pack_path)
+    pack["policy_scan"] = {
+        "available": True,
+        "configs": 10,
+        "families": [],
+        "falsified": [],
+        "survivors": [_policy_survivor_row(["IMX"])],
+    }
+    store.write_json(job_id, pack_path, pack)
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert (
+        prompt
+        and "policy_kernel slot, set policy_ref to one of ['/policy_scan/survivors/0']"
+        in prompt["next_action"]
+    )
+
+    design = _campaign_design()
+    design["slots"][2]["parent_source"] = "policy_kernel"
+    design["slots"][2]["policy_ref"] = "/policy_scan/survivors/7"
+    with pytest.raises(ValueError, match="policy_ref must name a policy-scan survivor"):
+        submit_campaign_design(store, job_id, campaign_design=design)
+    design["slots"][2]["policy_ref"] = "/policy_scan/survivors/0"
+    design["slots"][1]["policy_ref"] = "/policy_scan/survivors/0"
+    with pytest.raises(
+        ValueError, match="policy_ref requires parent_source policy_kernel"
+    ):
+        submit_campaign_design(store, job_id, campaign_design=design)
+    del design["slots"][1]["policy_ref"]
+    for hypothesis in design["hypotheses"]:
+        hypothesis["evidence_refs"] = ["/policy_scan/survivors/0"]
+    try:
+        submit_campaign_design(store, job_id, campaign_design=design)
+    except ValueError as exc:
+        assert "policy_ref" not in str(exc) and "must build on" not in str(exc)
+
+
+def test_starter_bar_params_rescale_to_the_job_interval(tmp_path) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _rescale_bar_params,
+        _starter_bar_ratio,
+    )
+
+    params = {
+        "momentum_bars": 288,
+        "rebalance_bars": 192,
+        "rebalance_offset": 48,
+        "stop_atr_period": 96,
+        "stop_cooldown_seconds": 0,
+        "weight_per_leg": 0.125,
+        "require_trend_alignment": True,
+        "top_n": 1,
+    }
+    scaled = _rescale_bar_params(params, 3.0)
+    assert scaled["momentum_bars"] == 864 and scaled["rebalance_bars"] == 576
+    assert scaled["rebalance_offset"] == 144 and scaled["stop_atr_period"] == 288
+    assert scaled["stop_cooldown_seconds"] == 0 and scaled["weight_per_leg"] == 0.125
+    assert scaled["require_trend_alignment"] is True and scaled["top_n"] == 1
+    assert _rescale_bar_params(params, 1.0) == params
+    assert _rescale_bar_params({"momentum_bars": 7}, 1 / 3)["momentum_bars"] == 2
+
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    root = store.job_dir(job_id)
+    job_path = root / "job.yaml"
+    job_data = yaml.safe_load(job_path.read_text(encoding="utf-8"))
+    # Without a declared bar interval nothing is rescaled.
+    assert _starter_bar_ratio({"timeframe": "15m"}, root) == 1.0
+    job_data["execution_spec"] = {
+        **dict(job_data.get("execution_spec") or {}),
+        "data_contract": {"bar_interval": "5m", "symbols": ["BTC", "ETH"]},
+    }
+    job_path.write_text(yaml.safe_dump(job_data, sort_keys=False), encoding="utf-8")
+    assert _starter_bar_ratio({"timeframe": "15m"}, root) == bar_interval_seconds(
+        "15m"
+    ) / bar_interval_seconds("5m")
+    assert _starter_bar_ratio({"timeframe": "5m"}, root) == 1.0
+    assert _starter_bar_ratio({"timeframe": ""}, root) == 1.0
+
+
+def test_adapted_starter_recomputes_warmup_after_bar_rescale(tmp_path) -> None:
+    from wayfinder_paths.jobs.strategies.regime_rotation import build_strategy
+
+    store, job_id = _evaluatable_job(tmp_path)
+    root = store.job_dir(job_id)
+    symbols = ["BNB", "PAXG", "HYPE", "ZEC", "MORPHO"]
+    job_path = root / "job.yaml"
+    job_data = yaml.safe_load(job_path.read_text(encoding="utf-8"))
+    job_data["execution_spec"]["data_contract"].update(
+        {"bar_interval": "15m", "symbols": symbols}
+    )
+    job_data["execution_params"]["symbols"] = symbols
+    job_path.write_text(yaml.safe_dump(job_data, sort_keys=False), encoding="utf-8")
+    improver_path = root / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"].update(
+        {
+            "incumbent_failure_modes": False,
+            "policy_scan_enabled": False,
+            "signal_first_seeding": False,
+        }
+    )
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    state = start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    starter = next(
+        row
+        for row in manifest["starter_seeds"]
+        if row["starter_id"] == "bullish-regime-rotation-5m"
+    )
+    candidate_root = root / "adapted-bull-starter"
+    seeded = _materialize_candidate_seed(
+        store,
+        job_id,
+        campaign_id=state["campaign_id"],
+        candidate_root=candidate_root,
+        plan={"source": "starter_seed", "parents": [], "starter": starter},
+    )
+    params = _read_bundle_params(store, job_id, "adapted-bull-starter")
+    actual = build_strategy(params).warmup_bars
+
+    assert params["slow_sma_bars"] == 480
+    assert seeded == params["warmup_bars"] == actual == 484
+    assert params["lookback_bars"] == actual + STARTER_LOOKBACK_MARGIN_BARS
+
+
+def _screened_campaign(tmp_path, *, checkpoint: bool = True):
+    from wayfinder_paths.jobs.evolution_campaign import _commit_designed_attempt
+
+    store, job_id = _investigative_job(tmp_path)
+    improver_path = store.job_dir(job_id) / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"].update(
+        {
+            "screen_before_repair": True,
+            "focus_candidates": 2,
+            "focus_attempts_per_candidate": 3,
+            "redesign_checkpoint": checkpoint,
+            "redesign_slots": 2,
+        }
+    )
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    submit_campaign_design(store, job_id, campaign_design=_campaign_design())
+
+    def commit(index: int, **kwargs: Any) -> dict[str, Any]:
+        state = campaign_status(store, job_id)
+        candidate = state["candidates"][index - 1]
+        root = store.job_dir(job_id) / candidate["bundle"]
+        _commit_designed_attempt(
+            store,
+            job_id,
+            state=state,
+            candidate=candidate,
+            outcome=_screen_outcome(root, **kwargs),
+        )
+        store.write_json(job_id, "state/evolution_campaign.json", state)
+        return candidate
+
+    for slot in range(1, 9):
+        prepare_candidate(store, job_id, now=started + timedelta(minutes=slot))
+        if slot == 3:
+            commit(
+                slot,
+                net=-0.5,
+                primary="cost_bleed",
+                codes=["negative_after_costs", "fees_erased_edge"],
+                economics={
+                    "candidate": {"fills_per_day": 59.0, "fee_pct_of_capital": 0.29},
+                    "incumbent": {"fills_per_day": 2.7},
+                },
+            )
+        else:
+            commit(slot, net=-0.01 * slot)
+    return store, job_id, started, commit
+
+
+def test_redesign_checkpoint_runs_once_after_the_screens(tmp_path) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _attempt_cap,
+        _focus_candidates,
+        _screen_table,
+        submit_campaign_redesign,
+    )
+
+    store, job_id, started, commit = _screened_campaign(tmp_path)
+    state = campaign_status(store, job_id)
+    ids = [item["candidate_id"] for item in state["candidates"]]
+    assert [item["status"] for item in state["candidates"]] == ["repair_pending"] * 8
+
+    block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=20))
+    assert block and block["artifact_key"] == "redesign"
+    assert block["agent_name"] == "wayfinder-evolution-designer"
+    redesign = block["constraints"]["redesign"]
+    assert redesign["open"] == ids
+    assert redesign["attempts_remaining"] == 16 and redesign["max_new_slots"] == 2
+    table = _screen_table(state, {})
+    assert table[2]["primary_failure"] == "cost_bleed" and table[2]["fixability"] >= 2
+    assert "Redesign checkpoint" in block["next_action"]
+    assert 'action="evolution_redesign"' in block["next_action"]
+
+    with pytest.raises(ValueError, match="unknown candidates"):
+        submit_campaign_redesign(store, job_id, redesign={"abandon": ["nope"]})
+    with pytest.raises(ValueError, match="both abandons and keeps"):
+        submit_campaign_redesign(
+            store, job_id, redesign={"abandon": [ids[0]], "keep": [ids[0]]}
+        )
+    with pytest.raises(ValueError, match="come together"):
+        submit_campaign_redesign(
+            store, job_id, redesign={"hypotheses": [{"id": "hx"}], "slots": []}
+        )
+    replacement = {
+        "abandon": [ids[3], ids[5]],
+        "keep": [ids[2]],
+        "hypotheses": [
+            {
+                "id": "h_relay",
+                "family": "risk_haven_relay",
+                "causal_mechanism": "risk-on leader, else the defensive asset",
+                "falsifier": "loses on both screen slices",
+                "evidence_refs": ["/baseline/reason"],
+            }
+        ],
+        "slots": [
+            {
+                "slot_id": "r01",
+                "wildcard": False,
+                "hypothesis_id": "h_relay",
+                "parent_source": "de_novo",
+                "mutation_kind": "structural",
+                "family": "risk_haven_relay",
+                "summary": "replace the falsified breakout with a relay",
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="cannot add wildcard"):
+        bad = json.loads(json.dumps(replacement))
+        bad["slots"][0]["wildcard"] = True
+        bad["slots"][0]["hypothesis_id"] = None
+        submit_campaign_redesign(store, job_id, redesign=bad)
+    with pytest.raises(ValueError, match="duplicate design slot id"):
+        bad = json.loads(json.dumps(replacement))
+        bad["slots"][0]["slot_id"] = "s01"
+        submit_campaign_redesign(store, job_id, redesign=bad)
+    result = submit_campaign_redesign(store, job_id, redesign=replacement)
+    assert result["status"] == "accepted" and result["added_slots"] == ["r01"]
+
+    state = campaign_status(store, job_id)
+    assert state["redesign"]["abandoned"] == [ids[3], ids[5]]
+    assert (
+        state["redesign"]["kept"] == [ids[2]] and state["redesign"]["extra_slots"] == 1
+    )
+    by_id = {item["candidate_id"]: item for item in state["candidates"]}
+    assert by_id[ids[3]]["status"] == "low_fidelity_rejected"
+    assert by_id[ids[3]]["abandoned_at_redesign"] is True
+    assert by_id[ids[2]]["status"] == "repair_pending"
+    # The accepted design stays immutable; the decision is its own artifact
+    # and campaign state references it.
+    design = store.read_json(job_id, str(state["campaign_design"]))
+    assert len(design["slots"]) == 8 and len(design["hypotheses"]) == 3
+    assert state["design"]["slots"] == 8
+    artifact = store.read_json(job_id, str(state["redesign"]["path"]))
+    assert [item["slot_id"] for item in artifact["slots"]] == ["r01"]
+    assert artifact["hypotheses"][0]["id"] == "h_relay"
+    assert artifact["abandon"] == [ids[3], ids[5]] and artifact["kept"] == [ids[2]]
+    from wayfinder_paths.jobs.evolution_campaign import _design_slots, _file_hash
+
+    assert state["redesign"]["sha256"] == _file_hash(
+        store.job_dir(job_id) / str(state["redesign"]["path"])
+    )
+    hypotheses_all, slots_all = _design_slots(store, job_id, state)
+    assert len(slots_all) == 9 and slots_all[-1]["slot_id"] == "r01"
+    assert len(hypotheses_all) == 4
+    with pytest.raises(ValueError, match="already used"):
+        submit_campaign_redesign(store, job_id, redesign={"keep": [ids[2]]})
+
+    # The replacement is screened next, as a fresh slot beyond the initial eight.
+    block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=21))
+    assert block and block["artifact_key"] == "candidate-09-attempt-01"
+    prepared = prepare_candidate(store, job_id, now=started + timedelta(minutes=22))
+    assert prepared["slot"] == 9 and prepared["family"] == "risk_haven_relay"
+    commit(9, net=-0.02)
+    state = campaign_status(store, job_id)
+    policy = store.read_json(job_id, str(state["manifest"]))["policy"]
+    focus = [item["candidate_id"] for item in _focus_candidates(state, policy)]
+    assert set(focus) == {ids[2], prepared["candidate_id"]}
+    assert _attempt_cap(state, by_id[ids[2]], policy) == 3
+    assert _attempt_cap(state, state["candidates"][0], policy) == 1
+    block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=23))
+    assert block and block["artifact_key"] != "redesign"
+    assert block["candidate_id"] in focus
+
+
+def test_redesign_checkpoint_can_be_disabled(tmp_path) -> None:
+    store, job_id, started, _ = _screened_campaign(tmp_path, checkpoint=False)
+    block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=20))
+    assert block and block["artifact_key"] == "candidate-03-attempt-02"
+    assert block["focus"]["phase"] == "focus"
+
+
+def test_redesign_recovers_from_a_crash_between_the_two_writes(
+    tmp_path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs import evolution_campaign as campaign_module
+    from wayfinder_paths.jobs.evolution_campaign import submit_campaign_redesign
+
+    store, job_id, started, commit = _screened_campaign(tmp_path)
+    state = campaign_status(store, job_id)
+    ids = [item["candidate_id"] for item in state["candidates"]]
+    decision = {
+        "abandon": [ids[3]],
+        "keep": [ids[2]],
+        "hypotheses": [
+            {
+                "id": "h_relay",
+                "family": "risk_haven_relay",
+                "causal_mechanism": "risk-on leader, else the defensive asset",
+                "falsifier": "loses on both screen slices",
+                "evidence_refs": ["/baseline/reason"],
+            }
+        ],
+        "slots": [
+            {
+                "slot_id": "r01",
+                "wildcard": False,
+                "hypothesis_id": "h_relay",
+                "parent_source": "de_novo",
+                "mutation_kind": "structural",
+                "family": "risk_haven_relay",
+                "summary": "replace the falsified breakout with a relay",
+            }
+        ],
+    }
+    real_save = campaign_module._save_campaign
+    calls = {"n": 0}
+
+    def crash_once(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise MemoryError("box ran out of memory between writes")
+        return real_save(*args, **kwargs)
+
+    monkeypatch.setattr(campaign_module, "_save_campaign", crash_once)
+    with pytest.raises(MemoryError):
+        submit_campaign_redesign(store, job_id, redesign=decision)
+    # The artifact exists, the state does not reference it: nothing applied.
+    campaign_root = (
+        store.job_dir(job_id) / "research/evolution/campaigns" / state["campaign_id"]
+    )
+    assert (campaign_root / "campaign_redesign.json").exists()
+    state = campaign_status(store, job_id)
+    assert state.get("redesign") is None
+    assert all(item["status"] == "repair_pending" for item in state["candidates"])
+    # A different decision on top of the unreferenced artifact is refused.
+    other = json.loads(json.dumps(decision))
+    other["abandon"] = [ids[4]]
+    with pytest.raises(ValueError, match="different redesign artifact"):
+        submit_campaign_redesign(store, job_id, redesign=other)
+    # The identical decision completes the commit.
+    result = submit_campaign_redesign(store, job_id, redesign=decision)
+    assert result["status"] == "accepted" and result["added_slots"] == ["r01"]
+    state = campaign_status(store, job_id)
+    assert state["redesign"]["abandoned"] == [ids[3]]
+    by_id = {item["candidate_id"]: item for item in state["candidates"]}
+    assert by_id[ids[3]]["status"] == "low_fidelity_rejected"
+
+
+def test_redesign_replacements_are_bounded_by_remaining_attempts(tmp_path) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import submit_campaign_redesign
+
+    store, job_id, started, commit = _screened_campaign(tmp_path)
+    state = campaign_status(store, job_id)
+    ids = [item["candidate_id"] for item in state["candidates"]]
+    policy = store.read_json(job_id, str(state["manifest"]))["policy"]
+    state["counts"]["quick_attempts"] = int(policy["max_quick_attempts"]) - 1
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+
+    def slot(index: int) -> dict[str, Any]:
+        return {
+            "slot_id": f"r{index:02d}",
+            "wildcard": False,
+            "hypothesis_id": "h_relay",
+            "parent_source": "de_novo",
+            "mutation_kind": "structural",
+            "family": "risk_haven_relay",
+            "summary": f"replacement {index}",
+        }
+
+    hypotheses = [
+        {
+            "id": "h_relay",
+            "family": "risk_haven_relay",
+            "causal_mechanism": "risk-on leader, else the defensive asset",
+            "falsifier": "loses on both screen slices",
+            "evidence_refs": ["/baseline/reason"],
+        }
+    ]
+    with pytest.raises(ValueError, match="only 1 attempt\\(s\\) remain"):
+        submit_campaign_redesign(
+            store,
+            job_id,
+            redesign={
+                "keep": [ids[2]],
+                "hypotheses": hypotheses,
+                "slots": [slot(1), slot(2)],
+            },
+        )
+    result = submit_campaign_redesign(
+        store,
+        job_id,
+        redesign={"keep": [ids[2]], "hypotheses": hypotheses, "slots": [slot(1)]},
+    )
+    assert result["added_slots"] == ["r01"]
+
+
+def test_policy_kernel_candidates_pair_against_the_incumbent() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import _INCUMBENT_REFERENCE_SOURCES
+
+    assert {"starter_seed", "research_seed", "policy_kernel"} <= set(
+        _INCUMBENT_REFERENCE_SOURCES
+    )
+
+
+def test_protected_mode_scopes_research_tools_to_the_discovery_snapshot(
+    tmp_path,
+) -> None:
+    from wayfinder_paths.jobs.execution.job import _load_dataset
+    from wayfinder_paths.jobs.research import campaign_dataset_root
+
+    store, job_id = _evaluatable_job(tmp_path)
+    _enable_protected_folds(store, job_id)
+    root = store.job_dir(job_id)
+    assert campaign_dataset_root(store, job_id) == root
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    snapshot = campaign_dataset_root(store, job_id)
+    assert snapshot != root
+    assert (
+        snapshot
+        == root / "research/evolution/campaigns" / state["campaign_id"] / "dataset"
+    )
+    job_data = yaml.safe_load((root / "job.yaml").read_text(encoding="utf-8"))
+    import pandas as pd
+
+    from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+    from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
+
+    spec_data, _ = resolve_execution_spec(root, job_data)
+    spec = ExecutionSpec.from_dict(spec_data)
+    visible = _load_dataset(snapshot, spec, job_data, include_store_features=True)
+    canonical = _load_dataset(root, spec, job_data, include_store_features=True)
+    discovery_end = pd.Timestamp(state["evaluation_plan"]["discovery"]["end"])
+    assert max(visible.bars.timestamps) <= discovery_end
+    assert max(canonical.bars.timestamps) > discovery_end
+
+
+def test_certification_trials_count_looks_at_the_protected_tail(tmp_path) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _campaign_trials,
+        _certification_trials,
+    )
+
+    store, job_id = _evaluatable_job(tmp_path)
+    _enable_protected_folds(store, job_id)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    state["counts"]["quick_attempts"] = 24
+    state["counts"]["full_dev"] = 1
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+    assert _campaign_trials(store, job_id) == 24
+    assert _certification_trials(store, job_id) == 2
+
+
+def test_protected_fold_verdict_treats_the_neutral_band_as_neither() -> None:
+    def verdict(returns, *, neutral_folds):
+        folds = [
+            {
+                "fold": index,
+                "base_return": value,
+                "stress_return": value,
+                "positive": value > 0.01,
+            }
+            for index, value in enumerate(returns)
+        ]
+        return _protected_fold_verdict(
+            folds,
+            valid=True,
+            validation_trades=12,
+            minimum_validation_trades=8,
+            pooled_return=0.05,
+            pooled_stress_return=0.05,
+            train_return=0.02,
+            specialized=False,
+            target_days=0,
+            min_target_days=10,
+            outside_loss_ok=True,
+            base_vector={"max_drawdown_pct": 0.04, "tail_loss": 0.01},
+            stress_vector={"max_drawdown_pct": 0.05, "tail_loss": 0.02},
+            hard_constraints={"max_drawdown_pct": 0.25, "max_tail_loss": 0.15},
+            required_positive_folds=3,
+            max_fold_loss_pct=0.05,
+            audit_passed=True,
+            haircut_cleared=True,
+            neutral_folds=neutral_folds,
+            stress_reused=True,
+        )
+
+    # The relay's shape: two positive folds, one at -0.3%, one at -6%.
+    lost = verdict((0.033, 0.086, -0.003, -0.061), neutral_folds=1)
+    assert "fold_loss_bound" in lost["failure_codes"]
+    assert "insufficient_positive_folds" not in lost["failure_codes"]
+    # Two positive folds and two neutral ones pass the positive-fold rule.
+    flat = verdict((0.033, 0.086, -0.003, 0.004), neutral_folds=2)
+    assert flat["status"] == "dev_frontier"
+    assert "stress leg equals base" in flat["evidence"]
+    assert "fold loss bound 5%" in flat["evidence"]
+    # Without the band the same shape fails the positive-fold rule.
+    strict = verdict((0.033, 0.086, -0.003, 0.004), neutral_folds=0)
+    assert "insufficient_positive_folds" in strict["failure_codes"]
+
+
+def test_short_history_falls_back_to_the_single_window(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    _enable_protected_folds(store, job_id)
+    improver_path = store.job_dir(job_id) / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    # 1,000 hourly bars are 41 days: below the production floors.
+    improver["evolution"]["protected_fold_certification"].update(
+        {"min_discovery_days": 90, "min_certification_days": 84}
+    )
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    plan = state["evaluation_plan"]
+    assert plan["mode"] == "single_validation_window_v1" and plan["protected"] is False
+    assert plan["short_history"]["fallback"] == "single_validation_window_v1"
+    assert any("discovery would be" in r for r in plan["short_history"]["reasons"])
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    certification = manifest["policy"]["protected_fold_certification"]
+    assert certification["enabled"] is False and certification["short_history"]
+    # The visible snapshot is the whole dataset and no protected plane exists.
+    assert not (tmp_path / "audit" / job_id / "evolution").exists()
+    from wayfinder_paths.jobs.research import campaign_dataset_root
+
+    assert campaign_dataset_root(store, job_id) == store.job_dir(job_id)
+
+
+def test_insufficient_history_refuses_to_start(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    _enable_protected_folds(store, job_id, bars=120)
+    improver_path = store.job_dir(job_id) / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"]["screen_slice_days"] = 35
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    with pytest.raises(ValueError, match="insufficient history"):
+        start_campaign(store, job_id, now=started)
+    journal = (store.job_dir(job_id) / "journal.jsonl").read_text(encoding="utf-8")
+    assert "evolution_campaign_refused" in journal
+    assert "insufficient_history" in journal
+
+
+def test_protected_pack_is_clipped_to_discovery(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    _enable_protected_folds(store, job_id)
+    root = store.job_dir(job_id)
+    (root / "results/forward").mkdir(parents=True, exist_ok=True)
+    (root / "results/forward/summary.json").write_text(
+        json.dumps({"plane": "forward", "net_pnl": 12.5, "days": 40}), encoding="utf-8"
+    )
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]))
+    plan = state["evaluation_plan"]
+    assert "forward_summary" not in pack
+    assert "forward_summary" in pack["artifacts_withheld"]["withheld"]
+    baseline = pack["baseline"]
+    assert baseline["available"] is True
+    assert baseline["window"]["source"] == "discovery_window"
+    assert baseline["window"]["bars"] == plan["discovery"]["bars"]
+    assert baseline["source"]["path"] == "discovery snapshot simulation"

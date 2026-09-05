@@ -83,6 +83,9 @@ JobAction = Literal[
     "evolution_start",
     "evolution_status",
     "evolution_design",
+    "evolution_compose",
+    "evolution_redesign",
+    "evolution_mechanism_grid",
     "evolution_prepare",
     "evolution_submit_seed",
     "evolution_evaluate",
@@ -363,6 +366,10 @@ async def core_jobs(
     family: str | None = None,
     hypothesis: str | None = None,
     campaign_design: dict[str, Any] | None = None,
+    signal_proposals: list[dict[str, Any]] | None = None,
+    redesign: dict[str, Any] | None = None,
+    signal_ref: str | None = None,
+    side: Literal["long", "short"] | None = None,
     base_revision: str | None = None,
     evidence_refs: list[str] | None = None,
     wake_id: str | None = None,
@@ -909,6 +916,40 @@ async def core_jobs(
         if background:
             return await _start_background_op(store, job_id, "evolution_design", kwargs)
         return await _run_job_op("evolution_design", kwargs)
+
+    if action == "evolution_compose":
+        if not job_id or signal_proposals is None:
+            return err(
+                "invalid_request",
+                "evolution_compose requires job_id and signal_proposals (a list; "
+                "an empty list ends composition)",
+            )
+        return await _run_job_op(
+            "evolution_compose",
+            {"job_id": job_id, "signal_proposals": list(signal_proposals)},
+        )
+
+    if action == "evolution_redesign":
+        if not job_id or redesign is None:
+            return err(
+                "invalid_request",
+                "evolution_redesign requires job_id and redesign (an object with "
+                "abandon, keep, hypotheses, slots)",
+            )
+        return await _run_job_op(
+            "evolution_redesign", {"job_id": job_id, "redesign": dict(redesign)}
+        )
+
+    if action == "evolution_mechanism_grid":
+        if not job_id or not signal_ref:
+            return err(
+                "invalid_request",
+                "evolution_mechanism_grid requires job_id and signal_ref",
+            )
+        return await _run_job_op(
+            "evolution_mechanism_grid",
+            {"job_id": job_id, "signal_ref": signal_ref, "side": side},
+        )
 
     if action == "evolution_prepare":
         if not job_id:

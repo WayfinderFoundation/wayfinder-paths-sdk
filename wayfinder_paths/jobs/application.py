@@ -882,6 +882,43 @@ def _promote_candidate(store: JobStore, job_id: str, candidate_dir: Path) -> Non
             shutil.copy2(source, destination)
 
 
+def apply_candidate_bundle(
+    store: JobStore, job_id: str, candidate_dir: Path, *, label: str
+) -> dict[str, Any]:
+    """Bench/lifecycle apply path under a declared owner rule: promotes a
+    candidate bundle and stamps its revision, skipping proposal loading, the
+    baseline-drift check, validation reuse, the live gate, sync, and compile."""
+    candidate_revision = compute_workspace_revision(candidate_dir)
+    root = store.job_dir(job_id)
+    backup_dir = root / "applications" / label / "backup"
+    active_workspace = root / "workspace"
+    if backup_dir.exists() and active_workspace.exists():
+        shutil.rmtree(backup_dir)
+    if not backup_dir.exists():
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        if active_workspace.exists():
+            shutil.copytree(active_workspace, backup_dir / "workspace")
+        shutil.copy2(root / "job.yaml", backup_dir / "job.yaml")
+        if (root / IMPROVER_FILENAME).exists():
+            shutil.copy2(root / IMPROVER_FILENAME, backup_dir / IMPROVER_FILENAME)
+    _promote_candidate(store, job_id, candidate_dir)
+    promoted_revision = _record_promoted_revision(
+        store,
+        job_id,
+        label,
+        changed_files=None,
+        validation={"status": "reused", "source": label},
+    )
+    job = store.load(job_id)
+    job.versioning["active_revision"] = promoted_revision
+    store.save(job)
+    return {
+        "promoted_revision": promoted_revision,
+        "candidate_revision": candidate_revision,
+        "backup_dir": str(backup_dir),
+    }
+
+
 def rollback_application(
     store: JobStore, job_id: str, proposal_id: str, *, by: str = "owner"
 ) -> dict[str, Any]:
