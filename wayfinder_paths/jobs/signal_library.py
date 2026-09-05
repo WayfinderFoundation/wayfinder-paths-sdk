@@ -29,8 +29,16 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from wayfinder_paths.jobs.indicators import (
+    FEED_FUNDING,
+    FEED_OPEN_INTEREST,
+    funding_divergence_signal,
+    funding_zscore,
+    liquidation_flush_signal,
+    trailing_change,
+    wilder_rsi,
+)
 from wayfinder_paths.jobs.indicators import atr as wilder_atr
-from wayfinder_paths.jobs.indicators import wilder_rsi
 
 
 @dataclass(frozen=True)
@@ -43,6 +51,14 @@ class SignalDef:
     # DSL source for defs that were composed rather than hand-written (the
     # population search, designer proposals): what a worker pastes.
     expression: str | None = None
+    # Feature-feed columns the builder reads (``funding``, ``open_interest``).
+    # A frame without them gets an all-False column and the scan reports the
+    # signal as unmeasured instead of testing an empty event set.
+    requires: tuple[str, ...] = ()
+
+
+def missing_feeds(frame: pd.DataFrame, spec: SignalDef) -> tuple[str, ...]:
+    return tuple(column for column in spec.requires if column not in frame.columns)
 
 
 _atr = wilder_atr
@@ -258,6 +274,43 @@ def _ema(close: pd.Series, span: int) -> pd.Series:
     return close.ewm(span=span, adjust=False).mean()
 
 
+def _funding_divergence(
+    frame: pd.DataFrame,
+    z_window: int = 480,
+    z_entry: float = 2.0,
+    bars: int = 24,
+    oi_mode: str = "building",
+) -> pd.Series:
+    """Funding/open-interest divergence side (+1 long, -1 short, 0 none) at
+    screening windows; the starters run ``funding_divergence_signal`` at
+    their own windows."""
+    return funding_divergence_signal(
+        frame,
+        z_window=z_window,
+        z_entry=z_entry,
+        confirm_bars=bars,
+        oi_bars=bars,
+        oi_mode=oi_mode,
+    )["signal"]
+
+
+def _liquidation_flush(
+    frame: pd.DataFrame,
+    bars: int = 24,
+    move: float = 0.08,
+    oi_drop: float = 0.10,
+) -> pd.Series:
+    """Liquidation flush side (+1 buy the flush, -1 sell the squeeze, 0 none)
+    at screening windows; see ``liquidation_flush_signal``."""
+    return liquidation_flush_signal(
+        frame,
+        return_bars=bars,
+        return_min=move,
+        oi_bars=bars,
+        oi_drop_min=oi_drop,
+    )["signal"]
+
+
 # Public names for the builders: the DSL a composed def (population search,
 # designer proposal) is written in, and what a worker imports to paste one.
 close = _close
@@ -284,6 +337,8 @@ rsi_cross = _rsi_cross
 session_window = _session_window
 weekend = _weekend
 trend_gated_extreme = _trend_gated_extreme
+funding_divergence = _funding_divergence
+liquidation_flush = _liquidation_flush
 
 
 def _series_log(values: pd.Series) -> pd.Series:
@@ -326,6 +381,10 @@ SIGNAL_DSL: dict[str, Any] = {
     "session_window": session_window,
     "weekend": weekend,
     "trend_gated_extreme": trend_gated_extreme,
+    "funding_zscore": funding_zscore,
+    "trailing_change": trailing_change,
+    "funding_divergence": funding_divergence,
+    "liquidation_flush": liquidation_flush,
     "log": _series_log,
     "sign": _series_sign,
     "where": _where,
@@ -766,6 +825,49 @@ SIGNAL_LIBRARY: tuple[SignalDef, ...] = (
         2,
         lambda f: _weekend(f),
     ),
+    # Positioning: the feature-feed signals behind the funding/open-interest
+    # starters, at screening bar counts (a 480-bar funding window, 24-bar
+    # confirmation and open-interest reads). Jobs declare the feeds in
+    # data_contract.features; without them the column is all False and the
+    # scan lists the signal as unmeasured.
+    SignalDef(
+        "funding_divergence_short",
+        "positioning",
+        "funding z-score above 2 over 480 bars while the 24-bar return is not "
+        "positive and open interest grew over 24 bars: crowded longs not "
+        "being paid",
+        130,
+        lambda f: _funding_divergence(f) < 0,
+        requires=(FEED_FUNDING, FEED_OPEN_INTEREST),
+    ),
+    SignalDef(
+        "funding_divergence_long",
+        "positioning",
+        "funding z-score below -2 over 480 bars while the 24-bar return is not "
+        "negative and open interest grew over 24 bars: crowded shorts not "
+        "being paid",
+        130,
+        lambda f: _funding_divergence(f) > 0,
+        requires=(FEED_FUNDING, FEED_OPEN_INTEREST),
+    ),
+    SignalDef(
+        "liquidation_flush_long",
+        "positioning",
+        "24-bar return at most -8% while open interest fell at least 10% over "
+        "24 bars: longs were liquidated into the drop",
+        26,
+        lambda f: _liquidation_flush(f) > 0,
+        requires=(FEED_OPEN_INTEREST,),
+    ),
+    SignalDef(
+        "liquidation_flush_short",
+        "positioning",
+        "24-bar return at least +8% while open interest fell at least 10% over "
+        "24 bars: shorts were squeezed out of the rise",
+        26,
+        lambda f: _liquidation_flush(f) < 0,
+        requires=(FEED_OPEN_INTEREST,),
+    ),
 )
 
 
@@ -777,7 +879,8 @@ def build_signal_frame(
     canonical_signals: Sequence[SignalDef] = (),
 ) -> pd.DataFrame:
     """All library signals for one symbol's OHLCV frame, as boolean columns
-    row-aligned with the input. NaN warmup rows resolve to False.
+    row-aligned with the input. NaN warmup rows resolve to False, and so does
+    a signal whose required feed columns the frame does not carry.
 
     `extra_signals` (validated workspace defs) are materialized after the
     canonical library so the scan sweeps both under one test family.
@@ -790,7 +893,7 @@ def build_signal_frame(
     for spec in (*library, *extra_signals):
         columns[spec.name] = (
             spec.build(frame).fillna(False).astype(bool)
-            if len(frame) >= spec.min_bars
+            if len(frame) >= spec.min_bars and not missing_feeds(frame, spec)
             else pd.Series(False, index=frame.index, dtype=bool)
         )
     if not columns:

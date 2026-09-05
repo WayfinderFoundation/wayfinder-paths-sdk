@@ -51,6 +51,7 @@ from wayfinder_paths.jobs.signal_library import (
     SIGNAL_LIBRARY,
     SignalDef,
     build_signal_frame,
+    missing_feeds,
     signal_defs,
     wilder_atr,
 )
@@ -1137,6 +1138,13 @@ def scan_signals(
             include_canonical=include_canonical,
             canonical_signals=selected_canonical,
         )
+        # Feed-backed signals on a frame without the feed are all False by
+        # construction: report them as unmeasured, never as a dead trigger.
+        feedless = {
+            spec.name: missing_feeds(bars, spec)
+            for spec in signal_specs
+            if missing_feeds(bars, spec)
+        }
         tf_horizon_set = (
             {int(h) for h in horizons}
             if horizons
@@ -1291,6 +1299,25 @@ def scan_signals(
             # frame has only workspace columns, so scoring the canonical
             # library against it would KeyError (hit live 2026-07-26).
             for spec in signal_specs:
+                if spec.name in feedless:
+                    reason = "feed_not_declared:" + ",".join(feedless[spec.name])
+                    _record_unmeasured(
+                        spec,
+                        timeframe=tf_name,
+                        horizon=h,
+                        status="missing_feed",
+                        reason=reason,
+                    )
+                    for label in regime_labels:
+                        _record_unmeasured(
+                            spec,
+                            timeframe=tf_name,
+                            horizon=h,
+                            status="missing_feed",
+                            reason=reason,
+                            regime=label,
+                        )
+                    continue
                 sig = signals[spec.name].to_numpy()
                 events = _decimate_events(sig[: n - h], h)
                 n_raw = int(sig[: n - h].sum())

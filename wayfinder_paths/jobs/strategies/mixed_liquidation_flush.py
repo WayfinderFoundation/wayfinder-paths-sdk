@@ -26,14 +26,19 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from wayfinder_paths.jobs.execution.primitives import (
     ExecutionContext,
     mark_to_market_equity,
 )
-from wayfinder_paths.jobs.indicators import bounded_span
+from wayfinder_paths.jobs.indicators import (
+    FEED_OPEN_INTEREST,
+    FLUSH_SIDES,
+    bars_since_signal,
+    bounded_span,
+    liquidation_flush_signal,
+)
 from wayfinder_paths.jobs.strategies._starter_utils import (
     RANKING_STOP_DEFAULTS,
     add_stop_atr,
@@ -43,8 +48,8 @@ from wayfinder_paths.jobs.strategies._starter_utils import (
     stop_brackets,
 )
 
-OPEN_INTEREST_COLUMN = "open_interest"
-SIDE_MODES = frozenset({"both", "long", "short"})
+OPEN_INTEREST_COLUMN = FEED_OPEN_INTEREST
+SIDE_MODES = FLUSH_SIDES
 
 
 class MixedLiquidationFlushStrategy:
@@ -104,40 +109,25 @@ class MixedLiquidationFlushStrategy:
         sides = str(self.params["sides"])
         derived: dict[str, pd.DataFrame] = {}
         for symbol, frame in frames.items():
-            close = pd.to_numeric(frame["close"], errors="coerce")
-            flush_return = close.pct_change(return_bars, fill_method=None)
-            if OPEN_INTEREST_COLUMN in frame.columns:
-                open_interest = pd.to_numeric(
-                    frame[OPEN_INTEREST_COLUMN], errors="coerce"
-                ).ffill()
-                oi_change = open_interest / open_interest.shift(oi_bars) - 1.0
-            else:
-                oi_change = pd.Series(np.nan, index=frame.index)
-            flushed = oi_change <= -oi_drop_min
-            long_signal = flushed & (flush_return <= -return_min)
-            short_signal = flushed & (flush_return >= return_min)
-            if sides == "long":
-                short_signal = pd.Series(False, index=frame.index)
-            elif sides == "short":
-                long_signal = pd.Series(False, index=frame.index)
-            signal = pd.Series(0.0, index=frame.index)
-            signal[short_signal.fillna(False)] = -1.0
-            signal[long_signal.fillna(False)] = 1.0
-            # Bars since the last flush bar of either side (0 on a flush bar):
-            # a pure function of the bar history, so restarts cannot lose it.
-            active = signal != 0
-            last_active = pd.Series(
-                np.where(active, np.arange(len(frame)), np.nan), index=frame.index
-            ).ffill()
-            signal_age = (
-                pd.Series(np.arange(len(frame)), index=frame.index) - last_active
+            # The shared indicator (also behind the signal library's
+            # positioning family and the flush/oichg chart specs).
+            flush = liquidation_flush_signal(
+                frame,
+                return_bars=return_bars,
+                return_min=return_min,
+                oi_bars=oi_bars,
+                oi_drop_min=oi_drop_min,
+                sides=sides,
             )
             derived[symbol] = pd.DataFrame(
                 {
-                    "starter_flush_return": flush_return,
-                    "starter_oi_change": oi_change,
-                    "starter_signal": signal,
-                    "starter_signal_age": signal_age,
+                    "starter_flush_return": flush["flush_return"],
+                    "starter_oi_change": flush["oi_change"],
+                    "starter_signal": flush["signal"],
+                    # Bars since the last flush bar of either side (0 on a
+                    # flush bar): a pure function of the bar history, so
+                    # restarts cannot lose it.
+                    "starter_signal_age": bars_since_signal(flush["signal"]),
                 }
             )
         return add_stop_atr(derived, frames, period=int(self.params["stop_atr_period"]))

@@ -20,11 +20,42 @@ from wayfinder_paths.jobs.research import (
     signal_scan_job,
 )
 from wayfinder_paths.jobs.signal_library import (
+    SIGNAL_DSL,
     SIGNAL_LIBRARY,
     build_signal_frame,
+    compile_signal_expression,
+    missing_feeds,
     signal_defs,
 )
 from wayfinder_paths.jobs.strategies import library_catalog
+
+
+def _with_feeds(frame: pd.DataFrame) -> pd.DataFrame:
+    """Synthetic funding and open-interest feeds: a positive funding spike
+    while price stalls and open interest builds (bars 300-330), the mirror
+    with negative funding (500-530), and open interest collapsing through
+    the crash (200-260) and the melt-up (400-460)."""
+    n = len(frame)
+    i = np.arange(n)
+    funding = 0.0001 + 0.00003 * np.sin(i / 5.0)
+    funding[300:331] = 0.004
+    funding[500:531] = -0.004
+    oi = 1.0e6 + 400.0 * i
+    for start, end in ((200, 261), (400, 461)):
+        oi[start:end] = oi[start - 1] * (1.0 - 0.25 * (i[start:end] - start) / 60)
+        oi[end:] = oi[end:] - (oi[end - 1] - oi[end]) if end < n else oi[end:]
+    out = frame.copy()
+    out["funding"] = funding[:n]
+    out["open_interest"] = oi[:n]
+    return out
+
+
+POSITIONING = {
+    "funding_divergence_short",
+    "funding_divergence_long",
+    "liquidation_flush_long",
+    "liquidation_flush_short",
+}
 
 
 def _bars(closes: list[float], volumes: list[float] | None = None) -> pd.DataFrame:
@@ -81,13 +112,67 @@ class TestSignalLibrary:
         for i in range(400, 460):
             closes[i] += (i - 400) * 0.8
         volumes = [100.0 + (500.0 if i % 37 == 0 else 0.0) for i in range(n)]
-        signals = build_signal_frame(_bars(closes, volumes))
+        signals = build_signal_frame(_with_feeds(_bars(closes, volumes)))
         silent = [name for name in signals.columns if not signals[name].any()]
         assert silent == [], f"never-firing signals: {silent}"
 
     def test_short_frame_returns_all_false(self):
         signals = build_signal_frame(_bars(_wavy_closes(5)))
         assert not signals.to_numpy().any()
+
+    def test_feed_signals_are_all_false_without_their_feeds(self):
+        # An OHLCV-only frame cannot measure positioning: the columns exist,
+        # are False everywhere, and the defs name the feeds they need.
+        frame = _bars(_wavy_closes(400))
+        signals = build_signal_frame(frame)
+        defs = signal_defs()
+        for name in POSITIONING:
+            assert not signals[name].any(), name
+            assert defs[name].family == "positioning"
+            assert missing_feeds(frame, defs[name]) == defs[name].requires
+            assert "open_interest" in defs[name].requires
+        assert missing_feeds(_with_feeds(frame), defs["funding_divergence_short"]) == ()
+        assert all(
+            spec.requires == ()
+            for spec in SIGNAL_LIBRARY
+            if spec.name not in POSITIONING
+        )
+
+    def test_feed_signals_are_causal_and_exposed_to_the_dsl(self):
+        closes = _wavy_closes(600)
+        for i in range(200, 260):
+            closes[i] -= (i - 200) * 0.8
+        for i in range(400, 460):
+            closes[i] += (i - 400) * 0.8
+        full = build_signal_frame(_with_feeds(_bars(closes)))
+        prefix = build_signal_frame(
+            _with_feeds(_bars(closes)).iloc[:450].reset_index(drop=True)
+        )
+        pd.testing.assert_frame_equal(full.iloc[:450], prefix)
+        assert full["liquidation_flush_long"].iloc[200:262].any()
+        assert full["liquidation_flush_short"].iloc[400:462].any()
+        assert full["funding_divergence_short"].iloc[300:332].any()
+        assert full["funding_divergence_long"].iloc[500:532].any()
+        assert not (
+            full["funding_divergence_short"] & full["funding_divergence_long"]
+        ).any()
+        # designer expressions can compose the shared indicators
+        for name in (
+            "funding_zscore",
+            "trailing_change",
+            "funding_divergence",
+            "liquidation_flush",
+        ):
+            assert name in SIGNAL_DSL
+        composed = compile_signal_expression(
+            name="flush_long_calm",
+            family="workspace",
+            description="flush long while funding is not extreme",
+            min_bars=130,
+            expression="(liquidation_flush(f) > 0) & (funding_zscore(f['funding'], 480).abs() < 3)",
+        )
+        column = composed.build(_with_feeds(_bars(closes))).fillna(False).astype(bool)
+        assert column.iloc[200:262].any()
 
     def test_directional_pairs_are_distinct_events(self):
         frame = _bars(_wavy_closes(400))
@@ -473,8 +558,9 @@ class TestSessionAndIndicatorAdditions:
 
     def test_session_families_and_counts(self):
         defs = signal_defs()
-        assert len(SIGNAL_LIBRARY) == 37
+        assert len(SIGNAL_LIBRARY) == 41
         assert defs["us_open_hour"].family == "session"
+        assert defs["liquidation_flush_long"].family == "positioning"
         assert defs["macd_cross_up_12_26_9"].family == "trend"
         assert defs["rsi14_cross_dn_50"].family == "momentum"
 

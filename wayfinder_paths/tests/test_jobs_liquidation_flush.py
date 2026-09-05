@@ -206,6 +206,40 @@ def test_cascade_guards_hold_entries_until_the_bar_calms_or_confirms() -> None:
     assert len(confirming.decide(_context(confirming, rows))) == 2
 
 
+def test_precompute_is_the_shared_indicator() -> None:
+    from wayfinder_paths.jobs.indicators import (
+        bars_since_signal,
+        liquidation_flush_signal,
+    )
+
+    strategy = _strategy(entry_order_type="market")
+    ctx = _context(strategy, _rows(move=-0.10, oi_change=-0.15, quiet_tail=40))
+    frame = ctx.view.symbol_frame("AAA").reset_index(drop=True)
+    shared = liquidation_flush_signal(
+        frame, return_bars=96, return_min=0.08, oi_bars=96, oi_drop_min=0.10
+    )
+    for starter_column, shared_column in (
+        ("starter_flush_return", "flush_return"),
+        ("starter_oi_change", "oi_change"),
+        ("starter_signal", "signal"),
+    ):
+        # the view stores derived columns as objects; compare the values
+        pd.testing.assert_series_equal(
+            pd.to_numeric(frame[starter_column], errors="coerce").reset_index(
+                drop=True
+            ),
+            shared[shared_column].astype(float).reset_index(drop=True),
+            check_names=False,
+        )
+    pd.testing.assert_series_equal(
+        pd.to_numeric(frame["starter_signal_age"], errors="coerce").reset_index(
+            drop=True
+        ),
+        bars_since_signal(shared["signal"]).astype(float).reset_index(drop=True),
+        check_names=False,
+    )
+
+
 def test_rejects_invalid_modes_and_thresholds() -> None:
     with pytest.raises(ValueError):
         MixedLiquidationFlushStrategy({"entry_order_type": "limit"})

@@ -26,14 +26,19 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from wayfinder_paths.jobs.execution.primitives import (
     ExecutionContext,
     mark_to_market_equity,
 )
-from wayfinder_paths.jobs.indicators import bounded_span
+from wayfinder_paths.jobs.indicators import (
+    FEED_FUNDING,
+    FEED_OPEN_INTEREST,
+    OI_CONFIRMATION_MODES,
+    bounded_span,
+    funding_divergence_signal,
+)
 from wayfinder_paths.jobs.strategies._starter_utils import (
     MEAN_REVERSION_STOP_DEFAULTS,
     add_stop_atr,
@@ -43,9 +48,8 @@ from wayfinder_paths.jobs.strategies._starter_utils import (
     stop_brackets,
 )
 
-FUNDING_COLUMN = "funding"
-OPEN_INTEREST_COLUMN = "open_interest"
-OI_CONFIRMATION_MODES = frozenset({"off", "building", "unwinding"})
+FUNDING_COLUMN = FEED_FUNDING
+OPEN_INTEREST_COLUMN = FEED_OPEN_INTEREST
 
 
 class MixedFundingDivergenceStrategy:
@@ -92,7 +96,6 @@ class MixedFundingDivergenceStrategy:
 
     def precompute(self, frames: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
         window = int(self.params["funding_z_window_bars"])
-        min_periods = max(10, window // 4)
         confirm_bars = int(self.params["confirm_return_bars"])
         confirm_max = float(self.params["confirm_return_max"])
         z_entry = float(self.params["funding_z_entry"])
@@ -100,43 +103,23 @@ class MixedFundingDivergenceStrategy:
         oi_lookback = int(self.params["oi_lookback_bars"])
         derived: dict[str, pd.DataFrame] = {}
         for symbol, frame in frames.items():
-            close = pd.to_numeric(frame["close"], errors="coerce")
-            if FUNDING_COLUMN in frame.columns:
-                funding = pd.to_numeric(frame[FUNDING_COLUMN], errors="coerce").ffill()
-                mean = funding.rolling(window, min_periods=min_periods).mean()
-                std = funding.rolling(window, min_periods=min_periods).std()
-                funding_z = (funding - mean) / std.replace(0.0, np.nan)
-            else:
-                funding_z = pd.Series(np.nan, index=frame.index)
-            confirm_return = close.pct_change(confirm_bars, fill_method=None)
-            if OPEN_INTEREST_COLUMN in frame.columns:
-                open_interest = pd.to_numeric(
-                    frame[OPEN_INTEREST_COLUMN], errors="coerce"
-                ).ffill()
-                oi_change = open_interest / open_interest.shift(oi_lookback) - 1.0
-            else:
-                oi_change = pd.Series(np.nan, index=frame.index)
-            if oi_mode == "building":
-                oi_confirms = oi_change > 0
-            elif oi_mode == "unwinding":
-                oi_confirms = oi_change < 0
-            else:
-                oi_confirms = pd.Series(True, index=frame.index)
-            short_signal = (
-                (funding_z > z_entry) & (confirm_return <= confirm_max) & oi_confirms
+            # The shared indicator (also behind the signal library's
+            # positioning family and the funddiv/fundz/oichg chart specs).
+            divergence = funding_divergence_signal(
+                frame,
+                z_window=window,
+                z_entry=z_entry,
+                confirm_bars=confirm_bars,
+                confirm_max=confirm_max,
+                oi_bars=oi_lookback,
+                oi_mode=oi_mode,
             )
-            long_signal = (
-                (funding_z < -z_entry) & (confirm_return >= -confirm_max) & oi_confirms
-            )
-            signal = pd.Series(0.0, index=frame.index)
-            signal[short_signal.fillna(False)] = -1.0
-            signal[long_signal.fillna(False)] = 1.0
             derived[symbol] = pd.DataFrame(
                 {
-                    "starter_funding_z": funding_z,
-                    "starter_confirm_return": confirm_return,
-                    "starter_oi_change": oi_change,
-                    "starter_signal": signal,
+                    "starter_funding_z": divergence["funding_z"],
+                    "starter_confirm_return": divergence["confirm_return"],
+                    "starter_oi_change": divergence["oi_change"],
+                    "starter_signal": divergence["signal"],
                 }
             )
         return add_stop_atr(derived, frames, period=int(self.params["stop_atr_period"]))

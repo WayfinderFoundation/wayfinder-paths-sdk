@@ -205,6 +205,38 @@ def test_positions_close_after_the_hold_or_on_a_flipped_signal() -> None:
     assert closes[0]["metadata"]["exit_reason"] == "max_hold"
 
 
+def test_precompute_is_the_shared_indicator() -> None:
+    from wayfinder_paths.jobs.indicators import funding_divergence_signal
+
+    strategy = _strategy(entry_order_type="market", oi_confirmation="building")
+    rows = _rows(crowded="longs", price_confirms=False)
+    ctx = _context(strategy, rows)
+    frame = ctx.view.symbol_frame("AAA").reset_index(drop=True)
+    shared = funding_divergence_signal(
+        frame,
+        z_window=WINDOW,
+        z_entry=2.0,
+        confirm_bars=96,
+        confirm_max=0.0,
+        oi_bars=96,
+        oi_mode="building",
+    )
+    for starter_column, shared_column in (
+        ("starter_funding_z", "funding_z"),
+        ("starter_confirm_return", "confirm_return"),
+        ("starter_oi_change", "oi_change"),
+        ("starter_signal", "signal"),
+    ):
+        # the view stores derived columns as objects; compare the values
+        pd.testing.assert_series_equal(
+            pd.to_numeric(frame[starter_column], errors="coerce").reset_index(
+                drop=True
+            ),
+            shared[shared_column].astype(float).reset_index(drop=True),
+            check_names=False,
+        )
+
+
 def test_rejects_unknown_execution_or_confirmation_modes() -> None:
     import pytest
 

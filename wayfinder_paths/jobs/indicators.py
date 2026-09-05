@@ -125,6 +125,158 @@ def panel_breadth(
     return breadth.where(eligible >= min_assets)
 
 
+# Feature-feed columns the positioning indicators read. A job that declares
+# the feed in its data contract sees the column on every bar (as-of merged);
+# without it the indicators return NaN / a zero signal rather than raising.
+FEED_FUNDING = "funding"
+FEED_OPEN_INTEREST = "open_interest"
+OI_CONFIRMATION_MODES = frozenset({"off", "building", "unwinding"})
+FLUSH_SIDES = frozenset({"both", "long", "short"})
+
+
+def funding_zscore(
+    funding: pd.Series, window: int, *, min_periods: int | None = None
+) -> pd.Series:
+    """Rolling z-score of a (forward-filled) funding series over ``window`` bars.
+
+    Hourly Hyperliquid funding on 15m bars is the calibrated use: 2,880 bars
+    is 30 days. The default ``min_periods`` is a quarter of the window.
+    """
+    if window <= 1:
+        raise ValueError("funding z-score window must exceed one bar")
+    periods = max(10, window // 4) if min_periods is None else int(min_periods)
+    values = pd.to_numeric(funding, errors="coerce").ffill()
+    mean = values.rolling(window, min_periods=periods).mean()
+    std = values.rolling(window, min_periods=periods).std()
+    return (values - mean) / std.replace(0.0, np.nan)
+
+
+def trailing_change(values: pd.Series, period: int) -> pd.Series:
+    """Forward-filled level change over ``period`` bars (``0.10`` means +10%);
+    the open-interest transform behind the positioning indicators."""
+    if period <= 0:
+        raise ValueError("trailing change period must be positive")
+    filled = pd.to_numeric(values, errors="coerce").ffill()
+    return filled / filled.shift(period) - 1.0
+
+
+def _feed_column(frame: pd.DataFrame, column: str) -> pd.Series | None:
+    return frame[column] if column in frame.columns else None
+
+
+def funding_divergence_signal(
+    frame: pd.DataFrame,
+    *,
+    z_window: int = 2880,
+    z_entry: float = 2.0,
+    confirm_bars: int = 96,
+    confirm_max: float = 0.0,
+    oi_bars: int = 96,
+    oi_mode: str = "building",
+) -> dict[str, pd.Series]:
+    """Crowded positioning that price is not rewarding.
+
+    ``signal`` is -1 where the funding z-score is above ``z_entry`` while the
+    trailing ``confirm_bars`` return is at most ``confirm_max`` (longs pay up,
+    price does not follow: fade them), +1 for the mirror, 0 otherwise.
+    ``oi_mode`` adds the open-interest read over ``oi_bars``: ``"building"``
+    requires the crowd to still be adding, ``"unwinding"`` requires it to be
+    shrinking, ``"off"`` ignores it. Missing feeds leave the signal at 0.
+    Returns ``funding_z``, ``confirm_return``, ``oi_change`` and ``signal``.
+    """
+    if oi_mode not in OI_CONFIRMATION_MODES:
+        raise ValueError(
+            "oi_mode must be one of " + ", ".join(sorted(OI_CONFIRMATION_MODES))
+        )
+    index = frame.index
+    close = pd.to_numeric(frame["close"], errors="coerce")
+    funding = _feed_column(frame, FEED_FUNDING)
+    funding_z = (
+        funding_zscore(funding, z_window)
+        if funding is not None
+        else pd.Series(np.nan, index=index)
+    )
+    confirm_return = close.pct_change(confirm_bars, fill_method=None)
+    open_interest = _feed_column(frame, FEED_OPEN_INTEREST)
+    oi_change = (
+        trailing_change(open_interest, oi_bars)
+        if open_interest is not None
+        else pd.Series(np.nan, index=index)
+    )
+    if oi_mode == "building":
+        oi_confirms = oi_change > 0
+    elif oi_mode == "unwinding":
+        oi_confirms = oi_change < 0
+    else:
+        oi_confirms = pd.Series(True, index=index)
+    short = (funding_z > z_entry) & (confirm_return <= confirm_max) & oi_confirms
+    long = (funding_z < -z_entry) & (confirm_return >= -confirm_max) & oi_confirms
+    signal = pd.Series(0.0, index=index)
+    signal[short.fillna(False)] = -1.0
+    signal[long.fillna(False)] = 1.0
+    return {
+        "funding_z": funding_z,
+        "confirm_return": confirm_return,
+        "oi_change": oi_change,
+        "signal": signal,
+    }
+
+
+def liquidation_flush_signal(
+    frame: pd.DataFrame,
+    *,
+    return_bars: int = 96,
+    return_min: float = 0.08,
+    oi_bars: int = 96,
+    oi_drop_min: float = 0.10,
+    sides: str = "both",
+) -> dict[str, pd.Series]:
+    """A move that open interest did not survive.
+
+    ``signal`` is +1 where the trailing ``return_bars`` return is at most
+    ``-return_min`` while open interest fell by at least ``oi_drop_min`` over
+    ``oi_bars`` (longs were liquidated into the drop: buy the flush), -1 for
+    the mirror (a short squeeze), 0 otherwise; ``sides`` keeps ``"long"``,
+    ``"short"`` or ``"both"``. Missing open interest leaves the signal at 0.
+    Returns ``flush_return``, ``oi_change`` and ``signal``.
+    """
+    if sides not in FLUSH_SIDES:
+        raise ValueError("sides must be one of " + ", ".join(sorted(FLUSH_SIDES)))
+    if return_min <= 0 or oi_drop_min <= 0:
+        raise ValueError("flush thresholds must be positive")
+    index = frame.index
+    close = pd.to_numeric(frame["close"], errors="coerce")
+    flush_return = close.pct_change(return_bars, fill_method=None)
+    open_interest = _feed_column(frame, FEED_OPEN_INTEREST)
+    oi_change = (
+        trailing_change(open_interest, oi_bars)
+        if open_interest is not None
+        else pd.Series(np.nan, index=index)
+    )
+    flushed = oi_change <= -oi_drop_min
+    long = flushed & (flush_return <= -return_min)
+    short = flushed & (flush_return >= return_min)
+    if sides == "long":
+        short = pd.Series(False, index=index)
+    elif sides == "short":
+        long = pd.Series(False, index=index)
+    signal = pd.Series(0.0, index=index)
+    signal[short.fillna(False)] = -1.0
+    signal[long.fillna(False)] = 1.0
+    return {"flush_return": flush_return, "oi_change": oi_change, "signal": signal}
+
+
+def bars_since_signal(signal: pd.Series) -> pd.Series:
+    """Bars since the last nonzero signal (0 on a signal bar, NaN before the
+    first): a pure function of the bar history, so restarts cannot lose it."""
+    active = pd.to_numeric(signal, errors="coerce").fillna(0.0) != 0
+    positions = np.arange(len(signal))
+    last_active = pd.Series(
+        np.where(active, positions, np.nan), index=signal.index
+    ).ffill()
+    return pd.Series(positions, index=signal.index) - last_active
+
+
 def _spec_error(spec: str, reason: str) -> ValueError:
     return ValueError(
         f"bad indicator spec {spec!r}: {reason}. Known specs: sma:N, ema:N, "
@@ -136,7 +288,14 @@ def _spec_error(spec: str, reason: str) -> ValueError:
         "z-score), vwapdist (bps from session VWAP), daylevel (bps to prior "
         "UTC-day high/low), rvratio:N:M (short-vs-long realized vol), "
         "sigmabars:K (bars since last K-sigma move), fundclock (bars "
-        "since/until the 8h funding settlement)"
+        "since/until the 8h funding settlement), fundz:N (funding-rate z-score "
+        "over N bars; needs the funding feed), oichg:N (open-interest change "
+        "over N bars; needs the open_interest feed), funddiv:Z:R:W "
+        "(funding/open-interest divergence side, +1 long / -1 short: z-score "
+        "over W bars beyond Z with the R-bar return not confirming and open "
+        "interest building; W defaults to 2880), "
+        "flush:R:O (liquidation flush side: R% move against an O% "
+        "open-interest drop over 96 bars)"
     )
 
 
@@ -303,6 +462,45 @@ def compute_indicator(frame: pd.DataFrame, spec: str) -> dict[str, pd.Series]:
             # Bars since the last 00/08/16 UTC settlement (0 = the bar that
             # closed ON the boundary).
             return {"fundclock": (seconds_into / bar_seconds).round()}
+        case "fundz":
+            n = _one(2880)
+            funding = _feed_column(frame, FEED_FUNDING)
+            return {
+                f"fundz{n}": funding_zscore(funding, n)
+                if funding is not None
+                else pd.Series(np.nan, index=frame.index)
+            }
+        case "oichg":
+            n = _one(96)
+            open_interest = _feed_column(frame, FEED_OPEN_INTEREST)
+            return {
+                f"oichg{n}": trailing_change(open_interest, n)
+                if open_interest is not None
+                else pd.Series(np.nan, index=frame.index)
+            }
+        case "funddiv":
+            if len(nums) > 3:
+                raise _spec_error(spec, "expected funddiv:Z:R:W")
+            z_entry = float(nums[0]) if nums else 2.0
+            bars = int(nums[1]) if len(nums) > 1 else 96
+            z_window = int(nums[2]) if len(nums) > 2 else 2880
+            divergence = funding_divergence_signal(
+                frame,
+                z_window=z_window,
+                z_entry=z_entry,
+                confirm_bars=bars,
+                oi_bars=bars,
+            )
+            return {"funddiv": divergence["signal"]}
+        case "flush":
+            if len(nums) > 2:
+                raise _spec_error(spec, "expected flush:R:O in percent")
+            move_pct = float(nums[0]) if nums else 8.0
+            drop_pct = float(nums[1]) if len(nums) > 1 else 10.0
+            flush = liquidation_flush_signal(
+                frame, return_min=move_pct / 100.0, oi_drop_min=drop_pct / 100.0
+            )
+            return {"flush": flush["signal"]}
         case _:
             raise _spec_error(spec, "unknown indicator")
 
