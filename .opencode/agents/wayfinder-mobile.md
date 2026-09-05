@@ -1,7 +1,6 @@
 ---
 description: Mobile messaging variant of the Wayfinder agent. Replies are delivered as SMS/iMessage texts — plain text only, no Markdown, no user suggestions.
 mode: primary
-temperature: 0.1
 steps: 64
 permission:
   task:
