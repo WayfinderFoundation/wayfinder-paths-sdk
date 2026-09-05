@@ -486,6 +486,160 @@ def _refresh_dataset_if_stale(job_id: str, store: JobStore, root: Any) -> str | 
     return f"dataset tail refreshed (was {int(age)}s stale)"
 
 
+FEED_FEATURE_FUNDING = "funding"
+FEED_FEATURE_OPEN_INTEREST = "open_interest"
+# Funding rows are hourly on Hyperliquid; three days of tail covers any wake gap.
+FUNDING_TOPUP_DAYS = 3
+
+
+def _declared_feature_names(root: Path) -> set[str]:
+    job_data = _load_job_yaml(root)
+    spec_data, _ = resolve_execution_spec(root, job_data)
+    if not spec_data:
+        return set()
+    features = (spec_data.get("data_contract") or {}).get("features") or []
+    return {
+        str(item.get("name"))
+        for item in features
+        if isinstance(item, dict) and item.get("name")
+    }
+
+
+def _append_feature_rows(root: Path, rows: list[dict[str, Any]]) -> int:
+    """Append canonical feature rows, deduped on timestamp+name+symbol."""
+    path = root / "state" / "features.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing: set[tuple[str, str, str]] = set()
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                existing.add(
+                    (
+                        str(row.get("timestamp")),
+                        str(row.get("name")),
+                        str(row.get("symbol")),
+                    )
+                )
+    written_at = utc_now_iso()
+    appended = 0
+    with path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            key = (str(row["timestamp"]), str(row["name"]), str(row["symbol"]))
+            if key in existing:
+                continue
+            existing.add(key)
+            handle.write(json.dumps({**row, "written_at": written_at}) + "\n")
+            appended += 1
+    return appended
+
+
+def _fetch_open_interest_rows(symbols: list[str]) -> list[dict[str, Any]]:
+    """One `open_interest` row per symbol from the venue's asset contexts:
+    open interest in USD (contracts x mark), stamped at the current hour."""
+    from wayfinder_paths.core.clients.HyperliquidInfoClient import (
+        HyperliquidInfoClient,
+    )
+
+    async def _fetch() -> Any:
+        return await HyperliquidInfoClient().post({"type": "metaAndAssetCtxs"})
+
+    meta, ctxs = asyncio.run(_fetch())
+    wanted = set(symbols)
+    stamp = (
+        dt.datetime.now(dt.UTC).replace(minute=0, second=0, microsecond=0).isoformat()
+    )
+    rows: list[dict[str, Any]] = []
+    for asset, ctx in zip(meta.get("universe", []), ctxs, strict=False):
+        name = str(asset.get("name"))
+        if name not in wanted:
+            continue
+        contracts = float(ctx.get("openInterest") or 0.0)
+        mark = float(ctx.get("markPx") or 0.0)
+        if contracts <= 0 or mark <= 0:
+            continue
+        rows.append(
+            {
+                "timestamp": stamp,
+                "name": FEED_FEATURE_OPEN_INTEREST,
+                "value": contracts * mark,
+                "symbol": name,
+            }
+        )
+    return rows
+
+
+def refresh_declared_feeds(
+    job_id: str,
+    *,
+    store: JobStore | None = None,
+    fetch_funding: Callable[..., dict[str, Any]] | None = None,
+    fetch_open_interest: Callable[[list[str]], list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    """Keep the venue feeds a strategy declares as features live from the
+    wake path: top up hourly `funding` rows and record an `open_interest`
+    row per symbol. Both are first-class carry/positioning data; open
+    interest has no public history beyond what the job records itself, so
+    the wake is its recorder. Never raises: a failed feed is journaled and
+    the feature's own staleness policy stands the strategy down."""
+    store = store or JobStore()
+    root = store.job_dir(job_id)
+    declared = _declared_feature_names(root)
+    result: dict[str, Any] = {"funding": None, "open_interest": None}
+    if not declared & {FEED_FEATURE_FUNDING, FEED_FEATURE_OPEN_INTEREST}:
+        return result
+    job_data = _load_job_yaml(root)
+    params = dict(job_data.get("execution_params") or {})
+    symbols = [str(s) for s in (params.get("symbols") or [])]
+    if FEED_FEATURE_FUNDING in declared:
+        try:
+            run_funding = fetch_funding
+            if run_funding is None:
+                from wayfinder_paths.jobs.execution.preflight import (
+                    fetch_funding_features,
+                )
+
+                run_funding = fetch_funding_features
+            venue = str(params.get("venue") or "hyperliquid")
+            quote = "USDC" if venue == "hyperliquid" else "USDT"
+            outcome = run_funding(
+                job_id,
+                days=FUNDING_TOPUP_DAYS,
+                exchange=venue,
+                quote=quote,
+                store=store,
+            )
+            result["funding"] = {"appended": int((outcome or {}).get("appended") or 0)}
+        except Exception as exc:  # noqa: BLE001 — wake must not die on a feed
+            store.append_journal(
+                job_id,
+                {
+                    "type": "feed_refresh_failed",
+                    "feed": FEED_FEATURE_FUNDING,
+                    "error": str(exc)[:280],
+                },
+            )
+            result["funding"] = {"error": str(exc)[:120]}
+    if FEED_FEATURE_OPEN_INTEREST in declared and symbols:
+        try:
+            rows = (fetch_open_interest or _fetch_open_interest_rows)(symbols)
+            result["open_interest"] = {"appended": _append_feature_rows(root, rows)}
+        except Exception as exc:  # noqa: BLE001
+            store.append_journal(
+                job_id,
+                {
+                    "type": "feed_refresh_failed",
+                    "feed": FEED_FEATURE_OPEN_INTEREST,
+                    "error": str(exc)[:280],
+                },
+            )
+            result["open_interest"] = {"error": str(exc)[:120]}
+    return result
+
+
 def refresh_derived_features_if_stale(
     job_id: str,
     *,
@@ -532,6 +686,10 @@ def refresh_derived_features_if_stale(
                 },
             )
             dataset_note = f"dataset refresh failed: {str(exc)[:120]}"
+    # Venue feeds a strategy consumes as features (funding, open interest)
+    # ride the same hourly stamp; each failure journals and stands down only
+    # the feature's consumer, never the wake.
+    feeds = refresh_declared_feeds(job_id, store=store)
 
     run = derive or derive_features_job
     try:
@@ -630,6 +788,7 @@ def refresh_derived_features_if_stale(
     store.write_json(job_id, REFRESH_STAMP_PATH, stamp)
     return {
         "refreshed": True,
+        **({"feeds": feeds} if any(feeds.values()) else {}),
         "rows_appended": result.get("rows_appended"),
         **({"dataset": dataset_note} if dataset_note else {}),
     }

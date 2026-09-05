@@ -242,7 +242,7 @@ def dataset_fetch_spawns(monkeypatch) -> list[dict[str, Any]]:
 
 def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
     catalog = starter_catalog()
-    assert len(catalog) == 16
+    assert len(catalog) == 18
     assert {item["timeframe"] for item in catalog} == {
         "5m",
         "15m",
@@ -251,7 +251,7 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
         "1d",
     }
     assert [item["timeframe"] for item in catalog].count("5m") == 3
-    assert [item["timeframe"] for item in catalog].count("15m") == 5
+    assert [item["timeframe"] for item in catalog].count("15m") == 7
     assert [item["timeframe"] for item in catalog].count("1h") == 5
     assert [item["timeframe"] for item in catalog].count("4h") == 1
     assert [item["timeframe"] for item in catalog].count("1d") == 2
@@ -269,6 +269,7 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
             "low_volatility_ranking",
             "regime_rotation",
             "relative_value_pair",
+            "funding_divergence",
         }
         assert isinstance(item["cautions"], list)
         assert item["strategy_inception_at"]
@@ -450,6 +451,8 @@ EXPECTED_STARTER_LOOKBACK_BARS = {
     "diversified-trend-sleeves-15m": 792,
     "diversified-momentum-taker-15m": 792,
     "crypto-gold-regime-relay-15m": 984,
+    "diversified-funding-oi-divergence-maker-15m": 2904,
+    "diversified-funding-oi-divergence-taker-15m": 2904,
 }
 
 
@@ -596,6 +599,30 @@ def test_create_starter_sets_driver_lookback_above_warmup(tmp_path) -> None:
     assert lookback == 2904
     strategy = MixedSleeveMomentumStrategy(dict(job.execution_params))
     assert lookback > strategy.warmup_bars  # 2884: momentum_bars 2880 + 4
+
+
+def test_funding_starters_declare_their_feeds_and_stand_without_them(tmp_path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    for starter_id in (
+        "diversified-funding-oi-divergence-maker-15m",
+        "diversified-funding-oi-divergence-taker-15m",
+    ):
+        create_starter_job(starter_id, store=store, compile_job=False)
+        job = store.load(starter_id)
+        declared = {
+            feature["name"]: feature
+            for feature in job.execution_spec["data_contract"]["features"]
+        }
+        assert set(declared) == {"funding", "open_interest"}
+        assert declared["funding"]["max_age_seconds"] == 7200
+        assert declared["open_interest"]["max_age_seconds"] == 172_800
+        assert all(f["stale_policy"] == "skip" for f in declared.values())
+        assert job.execution_params["oi_confirmation"] == "building"
+        assert job.execution_params["stop_min_pct"] == 0.30
+    # starters without feeds keep the contract unchanged
+    create_starter_job("mixed-sleeve-momentum-15m", store=store, compile_job=False)
+    plain = store.load("mixed-sleeve-momentum-15m")
+    assert "features" not in plain.execution_spec["data_contract"]
 
 
 def test_momentum_rank_longs_leaders_and_shorts_laggards() -> None:

@@ -124,6 +124,9 @@ class StarterDefinition:
     research_evidence: dict[str, Any]
     strategy_inception_at: str = STARTER_STRATEGY_INCEPTION_AT
     cautions: tuple[str, ...] = ()
+    # Declared feature feeds (data_contract.features): the wake refresh keeps
+    # each one live and the strategy stands down while a feed is stale.
+    features: tuple[dict[str, Any], ...] = ()
 
     def configured_params(self) -> dict[str, Any]:
         if self.family in {"mean_reversion", "maker_mean_reversion"}:
@@ -418,6 +421,94 @@ _BULLISH_5M_RESEARCH_METHOD = {
         "publication, so forward paper results remain the real holdout"
     ),
 }
+
+_FUNDING_OI_DIVERGENCE_RESEARCH_METHOD = {
+    "source": (
+        "Hydromancer Reservoir 1-second Hyperliquid candles aggregated to 15m, "
+        "hourly Hyperliquid funding through the SDK funding fetcher, and daily "
+        "open interest aggregated from a Hyperliquid account-snapshot archive"
+    ),
+    "window_start": "2025-07-31T00:15:00+00:00",
+    "window_end": "2026-09-04T00:00:00+00:00",
+    "calendar_days": 400.0,
+    "tradeable_from": "2025-08-30T00:00:00+00:00",
+    "fill_model": (
+        "decision on completed close; market fills at next bar open; post-only "
+        "fills require a 1 bp candle trade-through of the resting price"
+    ),
+    "costs": {
+        "taker_fee_bps_per_side": 4.5,
+        "slippage_bps_per_side": 3.5,
+        "maker_fee_bps_per_side": 1.5,
+    },
+    "funding_included": False,
+    "funding": (
+        "not included; the fade is paid funding on average, see funding_pnl_note"
+    ),
+    "validation": (
+        "indicator screened on 19 Hyperliquid perps against a Binance same-year "
+        "and four-year replay, then every candidate was re-simulated per symbol "
+        "in the jobs_v1 engine and pooled (cross_asset_lift); the plain "
+        "funding-divergence and open-interest-unwind variants failed that bar; "
+        "all slices were reviewed before publication, so forward paper results "
+        "remain the real holdout"
+    ),
+}
+
+_FUNDING_OI_DIVERGENCE_SYMBOLS = (
+    "BTC",
+    "ETH",
+    "HYPE",
+    "SOL",
+    "XRP",
+    "NEAR",
+    "PUMP",
+    "WLD",
+    "SUI",
+    "DOGE",
+    "TRUMP",
+    "FARTCOIN",
+    "AAVE",
+    "VVV",
+    "ENA",
+    "TAO",
+    "ONDO",
+    "BNB",
+    "kPEPE",
+)
+
+_FUNDING_OI_DIVERGENCE_FEATURES = (
+    {"name": "funding", "max_age_seconds": 7200, "stale_policy": "skip"},
+    {"name": "open_interest", "max_age_seconds": 172_800, "stale_policy": "skip"},
+)
+
+_FUNDING_OI_DIVERGENCE_PARAMS: dict[str, Any] = {
+    "funding_z_window_bars": 2880,
+    "funding_z_entry": 2.0,
+    "confirm_return_bars": 96,
+    "confirm_return_max": 0.0,
+    "oi_confirmation": "building",
+    "oi_lookback_bars": 96,
+    "max_hold_bars": 96,
+    "weight_per_leg": 0.05,
+    "maker_fee_bps": 1.5,
+    "maker_trade_through_bps": 1.0,
+    # catastrophe stop only: the mean-reversion overlay bound the 24-hour hold
+    # in three of four quarters (37 stops, +3.6% against +6.3% without), and
+    # the ranking floor of 25% fired once on a 27% VVV squeeze (-8 bps)
+    "stop_atr_period": 24,
+    "stop_atr_multiple": 12.0,
+    "stop_min_pct": 0.30,
+    "stop_max_pct": 0.50,
+}
+
+_FUNDING_OI_DIVERGENCE_CAUTIONS = (
+    "Open interest has no public history on Hyperliquid: a new job records it at every wake from its first day, and the strategy stands down until a full day of open-interest history exists. The backtest used a daily archive of account snapshots.",
+    "Hourly funding is required; the edge disappeared when the same rules ran on 8-hour averaged funding.",
+    "The funding-only signal was regime dependent over four Binance years (negative in 2022 and 2024); the open-interest-confirmed book has one year of Hyperliquid history and eight of nineteen symbols carried the taker book.",
+    "This fades a crowded side: liquidation cascades can move further than the 24-hour hold's usual range, and the catastrophe stop is the only per-position guard. Its 30% floor was chosen after the 25% ranking floor fired once on a 27% VVV squeeze; a 5% leg can still lose 1.5–2.5% of equity before it triggers.",
+    "Funding P&L is excluded from the headline figures.",
+)
 
 
 STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
@@ -1646,6 +1737,183 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
             "BCH and LTC are materially less liquid than BTC and ETH; keep this starter small and honor live capacity checks.",
         ),
     ),
+    StarterDefinition(
+        id="diversified-funding-oi-divergence-maker-15m",
+        name="Diversified Funding / OI Divergence Maker · 15m",
+        family="funding_divergence",
+        summary=(
+            "Rests post-only orders against a crowded side that hourly funding "
+            "says is paying up, price is not rewarding, and open interest shows "
+            "still adding, across nineteen Hyperliquid perps."
+        ),
+        timeframe="15m",
+        module="wayfinder_paths.jobs.strategies.mixed_funding_divergence",
+        symbols=_FUNDING_OI_DIVERGENCE_SYMBOLS,
+        crypto_assets=_FUNDING_OI_DIVERGENCE_SYMBOLS,
+        tokenized_equities=(),
+        rules=(
+            "Score hourly Hyperliquid funding as a z-score over the trailing 30 days (2,880 bars); a reading beyond ±2 marks a crowded side.",
+            "Fade the crowd only while price has not rewarded it over the trailing 24 hours and open interest has grown over the same 24 hours.",
+            "Rest a post-only order 0.5 ATR(24) beyond the close, replaced every bar; hold each fill for 96 completed bars or until the signal flips, then exit with a marketable order.",
+            "Size every leg at 5% of equity; the catastrophe stop is 12x ATR(24) bounded to 30–50%.",
+        ),
+        params={
+            **_FUNDING_OI_DIVERGENCE_PARAMS,
+            "entry_order_type": "maker",
+            "entry_offset_atr": 0.5,
+            "entry_ttl_bars": 1,
+        },
+        research_evidence={
+            **_FUNDING_OI_DIVERGENCE_RESEARCH_METHOD,
+            "strategy_family": (
+                "funding-rate divergence fade with open-interest confirmation, "
+                "passive entries"
+            ),
+            "sharpe": 0.7049,
+            "max_drawdown": -0.0577,
+            "chronological_fold_method": (
+                "fixed-parameter continuous jobs_v1 path divided into four "
+                "contiguous quarters"
+            ),
+            "chronological_fold_returns": [0.0093, 0.0102, -0.0131, 0.0402],
+            "cross_asset_lift": {
+                "method": (
+                    "jobs_v1 engine per symbol on cached frames, daily returns "
+                    "pooled at equal weight, 2025-08-31 to 2026-09-04"
+                ),
+                "pooled_sharpe": 0.77,
+                "pooled_return": 0.0474,
+                "halves_sharpe": [0.89, 0.62],
+                "symbols_positive": "12 of 19",
+                "funding_only_pooled_sharpe": 0.25,
+                "open_interest_unwind_pooled_sharpe": -0.25,
+            },
+            "signal_screen": {
+                "hyperliquid_pooled_sharpe": 1.75,
+                "binance_same_year_funding_only_sharpe": 1.13,
+                "binance_four_year_funding_only_sharpe": -0.20,
+                "binance_funding_only_by_year": {
+                    "2022": -0.58,
+                    "2023": 0.71,
+                    "2024": -1.75,
+                    "2025": 1.29,
+                },
+                "note": (
+                    "screen figures used a research fill model that rested a fresh "
+                    "order at every signal bar and overstated passive edges; the "
+                    "engine figures above are the published basis"
+                ),
+            },
+            "funding_pnl_note": (
+                "with hourly funding P&L included the same path returned 6.03% "
+                "at Sharpe 0.90 (drawdown -5.71%): the fade collects funding"
+            ),
+            "jobs_v1_engine": {
+                "return_after_fees_and_slippage": 0.0467,
+                "sharpe": 0.7049,
+                "max_drawdown": -0.0577,
+                "trade_count": 686,
+                "maker_fills": 343,
+                "total_fees_usd": 105.39,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
+                "funding_included": False,
+                "trace_valid": True,
+            },
+        },
+        strategy_inception_at="2026-09-05T00:00:00+00:00",
+        cautions=(
+            *_FUNDING_OI_DIVERGENCE_CAUTIONS,
+            "Maker fills use the strict candle trade-through model; live limit routing stays disabled until durable venue fill/cancel reconciliation lands.",
+            "Only 1x to 3x stayed within the -20% account-halt threshold in the leverage sweep.",
+        ),
+        features=_FUNDING_OI_DIVERGENCE_FEATURES,
+    ),
+    StarterDefinition(
+        id="diversified-funding-oi-divergence-taker-15m",
+        name="Diversified Funding / OI Divergence Taker · 15m",
+        family="funding_divergence",
+        summary=(
+            "Takes the next open against a crowded side that hourly funding "
+            "says is paying up, price is not rewarding, and open interest shows "
+            "still adding, across nineteen Hyperliquid perps."
+        ),
+        timeframe="15m",
+        module="wayfinder_paths.jobs.strategies.mixed_funding_divergence",
+        symbols=_FUNDING_OI_DIVERGENCE_SYMBOLS,
+        crypto_assets=_FUNDING_OI_DIVERGENCE_SYMBOLS,
+        tokenized_equities=(),
+        rules=(
+            "Score hourly Hyperliquid funding as a z-score over the trailing 30 days (2,880 bars); a reading beyond ±2 marks a crowded side.",
+            "Fade the crowd only while price has not rewarded it over the trailing 24 hours and open interest has grown over the same 24 hours.",
+            "Enter at the next bar open; hold 96 completed bars or until the signal flips, then exit with a marketable order.",
+            "Size every leg at 5% of equity; the catastrophe stop is 12x ATR(24) bounded to 30–50%.",
+        ),
+        params={
+            **_FUNDING_OI_DIVERGENCE_PARAMS,
+            "entry_order_type": "market",
+        },
+        research_evidence={
+            **_FUNDING_OI_DIVERGENCE_RESEARCH_METHOD,
+            "strategy_family": (
+                "funding-rate divergence fade with open-interest confirmation, "
+                "market entries"
+            ),
+            "sharpe": 0.8755,
+            "max_drawdown": -0.0475,
+            "chronological_fold_method": (
+                "fixed-parameter continuous jobs_v1 path divided into four "
+                "contiguous quarters"
+            ),
+            "chronological_fold_returns": [0.0115, 0.025, -0.0073, 0.033],
+            "cross_asset_lift": {
+                "method": (
+                    "jobs_v1 engine per symbol on cached frames, daily returns "
+                    "pooled at equal weight, 2025-08-31 to 2026-09-04"
+                ),
+                "pooled_sharpe": 0.93,
+                "pooled_return": 0.0633,
+                "halves_sharpe": [1.21, 0.59],
+                "symbols_positive": "8 of 19",
+                "funding_only_pooled_sharpe": 0.30,
+                "open_interest_unwind_pooled_sharpe": -0.63,
+            },
+            "signal_screen": {
+                "hyperliquid_pooled_sharpe": 0.99,
+                "binance_same_year_funding_only_sharpe": 1.13,
+                "binance_four_year_funding_only_sharpe": -0.20,
+                "binance_funding_only_by_year": {
+                    "2022": -0.58,
+                    "2023": 0.71,
+                    "2024": -1.75,
+                    "2025": 1.29,
+                },
+            },
+            "funding_pnl_note": (
+                "with hourly funding P&L included the same path returned 7.74% "
+                "at Sharpe 1.06 (drawdown -4.69%): the fade collects funding"
+            ),
+            "jobs_v1_engine": {
+                "return_after_fees_and_slippage": 0.0632,
+                "sharpe": 0.8755,
+                "max_drawdown": -0.0475,
+                "trade_count": 792,
+                "total_fees_usd": 184.94,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
+                "funding_included": False,
+                "trace_valid": True,
+            },
+        },
+        strategy_inception_at="2026-09-05T00:00:00+00:00",
+        cautions=(
+            *_FUNDING_OI_DIVERGENCE_CAUTIONS,
+            "Only 1x to 4x stayed within the -20% account-halt threshold in the leverage sweep.",
+        ),
+        features=_FUNDING_OI_DIVERGENCE_FEATURES,
+    ),
 )
 
 
@@ -1803,6 +2071,11 @@ def create_starter_job(
             "symbols": list(definition.symbols),
             "max_bar_age_intervals": 2,
             "stale_policy": "skip",
+            **(
+                {"features": [copy.deepcopy(dict(f)) for f in definition.features]}
+                if definition.features
+                else {}
+            ),
         },
         "validation": {
             "mode": "strict",
