@@ -351,8 +351,18 @@ async def onchain_swap(
         wallet_label, from_chain_id
     )
     to_leg = await find_wallet_leg_for_chain(wallet_label, to_chain_id)
-    dest_default = normalize_address(to_leg.get("address")) if to_leg else sender
+    dest_default = normalize_address(to_leg.get("address")) if to_leg else None
+    if not dest_default and is_solana_chain(from_chain_id) == is_solana_chain(
+        to_chain_id
+    ):
+        dest_default = sender
     rcpt = normalize_address(recipient) or dest_default
+    if not rcpt:
+        return err(
+            "invalid_wallet",
+            f"Wallet {wallet_label} has no destination address for chain {to_chain_id}. "
+            "Provide recipient explicitly or add the destination-chain wallet leg.",
+        )
     response: dict[str, Any] = {
         "sender": sender,
         "recipient": rcpt,
