@@ -42,12 +42,12 @@ class ApexGmxVelocityStrategy(ActivePerpsStrategy):
 
     HIP3_DEXES = []
 
-    # 60d window: edge dominates variance (audit shows ~+50% trailing 60d).
-    # Floor at -0.35 tolerates the strategy's observed adverse variance
-    # (runs as low as -29% on the Aug 2026 window) while still catching
-    # gross signal/decide regressions.
+    # No return floor: the smoke window is live market data and 2.5x on two
+    # alt perps has breached every floor we set (-0.20, -0.35, then -73% in
+    # Sep 2026) with zero code changes. The divergence checks still run;
+    # signal quality is covered by the ref-reproduction test.
     SMOKE_TEST_WINDOW_DAYS = 60
-    SMOKE_MIN_TOTAL_RETURN = -0.35
+    SMOKE_MIN_TOTAL_RETURN = float("-inf")
 
     DEFAULT_PARAMS = {
         "lookback_bars": 72,
