@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import Any, cast
 
 import httpx
+from eth_account import Account
 from loguru import logger
 from web3 import AsyncWeb3
 
@@ -430,6 +431,29 @@ async def send_transaction(
         if status is not None and int(status) == 0:
             _raise_revert_error(txn_hash, receipt, transaction)
     return txn_hash
+
+
+async def sign_and_send_transaction(
+    transaction: dict,
+    private_key: str,
+    wait_for_receipt: bool = True,
+    confirmations: int = 0,
+) -> str:
+    """Compat wrapper kept for paths published against 0.11.0, which import it
+    by name; removed in #472 while pyproject still said 0.11.0, so same-minor
+    runtimes must keep exporting it."""
+    account = Account.from_key(private_key)
+
+    async def sign_callback(tx: dict) -> bytes:
+        return account.sign_transaction(tx).raw_transaction
+
+    sign_callback.wallet_address = None
+    return await send_transaction(
+        transaction,
+        sign_callback,
+        wait_for_receipt=wait_for_receipt,
+        confirmations=confirmations,
+    )
 
 
 async def encode_call(

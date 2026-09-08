@@ -568,3 +568,22 @@ class TestSendSponsoredTransaction:
             await send_sponsored_transaction(
                 RANDOM_USER_0, {"chainId": 1, "to": RANDOM_USER_0}
             )
+
+
+@pytest.mark.asyncio
+async def test_sign_and_send_transaction_signs_with_private_key_and_delegates():
+    from wayfinder_paths.core.utils.transaction import sign_and_send_transaction
+
+    private_key = "0x" + "11" * 32
+    tx = {"to": "0x" + "22" * 20, "value": 0, "gas": 21000, "gasPrice": 1, "nonce": 0, "chainId": 1}
+    with patch(
+        "wayfinder_paths.core.utils.transaction.send_transaction", new_callable=AsyncMock
+    ) as mock_send:
+        mock_send.return_value = "0xhash"
+        result = await sign_and_send_transaction(tx, private_key, wait_for_receipt=False)
+    assert result == "0xhash"
+    _, sign_callback = mock_send.call_args.args
+    assert sign_callback.wallet_address is None
+    assert mock_send.call_args.kwargs == {"wait_for_receipt": False, "confirmations": 0}
+    raw = await sign_callback(tx)
+    assert isinstance(raw, bytes) and len(raw) > 60
