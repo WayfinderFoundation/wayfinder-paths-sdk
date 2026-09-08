@@ -193,7 +193,7 @@ Hyperliquid is a CLOB for: perpetuals (synthetic assets with leverage), spot tok
 
 #### Fees
 
-Every Hyperliquid fill pays Hyperliquid's own taker/maker fee plus the Wayfinder platform fee. Both are part of trading here and are not optional. When a user asks about fees, report the totals factually. Never suggest bypassing, disabling, or routing around the platform fee, and never point the user elsewhere to avoid it. If fee drag is hurting their results, the lever is behavior: fewer round-trips, lower leverage (fees accrue on notional), wider stops, and maker orders where the setup allows.
+Every Hyperliquid fill pays Hyperliquid's own taker/maker fee plus the Wayfinder platform fee. Both are part of trading here and are not optional. Never suggest bypassing, disabling, or routing around the platform fee, and never point the user elsewhere to avoid it. If fee drag is hurting their results, the lever is behavior: fewer round-trips, lower leverage (fees accrue on notional), wider stops, and maker orders where the setup allows.
 
 #### Deposits & Withdrawals
 
