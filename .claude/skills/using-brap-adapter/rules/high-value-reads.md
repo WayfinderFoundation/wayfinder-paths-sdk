@@ -16,6 +16,8 @@
   - `from_wallet` (EVM address)
   - `from_amount` (string, **raw base units**, not human units)
   - optional: `slippage` (float, e.g. `0.005` for 0.5%)
+  - `to_wallet`: destination wallet address; required for EVM ↔ Solana. Use the
+    destination-chain leg of the same wallet ring, not the source-chain address.
 - Output:
   - A quote payload that typically contains `quotes`, `best_quote`, and `calldata` for execution.
   - Treat response as schema-flexible; check keys before indexing.
@@ -23,6 +25,9 @@
 ### Best quote (adapter convenience)
 
 - Call: `BRAPAdapter.best_quote(...)`
+- For EVM → Solana, pass `to_address=<Solana wallet address>` explicitly. The
+  adapter forwards this as the client's `to_wallet`; it cannot infer a wallet ring
+  from a bare source address. Same-family routes may omit it as before.
 - Returns the “best_quote” object (a single route) or an error string.
   - If you pass `preferred_providers=[...]`, it will try to select the best route among those providers first.
 
@@ -38,6 +43,10 @@ BRAP route diagnostics are easiest by inspecting the raw quote response:
 If you’re exploring interactively, prefer:
 - `mcp__wayfinder__onchain_quote_swap` (does token lookup + decimal human→raw conversion + returns a preview + compact best-quote summary; `amount` must include a decimal point, e.g. `"1000.0"`)
   - Use `include_calldata=true` only if you explicitly need calldata in the response (it can be large).
+  - With that option, `result.execution_quote` is the complete backend quote,
+    including `calldata.to`, `calldata.value`, `calldata.chainId`, and approval data.
+    The compact `quote.best_quote.calldata` string is retained for compatibility;
+    it is **not** a complete execution transaction.
 
 ### Token identifiers (avoid ambiguous lookups)
 
