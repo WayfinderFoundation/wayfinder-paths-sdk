@@ -612,6 +612,17 @@ def test_rendered_export_reuses_newer_compatible_runtime(
     )
     assert python_is_compatible("~=3.12.0") is True
     assert python_is_compatible(">=3.13") is False
+    # Host interpreters without `packaging` must still get a real answer.
+    monkeypatch.setitem(sys.modules, "packaging", None)
+    monkeypatch.setitem(sys.modules, "packaging.specifiers", None)
+    monkeypatch.setitem(sys.modules, "packaging.version", None)
+    assert python_is_compatible(">=3.12,<3.13") is True
+    assert python_is_compatible("~=3.12.0") is True
+    assert python_is_compatible(">=3.13") is False
+    assert python_is_compatible("garbage") is False
+    monkeypatch.delitem(sys.modules, "packaging")
+    monkeypatch.delitem(sys.modules, "packaging.specifiers")
+    monkeypatch.delitem(sys.modules, "packaging.version")
 
     commands: list[list[str]] = []
 
