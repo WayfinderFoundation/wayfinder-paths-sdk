@@ -61,6 +61,8 @@ class BRAPQuoteEntry(TypedDict):
     fee_estimate: Required[FeeEstimate]
     wrap_transaction: NotRequired[dict[str, Any] | None]
     unwrap_transaction: NotRequired[dict[str, Any] | None]
+    prerequisite_transactions: NotRequired[list[dict[str, Any]] | None]
+    atomic_calls: NotRequired[list[dict[str, Any]] | None]
     native_input: Required[bool]
     native_output: Required[bool]
     safety_warnings: NotRequired[list[dict[str, Any]] | None]
