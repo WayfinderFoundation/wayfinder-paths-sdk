@@ -291,6 +291,7 @@ def _required_artifact_files(manifest: PathManifest) -> list[str]:
 
 def _opencode_bash_permission_block() -> list[str]:
     return [
+        "  bash_inspection: allow",
         "  bash:",
         '    "*": ask',
         '    "python *": allow',
@@ -336,6 +337,7 @@ def _opencode_orchestrator_permission_payload(
         "skill": {"*": "deny", skill.name: "allow"},
         "task": {"*": "deny"},
         "bash": {"*": "ask", "python *": "allow", "wayfinder *": "allow"},
+        "bash_inspection": "allow",
         "webfetch": "allow",
         "websearch": "allow",
     }
@@ -523,6 +525,7 @@ def _opencode_permission_block(agent: PathAgentConfig) -> list[str]:
     else:
         lines.append("  edit: deny")
     if "bash" in tool_values:
+        lines.append("  bash_inspection: allow")
         lines.append("  bash:")
         lines.append('    "*": ask')
         lines.append('    "python *": allow')
