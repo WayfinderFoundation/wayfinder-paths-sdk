@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.11.2] - 2026-09-09
+
+Note: 0.11.1 was tagged in this changelog but never published to PyPI; this release is the first to ship those changes.
+
+Added
+
+1. **Solana support** (#521, #522, #524, #525, #530, #532, #534, #549, #553, #554, #574, #576, #584): Wallets are now EVM+SVM rings — create returns both addresses, reads come from the ring endpoint, and `core_get_wallets` includes SOL/SPL balances. Solana signing + broadcast with priority-fee fan-out across RPCs, base58 mint resolution in token lookups, Solana branches in `onchain_swap`/`onchain_send`, cross-chain swaps signed with the source-chain leg and paid to the destination-chain leg, and core prompt guidance.
+2. **Gas sponsorship** (#446, #449, #450, #457): Remote-wallet transactions on sponsored chains (Ethereum, Base, Arbitrum, Polygon, BSC, Monad, MegaEth, Plasma, Robinhood) are broadcast by the backend with gas covered. Gated by the `privy_gas_sponsorship_enabled` feature switch; pre-broadcast 4xx rejections fall back to local sign-and-broadcast.
+3. **Robinhood Chain (4663)** (#445) and **Uniswap v4 exact-in swaps** (#462) on Ethereum, Base, Arbitrum, and Robinhood for pools aggregators cannot reach.
+4. **Mobile messaging agent** (#590, #591, #595, #598, #600, #608, #610, #614, #616, #618, #620, #621, #622, #650): `wayfinder-mobile` plain-text agent with iMessage effects, scheduled initiative check-ins with `<skip/>`, a hard 500-character / three-sentence reply contract, and permission overrides for the no-UI channel. Cannot be spawned as a subagent.
+5. **SMS notifications** (#640, #682): `notification_send(delivery="email" | "sms")`; texts are server-gated by quiet hours, a daily budget, and dedupe, with `override=true` for urgent updates. Successful sends return the remaining daily text budget.
+6. **Pattern Match quant workflow** (#594, #602, #605, #607, #609): Chart-selected historical analogue scans (formerly Fractal Scan) with a cached same-market baseline, labelled CEX proxy, perpetual outcome distributions, compact overlay handoff by `match_id`, and rejection of superseded forecasts.
+7. **Hyperliquid state** (#448, #459, #611, #619): `hyperliquid_get_state` now includes open orders (resting limits + untriggered TP/SL), reports canonical `asset_name`, and returns a mode-aware `summary` with real margin fields (`unified_usdc_equity`, `unified_usdc_margin_used`, `unified_usdc_margin_available`, liquidation floor).
+8. **Onchain token discovery** (#464, #465, #612): `onchain_list_tokens(chain_code, dimension)` for trending / volume / new / active tokens per chain, low-cap agent guidance, and canonical settlement safety checks.
+9. **Contract ABIs via the Wayfinder API** (#771, #773): New transport-only `CONTRACT_CLIENT`; `contracts_call`, `contract_get_abi`, and proxy resolution no longer need an Etherscan key.
+10. **Contract execution guard** (#526): `contracts_execute` refuses ERC20 `transfer` to a contract address unless `override=True`.
+11. **Signing session renewal prompt** (#670, #674): Expired remote-signing sessions raise `SessionExpiredError`, mapped to an actionable `session_expired` result on every transaction path, including sponsored broadcast.
+12. **Visual tools** (#451, #453): `visual_preview_series` dry-run and `visual_set_chart_indicators`; `visual_import_chart_spec` works on Shells and surfaces workspace API errors.
+13. **Alpha Lab sort** (#593): `sort` arg on `research_search_alpha` (e.g. `-created` for newest-first).
+14. **Wallets** (#689, #724): Instance id sent on remote wallet create; an all-wallets label for venue state tools.
+15. **Paths runtime reliability** (#760): Shared async HTTP clients created lazily and closed explicitly across CLI / strategy / MCP boundaries, new paths pinned to the SDK they were built against, MCP packaged as a runtime dependency. Shell paths gain inventory sync context (#633).
+
+16. **Runtime compatibility for installed paths** (#774, #778, #779): The rendered skill runner accepts any same-minor SDK at or above the pinned patch, 0.11.0 pins are floored to 0.11.1 at install time, `sign_and_send_transaction` is restored as a thin wrapper over `send_transaction` (dropped in #472 while the version stayed 0.11.0), and the bootstrap's packaging-free Python check handles zero-padded versions, wildcards, and compatible-release bounds.
+17. **Direct-route swap prerequisites** (#780): `onchain_swap` and `BRAPAdapter.swap_from_quote` execute the quoted ERC20 and Permit2 approvals in sequence, waiting on each receipt before submitting a direct Pons/Uniswap route; source-chain transactions are validated for chain, sender, and atomic-only routes before signing.
+18. **Cross-chain quote recipients** (#775): `best_quote` / `swap_from_token_ids` take a keyword-only `to_address`; EVM-to-Solana quotes without a destination wallet fail before any network call, and `include_calldata=true` returns an additive `execution_quote` with router, native value, chain, approval, and serialized SVM data.
+19. **Path inspection permissions** (#781): Generated orchestrators and Bash-enabled workers opt into runtime-validated inspection permissions so routine read-only commands stop prompting; existing installs pick it up on reactivation.
+
+Changed
+
+1. **Wallet API shape** (#521, #522): Remote wallet create returns `{"evm": ..., "svm": ...}`; wallet reads consume the ring-centric endpoint with the ring label as source of truth.
+2. **Agent context** (#456, #461, #466, #467, #576): Supported-chains tables synced to all 12 chains in `SUPPORTED_CHAINS`, balances always re-pulled before reporting, higher step limits, and an OpenCode compaction prompt baseline.
+3. **Hyperliquid info reads** (#696): Retry on 429 / 5xx / connection failures with the shared backoff policy; `get_user_state` documented as perp-only (#615).
+4. **Docs and examples** (#550): Delta Lab APY examples corrected to the `directions.LONG/SHORT` envelope.
+5. **Agent prompts** (#776): Hyperliquid **Fees** subsection so the agent reports platform fees factually and never suggests routing around them.
+6. **Mobile agent subagents** (#782): `task` is now an allowlist (`"*": deny` plus the built-in Wayfinder agents), so path-installed orchestrators cannot be spawned from a messaging session where their permission prompts are unanswerable.
+7. **Bonded upgrades** (#770): The owner-wallet argument is only required for an initial bonded publish; upgrades can omit it.
+8. **Cleanup** (#472, #666, #777): Dead transaction utils removed; Apex GMX Velocity smoke test no longer gates on live market return (floor relaxed to -0.35 in #666, then dropped in #777).
+
+Fixed
+
+1. **Polymarket deposit wallets** (#454): Deposit addresses are resolved on-chain after Polymarket's factory beacon upgrade; locally derived addresses were unownable and stranded funds.
+2. **Polymarket redeem** (#455): WCOL unwrap runs atomically inside the redeem batch; new sweep recovery tool for stranded WCOL.
+3. **Hyperliquid deposit/withdraw on split-mode accounts** (#447): Fresh accounts credit perp, not spot; deposit no longer reports a false failure and withdraw finds the balance.
+4. **Hyperliquid spot token names** (#523): Spot universe indexed by token `index` field instead of array position, recovering pairs shadowed after delistings.
+5. **Runner backend sync** (#632): Sync thread gets its own DB connection; side-effect crashes are surfaced instead of silently killing the sync.
+6. **Import cycle** (#647): `core.utils.wallets` and `core.utils.transaction` can each be imported first.
+7. **Compaction plugin** (#551): Module-private template so OpenCode's plugin loader no longer drops the plugin.
+
 ## [0.11.1] - 2026-06-23
 
 Added
