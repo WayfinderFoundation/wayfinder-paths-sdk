@@ -22,8 +22,16 @@
   its compact preview. Use `onchain_swap` for Solana-source execution.
 - What it can do:
   - Build a tx dict from `quote["calldata"]`
-  - Submit ERC20 approvals if needed
+  - Submit the route's `prerequisite_transactions` in order, waiting for each
+    successful receipt before continuing (including two-step Permit2 approvals)
+  - Use the existing ERC20 allowance helper for routes without solver-managed approvals
   - Broadcast the swap tx
+
+The same prerequisite handling applies to `onchain_swap`, including when
+`wait_for_receipt=false`: only the final swap may skip its receipt wait. A failed
+prerequisite stops execution. Direct Pons and Uniswap routes are supported when
+the backend returns an executable quote; `atomic_calls` / `pons_v2_batch` routes
+require a batch-capable executor and are rejected, never split into separate swaps.
 
 ## Safety rails
 

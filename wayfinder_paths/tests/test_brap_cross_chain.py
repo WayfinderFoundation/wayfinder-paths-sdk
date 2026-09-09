@@ -152,7 +152,7 @@ async def test_mcp_execution_quote_round_trips_router_fee_and_approval(
         ),
         patch(
             "wayfinder_paths.adapters.brap_adapter.adapter.ensure_allowance",
-            new_callable=AsyncMock,
+            new=AsyncMock(return_value=(True, "0xapproval")),
         ) as approve,
         patch(
             "wayfinder_paths.adapters.brap_adapter.adapter.send_transaction",

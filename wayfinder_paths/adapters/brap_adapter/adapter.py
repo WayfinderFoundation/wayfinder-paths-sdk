@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from web3 import Web3
-
 from wayfinder_paths.adapters.ledger_adapter.adapter import LedgerAdapter
 from wayfinder_paths.adapters.token_adapter.adapter import TokenAdapter
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
@@ -12,6 +10,10 @@ from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.clients.LedgerClient import TransactionRecord
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants.chains import SVM_CHAIN_IDS
+from wayfinder_paths.core.utils.brap import (
+    prepare_brap_transactions,
+    uses_solver_approvals,
+)
 from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
     is_native_token,
@@ -167,31 +169,16 @@ class BRAPAdapter(BaseAdapter):
         if chain_id in SVM_CHAIN_IDS:
             return (False, "Use onchain_swap for Solana-source execution.")
 
-        calldata = quote.get("calldata")
-        if not isinstance(calldata, dict) or not calldata.get("data"):
-            return (
-                False,
-                "Quote missing complete calldata. Use BRAPClient's best_quote or "
-                "the MCP quote's execution_quote; do not reconstruct a transaction "
-                "from the compact preview's hex data.",
+        try:
+            transaction, prerequisites = prepare_brap_transactions(
+                quote, chain_id=chain_id, sender=from_address
             )
-        if calldata.get("chainId") is not None and int(calldata["chainId"]) != chain_id:
-            return (
-                False,
-                "Quote calldata chain does not match the source token chain.",
-            )
+        except (TypeError, ValueError) as exc:
+            return False, str(exc)
 
-        transaction = {
-            **calldata,
-            "chainId": chain_id,
-            "from": Web3.to_checksum_address(from_address),
-        }
-        if "value" in calldata:
-            value = calldata["value"]
-            transaction["value"] = (
-                int(value, 16)
-                if isinstance(value, str) and value.startswith("0x")
-                else int(value)
+        for prerequisite in prerequisites:
+            await send_transaction(
+                prerequisite, self.sign_callback, wait_for_receipt=True, confirmations=0
             )
 
         approve_amount = (
@@ -211,8 +198,10 @@ class BRAPAdapter(BaseAdapter):
             and spender
             and approve_amount
             and not is_native_token(token_address)
+            and not prerequisites
+            and not uses_solver_approvals(quote)
         ):
-            await ensure_allowance(
+            approved, approval_hash = await ensure_allowance(
                 token_address=token_address,
                 owner=from_address,
                 spender=spender,
@@ -220,6 +209,11 @@ class BRAPAdapter(BaseAdapter):
                 chain_id=chain_id,
                 signing_callback=self.sign_callback,
             )
+            if not approved:
+                return (
+                    False,
+                    f"Approval not ready; swap was not submitted ({approval_hash}).",
+                )
 
         txn_hash = await send_transaction(transaction, self.sign_callback)
         self.logger.info(f"Swap broadcast: tx={txn_hash}")
