@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from wayfinder_paths.paths.manifest import PathManifest, PathManifestError
+from wayfinder_paths.paths.path_safety import unsafe_bundle_path_reason
 
 
 class PathBuildError(Exception):
@@ -30,6 +31,7 @@ _DEFAULT_IGNORE_DIRS = {
     "__pycache__",
     "node_modules",
     ".wayfinder",
+    ".wayfinder_runs",
 }
 
 _DEFAULT_SOURCE_IGNORE_DIRS = {
@@ -41,6 +43,7 @@ _DEFAULT_SOURCE_IGNORE_DIRS = {
     "__pycache__",
     "node_modules",
     ".wayfinder",
+    ".wayfinder_runs",
 }
 
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
@@ -49,6 +52,15 @@ _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 def _iter_files(root: Path, *, ignore_dirs: set[str]) -> Iterable[Path]:
     for dirpath, dirnames, filenames in os.walk(root):
         rel_dir = Path(dirpath).relative_to(root)
+        for dirname in dirnames:
+            path = Path(dirpath) / dirname
+            if (
+                dirname not in ignore_dirs
+                and unsafe_bundle_path_reason(path) == "symlink"
+            ):
+                raise PathBuildError(
+                    f"Symlinks are not allowed in path bundles: {path}"
+                )
         dirnames[:] = sorted(
             [
                 d
@@ -57,7 +69,17 @@ def _iter_files(root: Path, *, ignore_dirs: set[str]) -> Iterable[Path]:
             ]
         )
         for filename in sorted(filenames):
-            yield Path(dirpath) / filename
+            path = Path(dirpath) / filename
+            reason = unsafe_bundle_path_reason(path)
+            if reason == "symlink":
+                raise PathBuildError(
+                    f"Symlinks are not allowed in path bundles: {path}"
+                )
+            if reason:
+                raise PathBuildError(
+                    f"Secret-like files are not allowed in path bundles: {path}"
+                )
+            yield path
 
 
 def _sha256_file(path: Path) -> str:
@@ -101,6 +123,8 @@ class PathBuilder:
         )
         if not files:
             raise PathBuildError("No files found to bundle")
+        if any(path.resolve() == out_path.resolve() for path in files):
+            raise PathBuildError("Output archive cannot include itself")
 
         cls._write_archive(root=path_dir, files=files, out_path=out_path)
 
@@ -127,6 +151,8 @@ class PathBuilder:
         )
         if not files:
             raise PathBuildError("No files found to archive")
+        if any(path.resolve() == out_path.resolve() for path in files):
+            raise PathBuildError("Output archive cannot include itself")
 
         cls._write_archive(root=path_dir, files=files, out_path=out_path)
         return out_path

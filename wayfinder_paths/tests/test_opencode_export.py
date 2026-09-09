@@ -4,6 +4,8 @@ import json
 import shutil
 from pathlib import Path
 
+import click
+import pytest
 import yaml
 
 from wayfinder_paths.paths.cli import (
@@ -255,6 +257,35 @@ def test_opencode_activation_normalizes_legacy_tool_result_contract(
     )
     assert "return JSON.stringify(payload, null, 2)" in installed_text
     assert "output: JSON.stringify(payload, null, 2)" not in installed_text
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("source", "../outside"),
+        ("source", "/tmp/outside"),
+        ("destination", "../outside"),
+        ("destination", "/tmp/outside"),
+    ],
+)
+def test_install_targets_cannot_escape_roots(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    source_dir = tmp_path / "export"
+    runtime_dir = source_dir / "runtime"
+    runtime_dir.mkdir(parents=True)
+    target = {
+        "op": "copy_file",
+        "source": "install/file.txt",
+        "destination": "installed/file.txt",
+    }
+    target[field] = value
+    (runtime_dir / "export.json").write_text(
+        json.dumps({"install_targets": [target]}), encoding="utf-8"
+    )
+
+    with pytest.raises(click.ClickException, match="Install"):
+        _apply_install_targets(source_dir, tmp_path / "project")
 
 
 def test_opencode_config_activation_preserves_shell_owned_settings(tmp_path: Path):
