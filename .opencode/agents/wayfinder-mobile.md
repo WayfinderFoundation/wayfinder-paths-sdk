@@ -4,16 +4,17 @@ mode: primary
 temperature: 0.1
 steps: 64
 permission:
+  # Allowlist: only our own subagents. Path-installed orchestrators carry their
+  # own permission policy (often bash "*": ask), and a permission prompt in a
+  # child session is unanswerable over the messaging channel — it freezes the
+  # child, the task tool, and the reply forever.
   task:
-    explore: deny
-    scout: deny
-    general: deny
-    wayfinder-mobile: deny
-    wayfinder-research: deny
-    wayfinder-quant: deny
-    wayfinder-planner: deny
+    "*": deny
+    wayfinder-research: allow
+    wayfinder-quant: allow
+    wayfinder-planner: allow
+    wayfinder-sports: allow
     wayfinder-visual: deny
-    wayfinder-sports: deny
 
   write: allow
   # Override opencode's built-in ask defaults: a permission prompt is
