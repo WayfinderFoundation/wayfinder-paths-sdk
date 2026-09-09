@@ -91,6 +91,7 @@ async def test_quote_swap_returns_compact_best_quote_by_default():
     assert out["ok"] is True
     res = out["result"]
     assert "raw" not in res["quote"]
+    assert "execution_quote" not in res
 
     best = res["quote"]["best_quote"]
     assert best["provider"] == "brap_best"
@@ -131,7 +132,12 @@ async def test_quote_swap_can_include_calldata_when_requested():
             return from_meta
         return to_meta
 
-    calldata = {"data": "0x" + ("cd" * 1024)}
+    calldata = {
+        "data": "0x" + ("cd" * 1024),
+        "to": EVM_ADDRESS,
+        "value": "940000000000000",
+        "chainId": 42161,
+    }
     fake_brap = AsyncMock()
     fake_brap.get_quote = AsyncMock(
         return_value={
@@ -172,6 +178,7 @@ async def test_quote_swap_can_include_calldata_when_requested():
     assert out["ok"] is True
     best = out["result"]["quote"]["best_quote"]
     assert best["calldata"] == calldata["data"]
+    assert out["result"]["execution_quote"]["calldata"] == calldata
     assert out["result"]["suggested_swap_request"]["allow_unverified_output"] is True
     assert fake_brap.get_quote.await_args.kwargs["allow_unverified_output"] is True
 
@@ -283,7 +290,11 @@ async def test_quote_swap_accepts_top_level_brap_shape():
 
 
 @pytest.mark.asyncio
-async def test_quote_swap_passes_destination_ring_leg_to_brap():
+@pytest.mark.parametrize("has_destination", [True, False])
+@pytest.mark.parametrize("explicit_recipient", [None, SVM_ADDRESS])
+async def test_quote_swap_passes_destination_ring_leg_to_brap(
+    has_destination: bool, explicit_recipient: str | None
+) -> None:
     ring = [
         {
             "address": EVM_ADDRESS,
@@ -298,6 +309,8 @@ async def test_quote_swap_passes_destination_ring_leg_to_brap():
             "chain_type": "solana",
         },
     ]
+    if not has_destination:
+        ring = ring[:1]
     from_meta = {
         "token_id": "usd-coin-base",
         "symbol": "USDC",
@@ -346,7 +359,14 @@ async def test_quote_swap_passes_destination_ring_leg_to_brap():
             from_token="from",
             to_token="to",
             amount="1.0",
+            recipient=explicit_recipient,
         )
+
+    if not has_destination and not explicit_recipient:
+        assert out["ok"] is False
+        assert out["error"]["code"] == "invalid_wallet"
+        fake_brap.get_quote.assert_not_awaited()
+        return
 
     assert out["ok"] is True
     assert out["result"]["suggested_swap_request"]["recipient"] == SVM_ADDRESS

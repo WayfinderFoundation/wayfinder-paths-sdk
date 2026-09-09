@@ -11,6 +11,7 @@ from wayfinder_paths.core.adapters.models import SWAP
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.clients.LedgerClient import TransactionRecord
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
+from wayfinder_paths.core.constants.chains import SVM_CHAIN_IDS
 from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
     is_native_token,
@@ -113,7 +114,10 @@ class BRAPAdapter(BaseAdapter):
         preferred_providers: list[str] | None = None,
         retries: int = 1,
         slippage: float | None = None,
+        *,
+        to_address: str | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
+        """Quote raw token amounts; EVM/Solana routes require a destination address."""
         last_error = "No quotes available"
         for attempt in range(retries):
             try:
@@ -125,6 +129,7 @@ class BRAPAdapter(BaseAdapter):
                     from_wallet=from_address,
                     from_amount=amount,
                     slippage=slippage,
+                    to_wallet=to_address,
                 )
 
                 all_quotes, quote = data.get("quotes", []), data.get("best_quote")
@@ -159,10 +164,22 @@ class BRAPAdapter(BaseAdapter):
         strategy_name: str | None = None,
     ) -> tuple[bool, Any]:
         chain_id = from_token["chain"]["id"]
+        if chain_id in SVM_CHAIN_IDS:
+            return (False, "Use onchain_swap for Solana-source execution.")
 
         calldata = quote.get("calldata")
-        if not calldata or not calldata.get("data"):
-            return (False, "Quote missing calldata")
+        if not isinstance(calldata, dict) or not calldata.get("data"):
+            return (
+                False,
+                "Quote missing complete calldata. Use BRAPClient's best_quote or "
+                "the MCP quote's execution_quote; do not reconstruct a transaction "
+                "from the compact preview's hex data.",
+            )
+        if calldata.get("chainId") is not None and int(calldata["chainId"]) != chain_id:
+            return (
+                False,
+                "Quote calldata chain does not match the source token chain.",
+            )
 
         transaction = {
             **calldata,
@@ -170,7 +187,12 @@ class BRAPAdapter(BaseAdapter):
             "from": Web3.to_checksum_address(from_address),
         }
         if "value" in calldata:
-            transaction["value"] = int(calldata["value"])
+            value = calldata["value"]
+            transaction["value"] = (
+                int(value, 16)
+                if isinstance(value, str) and value.startswith("0x")
+                else int(value)
+            )
 
         approve_amount = (
             quote.get("input_amount")
@@ -179,7 +201,11 @@ class BRAPAdapter(BaseAdapter):
         )
         token_address = from_token.get("address")
 
-        spender = transaction.get("to")
+        spender = (
+            quote.get("approval_address")
+            or quote.get("approvalAddress")
+            or transaction.get("to")
+        )
         if (
             token_address
             and spender
@@ -232,6 +258,8 @@ class BRAPAdapter(BaseAdapter):
         preferred_providers: list[str] | None = None,
         retries: int = 1,
         slippage: float | None = None,
+        *,
+        to_address: str | None = None,
     ) -> tuple[bool, Any]:
         from_token = await TOKEN_CLIENT.get_token_details(from_token_id)
         to_token = await TOKEN_CLIENT.get_token_details(to_token_id)
@@ -250,6 +278,7 @@ class BRAPAdapter(BaseAdapter):
             preferred_providers=preferred_providers,
             retries=retries,
             slippage=slippage,
+            to_address=to_address,
         )
         if not success:
             return (False, quote)

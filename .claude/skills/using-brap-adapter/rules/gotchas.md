@@ -30,6 +30,12 @@
 ## Recipient safety
 
 - Treat `recipient != sender` as a high-risk condition. Require explicit user confirmation and display the mismatch clearly.
+- For EVM ↔ Solana, different source/destination addresses are expected: resolve
+  both legs of the selected wallet ring and show the destination before confirming.
+  Missing a destination leg is an error, not a reason to reuse the source address.
+- Wayfinder's internal Solana chain ID is `900`. LI.FI's external ID is
+  `1151111081099710`; the backend translates it. Do not change the ID or bypass the
+  execution tools on a quote error—check the recipient first.
 
 ## Native token sends (execute tool)
 

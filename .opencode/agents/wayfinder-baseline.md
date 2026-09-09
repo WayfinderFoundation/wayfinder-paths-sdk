@@ -160,6 +160,10 @@ Hyperliquid is a CLOB for: perpetuals (synthetic assets with leverage), spot tok
 - Order: $10 USD notional.
 - Withdraw: $2 USD gross. `hyperliquid_withdraw_usdc(amount_usdc=N)` debits `$N`from the unified balance; Bridge2 takes a $1 fee, so Arbitrum receives`$N - 1`.
 
+#### Fees
+
+Every Hyperliquid fill pays Hyperliquid's own taker/maker fee plus the Wayfinder platform fee. Both are part of trading here and are not optional. Never suggest bypassing, disabling, or routing around the platform fee, and never point the user elsewhere to avoid it.
+
 #### Deposits & Withdrawals
 
 Hyperliquid balances are separate from a user's EVM balances. To place transactions on the Hyperliquid CLOB, users must first fund their account using `hyperliquid_deposit_usdc`, and similarly `hyperliquid_withdraw_usdc` to recover their funds. Hyperliquid balances are held on HypeCore (which is not HypeEVM).

@@ -91,8 +91,10 @@ async def onchain_quote_swap(
         slippage_bps: Slippage cap in basis points (50 = 0.50%).
         recipient: Optional destination override. Defaults to the destination-chain
             leg of the same wallet ring.
-        include_calldata: Include the raw tx calldata in the response (off by default to keep
-            payload small; only the `len` is reported when false).
+        include_calldata: Include an unmodified execution_quote (router, value, chain,
+            approvals and transaction data). Off by default to keep payloads small.
+            Prefer onchain_swap(**suggested_swap_request) after user confirmation;
+            never rebuild a transaction from the compact preview's hex data.
         allow_unverified_output: Override a protected-identity safety block. Set
             true only after the user explicitly confirms the exact destination
             contract and acknowledges that it is not a canonical asset.
@@ -138,15 +140,21 @@ async def onchain_quote_swap(
 
     # Cross-chain swaps send from the source-chain leg and land on the
     # destination-chain leg of the same wallet ring (e.g. EVM→Solana pays out to
-    # the ring's SVM address). Same-chain swaps resolve both to the one leg;
-    # missing a chain-specific leg falls back to the default (EVM) leg.
-    from_leg = leg_for_chain(ring, from_chain_id) or ring[0]
-    to_leg = leg_for_chain(ring, to_chain_id) or ring[0]
+    # the ring's SVM address). Never substitute a different chain family's leg.
+    from_leg = leg_for_chain(ring, from_chain_id)
+    to_leg = leg_for_chain(ring, to_chain_id)
+    if not from_leg:
+        return err(
+            "invalid_wallet",
+            f"Wallet {wallet_label} has no source address for chain {from_chain_id}",
+        )
     sender = normalize_address(from_leg.get("address"))
     if not sender:
         return err("invalid_wallet", f"Wallet {wallet_label} missing address")
 
-    rcpt = normalize_address(recipient) or normalize_address(to_leg.get("address"))
+    rcpt = normalize_address(recipient) or (
+        normalize_address(to_leg.get("address")) if to_leg else None
+    )
     if not rcpt:
         return err(
             "invalid_wallet",
@@ -241,7 +249,7 @@ async def onchain_quote_swap(
     from_token_id = from_meta.get("token_id") or from_token
     to_token_id = to_meta.get("token_id") or to_token
 
-    result = {
+    result: dict[str, Any] = {
         "preview": preview,
         "quote": {
             "best_quote": best_out,
@@ -262,4 +270,8 @@ async def onchain_quote_swap(
             "allow_unverified_output": allow_unverified_output,
         },
     }
+    if include_calldata:
+        # Keep the legacy compact calldata string for existing consumers, but
+        # expose the complete quote for scripts without dropping fees or SVM data.
+        result["execution_quote"] = best_quote
     return ok(result)
