@@ -306,6 +306,7 @@ def _required_artifact_files(manifest: PathManifest) -> list[str]:
 
 def _opencode_bash_permission_block() -> list[str]:
     return [
+        "  bash_inspection: allow",
         "  bash:",
         '    "*": ask',
         '    "python *": allow',
@@ -351,6 +352,7 @@ def _opencode_orchestrator_permission_payload(
         "skill": {"*": "deny", skill.name: "allow"},
         "task": {"*": "deny"},
         "bash": {"*": "ask", "python *": "allow", "wayfinder *": "allow"},
+        "bash_inspection": "allow",
         "webfetch": "allow",
         "websearch": "allow",
     }
@@ -538,6 +540,7 @@ def _opencode_permission_block(agent: PathAgentConfig) -> list[str]:
     else:
         lines.append("  edit: deny")
     if "bash" in tool_values:
+        lines.append("  bash_inspection: allow")
         lines.append("  bash:")
         lines.append('    "*": ask')
         lines.append('    "python *": allow')
@@ -880,8 +883,8 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "",
             "import argparse",
             "import json",
-            "import re",
             "import os",
+            "import re",
             "import shutil",
             "import subprocess",
             "import sys",
@@ -991,21 +994,33 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "        pass",
             "    except ValueError:",
             "        return False",
-            "    # Host interpreters without `packaging` (system python on boxes, python.org",
-            "    # builds) still get a real answer instead of a refusal.",
+            "    # Standalone hosts may not have packaging until the runtime is installed.",
+            "    # Support numeric Python releases here; reject unsupported syntax safely.",
             "    for clause in spec.split(','):",
             "        clause = clause.strip()",
-            "        match = re.match(r'^(>=|<=|==|!=|~=|>|<)\\s*(\\d+(?:\\.\\d+){0,2})\\*?$', clause)",
+            "        if not clause:",
+            "            continue",
+            "        match = re.fullmatch(r'(>=|<=|==|!=|~=|>|<)\\s*([0-9]+(?:\\.[0-9]+){0,2})(\\.\\*)?', clause)",
             "        if not match:",
             "            return False",
-            "        op, raw = match.groups()",
+            "        op, raw, wildcard = match.groups()",
             "        wanted = tuple(int(p) for p in raw.split('.'))",
-            "        have = current[: len(wanted)]",
-            "        ok = {",
-            "            '>=': have >= wanted, '<=': have <= wanted, '>': have > wanted, '<': have < wanted,",
-            "            '==': have == wanted, '!=': have != wanted,",
-            "            '~=': have >= wanted and have[: len(wanted) - 1] == wanted[:-1],",
-            "        }[op]",
+            "        padded = wanted + (0,) * (3 - len(wanted))",
+            "        if wildcard:",
+            "            if op not in {'==', '!='}:",
+            "                return False",
+            "            matches = current[:len(wanted)] == wanted",
+            "            ok = matches if op == '==' else not matches",
+            "        elif op == '~=':",
+            "            if len(wanted) < 2:",
+            "                return False",
+            "            ok = current >= padded and current[:len(wanted) - 1] == wanted[:-1]",
+            "        else:",
+            "            ok = {",
+            "                '>=': current >= padded, '<=': current <= padded,",
+            "                '>': current > padded, '<': current < padded,",
+            "                '==': current == padded, '!=': current != padded,",
+            "            }[op]",
             "        if not ok:",
             "            return False",
             "    return True",
@@ -1099,7 +1114,7 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "    if not _python_version_is_compatible(python):",
             "        raise RuntimeError(f'Current Python does not satisfy {python}')",
             "    spec = _runtime_package_spec(manifest)",
-            "    cmd = [binary, 'run', '--spec', spec, 'wayfinder', *_wayfinder_exec_args(manifest, args)]",
+            "    cmd = [binary, 'run', '--python', sys.executable, '--spec', spec, 'wayfinder', *_wayfinder_exec_args(manifest, args)]",
             "    return _call_cli(cmd, env)",
             "",
             "",

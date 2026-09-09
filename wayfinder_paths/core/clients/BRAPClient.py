@@ -7,6 +7,7 @@ from loguru import logger
 
 from wayfinder_paths.core.clients.WayfinderClient import WayfinderClient
 from wayfinder_paths.core.config import get_api_base_url
+from wayfinder_paths.core.constants.chains import SVM_CHAIN_IDS
 
 
 class QuoteTx(TypedDict, total=False):
@@ -60,6 +61,8 @@ class BRAPQuoteEntry(TypedDict):
     fee_estimate: Required[FeeEstimate]
     wrap_transaction: NotRequired[dict[str, Any] | None]
     unwrap_transaction: NotRequired[dict[str, Any] | None]
+    prerequisite_transactions: NotRequired[list[dict[str, Any]] | None]
+    atomic_calls: NotRequired[list[dict[str, Any]] | None]
     native_input: Required[bool]
     native_output: Required[bool]
     safety_warnings: NotRequired[list[dict[str, Any]] | None]
@@ -86,6 +89,13 @@ class BRAPClient(WayfinderClient):
         to_wallet: str | None = None,
         allow_unverified_output: bool = False,
     ) -> BRAPQuoteResponse:  # type: ignore # noqa: E501
+        if (from_chain in SVM_CHAIN_IDS) != (to_chain in SVM_CHAIN_IDS) and not (
+            to_wallet and to_wallet.strip()
+        ):
+            raise ValueError(
+                "to_wallet is required for EVM/Solana swaps. Pass the destination "
+                "chain's wallet address, not the source wallet address."
+            )
         logger.info(
             f"Getting BRAP quote: {from_token} -> {to_token} (chain {from_chain} -> {to_chain})"
         )

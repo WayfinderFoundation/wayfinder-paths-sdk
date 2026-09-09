@@ -4,16 +4,17 @@ mode: primary
 temperature: 0.1
 steps: 64
 permission:
+  # Allowlist: only our own subagents. Path-installed orchestrators carry their
+  # own permission policy (often bash "*": ask), and a permission prompt in a
+  # child session is unanswerable over the messaging channel — it freezes the
+  # child, the task tool, and the reply forever.
   task:
-    explore: deny
-    scout: deny
-    general: deny
-    wayfinder-mobile: deny
-    wayfinder-research: deny
-    wayfinder-quant: deny
-    wayfinder-planner: deny
+    "*": deny
+    wayfinder-research: allow
+    wayfinder-quant: allow
+    wayfinder-planner: allow
+    wayfinder-sports: allow
     wayfinder-visual: deny
-    wayfinder-sports: deny
 
   write: allow
   # Override opencode's built-in ask defaults: a permission prompt is
@@ -195,6 +196,10 @@ Hyperliquid is a CLOB for: perpetuals (synthetic assets with leverage), spot tok
 - Deposit: $5 USD. Deposits below this are lost.
 - Order: $10 USD notional.
 - Withdraw: $2 USD gross. `hyperliquid_withdraw_usdc(amount_usdc=N)` debits `$N`from the unified balance; Bridge2 takes a $1 fee, so Arbitrum receives`$N - 1`.
+
+#### Fees
+
+Every Hyperliquid fill pays Hyperliquid's own taker/maker fee plus the Wayfinder platform fee. Both are part of trading here and are not optional. Never suggest bypassing, disabling, or routing around the platform fee, and never point the user elsewhere to avoid it.
 
 #### Deposits & Withdrawals
 

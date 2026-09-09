@@ -8,6 +8,10 @@ from solders.transaction import VersionedTransaction
 
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
+from wayfinder_paths.core.utils.brap import (
+    prepare_brap_transactions,
+    uses_solver_approvals,
+)
 from wayfinder_paths.core.utils.etherscan import get_etherscan_transaction_link
 from wayfinder_paths.core.utils.svm import (
     get_solana_explorer_link,
@@ -298,7 +302,8 @@ async def onchain_swap(
     user before running this. Same-chain swaps wait for the source receipt; cross-chain
     swaps additionally wait for the destination bridge leg to settle (via the
     BRAP wait-bridge-execution endpoint). Pass `wait_for_receipt=False` for
-    fire-and-forget broadcast (skips both waits).
+    fire-and-forget broadcast (skips both waits for the swap). Route prerequisites
+    always wait for successful receipts before the swap is submitted.
 
     Args:
         wallet_label: Wallet label.
@@ -317,7 +322,7 @@ async def onchain_swap(
             contract and acknowledges that it is not a canonical asset.
 
     Returns:
-        `{status: "submitted"|"confirmed"|"failed", sender, recipient, effects: {approval?, swap}, raw}`.
+        `{status: "submitted"|"confirmed"|"failed", sender, recipient, effects: {approval?, prerequisites?, swap?}, raw}`.
     """
     if not wallet_label.strip():
         return err("invalid_request", "wallet_label is required")
@@ -351,8 +356,18 @@ async def onchain_swap(
         wallet_label, from_chain_id
     )
     to_leg = await find_wallet_leg_for_chain(wallet_label, to_chain_id)
-    dest_default = normalize_address(to_leg.get("address")) if to_leg else sender
+    dest_default = normalize_address(to_leg.get("address")) if to_leg else None
+    if not dest_default and is_solana_chain(from_chain_id) == is_solana_chain(
+        to_chain_id
+    ):
+        dest_default = sender
     rcpt = normalize_address(recipient) or dest_default
+    if not rcpt:
+        return err(
+            "invalid_wallet",
+            f"Wallet {wallet_label} has no destination address for chain {to_chain_id}. "
+            "Provide recipient explicitly or add the destination-chain wallet leg.",
+        )
     response: dict[str, Any] = {
         "sender": sender,
         "recipient": rcpt,
@@ -497,11 +512,26 @@ async def onchain_swap(
         )
         return ok(response)
 
-    swap_tx = dict(calldata)
-    swap_tx["chainId"] = int(from_chain_id)
-    swap_tx["from"] = to_checksum_address(sender)
-    if "value" in swap_tx:
-        swap_tx["value"] = int(swap_tx["value"])
+    try:
+        swap_tx, prerequisites = prepare_brap_transactions(
+            best_quote, chain_id=int(from_chain_id), sender=sender
+        )
+    except (TypeError, ValueError) as exc:
+        return err("quote_error", str(exc))
+
+    for prerequisite in prerequisites:
+        approved, approval = await _broadcast(
+            sign_callback,
+            prerequisite,
+            chain_id=int(from_chain_id),
+            wait_for_receipt=True,
+            confirmations=receipt_confirmations,
+        )
+        response["effects"].setdefault("prerequisites", []).append(approval)
+        if not approved:
+            response["status"] = "failed"
+            response["raw"] = compact_quote
+            return ok(response)
 
     spender = (
         best_quote.get("approvalAddress")
@@ -516,9 +546,11 @@ async def onchain_swap(
     )
 
     if (
-        from_token_addr.lower() != ZERO_ADDRESS.lower()
+        not is_native_token(from_token_addr)
         and spender
         and approve_amount is not None
+        and not prerequisites
+        and not uses_solver_approvals(best_quote)
     ):
         try:
             need = int(approve_amount)

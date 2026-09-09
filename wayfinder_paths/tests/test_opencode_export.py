@@ -87,6 +87,14 @@ def test_opencode_export_is_model_neutral_and_callable_by_default(tmp_path: Path
     assert command_frontmatter["agent"] == "multi-asset-hedge-finder-orchestrator"
     assert worker_frontmatter["mode"] == "subagent"
     assert worker_frontmatter["hidden"] is True
+    assert orchestrator_frontmatter["permission"]["bash_inspection"] == "allow"
+    assert orchestrator_frontmatter["permission"]["bash"]["*"] == "ask"
+    assert (
+        opencode_config_payload["agent"]["multi-asset-hedge-finder-orchestrator"][
+            "permission"
+        ]
+        == orchestrator_frontmatter["permission"]
+    )
     assert orchestrator_frontmatter["permission"]["task"]["*"] == "deny"
     assert "general" not in orchestrator_frontmatter["permission"]["task"]
     assert "explore" not in orchestrator_frontmatter["permission"]["task"]
@@ -131,6 +139,33 @@ def test_opencode_export_is_model_neutral_and_callable_by_default(tmp_path: Path
     )
     assert export_manifest["requires"]["skills"][0]["path_slug"] == "using-delta-lab"
     assert export_manifest["requires"]["skills"][0]["skill_name"] == "using-delta-lab"
+
+
+@pytest.mark.parametrize("tools", [("read",), ("read", "bash")])
+def test_inspection_opt_in_only_applies_to_workers_with_bash(tmp_path: Path, tools):
+    path_dir = _make_pipeline_path(tmp_path)
+    manifest_path = path_dir / "wfpath.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    worker = manifest["agents"][0]
+    worker["tools"] = list(tools)
+    manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+
+    report = render_skill_exports(path_dir=path_dir, hosts=["opencode"])
+    worker_file = (
+        report.exports["opencode"].export_dir
+        / "install"
+        / ".opencode"
+        / "agents"
+        / f"multi-asset-hedge-finder-{worker['id']}.md"
+    )
+    permissions = _load_frontmatter(worker_file)["permission"]
+    if "bash" in tools:
+        assert permissions["bash_inspection"] == "allow"
+        assert permissions["bash"] == {"*": "ask", "python *": "allow"}
+    else:
+        assert "bash_inspection" not in permissions
+        assert "bash" not in permissions
+    assert permissions["edit"] == "deny"
 
 
 def test_opencode_export_renders_model_only_when_configured(tmp_path: Path):
