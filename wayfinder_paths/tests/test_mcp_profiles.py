@@ -416,8 +416,8 @@ def test_market_intelligence_agent_prompt_contracts() -> None:
     research = _agent_text("wayfinder-research")
     quant = _agent_text("wayfinder-quant")
 
-    assert _agent_frontmatter("wayfinder-research")["temperature"] == 0.1
-    assert _agent_frontmatter("wayfinder-quant")["temperature"] == 0.1
+    assert "temperature" not in _agent_frontmatter("wayfinder-research")
+    assert "temperature" not in _agent_frontmatter("wayfinder-quant")
 
     assert "fresh executable pricing as the prior" in primary
     assert "quote/snapshot updates" in planner
@@ -672,7 +672,7 @@ def test_wayfinder_planner_is_hidden_advisory_and_non_mutating() -> None:
     assert frontmatter["mode"] == "subagent"
     assert frontmatter["hidden"] is True
     assert frontmatter["steps"] == 8
-    assert frontmatter["temperature"] == 0.1
+    assert "temperature" not in frontmatter
     assert permission["*"] == "deny"
     assert permission["task"]["*"] == "deny"
     assert permission["question"] == "deny"
