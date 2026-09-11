@@ -84,7 +84,7 @@ def _tail_text(path: Path, *, max_bytes: int = 4000) -> str | None:
             size = f.tell()
             start = max(0, size - int(max_bytes))
             f.seek(start, os.SEEK_SET)
-            data = f.read()
+            data = f.read(max_bytes)
     except OSError:
         return None
     text = data.decode("utf-8", errors="replace").strip()
@@ -361,11 +361,8 @@ class RunnerDaemon:
         status: str,
         exit_code: int | None,
     ) -> None:
-        log_output = ""
-        try:
-            log_output = rp.log_path.read_text(errors="replace")
-        except Exception:  # noqa: BLE001
-            pass
+        # Keep reporting bounded even when a job emits a very large log.
+        log_output = _tail_text(rp.log_path, max_bytes=64_000) or ""
         SCHEDULED_JOBS_CLIENT.report_run(
             rp.job_name,
             {

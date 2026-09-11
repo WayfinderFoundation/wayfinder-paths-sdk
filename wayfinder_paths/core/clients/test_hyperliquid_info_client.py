@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import threading
 from unittest.mock import Mock
 
 import pytest
@@ -9,10 +10,12 @@ from hyperliquid.utils.error import (  # type: ignore[import-untyped]
     ServerError,
 )
 from requests import ConnectionError as RequestsConnectionError
+from requests import Timeout as RequestsTimeout
 
 from wayfinder_paths.core.clients.HyperliquidInfoClient import (
     HyperliquidInfoClient,
 )
+from wayfinder_paths.core.constants.base import DEFAULT_HTTP_TIMEOUT
 from wayfinder_paths.core.utils import retry as retry_utils
 
 client_module = importlib.import_module(
@@ -45,6 +48,7 @@ def mock_info(monkeypatch: pytest.MonkeyPatch) -> Mock:
         ServerError(500, "null"),
         ClientError(429, None, "rate limited", {}),
         RequestsConnectionError("connection reset"),
+        RequestsTimeout("read timed out"),
     ],
 )
 async def test_post_retries_transient_failures(
@@ -94,3 +98,39 @@ async def test_post_reraises_after_bounded_attempts(
     assert raised.value is error
     assert mock_info.post.call_count == 3
     assert no_retry_sleep == [0.25, 0.5]
+
+
+@pytest.mark.asyncio
+async def test_client_reuses_transport_without_metadata_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    expected = {"ETH": "2000"}
+    response = Mock(status_code=200)
+    response.json.return_value = expected
+
+    def post(*args: object, **kwargs: object) -> Mock:
+        threads.append(threading.get_ident())
+        return response
+
+    transport = Mock()
+    transport.post.side_effect = post
+    factory = Mock(return_value=transport)
+    monkeypatch.setattr("requests.Session", factory)
+    client_module._public_info.cache_clear()
+    try:
+        client = HyperliquidInfoClient()
+        for _ in range(2):
+            assert await client.post({"type": "allMids"}) == expected
+        assert len(threads) == 2
+        assert all(thread != loop_thread for thread in threads)
+        factory.assert_called_once_with()
+        assert transport.post.call_count == 2
+        transport.post.assert_called_with(
+            f"{client_module.constants.MAINNET_API_URL}/info",
+            json={"type": "allMids"},
+            timeout=DEFAULT_HTTP_TIMEOUT,
+        )
+    finally:
+        client_module._public_info.cache_clear()

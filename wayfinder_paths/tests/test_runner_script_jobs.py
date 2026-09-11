@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import sys
+from io import BytesIO
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
+
+import pytest
 
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
+from wayfinder_paths.core.clients.ScheduledJobsClient import SCHEDULED_JOBS_CLIENT
 from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, RunStatus
-from wayfinder_paths.runner.daemon import RunnerDaemon, RunningProcess
+from wayfinder_paths.runner.daemon import RunnerDaemon, RunningProcess, _tail_text
 from wayfinder_paths.runner.db import RunnerDB
 from wayfinder_paths.runner.paths import RunnerPaths
 from wayfinder_paths.runner.script_resolver import resolve_script_path
@@ -21,6 +25,61 @@ def _paths(tmp_path: Path) -> RunnerPaths:
         logs_dir=runner_dir / "logs",
         sock_path=runner_dir / "runner.sock",
     )
+
+
+@pytest.mark.parametrize("log_size", [None, 0, 100, 2_000_000])
+def test_report_finished_run_sends_only_bounded_log_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, log_size: int | None
+) -> None:
+    log_path = tmp_path / "run.log"
+    content = ""
+    if log_size is not None:
+        content = "x" * log_size + "\nfinished" if log_size else ""
+        log_path.write_text(content)
+    report = Mock()
+    monkeypatch.setattr(SCHEDULED_JOBS_CLIENT, "report_run", report)
+    rp = RunningProcess(
+        run_id=1,
+        job_id=2,
+        job_name="test-job",
+        started_at=0,
+        reason="schedule",
+        scheduled_for=0,
+        timeout_seconds=None,
+        popen=Mock(),
+        log_path=log_path,
+    )
+    RunnerDaemon(paths=_paths(tmp_path))._report_finished_run(
+        rp, finished_at=10, status=RunStatus.OK, exit_code=0
+    )
+
+    report.assert_called_once()
+    name, payload = report.call_args.args
+    assert name == "test-job"
+    assert payload["log_output"] == content[-64_000:].strip()
+    assert payload["status"] == RunStatus.OK
+    assert payload["run_id"] == 1
+    assert payload["exit_code"] == 0
+    if log_size is not None:
+        assert log_path.read_text() == content
+
+
+def test_log_tail_bounds_read_even_if_file_grows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stream = MagicMock(wraps=BytesIO(b"x" * 100_000))
+    stream.__enter__.return_value = stream
+    monkeypatch.setattr(Path, "open", Mock(return_value=stream))
+
+    assert _tail_text(tmp_path / "run.log", max_bytes=64_000) == "x" * 64_000
+    stream.read.assert_called_once_with(64_000)
+
+
+def test_unreadable_log_tail_is_optional(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "open", Mock(side_effect=PermissionError("denied")))
+    assert _tail_text(tmp_path / "run.log") is None
 
 
 def test_resolve_script_path_only_allows_wayfinder_runs(tmp_path: Path) -> None:

@@ -173,29 +173,30 @@ def maybe_heartbeat_installed_paths(
             trigger=trigger,
         )
 
-    results = response.get("results")
-    sent = 0
-    if isinstance(results, list):
-        sent = sum(
-            1
-            for item in results
-            if isinstance(item, dict) and item.get("status") == "recorded"
-        )
-
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(
-        json.dumps(
-            {
-                "schemaVersion": "0.1",
-                "last_success_at": current_time.isoformat(),
-                "last_trigger": trigger,
-                "attempted": len(heartbeats),
-                "sent": sent,
-            },
-            indent=2,
-        )
-        + "\n"
+    sent = sum(
+        1
+        for item in response["results"]
+        if isinstance(item, dict) and item.get("status") == "recorded"
     )
+
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": "0.1",
+                    "last_success_at": current_time.isoformat(),
+                    "last_trigger": trigger,
+                    "attempted": len(heartbeats),
+                    "sent": sent,
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+    except OSError as exc:
+        # Reporting succeeded; a local cooldown-file failure must not block startup.
+        logger.warning("Could not save installed-path heartbeat cooldown: {}", exc)
     return PathHeartbeatResult(
         status="recorded",
         reason="sent",
