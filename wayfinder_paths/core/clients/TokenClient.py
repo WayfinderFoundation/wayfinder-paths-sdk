@@ -185,6 +185,20 @@ class TokenClient(WayfinderClient):
         response.raise_for_status()
         return response.json()
 
+    async def get_holder_intel(
+        self, chain_id: int, token_address: str, refresh: bool = False
+    ) -> dict[str, Any]:
+        """Return backend-computed holder PnL, hold-time, and whale-entry analysis."""
+        url = f"{get_api_base_url()}/blockchain/token-intel/holders/"
+        params: dict[str, Any] = {"chain_id": chain_id, "address": token_address}
+        if refresh:
+            params["refresh"] = "true"
+        # Cold computes fan out to many upstream calls server-side (~30-60s);
+        # cached hits return instantly.
+        response = await self._authed_request("GET", url, params=params, timeout=90.0)
+        response.raise_for_status()
+        return response.json()
+
     async def fuzzy_search(
         self, query: str, chain: str | None = None
     ) -> FuzzyTokenResponse:
