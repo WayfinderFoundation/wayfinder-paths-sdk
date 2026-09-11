@@ -12,6 +12,16 @@
 - Set `limit=None` only when you intentionally want a full scan.
 - `get_full_user_state(account=..., start=..., limit=...)` is also paginated across voter pools.
 - `include_vote_claimables=True` can add extra work because the adapter resolves vote reward contracts and claimables.
+- `sugar_all(...)` calls current LP Sugar as `all(limit, offset, filter)`;
+  keep `pool_filter=0` for all pools unless you intentionally need listed,
+  unlisted, emerging, listed-or-emerging, or neither-listed-nor-emerging rows.
+
+## Sugar rows can include CL pools
+
+- Current LP Sugar can return classic and concentrated-liquidity pools.
+- Use `pool.is_v2` before classic LP APR/TVL assumptions.
+- Use `pool.is_cl` and the Slipstream adapter when a row has tick spacing,
+  NFPM, ALM, or root-pool metadata.
 
 ## Zero-address gauge is normal
 
@@ -34,6 +44,8 @@
 - `quote_best_route`, `get_amounts_out`, `quote_add_liquidity`, and `quote_remove_liquidity` do not move funds.
 - `add_liquidity`, `remove_liquidity`, `stake_lp`, `create_lock`, `vote`, and the claim methods do.
 - The adapter does **not** implement swap execution even though it can quote routes.
+- Sugar/Swapper deployments are tracked in constants for audit context, but
+  this adapter does not build UniversalRouter/Swapper execution payloads.
 
 ## Native token handling is limited
 
