@@ -6,6 +6,7 @@ from typing import Any, Literal
 from aiocache import Cache
 from eth_utils import to_checksum_address
 from eth_utils.abi import collapse_if_tuple
+from web3.exceptions import ContractLogicError
 
 from wayfinder_paths.adapters.multicall_adapter.adapter import MulticallAdapter
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
@@ -90,8 +91,8 @@ class MoonwellAdapter(BaseAdapter):
         """
         Execute multicall in chunks.
 
-        If a chunk reverts, fall back to executing calls one-by-one so we can salvage
-        partial results (returning b"" for failed calls).
+        Only contract reverts fall back to individual calls. Transport failures
+        must propagate, not become zero balances or trigger a retry per token.
         """
         out: list[bytes] = []
         for chunk in self._chunks(calls, max(1, int(chunk_size))):
@@ -101,12 +102,12 @@ class MoonwellAdapter(BaseAdapter):
                 res = await multicall.aggregate(chunk)
                 out.extend(list(res.return_data))
                 continue
-            except Exception:  # noqa: BLE001 - fall back to individual calls
+            except ContractLogicError:
                 for call in chunk:
                     try:
                         r = await multicall.aggregate([call])
                         out.append(r.return_data[0] if r.return_data else b"")
-                    except Exception:  # noqa: BLE001
+                    except ContractLogicError:
                         out.append(b"")
         return out
 
@@ -559,7 +560,9 @@ class MoonwellAdapter(BaseAdapter):
         include_zero_positions: bool = False,
         multicall_chunk_size: int = 240,
         block_identifier: int | str | None = None,  # multicall ignores block id
+        timeout_seconds: float = 60.0,
     ) -> tuple[bool, dict[str, Any] | str]:
+        """Read one chain's positions within ``timeout_seconds``; failures are not zeros."""
         _ = block_identifier  # reserved for future per-call block pinning
         cid = self._chain_id(chain_id)
         acct = to_checksum_address(account) if account else self.wallet_address
@@ -569,7 +572,10 @@ class MoonwellAdapter(BaseAdapter):
         reward_distributor_address = self._reward_distributor(cid)
 
         try:
-            async with web3_from_chain_id(cid) as web3:
+            async with (
+                asyncio.timeout(timeout_seconds),
+                web3_from_chain_id(cid) as web3,
+            ):
                 multicall = MulticallAdapter(chain_id=cid, web3=web3)
 
                 comptroller = web3.eth.contract(
@@ -887,8 +893,13 @@ class MoonwellAdapter(BaseAdapter):
 
                 return True, out
 
+        except TimeoutError:
+            return False, (
+                f"Moonwell position scan timed out on chain {cid} "
+                f"(limit {timeout_seconds:g}s)"
+            )
         except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+            return False, str(exc) or type(exc).__name__
 
     async def get_all_markets(
         self,
