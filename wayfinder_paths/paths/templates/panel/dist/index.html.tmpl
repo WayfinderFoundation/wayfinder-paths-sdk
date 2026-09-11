@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
+    <title>{{panel_name}}</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      }
+      body {
+        margin: 0;
+        padding: 12px;
+        /* Theme tokens arrive over the bridge (wf:context) and are applied as
+           CSS variables below — this keeps the panel matched to the shell. */
+        background: var(--wf-background, #17171a);
+        color: var(--wf-foreground, #e9eef2);
+        font-size: 13px;
+      }
+      .row { display: flex; flex-direction: column; gap: 8px; }
+      .card {
+        border: 1px solid var(--wf-border, rgba(255, 255, 255, 0.08));
+        border-radius: 12px;
+        padding: 12px;
+        background: var(--wf-card, rgba(255, 255, 255, 0.03));
+      }
+      .muted { color: var(--wf-muted-foreground, rgba(233, 238, 242, 0.6)); }
+      .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+      pre { margin: 0; overflow: auto; font-size: 11px; }
+      button {
+        background: var(--wf-primary, #98f283);
+        color: var(--wf-primary-foreground, #06210c);
+        border: 0;
+        border-radius: 999px;
+        padding: 6px 12px;
+        font: inherit;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body data-path-ready="false">
+    <div class="row">
+      <div class="card">
+        <div class="label muted">Active market</div>
+        <div id="market">Connecting…</div>
+      </div>
+      <div class="card">
+        <div class="label muted">Market data (bridge.fetch)</div>
+        <pre id="data" class="muted">—</pre>
+        <div style="margin-top: 8px">
+          <button id="refresh" type="button">Refresh</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./assets/panel.js"></script>
+  </body>
+</html>

@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
+    <title>Funding Radar</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 10px;
+        background: var(--wf-background, #17171a);
+        color: var(--wf-foreground, #e9eef2);
+        font-size: 12px;
+      }
+      .controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+      .pill {
+        background: transparent;
+        color: var(--wf-muted-foreground, rgba(233, 238, 242, 0.6));
+        border: 1px solid var(--wf-border, rgba(255, 255, 255, 0.08));
+        border-radius: 999px;
+        padding: 3px 10px;
+        font: inherit;
+        font-size: 11px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .pill.active {
+        color: var(--wf-primary, #98f283);
+        border-color: var(--wf-primary, #98f283);
+      }
+      .pill .arrow { opacity: 0.8; }
+      .scope { margin-left: auto; }
+      table { width: 100%; border-collapse: collapse; }
+      th {
+        text-align: right;
+        font-size: 10px;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--wf-muted-foreground, rgba(233, 238, 242, 0.6));
+        padding: 4px 6px;
+        border-bottom: 1px solid var(--wf-border, rgba(255, 255, 255, 0.08));
+        white-space: nowrap;
+      }
+      th:first-child { text-align: left; }
+      td {
+        text-align: right;
+        padding: 5px 6px;
+        border-bottom: 1px solid var(--wf-border, rgba(255, 255, 255, 0.05));
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      td:first-child { text-align: left; }
+      tbody tr { cursor: pointer; transition: background-color 120ms ease-out; }
+      tbody tr:hover { background: rgba(255, 255, 255, 0.04); }
+      tbody tr.flash { background: rgba(152, 242, 131, 0.12); }
+      tbody tr.active-market td:first-child .sym { color: var(--wf-primary, #98f283); }
+      .sym { font-weight: 600; }
+      .dexchip {
+        display: inline-block;
+        margin-left: 5px;
+        padding: 0 5px;
+        border-radius: 4px;
+        font-size: 9px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--wf-muted-foreground, rgba(233, 238, 242, 0.6));
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .pos { color: var(--wf-primary, #98f283); }
+      .neg { color: var(--wf-destructive, #f4626e); }
+      .dim { color: var(--wf-muted-foreground, rgba(233, 238, 242, 0.5)); }
+      .apr { font-size: 10px; opacity: 0.75; margin-left: 3px; }
+      #status { margin-top: 8px; font-size: 10px; color: var(--wf-muted-foreground, rgba(233, 238, 242, 0.5)); }
+      #note { color: var(--wf-destructive, #f4626e); margin-left: 6px; }
+    </style>
+  </head>
+  <body>
+    <div class="controls">
+      <button class="pill sort active" data-key="funding" type="button">1h funding <span class="arrow"></span></button>
+      <button class="pill sort" data-key="priceD24" type="button">Δ24h price <span class="arrow"></span></button>
+      <button class="pill sort" data-key="fundingD24" type="button">Δ24h funding <span class="arrow"></span></button>
+      <button class="pill scope" id="scope-toggle" type="button">Equities</button>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Market</th>
+          <th>Mark</th>
+          <th>1h funding</th>
+          <th>Δ24h px</th>
+          <th>Δ24h funding</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div id="status">Connecting…<span id="note"></span></div>
+    <script type="module" src="./assets/panel.js"></script>
+  </body>
+</html>
