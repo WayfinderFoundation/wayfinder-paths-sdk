@@ -1,5 +1,16 @@
 # Uniswap V3 gotchas
 
+## This adapter is V3 NPM-only
+
+The SDK's `UniswapAdapter` is not the Universal Router. It does not support V2
+routes, V3 swaps, Permit2 signatures/transfers, or Uniswap v4 pools/positions.
+Those flows require distinct command encoders, address maps, approval semantics,
+and safety checks.
+
+Current Uniswap docs describe Universal Router as the preferred programmatic
+swap entrypoint and v4 as recommended for new integrations. Treat that as a
+follow-up design boundary, not as behavior provided by this adapter.
+
 ## `price_to_tick_decimal` does NOT match on-chain ticks
 
 `price_to_tick_decimal(price, dec0, dec1)` and `tick_to_price_decimal()` are self-consistent

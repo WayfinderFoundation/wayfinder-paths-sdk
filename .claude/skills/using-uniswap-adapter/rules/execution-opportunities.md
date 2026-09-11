@@ -1,11 +1,24 @@
 # Uniswap V3 execution (ad-hoc scripts)
 
+The current SDK adapter executes **V3 position manager** transactions only:
+mint, increase liquidity, decrease/remove liquidity, collect fees, and optional
+burns. It does not execute swaps through Universal Router, does not build
+Permit2 signatures, and does not handle Uniswap v4 PositionManager actions.
+
 ## Execution pattern
 
 All write operations use ad-hoc scripts under `.wayfinder_runs/`:
 
 1. Write script with `get_adapter(UniswapAdapter, "wallet_label")`
 2. Run via `mcp__wayfinder__core_run_script(script_path, wallet_label)`
+
+For fund-moving changes to this adapter, run the focused unit tests and the
+Gorlami fork simulation when configured:
+
+```bash
+poetry run pytest -o addopts= wayfinder_paths/adapters/uniswap_adapter -q
+poetry run pytest -o addopts= wayfinder_paths/adapters/uniswap_adapter/test_gorlami_simulation.py -q
+```
 
 ## Add liquidity (new position)
 
