@@ -433,7 +433,15 @@ class PathsApiClient:
             raise PathsApiError(
                 f"Batch install heartbeat failed ({resp.status_code}): {resp.text}"
             )
-        return resp.json()
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise PathsApiError(
+                "Batch install heartbeat returned invalid JSON"
+            ) from exc
+        if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+            raise PathsApiError("Batch install heartbeat returned invalid results")
+        return data
 
     def emit_signal(
         self,

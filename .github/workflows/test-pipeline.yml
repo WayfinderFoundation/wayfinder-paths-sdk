@@ -213,7 +213,11 @@ jobs:
       run: poetry install --no-interaction
 
     - name: Run MCP tests
-      run: poetry run pytest wayfinder_paths/tests/test_mcp*.py wayfinder_paths/tests/test_delta_lab_resources.py -v --maxfail=5 -m "not local"
+      run: >-
+        poetry run pytest wayfinder_paths/tests/test_mcp*.py
+        wayfinder_paths/tests/test_delta_lab_resources.py
+        wayfinder_paths/core/clients/test_hyperliquid_info_client.py
+        -v --maxfail=5 -m "not local"
 
   # Integration Tests (strategies with multiple adapters)
   integration-tests:

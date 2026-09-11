@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -204,12 +205,23 @@ def test_maybe_heartbeat_installed_paths_reads_legacy_cooldown_state(
 
 
 @pytest.mark.parametrize(
-    "failure", [httpx.ReadTimeout, httpx.ConnectError, httpx.RemoteProtocolError, 503]
+    "failure",
+    [
+        httpx.ReadTimeout,
+        httpx.ConnectError,
+        httpx.RemoteProtocolError,
+        503,
+        "<html>Unavailable</html>",
+        "null",
+        "[]",
+        "{}",
+        '{"results": null}',
+    ],
 )
 def test_heartbeat_failure_does_not_start_cooldown(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    failure: type[httpx.RequestError] | int,
+    failure: type[httpx.RequestError] | int | str,
 ) -> None:
     _write_lockfile(tmp_path)
     monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://paths.example")
@@ -219,6 +231,8 @@ def test_heartbeat_failure_does_not_start_cooldown(
     def handle(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         if len(requests) == 1:
+            if isinstance(failure, str):
+                return httpx.Response(200, text=failure)
             if isinstance(failure, int):
                 return httpx.Response(failure, text="Unavailable")
             raise failure("Heartbeat unavailable", request=request)
@@ -246,3 +260,35 @@ def test_heartbeat_failure_does_not_start_cooldown(
         assert requests[0].url.path == "/api/v1/paths/installations/heartbeat-batch/"
         assert requests[0].extensions["timeout"] == httpx.Timeout(5).as_dict()
         assert http.timeout == httpx.Timeout(60)
+
+
+@pytest.mark.parametrize("operation", ["mkdir", "write_text"])
+def test_heartbeat_state_write_failure_is_nonfatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    _write_lockfile(tmp_path)
+    monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://paths.example")
+    monkeypatch.setenv("OPENCODE_INSTANCE_ID", "test-instance")
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"results": [{"status": "recorded"}]})
+
+    def fail_write(*args: object, **kwargs: object) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
+        client = PathsApiClient(api_base_url="https://paths.example", client=http)
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, operation, fail_write)
+            result = maybe_heartbeat_installed_paths(
+                trigger="mcp-server", cwd=tmp_path, client=client
+            )
+
+        assert result.status == "recorded"
+        assert result.sent == 1
+        assert not (tmp_path / ".wayfinder" / "paths-heartbeat.json").exists()
+        recovered = maybe_heartbeat_installed_paths(
+            trigger="mcp-server", cwd=tmp_path, client=client
+        )
+        assert recovered.status == "recorded"
+        assert (tmp_path / ".wayfinder" / "paths-heartbeat.json").exists()

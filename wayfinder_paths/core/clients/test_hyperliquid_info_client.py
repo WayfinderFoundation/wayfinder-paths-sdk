@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import threading
 from unittest.mock import Mock
 
 import pytest
@@ -9,10 +10,12 @@ from hyperliquid.utils.error import (  # type: ignore[import-untyped]
     ServerError,
 )
 from requests import ConnectionError as RequestsConnectionError
+from requests import Timeout as RequestsTimeout
 
 from wayfinder_paths.core.clients.HyperliquidInfoClient import (
     HyperliquidInfoClient,
 )
+from wayfinder_paths.core.constants.base import DEFAULT_HTTP_TIMEOUT
 from wayfinder_paths.core.utils import retry as retry_utils
 
 client_module = importlib.import_module(
@@ -45,6 +48,7 @@ def mock_info(monkeypatch: pytest.MonkeyPatch) -> Mock:
         ServerError(500, "null"),
         ClientError(429, None, "rate limited", {}),
         RequestsConnectionError("connection reset"),
+        RequestsTimeout("read timed out"),
     ],
 )
 async def test_post_retries_transient_failures(
@@ -94,3 +98,34 @@ async def test_post_reraises_after_bounded_attempts(
     assert raised.value is error
     assert mock_info.post.call_count == 3
     assert no_retry_sleep == [0.25, 0.5]
+
+
+@pytest.mark.asyncio
+async def test_cold_client_initialization_runs_off_event_loop_with_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+    info = Mock()
+    info.post.return_value = {"ETH": "2000"}
+
+    def build_info(*args: object, **kwargs: object) -> Mock:
+        threads.append(threading.get_ident())
+        return info
+
+    factory = Mock(side_effect=build_info)
+    monkeypatch.setattr(client_module, "Info", factory)
+    client_module._public_info.cache_clear()
+    try:
+        client = HyperliquidInfoClient()
+        for _ in range(2):
+            assert await client.post({"type": "allMids"}) == {"ETH": "2000"}
+        assert len(threads) == 1
+        assert threads[0] != loop_thread
+        factory.assert_called_once_with(
+            client_module.constants.MAINNET_API_URL,
+            skip_ws=True,
+            timeout=DEFAULT_HTTP_TIMEOUT,
+        )
+    finally:
+        client_module._public_info.cache_clear()
