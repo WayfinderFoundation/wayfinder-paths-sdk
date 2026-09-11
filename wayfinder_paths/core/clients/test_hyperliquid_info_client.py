@@ -101,30 +101,35 @@ async def test_post_reraises_after_bounded_attempts(
 
 
 @pytest.mark.asyncio
-async def test_cold_client_initialization_runs_off_event_loop_with_timeout(
+async def test_client_reuses_transport_without_metadata_requests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     loop_thread = threading.get_ident()
     threads: list[int] = []
-    info = Mock()
-    info.post.return_value = {"ETH": "2000"}
+    expected = {"ETH": "2000"}
+    response = Mock(status_code=200)
+    response.json.return_value = expected
 
-    def build_info(*args: object, **kwargs: object) -> Mock:
+    def post(*args: object, **kwargs: object) -> Mock:
         threads.append(threading.get_ident())
-        return info
+        return response
 
-    factory = Mock(side_effect=build_info)
-    monkeypatch.setattr(client_module, "Info", factory)
+    transport = Mock()
+    transport.post.side_effect = post
+    factory = Mock(return_value=transport)
+    monkeypatch.setattr("requests.Session", factory)
     client_module._public_info.cache_clear()
     try:
         client = HyperliquidInfoClient()
         for _ in range(2):
-            assert await client.post({"type": "allMids"}) == {"ETH": "2000"}
-        assert len(threads) == 1
-        assert threads[0] != loop_thread
-        factory.assert_called_once_with(
-            client_module.constants.MAINNET_API_URL,
-            skip_ws=True,
+            assert await client.post({"type": "allMids"}) == expected
+        assert len(threads) == 2
+        assert all(thread != loop_thread for thread in threads)
+        factory.assert_called_once_with()
+        assert transport.post.call_count == 2
+        transport.post.assert_called_with(
+            f"{client_module.constants.MAINNET_API_URL}/info",
+            json={"type": "allMids"},
             timeout=DEFAULT_HTTP_TIMEOUT,
         )
     finally:

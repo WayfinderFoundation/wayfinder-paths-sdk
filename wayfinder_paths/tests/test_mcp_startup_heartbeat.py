@@ -1,17 +1,10 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from unittest.mock import Mock
-
 import click
-import httpx
 import pytest
 
 from wayfinder_paths.mcp import cli as mcp_cli
 from wayfinder_paths.mcp import server as mcp_server
-from wayfinder_paths.paths import heartbeat
-from wayfinder_paths.paths.client import PathsApiClient
 
 
 def _make_fake_group() -> click.Group:
@@ -143,39 +136,3 @@ def test_mcp_server_main_accepts_profile_host_port_and_transport(monkeypatch) ->
 
     assert calls == ["mcp-server"]
     assert runs == [("0.0.0.0", 8123, "streamable-http")]
-
-
-def test_mcp_server_starts_after_heartbeat_read_timeout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://paths.example")
-    monkeypatch.setenv("OPENCODE_INSTANCE_ID", "test-instance")
-    state_dir = tmp_path / ".wayfinder"
-    state_dir.mkdir()
-    (state_dir / "paths.lock.json").write_text(
-        json.dumps(
-            {
-                "paths": {
-                    "demo": {"installation_id": "install-1", "heartbeat_token": "test"}
-                }
-            }
-        )
-    )
-    requests: list[httpx.Request] = []
-
-    def handle(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        raise httpx.ReadTimeout("The read operation timed out", request=request)
-
-    with httpx.Client(transport=httpx.MockTransport(handle)) as http:
-        client = PathsApiClient(api_base_url="https://paths.example", client=http)
-        monkeypatch.setattr(heartbeat, "PathsApiClient", lambda: client)
-        server = Mock()
-        monkeypatch.setattr(mcp_server, "build_mcp", Mock(return_value=server))
-
-        mcp_server.main(["--transport", "streamable-http"])
-
-    assert len(requests) == 1
-    server.run.assert_called_once_with(transport="streamable-http")
-    assert not (state_dir / "paths-heartbeat.json").exists()

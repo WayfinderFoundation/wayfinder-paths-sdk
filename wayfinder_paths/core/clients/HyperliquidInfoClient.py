@@ -4,7 +4,7 @@ import asyncio
 from functools import cache
 from typing import Any
 
-from hyperliquid.info import Info
+from hyperliquid.api import API
 from hyperliquid.utils import constants
 from hyperliquid.utils.error import (  # type: ignore[import-untyped]
     ClientError,
@@ -20,8 +20,9 @@ _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 
 @cache
-def _public_info() -> Info:
-    return Info(constants.MAINNET_API_URL, skip_ws=True, timeout=DEFAULT_HTTP_TIMEOUT)
+def _public_info() -> API:
+    # Raw /info posts do not need Info's eager market-metadata requests.
+    return API(constants.MAINNET_API_URL, timeout=DEFAULT_HTTP_TIMEOUT)
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -32,9 +33,9 @@ def _is_retryable(exc: Exception) -> bool:
 
 class HyperliquidInfoClient:
     async def post(self, body: dict[str, Any]) -> Any:
+        client = _public_info()
         return await retry_async(
-            # Info initialization also performs blocking metadata requests.
-            lambda: asyncio.to_thread(lambda: _public_info().post("/info", body)),
+            lambda: asyncio.to_thread(client.post, "/info", body),
             should_retry=_is_retryable,
         )
 
