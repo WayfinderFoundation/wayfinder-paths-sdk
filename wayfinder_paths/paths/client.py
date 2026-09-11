@@ -422,7 +422,13 @@ class PathsApiClient:
         if source:
             body["source"] = source
 
-        resp = self._client.post(url, json=body, headers=self._headers())
+        # Best-effort startup reporting must not stall MCP for the normal 60s timeout.
+        try:
+            resp = self._client.post(
+                url, json=body, headers=self._headers(), timeout=5.0
+            )
+        except httpx.HTTPError as exc:
+            raise PathsApiError(f"Batch install heartbeat failed: {exc}") from exc
         if resp.status_code >= 400:
             raise PathsApiError(
                 f"Batch install heartbeat failed ({resp.status_code}): {resp.text}"
