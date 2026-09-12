@@ -708,6 +708,143 @@ class TestBorosAdapter:
         assert orders[0].remaining_size == 0.5
 
     @pytest.mark.asyncio
+    async def test_get_open_limit_orders_parses_v2_fields(
+        self, adapter, mock_boros_client
+    ):
+        mock_boros_client.get_open_orders = AsyncMock(
+            return_value=[
+                {
+                    "orderId": "order-456",
+                    "marketId": 74,
+                    "side": 0,
+                    "placedSize": "3000000000000000000",
+                    "unfilledSize": "1000000000000000000",
+                    "tick": 410,
+                    "impliedApr": 0.041,
+                    "status": 0,
+                }
+            ]
+        )
+
+        success, orders = await adapter.get_open_limit_orders()
+
+        assert success is True
+        assert len(orders) == 1
+        assert orders[0].order_id == "order-456"
+        assert orders[0].market_id == 74
+        assert orders[0].side == "long"
+        assert orders[0].size == 3.0
+        assert orders[0].filled_size == 2.0
+        assert orders[0].remaining_size == 1.0
+        assert orders[0].limit_tick == 410
+        assert orders[0].limit_apr == 0.041
+
+    def test_build_tx_from_calldata_accepts_current_calldata_field(self, adapter):
+        tx = adapter._build_tx_from_calldata(
+            {
+                "from": adapter.wallet_address,
+                "to": "0x0000000000000000000000000000000000000002",
+                "calldata": "0xdeadbeef",
+                "value": "0",
+            },
+            from_address=adapter.wallet_address,
+        )
+
+        assert tx["data"] == "0xdeadbeef"
+        assert tx["to"] == "0x0000000000000000000000000000000000000002"
+
+    @pytest.mark.asyncio
+    async def test_agent_calldata_is_advanced_not_default_product_flow(self, adapter):
+        adapter.sign_callback = object()
+
+        ok, res = await adapter._broadcast_user_or_return_agent_calldata(
+            {"calls": [{"calldata": "0xabc", "accountId": 0}]},
+            action="place_rate_order",
+        )
+
+        assert ok is False
+        assert res["status"] == "agent_execution_not_default"
+        assert res["signing"] == "agent"
+        assert res["product_flow"] == "not_default"
+        assert res["advanced"] is True
+        assert res["payload_keys"] == ["calls"]
+        assert "calls" not in res
+        assert "calldata" not in res
+        assert "executeParams" not in res
+
+        ok, res = await adapter._broadcast_user_or_return_agent_calldata(
+            {"executeParams": {"calldata": "0xdef", "accountId": 0}},
+            action="cash_transfer",
+        )
+
+        assert ok is False
+        assert res["status"] == "agent_execution_not_default"
+        assert res["payload_keys"] == ["executeParams"]
+        assert "calls" not in res
+        assert "calldata" not in res
+        assert "executeParams" not in res
+
+    @pytest.mark.asyncio
+    async def test_simulate_place_order_delegates_current_payload(
+        self, adapter, mock_boros_client
+    ):
+        mock_boros_client.simulate_place_order = AsyncMock(
+            return_value={"resolved": {"limitTick": 410}}
+        )
+        adapter._get_market_acc = AsyncMock(
+            return_value="0x1234567890123456789012345678901234567890000003ffffff"
+        )
+
+        ok, data = await adapter.simulate_place_order(
+            market_id=74,
+            token_id=3,
+            size_yu_wei=10**18,
+            side="short",
+            limit_tick=410,
+            tif="IOC",
+        )
+
+        assert ok is True
+        assert data == {"resolved": {"limitTick": 410}}
+        mock_boros_client.simulate_place_order.assert_awaited_once_with(
+            market_acc="0x1234567890123456789012345678901234567890000003ffffff",
+            market_id=74,
+            side=1,
+            size_wei=10**18,
+            tif=1,
+            limit_tick=410,
+            rate=None,
+            slippage=0.005,
+            amm_id=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_place_rate_order_reports_agent_only_not_product_flow(
+        self, adapter, mock_boros_client
+    ):
+        adapter._get_market_acc = AsyncMock(
+            return_value="0x1234567890123456789012345678901234567890000003ffffff"
+        )
+        adapter._pick_limit_tick_for_fill = AsyncMock(return_value=410)
+        mock_boros_client.build_place_order_calldata = AsyncMock(
+            return_value={"calls": [{"calldata": "0xabc", "accountId": 0}]}
+        )
+
+        ok, res = await adapter.place_rate_order(
+            market_id=74,
+            token_id=3,
+            size_yu_wei=10**18,
+            side="short",
+        )
+
+        assert ok is False
+        assert res["status"] == "agent_execution_not_default"
+        assert res["product_flow"] == "not_default"
+        assert res["payload_keys"] == ["calls"]
+        assert "calls" not in res
+        mock_boros_client.build_place_order_calldata.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_get_full_user_state_success(self, adapter, mock_boros_client):
         market_acc = "0x" + ("0" * 58) + "000012"  # 0x12 == 18
         mock_boros_client.get_collaterals = AsyncMock(
@@ -869,10 +1006,10 @@ class TestBorosAdapter:
         assert res["moved"][0]["ok"] is False
 
     @pytest.mark.asyncio
-    async def test_deposit_to_cross_margin_sweeps_after_deposit(
+    async def test_deposit_to_cross_margin_stays_wallet_signed_by_default(
         self, adapter, mock_boros_client
     ):
-        """Test deposit falls back to direct isolated->cross transfer when sweep is empty."""
+        """Test cross-margin deposit does not auto-enter agent-key cash transfer."""
         adapter.sign_callback = object()
 
         mock_boros_client.build_deposit_calldata = AsyncMock(
@@ -915,16 +1052,6 @@ class TestBorosAdapter:
             ),
             patch.object(
                 adapter,
-                "sweep_isolated_to_cross",
-                new=AsyncMock(return_value=(True, {"status": "ok", "moved": []})),
-            ) as mock_sweep,
-            patch.object(
-                adapter,
-                "unscaled_to_scaled_cash_wei",
-                new=AsyncMock(return_value=10**18),
-            ) as mock_scaled,
-            patch.object(
-                adapter,
                 "cash_transfer",
                 new=AsyncMock(return_value=(True, {"status": "ok"})),
             ) as mock_transfer,
@@ -940,15 +1067,13 @@ class TestBorosAdapter:
         assert res["status"] == "ok"
         assert res["approve"]["tx_hash"] == "0xapprove"
         assert res["tx"]["tx_hash"] == "0xdeposit"
-        assert res["sweep"]["status"] == "fallback_direct_transfer"
-
-        mock_sweep.assert_awaited_once_with(token_id=3, market_id=18)
-        mock_scaled.assert_awaited_once_with(3, 1_000_000)
-        mock_transfer.assert_awaited_once_with(
-            market_id=18,
-            amount_wei=10**18,
-            is_deposit=False,
+        assert res["post_deposit_cash_transfer"]["status"] == "not_attempted"
+        assert res["post_deposit_cash_transfer"]["advanced_operation"] == (
+            "cash_transfer"
         )
+        assert res["sweep"]["status"] == "not_attempted"
+
+        mock_transfer.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_deposit_to_isolated_margin_skips_cross_sweep(
