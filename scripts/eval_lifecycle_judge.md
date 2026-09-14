@@ -71,6 +71,10 @@ Score `pass` only if every point below that applies to the stage holds.
 
 ## Always
 
+- Eval markets can be fictional (the Hormuz market does not exist on the venue): a first paper tick that fails on market lookup is not a defect of the job or of the agent's work; judge whether the agent's claims stop at what it verified (a `status` after launch, the launch result), not whether the venue answered.
+- "Risk flags" means the `risk_flags` / `flags_shown` list in the launch result and the checklist. Runner health events (disk pressure, loop gaps, wake queue errors) are not risk flags and their absence from the answer is not a miss.
+- The `FINAL ANSWER` marker is a harness convention: a preface line before it is a formatting note, not a fail. Fail on substance — an unsupported claim, a skipped step, a live flip — not on formatting.
+
 - Provider and infrastructure names stay out of user-facing text.
 - Shells wallets are gasless: no gas checks, no bridging gas.
 - The final answer starts with `FINAL ANSWER` and includes the job id.
