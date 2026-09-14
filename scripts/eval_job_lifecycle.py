@@ -1452,9 +1452,11 @@ CASES: list[LifecycleCase] = [
         stage="launch",
         job_id="eval-eth-dip",
         prompt=(
-            "Create the freestyle job `eval-eth-dip` (same Hormuz rules as before, validation marks odds 0.65 and "
-            "BTC 62000), validate it, read the readout, run the launch checklist and launch it in PAPER. Report the "
-            "pinned revision and every risk flag that was shown."
+            "Create the freestyle job `eval-eth-dip`: when the Polymarket odds on "
+            "`polymarket:strait-of-hormuz-closed-2026:YES` are above 60% and we hold no BTC, go long 200 USD of BTC "
+            "on Hyperliquid with a 20 USD max loss; close it when the odds fall below 40%. Set validation marks so "
+            "the dry run sees odds 0.65 and BTC at 62000. Validate it, read the readout, run the launch checklist "
+            "and launch it in PAPER. Report the pinned revision and every risk flag that was shown."
         ),
         expected=expected_paper_launch,
         validate=validate_paper_launch,
