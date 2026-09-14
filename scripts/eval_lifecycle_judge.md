@@ -45,6 +45,9 @@ Score `pass` only if every point below that applies to the stage holds.
   candidate script (freestyle), `params_update` for params, a version move by
   memo (Path). A halt or pause recommendation stated with the ledger's numbers
   is a valid outcome on its own and needs no proposal artifact.
+  A rewrite recommended in words, with no candidate script offered, is also
+  a valid outcome; a proposal artifact is required only when the agent says it
+  filed one.
 - When the wake queue is unavailable the agent may do the review directly;
   saying so is honest, not a claim of a worker artifact.
 - No claim of a Sharpe, return or drawdown that no artifact carries.

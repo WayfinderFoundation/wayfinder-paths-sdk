@@ -1672,7 +1672,12 @@ def run_case(
                 job_id=case.job_id,
                 validator_report=validator,
                 agent_output=agent_output,
-                extra_context=f"Lifecycle stage: {case.stage}",
+                extra_context=(
+                    f"Lifecycle stage: {case.stage}\n\n"
+                    "Status snapshot the agent could read through core_jobs(status) "
+                    "after its run (tool results are not in the transcript):\n"
+                    + status_context(workspace, case.job_id)
+                ),
             )
             judge_result = jobs_eval.run_judge(
                 case_id=case.id,
@@ -1875,6 +1880,38 @@ def stop_sandbox_runner(runner_dir: Path) -> None:
             except OSError:
                 pass
     shutil.rmtree(runner_dir, ignore_errors=True)
+
+
+STATUS_CONTEXT_KEYS = (
+    "execution_contract",
+    "script_loop",
+    "execution_params",
+    "launch",
+    "launch_checklist",
+    "risk_flags",
+    "readout",
+    "watchdog",
+    "gate",
+    "evolution",
+    "research",
+)
+
+
+def status_context(workspace: Path, job_id: str, *, max_chars: int = 12_000) -> str:
+    """What `core_jobs(status)` showed the agent: the judge only sees tool
+    calls in the transcript, not their results, so the snapshot keys the
+    agent quotes (watchdog, checklist, flags, launch) travel as context."""
+    from wayfinder_paths.jobs.sync import snapshot_job
+
+    store = _store(workspace)
+    if not (store.job_dir(job_id) / "job.yaml").exists():
+        return "(no job snapshot: the job does not exist)"
+    with Sandbox():
+        snapshot = snapshot_job(job_id, store=store)
+    job = snapshot.get("job") if isinstance(snapshot.get("job"), dict) else {}
+    picked = {k: snapshot.get(k, job.get(k)) for k in STATUS_CONTEXT_KEYS}
+    text = json.dumps(picked, indent=1, default=str)
+    return text if len(text) <= max_chars else text[:max_chars] + "\n…(truncated)"
 
 
 def preflight_model_gateway(model: str, env: Mapping[str, str]) -> None:
