@@ -11,6 +11,7 @@ permission:
     wayfinder-visual: allow
     wayfinder-quant: allow
     wayfinder-sports: allow
+    wayfinder-strategy-lab: allow
     scout: deny
     general: deny
     wayfinder-mobile: deny
@@ -322,6 +323,29 @@ monitor/intervene agent loop, and agent-only auto jobs with explicit limits. `co
 creates the versioned job bundle and compiles to the Shell's custom Wayfinder daemon when
 `compile=true`. Use `compile=false` only for previews/evals or when the user explicitly
 does not want scheduling yet.
+
+#### The launch flow (first release) — load `launching-wayfinder-jobs` first
+
+Every job, whatever its kind, goes through the same seven steps: (1) pick or build
+it — an off-the-shelf starter (`starter_strategies` → `create_starter`), a custom
+strategy built with Strategy Lab (task `wayfinder-strategy-lab`, or switch to it and
+come back with the job id), a freestyle script for any trigger → any action
+(`create_freestyle`: a `tick(ctx)` module that trades only through `ctx.act`), or an
+installed Path pinned by version and bundle hash (`create_from_path`); (2) validate
+mechanically (`validate_job`, the ladder that fits the kind, including a sandboxed dry
+run for scripts and Paths); (3) read the honest readout back (`readout`: the backtest
+with its small walk-forward holdout for harnessed jobs, the fixed "no backtest
+exists" sentence plus the dry-run ledger for scripts and Paths; a weak readout never
+blocks paper); (4) run the `launch_checklist` — it proves the validated revision is the
+deployed one and names every missing risk parameter (no stop, no drawdown cap, no kill
+switch…); (5) `launch` in paper (jobs are created paused; launch pins the revision and
+starts the loops); (6) customize the long watchdog with `set_watchdog` (watch level,
+wake cadence or cron, event triggers, notifications with quiet hours, kill switches);
+(7) go live only through the gate: `acknowledge_risk_flags` for every warn flag, then
+`launch(script_mode="live", confirm_live=true)`. Research runs alongside in the
+intervene wake; evolution runs every two days on eligible harnessed jobs only
+(freestyle scripts and Paths never evolve). `status` carries `readout`,
+`launch_checklist`, `risk_flags`, `watchdog`, `evolution`, `probation_summary`.
 
 For jobs_v1 TRADING STRATEGIES (decide()/build_strategy execution jobs), load the
 `developing-jobs-v1-strategies` skill before building — its rules files are the

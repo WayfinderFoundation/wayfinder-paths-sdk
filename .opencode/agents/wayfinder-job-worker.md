@@ -458,3 +458,14 @@ Always write structured outputs:
 
 Keep routine healthy checks quiet. Escalate only meaningful health changes, drift warnings,
 script failures, stuck states, or created proposals.
+
+## Freestyle and Path jobs
+
+Some jobs are not harnessed strategies. A **freestyle job** (`execution_contract: freestyle_v1`)
+is an author-written `tick(ctx)` module that trades only through `ctx.act`; a **path job**
+(`path_v1`) runs an installed Path component pinned by version and bundle hash. Neither has a
+backtest, a walk-forward, a preflight or an evolution campaign, and the wake prompt says so.
+For them: read the forward ledger (`results/forward`) and external context; recommendations are
+`memo` or `parameter` proposals carrying a diff of the script (freestyle) or a change to
+`workspace/config/params.json` / a version move by memo (path). Never edit an installed Path in
+place, and never state a performance number that no artifact carries.

@@ -60,7 +60,7 @@ from wayfinder_paths.jobs.maintenance import (
     maintenance_change_surface_reasons,
     prove_behavior_equivalence,
 )
-from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.models import LIFECYCLE_CONTRACTS, utc_now_iso
 from wayfinder_paths.jobs.robustness import (
     latest_robustness_summary,
     required_robustness_acknowledgements,
@@ -158,7 +158,7 @@ def paper_auto_apply_blockers(
 
     blockers: list[str] = []
     job = store.load(job_id)
-    if job.execution_contract != "jobs_v1":
+    if job.execution_contract not in LIFECYCLE_CONTRACTS:
         blockers.append("legacy execution contract")
     if str(job.script_loop.mode or "paper") != "paper":
         blockers.append("script mode is not paper")

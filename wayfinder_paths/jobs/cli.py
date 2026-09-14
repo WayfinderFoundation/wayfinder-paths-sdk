@@ -21,6 +21,7 @@ from wayfinder_paths.jobs.backtest_artifacts import (
     load_backtest_view,
 )
 from wayfinder_paths.jobs.compiler import JobCompiler, compile_job
+from wayfinder_paths.jobs.contracts import validate_job_for_kind
 from wayfinder_paths.jobs.counterfactual import counterfactual_job
 from wayfinder_paths.jobs.decision_gates import (
     load_decision_gates,
@@ -66,6 +67,11 @@ from wayfinder_paths.jobs.features import append_feature, list_features
 from wayfinder_paths.jobs.forward_artifacts import load_forward_view
 from wayfinder_paths.jobs.gating import evaluate_live_gate
 from wayfinder_paths.jobs.halt import clear_halt, request_halt
+from wayfinder_paths.jobs.launch import (
+    evaluate_launch_checklist,
+    launch_job,
+    set_watchdog,
+)
 from wayfinder_paths.jobs.ledger import append_ledger_row, tail_ledger
 from wayfinder_paths.jobs.lifecycle import lifecycle_sweep
 from wayfinder_paths.jobs.models import (
@@ -75,12 +81,14 @@ from wayfinder_paths.jobs.models import (
     infer_job_kind,
     normalize_agent_mode,
 )
+from wayfinder_paths.jobs.paths_runtime import create_from_path
 from wayfinder_paths.jobs.probation import open_paper_probation_leg
 from wayfinder_paths.jobs.proposals import (
     propose_change,
     restage_proposal,
     revalidate_proposal,
 )
+from wayfinder_paths.jobs.readout import build_readout
 from wayfinder_paths.jobs.regime_health import regime_health_job
 from wayfinder_paths.jobs.replication import replication_job
 from wayfinder_paths.jobs.research import (
@@ -90,6 +98,7 @@ from wayfinder_paths.jobs.research import (
     signal_check_job,
     signal_scan_job,
 )
+from wayfinder_paths.jobs.risk_flags import acknowledge_risk_flags
 from wayfinder_paths.jobs.risk_overrides import risk_block_symbol, risk_unblock_symbol
 from wayfinder_paths.jobs.robustness import robustness_check_job
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
@@ -131,7 +140,7 @@ def job_cli() -> None:
 @click.option(
     "--execution-contract",
     "execution_contract",
-    type=click.Choice(["jobs_v1", "legacy"]),
+    type=click.Choice(["jobs_v1", "legacy", "freestyle_v1", "path_v1"]),
     default="jobs_v1",
     show_default=True,
     help=(
@@ -220,9 +229,7 @@ def create_cmd(
         name=name,
         goal=goal,
         script=script,
-        execution_contract=(
-            "jobs_v1" if script and execution_contract == "jobs_v1" else "legacy"
-        ),
+        execution_contract=(execution_contract if script else "legacy"),
         interval_seconds=interval_seconds,
         cron_expr=cron_expr,
         timezone=timezone,
@@ -331,10 +338,193 @@ def status_cmd(job_id: str) -> None:
 @click.option("--strict", is_flag=True, default=False)
 def validate_cmd(job_id: str, strict: bool) -> None:
     store = JobStore()
-    result = validate_execution_job(job_id, strict=strict, store=store)
+    result = validate_job_for_kind(job_id, strict=strict, store=store)
     _echo_json({"ok": result["status"] == "passed", "result": result})
     if strict and result["status"] != "passed":
         raise click.ClickException("job validation failed")
+
+
+@job_cli.command(
+    name="launch-checklist",
+    help="Identity, mechanical and risk-flag checklist a launch must pass.",
+)
+@click.argument("job_id")
+@click.option("--target", type=click.Choice(["paper", "live"]), default="paper")
+def launch_checklist_cmd(job_id: str, target: str) -> None:
+    result = evaluate_launch_checklist(job_id, store=JobStore(), target=target)
+    _echo_json({"ok": result["ok"], "result": result})
+
+
+@job_cli.command(
+    name="launch",
+    help="Pin the validated revision and start the loops (paper unless --mode live).",
+)
+@click.argument("job_id")
+@click.option(
+    "--mode", "script_mode", type=click.Choice(["paper", "live"]), default="paper"
+)
+@click.option("--confirm-live", is_flag=True, default=False)
+@click.option(
+    "--acknowledge",
+    "acknowledge",
+    multiple=True,
+    help="Risk flag code to acknowledge before launching (repeatable).",
+)
+def launch_cmd(
+    job_id: str, script_mode: str, confirm_live: bool, acknowledge: tuple[str, ...]
+) -> None:
+    result = launch_job(
+        job_id,
+        store=JobStore(),
+        script_mode=script_mode,
+        confirm_live=confirm_live,
+        acknowledge=list(acknowledge),
+    )
+    _echo_json({"ok": result["launched"], "result": result})
+    if not result["launched"]:
+        raise click.ClickException("launch blocked; read the checklist")
+
+
+@job_cli.command(
+    name="set-watchdog",
+    help="Customize the long watchdog: watch level, cadence, triggers, alerts, kill switches.",
+)
+@click.argument("job_id")
+@click.option(
+    "--watch-level",
+    type=click.Choice(["off", "monitor", "intervene", "auto"]),
+    default=None,
+)
+@click.option("--wake-seconds", type=int, default=None)
+@click.option("--cron", "cron_expr", default=None)
+@click.option("--timezone", default=None)
+@click.option(
+    "--trigger",
+    "triggers",
+    multiple=True,
+    help="Event that wakes the agent (repeatable; replaces the list).",
+)
+@click.option(
+    "--notify-on",
+    "notify_on",
+    multiple=True,
+    help="Event that notifies the owner (repeatable).",
+)
+@click.option(
+    "--channel", "channels", multiple=True, help="chat, email or sms (repeatable)."
+)
+@click.option("--quiet", "quiet", default=None, help="Quiet hours as HH:MM-HH:MM[@tz].")
+@click.option(
+    "--kill-switch",
+    "kill_switches",
+    multiple=True,
+    help="key=value, e.g. max_daily_loss_usd=25 (repeatable).",
+)
+def set_watchdog_cmd(
+    job_id: str,
+    watch_level: str | None,
+    wake_seconds: int | None,
+    cron_expr: str | None,
+    timezone: str | None,
+    triggers: tuple[str, ...],
+    notify_on: tuple[str, ...],
+    channels: tuple[str, ...],
+    quiet: str | None,
+    kill_switches: tuple[str, ...],
+) -> None:
+    notifications = None
+    if notify_on or channels or quiet:
+        quiet_hours = None
+        if quiet:
+            window, _, tz = quiet.partition("@")
+            start, _, end = window.partition("-")
+            quiet_hours = {"start": start, "end": end, "tz": tz or "UTC"}
+        notifications = {
+            "on": list(notify_on),
+            "channels": list(channels) or ["chat", "email"],
+            "quiet_hours": quiet_hours,
+        }
+    switches = None
+    if kill_switches:
+        switches = {}
+        for item in kill_switches:
+            key, _, value = item.partition("=")
+            switches[key.strip()] = float(value)
+    result = set_watchdog(
+        job_id,
+        store=JobStore(),
+        watch_level=watch_level,
+        wake_interval_seconds=wake_seconds,
+        cron_expr=cron_expr,
+        timezone=timezone,
+        triggers=list(triggers) if triggers else None,
+        notifications=notifications,
+        kill_switches=switches,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="readout", help="What the evidence says about a job before launch."
+)
+@click.argument("job_id")
+def readout_cmd(job_id: str) -> None:
+    _echo_json({"ok": True, "result": build_readout(job_id, store=JobStore())})
+
+
+@job_cli.command(
+    name="create-from-path",
+    help="Pin an installed Path version into a paused path_v1 job.",
+)
+@click.argument("slug")
+@click.option("--job-id", default=None)
+@click.option("--version", "version", default=None)
+@click.option("--component", default=None)
+@click.option("--interval", "interval_seconds", type=int, default=None)
+@click.option("--cron", "cron_expr", default=None)
+@click.option("--timezone", default="UTC")
+@click.option("--timeout", "timeout_seconds", type=int, default=None)
+@click.option("--install-dir", default=None)
+@click.option("--no-compile", is_flag=True, default=False)
+def create_from_path_cmd(
+    slug: str,
+    job_id: str | None,
+    version: str | None,
+    component: str | None,
+    interval_seconds: int | None,
+    cron_expr: str | None,
+    timezone: str,
+    timeout_seconds: int | None,
+    install_dir: str | None,
+    no_compile: bool,
+) -> None:
+    result = create_from_path(
+        slug,
+        job_id=job_id,
+        version=version,
+        component=component,
+        interval_seconds=interval_seconds,
+        cron_expr=cron_expr,
+        timezone=timezone,
+        timeout_seconds=timeout_seconds,
+        install_dir=install_dir,
+        store=JobStore(),
+        compile_job=not no_compile,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="acknowledge-risk", help="Acknowledge warn-level risk flags by code."
+)
+@click.argument("job_id")
+@click.argument("codes", nargs=-1, required=True)
+@click.option("--memo", default=None)
+def acknowledge_risk_cmd(job_id: str, codes: tuple[str, ...], memo: str | None) -> None:
+    result = acknowledge_risk_flags(
+        JobStore(), job_id, list(codes), by="owner", memo=memo
+    )
+    _echo_json({"ok": True, "result": result})
 
 
 @job_cli.command(name="backtest", help="Run an execution-contract backtest for a job.")

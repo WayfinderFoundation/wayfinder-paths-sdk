@@ -861,6 +861,27 @@ def _build_worker_prompt_sections(
             "never satisfies the constitution.\n"
         )
     )
+    job_contract = str(
+        (snapshot.get("job") or {}).get("execution_contract") or "legacy"
+    )
+    if job_contract == "freestyle_v1":
+        kind_rule = (
+            "- THIS JOB IS A FREESTYLE SCRIPT (contract freestyle_v1): the module exposes "
+            "`tick(ctx)` and trades only through `ctx.act`; there is no backtest, no "
+            "walk-forward and no evolution for it. Research reads the forward ledger "
+            "(results/forward) and external context; recommendations are `memo` or "
+            "`parameter` proposals carrying a diff of the script. Never state a "
+            "performance number that no artifact carries.\n"
+        )
+    elif job_contract == "path_v1":
+        kind_rule = (
+            "- THIS JOB RUNS AN INSTALLED PATH COMPONENT pinned by version and bundle "
+            "hash (job.yaml `source`); the Path's code is third-party and is never "
+            "edited in place. Recommend a version move by memo, or parameter changes "
+            "to workspace/config/params.json; there is no backtest and no evolution.\n"
+        )
+    else:
+        kind_rule = ""
     memory_md = _read_text(root / "memory.md", max_chars=6000)
     # The research prior library: idea families, prior strengths, archetype
     # mapping, and test paths. Lives in the STABLE prefix so it prompt-caches
@@ -1001,6 +1022,7 @@ def _build_worker_prompt_sections(
         "Rules:\n"
         "- Monitor mode is read-only except reports/memory.\n"
         f"- {intervene_scope}\n"
+        f"{kind_rule}"
         "- Proposals stage ONLY `workspace/` + `job.yaml`; code outside `workspace/` "
         "cannot be versioned, proposed, or promoted. If the active script entrypoint "
         "resolves outside `workspace/`, your FIRST proposal must migrate it into "

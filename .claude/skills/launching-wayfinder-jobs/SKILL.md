@@ -1,0 +1,37 @@
+---
+name: launching-wayfinder-jobs
+description: The first-release job flow on Shells — pick an off-the-shelf strategy, build one with Strategy Lab, write a freestyle script, or pin an installed Path; read the honest readout; run the launch checklist; launch in paper; customize the long watchdog; go live only through the gate. Load before creating, validating, launching or watching any job.
+---
+
+# Launching Wayfinder jobs
+
+One flow for every kind of job. Seven steps, in this order, every time.
+
+| step | what happens | action |
+|---|---|---|
+| 1 | Pick or build the job | `create_starter` (catalog: `starter_strategies`), Strategy Lab, `create_freestyle`, `create_from_path` |
+| 2 | Validate mechanically | `validate_job` — the ladder that fits the kind (static rules + backtest trace for jobs_v1; static rules + a sandboxed three-tick dry run for freestyle; pin + manifest + eval fixtures + dry run for a Path) |
+| 3 | Read the evidence back honestly | `readout` (`refresh=true` on a harnessed job runs backtest, walk-forward holdout and robustness in the background) — see `rules/readout.md` |
+| 4 | Run the launch checklist | `launch_checklist` — identity (validated revision == deployed revision), mechanical dry run, and every named risk flag — see `rules/launch-checklist.md` |
+| 5 | Launch in paper | `launch` (pins the revision, compiles it into the runner, resumes the loops). A weak readout never blocks paper. |
+| 6 | Customize the watchdog | `set_watchdog` — watch level, wake cadence, event triggers, notifications, kill switches — see `rules/watchdog.md` |
+| 7 | Go live, gated | `acknowledge_risk_flags` for every warn flag, then `launch(script_mode="live", confirm_live=true)`; harnessed jobs also pass the live gate (validation, backtest, preflight at one revision); funding per `developing-jobs-v1-strategies/rules/going-live.md` |
+
+## Kinds and what each gets
+
+- **Harnessed strategies (`jobs_v1`)**: the SDK driver runs `decide()`. Backtest, walk-forward holdout, replication, robustness, preflight, the live gate, research wakes and evolution (every two days, fleet-wide by default). Starters are the off-the-shelf catalog; Strategy Lab builds custom ones.
+- **Freestyle scripts (`freestyle_v1`)**: any trigger, any action — "if the Hormuz odds cross X, buy Y perp". A module with `tick(ctx)` that trades only through `ctx.act` (paper fills through the venue's paper broker, live through its real broker). No backtest, no evolution; research wakes read the forward ledger. See `rules/freestyle.md`.
+- **Installed Paths (`path_v1`)**: a pinned version of a published Path (`wayfinder path install <slug>` first). The Path runs from its install directory; every tick re-checks the bundle and tree hashes against the pin. No backtest, no evolution. A component without a declared dry-run mode has no paper mode and launches live only after the `no_dry_run` flag is acknowledged. See `rules/paths.md`.
+
+## Rules that hold for every kind
+
+- Jobs are created **paused**. Nothing ticks before `launch`.
+- `validate_job` stamps the workspace revision; `launch_checklist` refuses when the deployed revision differs from the validated one ("validated a, deployed b: re-run validate"). After any edit to `workspace/` (including `risk_limits.json`) the job must be validated and launched again; a launched freestyle/path job refuses to tick on revision drift.
+- Risk flags are shown before every paper launch and journaled. A `block` flag (governance ceiling) cannot be acknowledged. Every `warn` flag must be acknowledged, with a memo, before live.
+- Never patch a runner env var to change mode or revision; `launch`, `set_script_mode` and `set_watchdog` recompile.
+- Never claim a performance number that no artifact carries. The readout's verdict and reasons are the only sentences about performance.
+- Shells wallets are gasless: never check or bridge gas.
+
+## Reading the snapshot
+
+`core_jobs(action="status")` carries `readout`, `launch_checklist`, `launch`, `risk_flags`, `watchdog`, `evolution`, `probation_summary`, `research` and `path_upgrade` so the state of the flow is one call away.

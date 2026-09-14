@@ -20,7 +20,7 @@ from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.forward import load_forward_snapshot
 from wayfinder_paths.jobs.gating import evaluate_live_gate
 from wayfinder_paths.jobs.halt import read_halt
-from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.models import LIFECYCLE_CONTRACTS, utc_now_iso
 from wayfinder_paths.jobs.probation import probation_sync_payload
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
@@ -307,7 +307,62 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
         # mechanical decisions with evidence + bounded undo. Top-level (like
         # scorecard) so backend/FE consume it without SDK round-trips.
         "owner_attention": _owner_attention(store, job_id, job),
+        # The launch flow: the pinned launch, named risk gaps and the paper
+        # checklist, so the UI reads identity and blockers without an SDK
+        # round-trip. Raise-free: a feed failure must never break a sync.
+        **_launch_payload(store, job_id, job),
     }
+
+
+def _launch_payload(store: JobStore, job_id: str, job: Any) -> dict[str, Any]:
+    from wayfinder_paths.jobs.launch import LAUNCH_STATE_PATH, evaluate_launch_checklist
+    from wayfinder_paths.jobs.paths_runtime import UPGRADE_STATE_PATH
+    from wayfinder_paths.jobs.readout import READOUT_PATH
+    from wayfinder_paths.jobs.risk_flags import risk_flags
+
+    payload: dict[str, Any] = {
+        "launch": store.read_json(job_id, LAUNCH_STATE_PATH, default=None),
+        "readout": store.read_json(job_id, READOUT_PATH, default=None),
+        "path_upgrade": store.read_json(job_id, UPGRADE_STATE_PATH, default=None),
+        "watchdog": None,
+        "evolution": None,
+        "probation_summary": [],
+        "research": {
+            "ideation": store.read_json(
+                job_id, "research/ideation/latest.json", default=None
+            ),
+        },
+        "risk_flags": None,
+        "launch_checklist": None,
+    }
+    try:
+        payload["risk_flags"] = risk_flags(job, store.job_dir(job_id))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from wayfinder_paths.jobs.launch import watchdog_view
+
+        payload["watchdog"] = watchdog_view(job, store.job_dir(job_id))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from wayfinder_paths.jobs.evolution_view import (
+            evolution_snapshot,
+            probation_summary,
+        )
+
+        payload["evolution"] = evolution_snapshot(store, job_id, job)
+        payload["probation_summary"] = probation_summary(store, job_id)
+    except Exception:  # noqa: BLE001
+        pass
+    if str(job.execution_contract or "legacy") in LIFECYCLE_CONTRACTS:
+        try:
+            payload["launch_checklist"] = evaluate_launch_checklist(
+                job_id, store=store, target="paper"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return payload
 
 
 def _owner_attention(store: JobStore, job_id: str, job: Any) -> dict[str, Any]:
@@ -370,7 +425,14 @@ def apply_script_mode(
                 "live job needs a funded wallet to trade from (set it via the "
                 "job's execution params, then retry)"
             )
-        gate = evaluate_live_gate(job_id, store=store)
+        if str(job.execution_contract) in {"freestyle_v1", "path_v1"}:
+            # Non-harnessed kinds answer through the launch checklist;
+            # jobs_v1 keeps the live gate call byte-identical.
+            from wayfinder_paths.jobs.contracts import evaluate_live_readiness
+
+            gate = evaluate_live_readiness(job_id, store=store)
+        else:
+            gate = evaluate_live_gate(job_id, store=store)
         if not gate["live_ready"]:
             reasons = "; ".join(gate["reasons"]) or "live gate not ready"
             raise ValueError(f"cannot go live: {reasons}")
@@ -560,9 +622,7 @@ def _funded_wallet_label(job) -> str:
     return label
 
 
-def _shift_equity_recon_baseline(
-    store: JobStore, job_id: str, delta: float
-) -> None:
+def _shift_equity_recon_baseline(store: JobStore, job_id: str, delta: float) -> None:
     """Fold an operator deposit/withdrawal into the drift baseline. The
     equity reconciler treats venue-vs-expected drift as its signal; without
     this, every funding action reads as permanent drift the agent has to

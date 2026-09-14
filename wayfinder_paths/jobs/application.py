@@ -24,7 +24,7 @@ from wayfinder_paths.jobs.improver.spec import (
     IMPROVER_FILENAME,
     improver_revision,
 )
-from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.models import LIFECYCLE_CONTRACTS, utc_now_iso
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import sync_all_jobs
@@ -54,7 +54,7 @@ def ensure_jobs_v1_contract(
     if allow_legacy:
         return
     job = store.load(job_id)
-    if job.execution_contract != "jobs_v1":
+    if job.execution_contract not in LIFECYCLE_CONTRACTS:
         raise ValueError(
             "job is on the legacy execution contract; run "
             "`wayfinder job migrate-contract` before approving proposals"

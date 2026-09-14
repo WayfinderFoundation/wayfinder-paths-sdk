@@ -84,14 +84,17 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         },
         "exploration_floor": 0.25,
     },
-    # Isolated open-ended code evolution. Keep the default canary-scoped;
-    # fleet rollout is an explicit job-local policy change after canary health.
+    # Isolated open-ended code evolution, fleet-wide by default: every
+    # eligible harnessed job (jobs_v1, intervene/auto, canonical dataset) gets
+    # a campaign once every two days; one campaign per box at a time, so a
+    # large fleet rotates oldest-first. Scope it down per job with a job-local
+    # improver.yaml (allowed_job_ids / excluded_job_ids).
     "evolution": {
         "enabled": True,
-        "allowed_job_ids": ["majors-5m-lab"],
+        "allowed_job_ids": [],
         "excluded_job_ids": [],
         "campaign_hours": 4,
-        "start_interval_hours": 24,
+        "start_interval_hours": 48,
         # DeepSeek has announced 2x pricing during 09:00-12:00 and
         # 14:00-18:00 Beijing time. Keep this in UTC so host DST cannot move it.
         # The guard leaves one hourly worker interval for the final prompt to
@@ -272,6 +275,8 @@ class ImproverSpec:
             return {"eligible": False, "reasons": ["job_yaml_unreadable"]}
         if raw.get("execution_contract") != "jobs_v1":
             reasons.append("execution_contract_not_jobs_v1")
+            if raw.get("execution_contract") in {"freestyle_v1", "path_v1"}:
+                reasons.append("freestyle_and_path_jobs_do_not_evolve")
         script_loop = raw.get("script_loop") or {}
         agent_loop = raw.get("agent_loop") or {}
         if not isinstance(script_loop, dict) or not script_loop.get("enabled"):
