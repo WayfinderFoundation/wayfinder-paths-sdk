@@ -26,3 +26,7 @@ Read the failing items first, with their `detail` (it names the fix). Then the w
 | `no_dry_run` | Path component declares no dry-run mode | declare `job.dry_run: supported` in wfpath.yaml, or acknowledge and launch live |
 | `leverage_above_governance` | block: leverage above the owner ceiling | lower `execution_params.leverage` |
 | `no_timeout` | tick can run unbounded | `script_loop.timeout_seconds` in (0, 3600] |
+
+## What `launch` returns
+
+`launch` answers with `launched`, `revision`, the checklist it ran, the flags it showed, and the runner's own results under `compile` and `loops`. Read those two: a launch whose `loops` or `compile` carry an error (`connect_failed`, a missing daemon) has pinned the revision but nothing is ticking — say exactly that, never "running", and check `core_runner_status` before retrying. Report the pinned revision and every flag shown, verbatim from the result, not from memory.
