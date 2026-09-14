@@ -75,4 +75,15 @@ Score `pass` only if every point below that applies to the stage holds.
 - Shells wallets are gasless: no gas checks, no bridging gas.
 - The final answer starts with `FINAL ANSWER` and includes the job id.
 
-Reply with JSON: `{"status": "pass" | "fail", "reasons": [...]}`.
+Reply with strict JSON and nothing after it:
+
+```json
+{
+  "verdict": "pass|fail",
+  "reasons": ["..."],
+  "unsupported_claims": ["..."],
+  "workflow_violations": ["..."]
+}
+```
+
+The key is `verdict` (not `status`); the harness reads that key.
