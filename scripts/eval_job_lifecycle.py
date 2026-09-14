@@ -1347,6 +1347,86 @@ def validate_funding_trigger(workspace: Path) -> dict[str, Any]:
     return _report(checks)
 
 
+# ---- token-value-triggered perp script ---------------------------------------
+
+TOKEN_VALUE_SCRIPT = """
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=("hyperliquid",), max_notional_per_tick=200, max_loss_usd=10)
+
+
+def tick(ctx):
+    eth_usd = ctx.token_value("ethereum-base")
+    ctx.state["eth_usd"] = eth_usd
+    if eth_usd < 2000 and "BTC" not in ctx.positions:
+        ctx.act({"venue": "hyperliquid", "kind": "market", "symbol": "BTC",
+                 "side": "long", "notional": 100, "max_loss": 10})
+    elif eth_usd > 2200 and "BTC" in ctx.positions:
+        ctx.act({"venue": "hyperliquid", "kind": "close", "symbol": "BTC"})
+"""
+TOKEN_VALUE_MARKS = {"hyperliquid:BTC": 60_000, "token:ethereum-base": 1950}
+
+
+def expected_token_value_trigger(workspace: Path) -> None:
+    _create_validated_freestyle(
+        workspace,
+        "eval-eth-value-watch",
+        "Eval ETH Value Watch",
+        TOKEN_VALUE_SCRIPT,
+        TOKEN_VALUE_MARKS,
+    )
+
+
+def validate_token_value_trigger(workspace: Path) -> dict[str, Any]:
+    """A script keyed on an on-chain token's USD value reads it through
+    ctx.token_value; the dry run reads the token mark, buys once, and the
+    validation report carries the token read; no venue is invented for it."""
+    job_id = "eval-eth-value-watch"
+    data = _job_yaml(workspace, job_id)
+    root = workspace / ".wayfinder" / "jobs" / job_id
+    validation = _read(root / "reports" / "validation" / "latest.json")
+    dry = (validation.get("freestyle") or {}).get("dry_run") or {}
+    source = _entrypoint(workspace, job_id).read_text(encoding="utf-8") if data else ""
+    opens = [
+        a
+        for a in dry.get("actions") or []
+        if (a.get("intent") or {}).get("action") == "OPEN"
+    ]
+    checks = [
+        _check("job_created", bool(data)),
+        _check(
+            "validation_passed",
+            validation.get("status") == "passed",
+            failed=[
+                c.get("name")
+                for c in validation.get("checks") or []
+                if not c.get("passed")
+            ],
+        ),
+        _check("reads_token_value_through_ctx", "ctx.token_value(" in source),
+        _check(
+            "dry_run_read_the_token_mark",
+            float((dry.get("token_values") or {}).get("ethereum-base") or 0.0)
+            == 1950.0,
+            token_values=dry.get("token_values"),
+        ),
+        _check(
+            "bought_once_on_cheap_eth",
+            len(opens) == 1
+            and (opens[0].get("intent") or {}).get("side") == "long"
+            and float((opens[0].get("intent") or {}).get("notional") or 0) == 100.0
+            and opens[0].get("status") == "filled",
+            opens=len(opens),
+        ),
+        _check(
+            "only_hyperliquid_used",
+            set(dry.get("venues_used") or []) == {"hyperliquid"},
+        ),
+        _check("not_launched", not (root / "state" / "launch.json").exists()),
+    ]
+    return _report(checks)
+
+
 # ---- gated live, and the identity pin under an edit --------------------------
 
 
@@ -1660,6 +1740,20 @@ CASES: list[LifecycleCase] = [
         ),
         expected=expected_funding_trigger,
         validate=validate_funding_trigger,
+    ),
+    LifecycleCase(
+        id="freestyle_token_value_trigger",
+        stage="creation",
+        job_id="eval-eth-value-watch",
+        prompt=(
+            "Build a freestyle job `eval-eth-value-watch` that every 5 minutes reads the USD value of ETH on Base "
+            "(token id `ethereum-base`) through ctx.token_value; when ETH is below 2000 USD and we hold no BTC, go "
+            "long 100 USD of BTC on Hyperliquid with a 10 USD max loss, and close it when ETH is back above 2200. "
+            "Set validation marks so the dry run sees ETH at 1950 (key `token:ethereum-base`) and BTC at 60000. "
+            "Validate it and tell me what the dry run did tick by tick. Do not launch."
+        ),
+        expected=expected_token_value_trigger,
+        validate=validate_token_value_trigger,
     ),
 ]
 

@@ -399,3 +399,68 @@ def test_dry_run_funding_trigger_opens_a_short_from_the_funding_mark(
     assert opens[0]["status"] == "filled"
     assert dry["funding"]["hyperliquid:BTC"] == pytest.approx(0.0002)
     assert dry["venues_used"] == ["hyperliquid"]
+
+
+ETH_VALUE_WATCH = """
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=("hyperliquid",), max_notional_per_tick=200, max_loss_usd=10)
+
+
+def tick(ctx):
+    eth_usd = ctx.token_value("ethereum-base")
+    ctx.state["eth_usd"] = eth_usd
+    if eth_usd < 2000 and "BTC" not in ctx.positions:
+        ctx.act({"venue": "hyperliquid", "kind": "market", "symbol": "BTC",
+                 "side": "long", "notional": 100, "max_loss": 10})
+    elif eth_usd > 2200 and "BTC" in ctx.positions:
+        ctx.act({"venue": "hyperliquid", "kind": "close", "symbol": "BTC"})
+"""
+
+
+def test_stub_gateway_token_price_reads_the_mark_and_defaults_to_one() -> None:
+    from wayfinder_paths.jobs.freestyle import runtime as rt
+
+    gateway = rt.StubVenueGateway(marks={"token:ethereum-base": 1950.0})
+    assert gateway.token_price("ethereum-base") == pytest.approx(1950.0)
+    assert gateway.token_price("usd-coin-polygon") == pytest.approx(1.0)
+
+
+def test_venue_gateway_token_price_reads_the_token_client(monkeypatch) -> None:
+    from wayfinder_paths.jobs.freestyle import runtime as rt
+
+    seen: list[tuple[str, bool]] = []
+
+    async def _details(token_id: str, *, market_data: bool = False, **kwargs):
+        seen.append((token_id, market_data))
+        return {"current_price": 2500.5} if token_id == "ethereum-base" else {}
+
+    monkeypatch.setattr(rt.TOKEN_CLIENT, "get_token_details", _details)
+    gateway = rt.VenueGateway(mode="paper", params={}, quote_interval="5m")
+    assert gateway.token_price("ethereum-base") == pytest.approx(2500.5)
+    assert seen == [("ethereum-base", True)]
+    with pytest.raises(LookupError, match="no USD price"):
+        gateway.token_price("nothing-here")
+
+
+def test_dry_run_token_value_trigger_buys_from_the_token_mark(tmp_path: Path) -> None:
+    store, job = _job(
+        tmp_path,
+        ETH_VALUE_WATCH,
+        freestyle={
+            "validation_marks": {
+                "hyperliquid:BTC": 60_000,
+                "token:ethereum-base": 1950,
+            }
+        },
+    )
+    report = validate_freestyle_job(job.id, store=store)
+    assert report["status"] == "passed", [
+        c for c in report["checks"] if not c["passed"]
+    ]
+    dry = report["freestyle"]["dry_run"]
+    opens = [a for a in dry["actions"] if a["intent"]["action"] == "OPEN"]
+    assert len(opens) == 1 and opens[0]["intent"]["side"] == "long"
+    assert dry["token_values"]["ethereum-base"] == pytest.approx(1950.0)
+    # a token read is not a venue: only the perp venue was used
+    assert dry["venues_used"] == ["hyperliquid"]

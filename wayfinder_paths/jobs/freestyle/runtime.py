@@ -26,6 +26,7 @@ from typing import Any
 
 import pandas as pd
 
+from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.jobs.execution.engine import EngineState
 from wayfinder_paths.jobs.execution.job import _load_job_yaml
 from wayfinder_paths.jobs.execution.paper import PaperBroker
@@ -125,6 +126,13 @@ class VenueGateway:
             )
         return float(_run(get_funding(symbol)).rate)
 
+    def token_price(self, token_id: str) -> float:
+        data = _run(TOKEN_CLIENT.get_token_details(token_id, market_data=True))
+        price = (data or {}).get("current_price")
+        if price is None:
+            raise LookupError(f"no USD price for token {token_id!r}")
+        return float(price)
+
     def place(self, intent: OrderIntent, *, price: float, timestamp: str) -> FillEvent:
         return _run(
             self.adapter(intent.venue).broker.place(
@@ -173,6 +181,10 @@ class StubVenueGateway:
                 f"{venue} has no funding rate: only perp venues settle funding"
             )
         return float(self.marks.get(f"funding:{venue}:{symbol}", 0.0))
+
+    def token_price(self, token_id: str) -> float:
+        # A token value is a read, never a traded mark, so it does not drift.
+        return float(self.marks.get(f"token:{token_id}", 1.0))
 
     def place(self, intent: OrderIntent, *, price: float, timestamp: str) -> FillEvent:
         broker = self._brokers.get(intent.venue)
@@ -232,6 +244,7 @@ class FreestyleContext:
         self.state: dict[str, Any] = _read_json(root / STATE_PATH) or {}
         self.marks: dict[str, float] = {}
         self.funding_reads: dict[str, float] = {}
+        self.token_reads: dict[str, float] = {}
         self.actions: list[dict[str, Any]] = []
         self.fills: list[dict[str, Any]] = []
         self.logs: list[str] = []
@@ -269,6 +282,15 @@ class FreestyleContext:
         self.funding_reads[f"{venue}:{symbol}"] = rate
         self.venues_used.add(venue)
         return rate
+
+    def token_value(self, token_id: str, amount: float = 1.0) -> float:
+        """The USD value of `amount` units of an on-chain token, by token id
+        (`<coingecko_id>-<chain_code>` or `<chain_code>_<address>`); with the
+        default amount it is the token's USD price. Not a venue: nothing can
+        be traded through it. The dry run reads the `token:<token_id>` mark."""
+        price = float(self._gateway.token_price(str(token_id)))
+        self.token_reads[str(token_id)] = price
+        return price * float(amount)
 
     def log(self, message: str) -> None:
         self.logs.append(str(message)[:500])
@@ -744,6 +766,7 @@ def _one_tick(
             "guard_events": guard_events,
             "marks": dict(ctx.marks),
             "funding": dict(ctx.funding_reads),
+            "token_values": dict(ctx.token_reads),
             "equity": equity,
             "unrealized_pnl": unrealized,
             "actions": list(ctx.actions),
@@ -786,6 +809,7 @@ def _one_tick(
         "guard_events": guard_events,
         "marks": dict(ctx.marks),
         "funding": dict(ctx.funding_reads),
+        "token_values": dict(ctx.token_reads),
         "equity": equity,
         "unrealized_pnl": unrealized,
         "realized_pnl": float(ledger.realized_pnl),

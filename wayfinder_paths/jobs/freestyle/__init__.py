@@ -15,9 +15,11 @@ Public surface for script authors::
 
 Reads: ``ctx.quote(venue, symbol)`` (latest completed-bar close),
 ``ctx.funding(venue, symbol)`` (a perp's latest settled hourly funding rate as a
-decimal, Hyperliquid only), ``ctx.positions``, ``ctx.realized_pnl``,
-``ctx.state``. The validation dry run answers both reads from stub marks
-(``<venue>:<symbol>`` and ``funding:<venue>:<symbol>``).
+decimal, Hyperliquid only), ``ctx.token_value(token_id, amount=1.0)`` (USD
+value of an on-chain token by token id, a read only), ``ctx.positions``,
+``ctx.realized_pnl``, ``ctx.state``. The validation dry run answers the reads
+from stub marks (``<venue>:<symbol>``, ``funding:<venue>:<symbol>``,
+``token:<token_id>``).
 """
 
 from wayfinder_paths.jobs.freestyle.contract import (
