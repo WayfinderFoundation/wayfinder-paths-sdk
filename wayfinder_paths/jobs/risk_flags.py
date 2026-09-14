@@ -79,7 +79,7 @@ def risk_flags(job: WayfinderJob, root: Path) -> list[dict[str, Any]]:
                 "no_max_drawdown",
                 "warn",
                 "no drawdown cap: the job keeps trading through any loss from peak",
-                "add max_drawdown (negative decimal, e.g. -0.10) to workspace/risk_limits.json",
+                'set_watchdog(kill_switches={"max_drawdown": -0.10}) — it writes workspace/risk_limits.json and relaunches',
                 "risk_limits",
             )
         )
@@ -89,7 +89,7 @@ def risk_flags(job: WayfinderJob, root: Path) -> list[dict[str, Any]]:
                 "no_max_daily_loss",
                 "warn",
                 "no daily loss cap: one bad day can run to the drawdown cap or beyond",
-                "add max_daily_loss_usd to workspace/risk_limits.json",
+                'set_watchdog(kill_switches={"max_daily_loss_usd": …}) — it writes workspace/risk_limits.json and relaunches',
                 "risk_limits",
             )
         )
@@ -99,7 +99,7 @@ def risk_flags(job: WayfinderJob, root: Path) -> list[dict[str, Any]]:
                 "no_position_cap",
                 "info",
                 "no per-symbol position cap",
-                "add max_position_per_symbol_usd to workspace/risk_limits.json",
+                'set_watchdog(kill_switches={"max_position_per_symbol_usd": …})',
                 "risk_limits",
             )
         )
@@ -111,7 +111,7 @@ def risk_flags(job: WayfinderJob, root: Path) -> list[dict[str, Any]]:
                 "unbounded_notional",
                 "warn",
                 "no gross exposure cap: total notional is unbounded",
-                "add max_gross_exposure_usd to workspace/risk_limits.json",
+                'set_watchdog(kill_switches={"max_gross_exposure_usd": …})',
                 "risk_limits",
             )
         )
@@ -121,7 +121,7 @@ def risk_flags(job: WayfinderJob, root: Path) -> list[dict[str, Any]]:
                 "no_consecutive_loss_pause",
                 "info",
                 "no pause after a losing streak",
-                "add pause_after_consecutive_losses to workspace/risk_limits.json",
+                'set_watchdog(kill_switches={"pause_after_consecutive_losses": …})',
                 "risk_limits",
             )
         )
@@ -194,7 +194,7 @@ def _freestyle_flags(
                 "no_kill_switch",
                 "warn",
                 "no halt condition: nothing stops the script except the owner",
-                "set SPEC.halt_when or write workspace/risk_limits.json",
+                "set SPEC.halt_when in the script, or set_watchdog(kill_switches={…})",
                 "script",
             )
         )

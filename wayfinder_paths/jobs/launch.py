@@ -179,7 +179,7 @@ def evaluate_launch_checklist(
                 "pass" if has_limits else "fail",
                 "risk limits declare a daily loss or drawdown cap"
                 if has_limits
-                else "workspace/risk_limits.json needs max_daily_loss_usd or max_drawdown before live",
+                else "live needs a daily loss or drawdown cap: set_watchdog(kill_switches={…}) writes workspace/risk_limits.json and relaunches",
             )
             runs = _paper_runs(store, job_id)
             minimum = int(
