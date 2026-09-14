@@ -30,8 +30,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import sys
 import tempfile
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -1608,6 +1610,7 @@ def run_case(
             case_env = stage_config(workspace, env or {})
             patch_provider_base_url(workspace, case_env)
             link_virtualenv(workspace)
+            runner_dir = sandbox_runner_dir(case_env)
             configure_local_mcp(workspace, case_env)
             if case.setup is not None:
                 case.setup(workspace)
@@ -1635,6 +1638,7 @@ def run_case(
                 log_path=log_path,
                 timeout_seconds=timeout_seconds,
             )
+            stop_sandbox_runner(runner_dir)
             agent_output = jobs_eval.harvest_answer(log_path, db_path, title=title)
             scrub_secrets(log_path, case_env)
             agent_output = scrub_text(agent_output, case_env)
@@ -1811,7 +1815,11 @@ def configure_local_mcp(workspace: Path, env: Mapping[str, str]) -> Path | None:
         python = Path(sys.executable)
     environment = {
         key: str(env[key])
-        for key in ("WAYFINDER_CONFIG_PATH", "WAYFINDER_API_KEY")
+        for key in (
+            "WAYFINDER_CONFIG_PATH",
+            "WAYFINDER_API_KEY",
+            "WAYFINDER_RUNNER_DIR",
+        )
         if env.get(key)
     }
     environment["WAYFINDER_RUNS_DIR"] = str(workspace / ".wayfinder_runs")
@@ -1824,6 +1832,47 @@ def configure_local_mcp(workspace: Path, env: Mapping[str, str]) -> Path | None:
     }
     config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return config_path
+
+
+def sandbox_runner_dir(env: dict[str, str]) -> Path:
+    """The sandbox lives under the long macOS temp path, which overflows the
+    AF_UNIX socket limit, so its runner daemon gets a short state dir of its
+    own (the runner's documented WAYFINDER_RUNNER_DIR override)."""
+    runner_dir = Path("/tmp") / f"wfr-{uuid.uuid4().hex[:8]}"
+    runner_dir.mkdir(parents=True, exist_ok=True)
+    env["WAYFINDER_RUNNER_DIR"] = str(runner_dir)
+    return runner_dir
+
+
+def stop_sandbox_runner(runner_dir: Path) -> None:
+    """Shut the sandbox's runner daemon down (socket first, SIGKILL as the
+    fallback) so no daemon outlives its deleted workspace, then drop its state."""
+    from wayfinder_paths.runner.client import RunnerControlClient
+
+    sock = runner_dir / "runner.sock"
+    pid: int | None = None
+    if sock.exists():
+        client = RunnerControlClient(sock_path=sock)
+        try:
+            status = client.call("status")
+            pid = int((status.get("result") or {}).get("pid") or 0) or None
+            client.call("shutdown")
+        except Exception:  # noqa: BLE001 — the daemon may already be gone
+            pass
+    if pid:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                break
+            time.sleep(0.5)
+        else:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+    shutil.rmtree(runner_dir, ignore_errors=True)
 
 
 def preflight_model_gateway(model: str, env: Mapping[str, str]) -> None:
