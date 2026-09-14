@@ -1617,6 +1617,7 @@ def run_case(
                 "the job store is ./.wayfinder in this directory. Skip the Shells boot checks. "
                 "The job tools are already configured for this sandbox: do not read, print, search for or edit "
                 "configuration files, environment variables, or anything outside this directory. "
+                "If a job the task names does not exist here, say so and stop. "
                 "Eval harness instruction: finish in this single run. Do not output a progress checkpoint or ask "
                 "follow-up questions. The final answer must start with `FINAL ANSWER` and include the job id."
             )

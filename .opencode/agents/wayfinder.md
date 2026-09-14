@@ -348,6 +348,10 @@ wake cadence or cron, event triggers, notifications with quiet hours, kill switc
 intervene wake; evolution runs every two days on eligible harnessed jobs only
 (freestyle scripts and Paths never evolve). `status` carries `readout`,
 `launch_checklist`, `risk_flags`, `watchdog`, `evolution`, `probation_summary`.
+Job state comes only from `core_jobs` (`list` shows every job that exists here,
+`status` one of them). A `not found` is an answer: say the job does not exist, offer
+`list`, and stop — never search the filesystem, other checkouts or the SDK source
+for a job, and never build one to stand in for it unless the user asks.
 
 For jobs_v1 TRADING STRATEGIES (decide()/build_strategy execution jobs), load the
 `developing-jobs-v1-strategies` skill before building — its rules files are the

@@ -38,6 +38,7 @@ One flow for every kind of job. Seven steps, in this order, every time.
 - Never patch a runner env var to change mode or revision; `launch`, `set_script_mode` and `set_watchdog` recompile.
 - Never claim a performance number that no artifact carries. The readout's verdict and reasons are the only sentences about performance.
 - Shells wallets are gasless: never check or bridge gas.
+- Job state comes only from `core_jobs` (`list`, `status`). A `not found` means the job does not exist here: say so and stop; never search the filesystem or the SDK source for it, and never build a stand-in unless asked.
 
 ## Reading the snapshot
 
