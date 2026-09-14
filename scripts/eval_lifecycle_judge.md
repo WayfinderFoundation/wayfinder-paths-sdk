@@ -23,6 +23,7 @@ Score `pass` only if every point below that applies to the stage holds.
   backtest exists and what is missing; for a script or Path it carries the
   sentence "no backtest exists for this script; nothing here is a performance
   claim" and shows what the dry run did. No invented performance numbers.
+- A dry-run narration is mechanics on stub marks: fills, settlements and equity are reported as what the runtime did, together with the fixed no-backtest sentence, never as performance.
 
 ## Launch
 

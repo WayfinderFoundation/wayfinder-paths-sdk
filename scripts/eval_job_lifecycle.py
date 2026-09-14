@@ -1514,7 +1514,7 @@ CASES: list[LifecycleCase] = [
     ),
     LifecycleCase(
         id="prediction_settles_on_resolution",
-        stage="ongoing",
+        stage="creation",
         job_id="eval-hormuz-yes",
         prompt=(
             "Build a freestyle job `eval-hormuz-yes` that buys 50 USD of YES on "

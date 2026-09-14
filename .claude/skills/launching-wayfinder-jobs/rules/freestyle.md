@@ -39,6 +39,8 @@ The validation dry run quotes from stub marks. Pass them at creation: `create_fr
 
 Static: `tick` present and sync, no direct venue writes (`hyperliquid_place_*`, `polymarket_*`, `swap_from_quote`, adapter imports…), no sleeps or `while True`, no forward recorder of its own. Then a **dry run**: three paper ticks in a subprocess with stub marks (override with `execution_params.freestyle.validation_marks`), an isolated forward directory and no network. The report's `freestyle.dry_run` lists every action and fill; the readout shows it.
 
+When you narrate a dry run, say it ran on stub marks: its fills, settlements and equity are the runtime's mechanics, not performance. Any money number from a dry run travels with the readout's fixed sentence — "no backtest exists for this script; nothing here is a performance claim".
+
 ## Paper, live, identity
 
 Paper fills go through the venue's paper broker (taker fee and slippage assumptions per venue); live fills through the venue's real broker with the job's `wallet_label`. The ledger lives in `state/freestyle_ledger.json`; a mode flip archives it. Every tick compares the runner's baked revision with the workspace hash and refuses to run on drift. Live needs a wallet, `risk_limits.json` with a daily-loss or drawdown cap, `min_paper_runs` paper runs (default 20) and every warn flag acknowledged.
