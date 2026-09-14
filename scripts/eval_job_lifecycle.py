@@ -1409,14 +1409,19 @@ def run_case(
         workspace = Path(tmp) / "repo"
         if live and case.live and jobs_eval is not None:
             copy_sandbox(REPO_ROOT, workspace)
-            patch_provider_base_url(workspace, env or {})
+            case_env = stage_config(workspace, env or {})
+            patch_provider_base_url(workspace, case_env)
             link_virtualenv(workspace)
-            configure_local_mcp(workspace, env or {})
+            configure_local_mcp(workspace, case_env)
             if case.id == "path_pinned_created":
                 _fake_path_install(workspace)
             prompt = (
                 f"{case.prompt}\n\nUse the exact job_id `{case.job_id}`. This is an eval sandbox: use "
                 "`wayfinder_core_jobs` actions; a paper launch is expected where the task says launch, never go live.\n\n"
+                "This is a local eval sandbox, not a Shell: there is no health endpoint and no /wf vault; "
+                "the job store is ./.wayfinder in this directory. Skip the Shells boot checks. "
+                "The job tools are already configured for this sandbox: do not read, print, search for or edit "
+                "configuration files, environment variables, or anything outside this directory. "
                 "Eval harness instruction: finish in this single run. Do not output a progress checkpoint or ask "
                 "follow-up questions. The final answer must start with `FINAL ANSWER` and include the job id."
             )
@@ -1429,11 +1434,13 @@ def run_case(
             returncode, duration, error = jobs_eval.run_process(
                 command,
                 cwd=workspace,
-                env=env or {},
+                env=case_env,
                 log_path=log_path,
                 timeout_seconds=timeout_seconds,
             )
             agent_output = jobs_eval.harvest_answer(log_path, db_path, title=title)
+            scrub_secrets(log_path, case_env)
+            agent_output = scrub_text(agent_output, case_env)
         else:
             workspace.mkdir(parents=True)
             (case_dir / "prompt.md").write_text(case.prompt, encoding="utf-8")
@@ -1560,6 +1567,38 @@ def link_virtualenv(workspace: Path) -> Path | None:
         return target
     target.symlink_to(source, target_is_directory=True)
     return target
+
+
+def scrub_text(text: str, env: Mapping[str, str]) -> str:
+    """The agent's shell can echo its environment; the kept transcript must not
+    carry the credential."""
+    for key in ("WAYFINDER_API_KEY",):
+        value = str(env.get(key) or "")
+        if len(value) >= 8:
+            text = text.replace(value, "***")
+    return text
+
+
+def scrub_secrets(path: Path, env: Mapping[str, str]) -> None:
+    if path.exists():
+        path.write_text(
+            scrub_text(path.read_text(errors="replace"), env), encoding="utf-8"
+        )
+
+
+def stage_config(workspace: Path, env: Mapping[str, str]) -> dict[str, str]:
+    """Copy the SDK config the run uses into the sandbox and point the case's
+    environment at it: a curious agent then reads its own project's
+    config.json instead of reaching outside the directory (which opencode
+    refuses, ending the run)."""
+    case_env = dict(env)
+    source = case_env.get("WAYFINDER_CONFIG_PATH")
+    if source and Path(source).is_file():
+        target = workspace / "config.json"
+        target.write_text(Path(source).read_text(encoding="utf-8"), encoding="utf-8")
+        target.chmod(0o600)
+        case_env["WAYFINDER_CONFIG_PATH"] = str(target)
+    return case_env
 
 
 def configure_local_mcp(workspace: Path, env: Mapping[str, str]) -> Path | None:
