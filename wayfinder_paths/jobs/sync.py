@@ -487,7 +487,11 @@ def _gate_with_restamp(job_id: str, store: JobStore) -> dict[str, Any]:
     running the gate is transiently red by construction — surface that so
     UIs and wake agents render 'refreshing' instead of alarming. The
     authoritative live_ready stays strict."""
-    gate = evaluate_live_gate(job_id, store=store)
+    from wayfinder_paths.jobs.contracts import evaluate_live_readiness
+
+    # Freestyle and path jobs answer through the launch checklist; jobs_v1
+    # keeps evaluate_live_gate. The backend reads this as job.live_gate.
+    gate = evaluate_live_readiness(job_id, store=store)
     try:
         import json as _json
         import os
