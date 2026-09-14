@@ -15,7 +15,7 @@
 
 ## Research alongside
 
-The intervene wake carries the research lane: it reads the forward ledger, runs the ideation cadence (due 20 h, overdue 48 h) and files proposals with a memo; the owner approves. `status.research.ideation` shows the latest ideation artifact. For freestyle and path jobs the worker is told there is no backtest and no evolution; its recommendations are `memo` or `parameter` proposals with a script diff.
+The intervene wake carries the research lane: it reads the forward ledger, runs the ideation cadence (due 20 h, overdue 48 h) and files proposals with a memo; the owner approves. `status.research.ideation` shows the latest ideation artifact. For freestyle and path jobs the worker is told there is no backtest and no evolution; a recommended change is a `code_change` proposal carrying the candidate script or a `params_update`, each with a memo; a halt or pause is recommended with the ledger's numbers and left to the owner.
 
 ## Evolution every two days
 

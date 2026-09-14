@@ -465,7 +465,9 @@ Some jobs are not harnessed strategies. A **freestyle job** (`execution_contract
 is an author-written `tick(ctx)` module that trades only through `ctx.act`; a **path job**
 (`path_v1`) runs an installed Path component pinned by version and bundle hash. Neither has a
 backtest, a walk-forward, a preflight or an evolution campaign, and the wake prompt says so.
-For them: read the forward ledger (`results/forward`) and external context; recommendations are
-`memo` or `parameter` proposals carrying a diff of the script (freestyle) or a change to
-`workspace/config/params.json` / a version move by memo (path). Never edit an installed Path in
-place, and never state a performance number that no artifact carries.
+For them: read the forward ledger (`results/forward`) and external context. A recommended
+change is a proposal with a memo — `code_change` carrying the candidate script (freestyle),
+`params_update` for `ctx.params` or `workspace/config/params.json`, a version move by memo
+(path). A halt or pause is recommended with the ledger's numbers and left to the owner; a short
+forward record supports "pause and rework" at most. Never edit an installed Path in place, and
+never state a performance number that no artifact carries.

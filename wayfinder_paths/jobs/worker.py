@@ -869,16 +869,19 @@ def _build_worker_prompt_sections(
             "- THIS JOB IS A FREESTYLE SCRIPT (contract freestyle_v1): the module exposes "
             "`tick(ctx)` and trades only through `ctx.act`; there is no backtest, no "
             "walk-forward and no evolution for it. Research reads the forward ledger "
-            "(results/forward) and external context; recommendations are `memo` or "
-            "`parameter` proposals carrying a diff of the script. Never state a "
-            "performance number that no artifact carries.\n"
+            "(results/forward) and external context; a recommended change is a "
+            "proposal with a memo: `code_change` carrying the candidate script, or "
+            "`params_update` for ctx.params. A halt or pause is recommended with the "
+            "ledger's numbers and left to the owner. Never state a performance number "
+            "that no artifact carries.\n"
         )
     elif job_contract == "path_v1":
         kind_rule = (
             "- THIS JOB RUNS AN INSTALLED PATH COMPONENT pinned by version and bundle "
             "hash (job.yaml `source`); the Path's code is third-party and is never "
-            "edited in place. Recommend a version move by memo, or parameter changes "
-            "to workspace/config/params.json; there is no backtest and no evolution.\n"
+            "edited in place. Recommend a version move by memo, or a `params_update` "
+            "proposal for workspace/config/params.json; there is no backtest and no "
+            "evolution.\n"
         )
     else:
         kind_rule = ""
