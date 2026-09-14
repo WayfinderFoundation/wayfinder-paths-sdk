@@ -32,6 +32,13 @@ MAKER_MEAN_REVERSION_HALT = -0.08
 OTHER_STARTER_HALT = -0.20
 
 STARTER_LEVERAGE_RESULTS: dict[str, tuple[dict[str, Any], ...]] = {
+    "bullish-regime-rotation-5m": (
+        _result(1, 1.4347, 2.6261, -0.1758, 156, 508.61, OTHER_STARTER_HALT),
+        _result(2, 3.8763, 2.6081, -0.3271, 155, 1662.44, OTHER_STARTER_HALT),
+        _result(3, 7.3691, 2.6326, -0.4562, 155, 3745.28, OTHER_STARTER_HALT),
+        _result(4, 11.7071, 2.6322, -0.5653, 155, 6984.70, OTHER_STARTER_HALT),
+        _result(5, 16.6030, 2.5928, -0.6565, 156, 11614.16, OTHER_STARTER_HALT),
+    ),
     "mixed-rsi-snapback-1h": (
         _result(1, 0.0815, 1.6318, -0.0279, 182, 213.81, MEAN_REVERSION_HALT),
         _result(2, 0.1670, 1.6406, -0.0554, 182, 445.13, MEAN_REVERSION_HALT),
@@ -87,6 +94,27 @@ STARTER_LEVERAGE_RESULTS: dict[str, tuple[dict[str, Any], ...]] = {
         _result(3, 0.5335, 1.2668, -0.2732, 143, 607.34, OTHER_STARTER_HALT),
         _result(4, 0.6290, 1.1954, -0.3986, 149, 836.47, OTHER_STARTER_HALT),
         _result(5, 0.7307, 1.2168, -0.4753, 151, 1129.24, OTHER_STARTER_HALT),
+    ),
+    "diversified-trend-sleeves-15m": (
+        _result(1, 0.8443, 2.6780, -0.1107, 889, 674.93, OTHER_STARTER_HALT),
+        _result(2, 2.4468, 2.8853, -0.2010, 889, 1950.41, OTHER_STARTER_HALT),
+        _result(3, 4.6532, 2.8889, -0.2803, 889, 3901.41, OTHER_STARTER_HALT),
+        _result(4, 6.5567, 2.6873, -0.4352, 888, 5886.12, OTHER_STARTER_HALT),
+        _result(5, 9.8576, 2.7212, -0.4940, 888, 9152.52, OTHER_STARTER_HALT),
+    ),
+    "diversified-momentum-taker-15m": (
+        _result(1, 0.4537, 1.4236, -0.1821, 1634, 1437.92, OTHER_STARTER_HALT),
+        _result(2, 1.0001, 1.5156, -0.3365, 1634, 3335.48, OTHER_STARTER_HALT),
+        _result(3, 1.3086, 1.4482, -0.4665, 1633, 5120.84, OTHER_STARTER_HALT),
+        _result(4, 1.4081, 1.4072, -0.5808, 1628, 6478.78, OTHER_STARTER_HALT),
+        _result(5, 1.6692, 1.4850, -0.6666, 1629, 8240.02, OTHER_STARTER_HALT),
+    ),
+    "crypto-gold-regime-relay-15m": (
+        _result(1, 0.7023, 1.6410, -0.1716, 276, 634.06, OTHER_STARTER_HALT),
+        _result(2, 1.4739, 1.6620, -0.3178, 275, 1477.88, OTHER_STARTER_HALT),
+        _result(3, 2.2541, 1.7124, -0.4417, 275, 2463.38, OTHER_STARTER_HALT),
+        _result(4, 2.8333, 1.7457, -0.5461, 275, 3412.28, OTHER_STARTER_HALT),
+        _result(5, 2.9776, 1.7550, -0.6336, 277, 4054.20, OTHER_STARTER_HALT),
     ),
     "hype-passive-rsi-full-5m": (
         _result(1, 0.2566, 1.6639, -0.0627, 244, 613.80, MAKER_MEAN_REVERSION_HALT),

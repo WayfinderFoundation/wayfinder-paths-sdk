@@ -142,5 +142,5 @@ def _close(symbol: str, position: Any, venue: str, *, size: float) -> dict[str, 
         "side": "sell" if position.side == "long" else "buy",
         "size": size,
         "reduce_only": True,
-        "metadata": {"position_side": position.side},
+        "metadata": {"exit_reason": "target_weight", "position_side": position.side},
     }

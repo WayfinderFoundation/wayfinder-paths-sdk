@@ -726,6 +726,28 @@ def _forward_trial(store: JobStore, job_id: str, name: str, started: datetime) -
     return trial
 
 
+def _write_forward_days(
+    store: JobStore,
+    job_id: str,
+    trial: dict,
+    started: datetime,
+    *,
+    days: int,
+    candidate_pnl: float | None = None,
+    reference_pnl: float | None = None,
+    candidate_trade_days: int | None = None,
+) -> None:
+    stamps = [started + timedelta(days=offset) for offset in range(days)]
+    for role, pnl in (("candidate", candidate_pnl), ("reference", reference_pnl)):
+        stream = store.job_dir(job_id) / trial[role]["stream"]
+        _write_ticks(stream, stamps)
+        if pnl is None:
+            continue
+        limit = candidate_trade_days if role == "candidate" else None
+        for stamp in stamps[:limit]:
+            _write_trade(stream, stamp, pnl)
+
+
 def _advance_cursors(store: JobStore, job_id: str, bar: datetime) -> None:
     doc = load_probation(store, job_id)
     for role in ("candidate", "reference"):
@@ -1037,3 +1059,24 @@ async def test_live_symbol_block_preserves_unconfirmed_resting_entry() -> None:
             "cancel_error": "venue timeout",
         }
     ]
+
+
+def test_paired_utility_uses_the_jobs_capital_not_ten_thousand(tmp_path: Path) -> None:
+    store, job_id = _job(tmp_path)
+    job = store.load(job_id)
+    job.execution_params = {**(job.execution_params or {}), "initial_capital": 100.0}
+    store.save(job)
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    trial = _forward_trial(store, job_id, "small-book", started)
+    assert trial["burn_in"]["capital"] == 100.0
+    # +$0.10/day is noise on $10k but a 0.1%/day edge on a $100 book.
+    _write_forward_days(store, job_id, trial, started, days=8, candidate_pnl=0.1)
+
+    outcomes = maybe_adjudicate_probation(
+        store, job_id, now=started + timedelta(days=8)
+    )
+
+    updated = load_probation(store, job_id)["trials"][0]
+    assert updated["status"] == "graduated"
+    assert updated["forward"]["metrics"]["estimate"] > 0.001
+    assert outcomes[0]["action"] == "probation_graduated"

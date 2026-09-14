@@ -20,13 +20,15 @@ permission:
 
   write: allow
   edit:
-    # The governance plane (owner targets, hard constraints, audit policy)
-    # is capability-protected: outside the job tree AND explicitly denied.
+    # ORDER IS LOAD-BEARING (last-match-wins, see external_directory below):
+    # the catch-all deny comes FIRST so the job-tree allow overrides it; the
+    # governance plane (owner targets, hard constraints, audit policy) stays
+    # LAST so it wins over any overlapping allow ever added above.
+    "*": deny
+    ".wayfinder_runs/**": ask
+    ".wayfinder/jobs/**": allow
     "governance/**": deny
     "audit/**": deny
-    ".wayfinder/jobs/**": allow
-    ".wayfinder_runs/**": ask
-    "*": deny
 
   # opencode 1.18+ resolves symlinks and classifies vault writes
   # (.wayfinder -> /wf/user_vault/wayfinder, .wayfinder_runs ->
@@ -79,11 +81,14 @@ permission:
     "python -m py_compile .wayfinder/jobs/**": allow
     "python3 -m py_compile .wayfinder/jobs/**": allow
 
+  # ORDER IS LOAD-BEARING: the broad MCP deny must precede the narrow allows
+  # (last-match-wins); with the deny last, core_jobs resolved to deny and the
+  # worker had no MCP tool at all.
+  wayfinder_*: deny
   wayfinder_core_jobs: allow
   wayfinder_core_run_script: ask
   wayfinder_core_runner: ask
   wayfinder_research_*: allow
-  wayfinder_*: deny
 
   wayfinder_onchain_swap: deny
   wayfinder_onchain_send: deny
