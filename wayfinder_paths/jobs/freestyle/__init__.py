@@ -12,6 +12,12 @@ Public surface for script authors::
         if odds > 0.6 and "BTC" not in ctx.positions:
             ctx.act({"venue": "hyperliquid", "kind": "market", "symbol": "BTC",
                      "side": "long", "notional": 100, "max_loss": 10})
+
+Reads: ``ctx.quote(venue, symbol)`` (latest completed-bar close),
+``ctx.funding(venue, symbol)`` (a perp's latest settled hourly funding rate as a
+decimal, Hyperliquid only), ``ctx.positions``, ``ctx.realized_pnl``,
+``ctx.state``. The validation dry run answers both reads from stub marks
+(``<venue>:<symbol>`` and ``funding:<venue>:<symbol>``).
 """
 
 from wayfinder_paths.jobs.freestyle.contract import (

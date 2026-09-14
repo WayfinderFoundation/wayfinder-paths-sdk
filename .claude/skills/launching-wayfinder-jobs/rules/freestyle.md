@@ -25,7 +25,7 @@ def tick(ctx):
 ```
 
 - `tick(ctx)` is a plain function (not async). The runtime owns venues, the ledger, halts, risk checks, timeouts and recording.
-- `ctx.quote(venue, symbol)` reads a price (HL mid, Polymarket CLOB mid). `ctx.positions`, `ctx.realized_pnl`, `ctx.mode`, `ctx.now`, `ctx.params` are reads.
+- `ctx.quote(venue, symbol)` reads a price (HL mid, Polymarket CLOB mid). `ctx.funding(venue, symbol)` reads a perp's latest settled hourly funding rate as a decimal (0.0001 = 0.01% per hour; positive means longs pay) — `hyperliquid` only, other venues raise. `ctx.positions`, `ctx.realized_pnl`, `ctx.mode`, `ctx.now`, `ctx.params` are reads.
 - `ctx.act(action)` is the only trade seam. `kind` is `market | limit | buy` (open) or `close | sell | redeem` (reduce). Every open needs `notional` or `size`; put `max_loss` on it. It returns `ActionResult` (`filled | resting | rejected | refused`, with a reason). Halted jobs refuse openers and still allow exits.
 - `ctx.state` is a dict that persists between ticks. `ctx.notify(title, body)` sends one notification per key per tick. `ctx.halt(reason)` latches the kill switch.
 - `ctx.custom(label, coro)` is the escape hatch for venue calls the runtime cannot paper; it is skipped in paper mode and flagged (`custom_actions`).
@@ -33,7 +33,7 @@ def tick(ctx):
 
 ## Dry-run marks
 
-The validation dry run quotes from stub marks. Pass them at creation: `create_freestyle(..., execution_params={"freestyle": {"validation_marks": {...}}, "initial_capital": 1000})`. Keys are `<venue>:<symbol>` (for a prediction market the symbol itself starts with `polymarket:`, so the key reads `polymarket:polymarket:<market>:YES`); unknown symbols quote 100 (perps) or 0.5 (prediction). A key `resolution:<venue>:<symbol>` settles that market at the given value from the second tick on, so a script can be seen buying on tick one and settling on tick two. Never put a real key or a wallet in execution_params.
+The validation dry run quotes from stub marks. Pass them at creation: `create_freestyle(..., execution_params={"freestyle": {"validation_marks": {...}}, "initial_capital": 1000})`. Keys are `<venue>:<symbol>` (for a prediction market the symbol itself starts with `polymarket:`, so the key reads `polymarket:polymarket:<market>:YES`); unknown symbols quote 100 (perps) or 0.5 (prediction). A key `funding:<venue>:<symbol>` is what `ctx.funding` reads (default 0). A key `resolution:<venue>:<symbol>` settles that market at the given value from the second tick on, so a script can be seen buying on tick one and settling on tick two. Never put a real key or a wallet in execution_params.
 
 ## What validation checks
 

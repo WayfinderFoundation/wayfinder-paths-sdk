@@ -27,6 +27,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     bar_interval_seconds,
 )
 from wayfinder_paths.jobs.execution.venues import (
+    FundingSnapshot,
     MarketEvent,
     NativeProtectionResult,
     VenueCapabilities,
@@ -251,6 +252,29 @@ class HyperliquidMarketFeed:
         self, symbols: Sequence[str], *, since: datetime | None = None
     ) -> list[MarketEvent]:
         return []
+
+    async def get_funding(
+        self, symbol: str, *, lookback_hours: int = 24
+    ) -> FundingSnapshot:
+        """The settled hourly funding rates for a perp over the lookback, from
+        the same data service the candles come from; the latest row is the
+        rate a script reads through ctx.funding."""
+        end_ms = int(time.time() * 1000)
+        start_ms = end_ms - max(1, int(lookback_hours)) * 3_600_000
+        rows = await self._safe.client.get_funding_history(symbol, start_ms, end_ms)
+        history = tuple(
+            sorted(
+                (int(row["time"]), float(row["fundingRate"]))
+                for row in rows
+                if row.get("time") is not None and row.get("fundingRate") is not None
+            )
+        )
+        if not history:
+            raise LookupError(f"hyperliquid returned no funding rows for {symbol}")
+        time_ms, rate = history[-1]
+        return FundingSnapshot(
+            symbol=symbol, rate=rate, time_ms=time_ms, history=history
+        )
 
 
 class HyperliquidPerpBroker:

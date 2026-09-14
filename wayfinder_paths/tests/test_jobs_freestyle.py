@@ -3,6 +3,7 @@ ladder with its sandboxed dry run, and the compiler wrapper."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -298,3 +299,103 @@ def test_compiler_writes_the_freestyle_wrapper(tmp_path: Path, monkeypatch) -> N
     assert "run_freestyle_tick as run_tick" in text
     assert "SystemExit(2" in text
     assert wrapper is None
+
+
+FUNDING_SHORT = """
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=("hyperliquid",), max_notional_per_tick=200, max_loss_usd=10)
+
+
+def tick(ctx):
+    rate = ctx.funding("hyperliquid", "BTC")
+    ctx.state["last_funding"] = rate
+    if rate > 0.0001 and "BTC" not in ctx.positions:
+        ctx.act({"venue": "hyperliquid", "kind": "market", "symbol": "BTC",
+                 "side": "short", "notional": 100, "max_loss": 10})
+    elif rate < 0 and "BTC" in ctx.positions:
+        ctx.act({"venue": "hyperliquid", "kind": "close", "symbol": "BTC"})
+"""
+
+
+def test_stub_gateway_funding_reads_the_mark_and_refuses_non_perp_venues() -> None:
+    from wayfinder_paths.jobs.freestyle import runtime as rt
+
+    gateway = rt.StubVenueGateway(marks={"funding:hyperliquid:BTC": 0.0002})
+    assert gateway.funding("hyperliquid", "BTC") == pytest.approx(0.0002)
+    assert gateway.funding("hyperliquid", "ETH") == 0.0
+    with pytest.raises(LookupError, match="no funding rate"):
+        gateway.funding("polymarket", "polymarket:x:YES")
+
+
+def test_venue_gateway_funding_uses_the_feed_extension(monkeypatch) -> None:
+    from wayfinder_paths.jobs.execution.venues import FundingSnapshot
+    from wayfinder_paths.jobs.freestyle import runtime as rt
+
+    class _Feed:
+        async def get_funding(self, symbol: str, *, lookback_hours: int = 24):
+            return FundingSnapshot(
+                symbol=symbol, rate=0.00013, time_ms=1, history=((1, 0.00013),)
+            )
+
+    class _Adapter:
+        feed = _Feed()
+
+    monkeypatch.setattr(rt, "build_adapter", lambda venue, **kwargs: _Adapter())
+    gateway = rt.VenueGateway(mode="paper", params={}, quote_interval="5m")
+    assert gateway.funding("hyperliquid", "BTC") == pytest.approx(0.00013)
+    with pytest.raises(LookupError, match="no funding rate"):
+        gateway.funding("polymarket", "polymarket:x:YES")
+
+
+def test_hyperliquid_feed_get_funding_returns_the_latest_settled_rate() -> None:
+    from wayfinder_paths.jobs.execution.hyperliquid import HyperliquidMarketFeed
+
+    class _Client:
+        def __init__(self, rows: list[dict]) -> None:
+            self.rows = rows
+
+        async def get_funding_history(self, coin: str, start_ms: int, end_ms: int):
+            assert coin == "BTC" and end_ms > start_ms
+            return self.rows
+
+    feed = HyperliquidMarketFeed(
+        client=_Client(  # type: ignore[arg-type]
+            [
+                {"time": 2000, "fundingRate": "0.0002"},
+                {"time": 1000, "fundingRate": "0.0001"},
+                {"time": 3000, "fundingRate": None},
+            ]
+        )
+    )
+    snap = asyncio.run(feed.get_funding("BTC"))
+    assert snap.rate == pytest.approx(0.0002) and snap.time_ms == 2000
+    assert snap.history == ((1000, 0.0001), (2000, 0.0002))
+    empty = HyperliquidMarketFeed(client=_Client([]))  # type: ignore[arg-type]
+    with pytest.raises(LookupError, match="no funding rows"):
+        asyncio.run(empty.get_funding("BTC"))
+
+
+def test_dry_run_funding_trigger_opens_a_short_from_the_funding_mark(
+    tmp_path: Path,
+) -> None:
+    store, job = _job(
+        tmp_path,
+        FUNDING_SHORT,
+        freestyle={
+            "validation_marks": {
+                "hyperliquid:BTC": 60_000,
+                "funding:hyperliquid:BTC": 0.0002,
+            }
+        },
+    )
+    report = validate_freestyle_job(job.id, store=store)
+    assert report["status"] == "passed", [
+        c for c in report["checks"] if not c["passed"]
+    ]
+    dry = report["freestyle"]["dry_run"]
+    opens = [a for a in dry["actions"] if a["intent"]["action"] == "OPEN"]
+    assert len(opens) == 1 and opens[0]["intent"]["side"] == "short"
+    assert opens[0]["status"] == "filled"
+    assert dry["funding"]["hyperliquid:BTC"] == pytest.approx(0.0002)
+    assert dry["venues_used"] == ["hyperliquid"]

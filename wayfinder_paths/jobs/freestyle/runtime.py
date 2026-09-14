@@ -65,6 +65,10 @@ DEFAULT_VENUE_PARAMS: dict[str, dict[str, float]] = {
 }
 
 
+# Venues that settle funding; ctx.funding refuses the others by name.
+FUNDING_VENUES: frozenset[str] = frozenset({"hyperliquid"})
+
+
 class FreestyleRefusal(RuntimeError):
     """The runtime refused to run at all (identity drift, bad contract)."""
 
@@ -113,6 +117,14 @@ class VenueGateway:
             raise LookupError(f"{venue} returned no bars for {symbol}")
         return float(view.latest(symbol)["close"])
 
+    def funding(self, venue: str, symbol: str) -> float:
+        get_funding = getattr(self.adapter(venue).feed, "get_funding", None)
+        if venue not in FUNDING_VENUES or get_funding is None:
+            raise LookupError(
+                f"{venue} has no funding rate: only perp venues settle funding"
+            )
+        return float(_run(get_funding(symbol)).rate)
+
     def place(self, intent: OrderIntent, *, price: float, timestamp: str) -> FillEvent:
         return _run(
             self.adapter(intent.venue).broker.place(
@@ -154,6 +166,13 @@ class StubVenueGateway:
             base = 0.5 if venue in {"polymarket", "hyperliquid_prediction"} else 100.0
         # A gentle drift so a multi-tick dry run exercises mark-to-market.
         return base * (1.0 + 0.001 * self.tick_index)
+
+    def funding(self, venue: str, symbol: str) -> float:
+        if venue not in FUNDING_VENUES:
+            raise LookupError(
+                f"{venue} has no funding rate: only perp venues settle funding"
+            )
+        return float(self.marks.get(f"funding:{venue}:{symbol}", 0.0))
 
     def place(self, intent: OrderIntent, *, price: float, timestamp: str) -> FillEvent:
         broker = self._brokers.get(intent.venue)
@@ -212,6 +231,7 @@ class FreestyleContext:
         self.halted = halted
         self.state: dict[str, Any] = _read_json(root / STATE_PATH) or {}
         self.marks: dict[str, float] = {}
+        self.funding_reads: dict[str, float] = {}
         self.actions: list[dict[str, Any]] = []
         self.fills: list[dict[str, Any]] = []
         self.logs: list[str] = []
@@ -239,6 +259,16 @@ class FreestyleContext:
         self.marks[f"{venue}:{symbol}"] = price
         self.venues_used.add(venue)
         return price
+
+    def funding(self, venue: str, symbol: str) -> float:
+        """The venue's latest settled hourly funding rate for a perp, as a
+        decimal (0.0001 = 0.01% per hour; positive means longs pay). Perp
+        venues only; the dry run reads the `funding:<venue>:<symbol>` mark."""
+        venue = str(venue).lower()
+        rate = float(self._gateway.funding(venue, symbol))
+        self.funding_reads[f"{venue}:{symbol}"] = rate
+        self.venues_used.add(venue)
+        return rate
 
     def log(self, message: str) -> None:
         self.logs.append(str(message)[:500])
@@ -713,6 +743,7 @@ def _one_tick(
             "fills": list(ctx.fills),
             "guard_events": guard_events,
             "marks": dict(ctx.marks),
+            "funding": dict(ctx.funding_reads),
             "equity": equity,
             "unrealized_pnl": unrealized,
             "actions": list(ctx.actions),
@@ -754,6 +785,7 @@ def _one_tick(
         "fills": list(ctx.fills),
         "guard_events": guard_events,
         "marks": dict(ctx.marks),
+        "funding": dict(ctx.funding_reads),
         "equity": equity,
         "unrealized_pnl": unrealized,
         "realized_pnl": float(ledger.realized_pnl),

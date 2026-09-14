@@ -1268,6 +1268,85 @@ def validate_kill_switch_trip(workspace: Path) -> dict[str, Any]:
     return _report(checks)
 
 
+# ---- funding-triggered perp script ------------------------------------------
+
+FUNDING_SCRIPT = """
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=("hyperliquid",), max_notional_per_tick=200, max_loss_usd=10)
+
+
+def tick(ctx):
+    rate = ctx.funding("hyperliquid", "BTC")
+    ctx.state["last_funding"] = rate
+    if rate > 0.0001 and "BTC" not in ctx.positions:
+        ctx.act({"venue": "hyperliquid", "kind": "market", "symbol": "BTC",
+                 "side": "short", "notional": 100, "max_loss": 10})
+    elif rate < 0 and "BTC" in ctx.positions:
+        ctx.act({"venue": "hyperliquid", "kind": "close", "symbol": "BTC"})
+"""
+FUNDING_MARKS = {"hyperliquid:BTC": 60_000, "funding:hyperliquid:BTC": 0.0002}
+
+
+def expected_funding_trigger(workspace: Path) -> None:
+    _create_validated_freestyle(
+        workspace,
+        "eval-funding-short",
+        "Eval Funding Short",
+        FUNDING_SCRIPT,
+        FUNDING_MARKS,
+    )
+
+
+def validate_funding_trigger(workspace: Path) -> dict[str, Any]:
+    """A funding-triggered script reads the rate through ctx.funding; the dry
+    run reads the funding mark, shorts once on expensive funding, and the
+    validation report carries the funding read."""
+    job_id = "eval-funding-short"
+    data = _job_yaml(workspace, job_id)
+    root = workspace / ".wayfinder" / "jobs" / job_id
+    validation = _read(root / "reports" / "validation" / "latest.json")
+    dry = (validation.get("freestyle") or {}).get("dry_run") or {}
+    source = _entrypoint(workspace, job_id).read_text(encoding="utf-8") if data else ""
+    opens = [
+        a
+        for a in dry.get("actions") or []
+        if (a.get("intent") or {}).get("action") == "OPEN"
+    ]
+    checks = [
+        _check("job_created", bool(data)),
+        _check(
+            "validation_passed",
+            validation.get("status") == "passed",
+            failed=[
+                c.get("name")
+                for c in validation.get("checks") or []
+                if not c.get("passed")
+            ],
+        ),
+        _check("reads_funding_through_ctx", "ctx.funding(" in source),
+        _check(
+            "dry_run_read_the_funding_mark",
+            float((dry.get("funding") or {}).get("hyperliquid:BTC") or 0.0) == 0.0002,
+            funding=dry.get("funding"),
+        ),
+        _check(
+            "shorted_once_on_expensive_funding",
+            len(opens) == 1
+            and (opens[0].get("intent") or {}).get("side") == "short"
+            and float((opens[0].get("intent") or {}).get("notional") or 0) == 100.0
+            and opens[0].get("status") == "filled",
+            opens=len(opens),
+        ),
+        _check(
+            "only_hyperliquid_used",
+            set(dry.get("venues_used") or []) == {"hyperliquid"},
+        ),
+        _check("not_launched", not (root / "state" / "launch.json").exists()),
+    ]
+    return _report(checks)
+
+
 # ---- gated live, and the identity pin under an edit --------------------------
 
 
@@ -1567,6 +1646,20 @@ CASES: list[LifecycleCase] = [
         setup=setup_edit_relaunch,
         expected=expected_edit_relaunch,
         validate=validate_edit_relaunch,
+    ),
+    LifecycleCase(
+        id="freestyle_funding_trigger",
+        stage="creation",
+        job_id="eval-funding-short",
+        prompt=(
+            "Build a freestyle job `eval-funding-short` that every 5 minutes reads BTC's funding rate on "
+            "Hyperliquid through ctx.funding; when the hourly rate is above 0.01% (0.0001 as a decimal) and we "
+            "hold no BTC, short 100 USD of BTC with a 10 USD max loss, and close it when funding turns negative. "
+            "Set validation marks so the dry run sees BTC at 60000 and funding 0.0002 (key "
+            "`funding:hyperliquid:BTC`). Validate it and tell me what the dry run did tick by tick. Do not launch."
+        ),
+        expected=expected_funding_trigger,
+        validate=validate_funding_trigger,
     ),
 ]
 
