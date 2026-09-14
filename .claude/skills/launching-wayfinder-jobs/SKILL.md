@@ -23,6 +23,13 @@ One flow for every kind of job. Seven steps, in this order, every time.
 - **Freestyle scripts (`freestyle_v1`)**: any trigger, any action — "if the Hormuz odds cross X, buy Y perp". A module with `tick(ctx)` that trades only through `ctx.act` (paper fills through the venue's paper broker, live through its real broker). No backtest, no evolution; research wakes read the forward ledger. See `rules/freestyle.md`.
 - **Installed Paths (`path_v1`)**: a pinned version of a published Path (`wayfinder path install <slug>` first). The Path runs from its install directory; every tick re-checks the bundle and tree hashes against the pin. No backtest, no evolution. A component without a declared dry-run mode has no paper mode and launches live only after the `no_dry_run` flag is acknowledged. See `rules/paths.md`.
 
+## When the ask does not fit a kind
+
+- Perp, spot-perp or prediction-market rules with any trigger ("if the odds cross X, buy Y perp") → a freestyle job. Venues in v1: `hyperliquid`, `polymarket`, `hyperliquid_prediction`.
+- On-chain DeFi actions (swaps, lending, yield rotation) are **not** a freestyle venue in v1: the runtime refuses an `onchain` action and validation reports it. Say exactly that, then offer the fits: an installed Path that does it (`create_from_path`), or a classic strategy job through `core_runner` (`type="strategy"`) with the adapter skills. Never launch a freestyle job whose validation shows a refused venue.
+- A described alpha idea on the harnessed universe → Strategy Lab (jobs_v1), so it gets the backtest, holdout and evolution.
+- Anything that needs funds moved, gas, or a wallet created is out of the job flow: hand it to the normal execution tools with their safety review.
+
 ## Rules that hold for every kind
 
 - Jobs are created **paused**. Nothing ticks before `launch`.

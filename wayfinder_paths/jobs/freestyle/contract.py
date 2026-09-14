@@ -99,6 +99,11 @@ def normalize_action(
     symbol = str(data.get("symbol") or "").strip()
     if not venue:
         raise ValueError("action needs a venue")
+    if venue not in SUPPORTED_VENUES:
+        raise ValueError(
+            f"venue {venue!r} is not supported by the freestyle runtime "
+            f"(supported: {sorted(SUPPORTED_VENUES)}); on-chain swaps are not a venue yet"
+        )
     if kind not in ACTION_KINDS:
         raise ValueError(
             f"action kind must be one of {sorted(ACTION_KINDS)}, got {kind!r}"

@@ -144,6 +144,11 @@ class StubVenueGateway:
         self._brokers: dict[str, PaperBroker] = {}
 
     def quote(self, venue: str, symbol: str) -> float:
+        # A settled market quotes at its resolution value from the second
+        # tick on, so a script cannot keep buying a market that has resolved.
+        resolved = self.marks.get(f"resolution:{venue}:{symbol}")
+        if resolved is not None and self.tick_index >= 1:
+            return float(resolved)
         base = self.marks.get(f"{venue}:{symbol}", self.marks.get(symbol))
         if base is None:
             base = 0.5 if venue in {"polymarket", "hyperliquid_prediction"} else 100.0
@@ -162,7 +167,17 @@ class StubVenueGateway:
         return _run(broker.place(intent, timestamp=timestamp, price=price))
 
     def resolutions(self, venue: str, symbols: list[str]) -> list[dict[str, Any]]:
-        return []
+        # A dry run settles a market when the marks carry
+        # resolution:<venue>:<symbol> and at least one tick has passed, so a
+        # script can be seen buying on tick one and settling on tick two.
+        if self.tick_index < 1:
+            return []
+        resolved = []
+        for symbol in symbols:
+            value = self.marks.get(f"resolution:{venue}:{symbol}")
+            if value is not None:
+                resolved.append({"symbol": symbol, "value": float(value)})
+        return resolved
 
 
 class FreestyleContext:
@@ -328,6 +343,11 @@ class FreestyleContext:
         realized_before = self._ledger.realized_pnl
         if fill.successful:
             self._ledger.apply_fill(fill)
+            held = self._ledger.positions.get(intent.symbol)
+            if held is not None:
+                # The venue rides on the position so marks, settlement and
+                # equity know where to look after a restart.
+                held.metadata["venue"] = intent.venue
             if intent.action == "OPEN":
                 self._tick_notional += abs(
                     float(fill.filled_size) * float(fill.avg_price or price)

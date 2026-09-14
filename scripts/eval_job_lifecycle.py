@@ -13,6 +13,11 @@ what it produced; ``--judge`` adds the repo-grounded pass/fail judge from
     poetry run python scripts/eval_job_lifecycle.py            # deterministic
     poetry run python scripts/eval_job_lifecycle.py --case starter_paused_readout
     poetry run python scripts/eval_job_lifecycle.py --live --judge
+
+Live runs need the project opencode config (the gitignored ``opencode.json``
+and ``.opencode/opencode.json`` with the wayfinder provider) in this checkout,
+``WAYFINDER_CONFIG_PATH`` pointing at a config.json whose key the LLM gateway
+accepts, and the opencode binary; the runner checks the gateway first.
 """
 
 from __future__ import annotations
@@ -943,6 +948,293 @@ def validate_evolution(workspace: Path) -> dict[str, Any]:
     return _report(checks)
 
 
+# ---- extra cases: things we were unsure about ------------------------------
+
+DEFI_SCRIPT = """
+def tick(ctx):
+    # A DeFi rotation attempt: swap USDC into ETH on Base when funding looks cheap.
+    ctx.act({"venue": "onchain", "kind": "swap", "symbol": "USDC->ETH", "chain": "base",
+             "notional": 500})
+"""
+
+PREDICTION_SCRIPT = """
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=("polymarket",), max_notional_per_tick=100, max_loss_usd=50)
+MARKET = "polymarket:strait-of-hormuz-closed-2026:YES"
+
+
+def tick(ctx):
+    odds = ctx.quote("polymarket", MARKET)
+    if odds < 0.3 and MARKET not in ctx.positions:
+        ctx.act({"venue": "polymarket", "kind": "buy", "symbol": MARKET, "notional": 50,
+                 "max_loss": 50})
+"""
+PREDICTION_MARKS = {
+    "polymarket:polymarket:strait-of-hormuz-closed-2026:YES": 0.25,
+    "resolution:polymarket:polymarket:strait-of-hormuz-closed-2026:YES": 1.0,
+}
+
+
+def _create_validated_freestyle(
+    workspace: Path,
+    job_id: str,
+    name: str,
+    script: str,
+    marks: dict[str, float],
+    *,
+    agent_mode: str = "monitor",
+) -> None:
+    from wayfinder_paths.jobs.freestyle.create import create_freestyle_job
+    from wayfinder_paths.jobs.freestyle.validate import validate_freestyle_job
+    from wayfinder_paths.jobs.readout import build_readout
+
+    store = _store(workspace)
+    with Sandbox():
+        create_freestyle_job(
+            job_id,
+            name=name,
+            script_source=script,
+            interval_seconds=300,
+            timeout_seconds=120,
+            store=store,
+            compile_job=True,
+            agent_mode=agent_mode,
+        )
+        job = store.load(job_id)
+        job.execution_params["freestyle"] = {"validation_marks": marks}
+        store.save(job)
+        validate_freestyle_job(job_id, store=store)
+        build_readout(job_id, store=store)
+
+
+def expected_defi_refused(workspace: Path) -> None:
+    _create_validated_freestyle(
+        workspace, "eval-defi-rotator", "Eval DeFi Rotator", DEFI_SCRIPT, {}
+    )
+
+
+def validate_defi_refused(workspace: Path) -> dict[str, Any]:
+    """On-chain swaps are not a freestyle venue in v1: validation must say so,
+    the readout must carry the refusal, and nothing may launch."""
+    from wayfinder_paths.jobs.launch import evaluate_launch_checklist
+
+    job_id = "eval-defi-rotator"
+    data = _job_yaml(workspace, job_id)
+    root = workspace / ".wayfinder" / "jobs" / job_id
+    validation = _read(root / "reports" / "validation" / "latest.json")
+    by_name = {c.get("name"): c for c in validation.get("checks") or []}
+    readout = _read(root / "reports" / "readout" / "latest.json")
+    dry_actions = ((validation.get("freestyle") or {}).get("dry_run") or {}).get(
+        "actions"
+    ) or []
+    refusals = [a for a in dry_actions if a.get("status") == "refused"]
+    checks = [
+        _check("job_created", bool(data)),
+        _check("validation_failed", validation.get("status") == "failed"),
+        _check(
+            "unsupported_venue_named",
+            by_name.get("dry_run_venues_supported", {}).get("passed") is False,
+            refused=by_name.get("dry_run_venues_supported", {}).get("refused"),
+        ),
+        _check(
+            "refusal_mentions_onchain",
+            any(
+                "onchain" in str(a.get("reason"))
+                and "not supported" in str(a.get("reason"))
+                for a in refusals
+            ),
+        ),
+        _check("readout_not_launch_allowed", readout.get("launch_allowed") is False),
+        _check("readout_no_claim", readout.get("performance_claim") is None),
+        _check("not_launched", not (root / "state" / "launch.json").exists()),
+    ]
+    if data:
+        checklist = evaluate_launch_checklist(job_id, store=_store(workspace))
+        checks.append(_check("checklist_blocks_paper", checklist.get("ok") is False))
+    return _report(checks)
+
+
+def expected_prediction_settles(workspace: Path) -> None:
+    _create_validated_freestyle(
+        workspace,
+        "eval-hormuz-yes",
+        "Eval Hormuz YES",
+        PREDICTION_SCRIPT,
+        PREDICTION_MARKS,
+    )
+
+
+def validate_prediction_settles(workspace: Path) -> dict[str, Any]:
+    """A prediction-market position bought on tick one settles at resolution
+    on tick two, as a reduce fill with exit_reason resolution."""
+    job_id = "eval-hormuz-yes"
+    data = _job_yaml(workspace, job_id)
+    root = workspace / ".wayfinder" / "jobs" / job_id
+    validation = _read(root / "reports" / "validation" / "latest.json")
+    dry = (validation.get("freestyle") or {}).get("dry_run") or {}
+    actions = dry.get("actions") or []
+    opens = [
+        a
+        for a in actions
+        if (a.get("intent") or {}).get("action") == "OPEN"
+        and a.get("status") == "filled"
+    ]
+    settles = [
+        a
+        for a in actions
+        if (a.get("intent") or {}).get("action") == "CLOSE"
+        and ((a.get("intent") or {}).get("metadata") or {}).get("exit_reason")
+        == "resolution"
+    ]
+    checks = [
+        _check("job_created", bool(data)),
+        _check(
+            "validation_passed",
+            validation.get("status") == "passed",
+            failed=[
+                c.get("name")
+                for c in validation.get("checks") or []
+                if not c.get("passed")
+            ],
+        ),
+        _check("bought_once", len(opens) == 1),
+        _check(
+            "settled_on_resolution",
+            len(settles) == 1 and settles[0].get("status") == "filled",
+        ),
+        _check(
+            "settle_price_is_resolution_value",
+            bool(settles)
+            and float((settles[0].get("fill") or {}).get("avg_price") or 0) == 1.0,
+        ),
+        _check("flat_after_settle", not (dry.get("positions") or {})),
+        _check(
+            "only_polymarket_used", set(dry.get("venues_used") or []) == {"polymarket"}
+        ),
+    ]
+    return _report(checks)
+
+
+def expected_kill_switch_trip(workspace: Path) -> None:
+    from wayfinder_paths.jobs import notify_policy
+    from wayfinder_paths.jobs.forward import ForwardRecorder
+    from wayfinder_paths.jobs.freestyle import runtime as rt
+    from wayfinder_paths.jobs.launch import launch_job, set_watchdog
+
+    _create_validated_freestyle(
+        workspace, "eval-kill-switch", "Eval Kill Switch", HORMUZ_SCRIPT, HORMUZ_MARKS
+    )
+    store = _store(workspace)
+    root = store.job_dir("eval-kill-switch")
+    with Sandbox():
+        launch_job("eval-kill-switch", store=store)
+        set_watchdog(
+            "eval-kill-switch", store=store, kill_switches={"max_daily_loss_usd": 25}
+        )
+    # today's book already lost 40 USD on a closed trade
+    recorder = ForwardRecorder(
+        job_id="eval-kill-switch", job_dir=root, mode="paper", revision="eval00000000"
+    )
+    recorder.record_trade_close(
+        {
+            "ts": datetime.now(UTC).isoformat(),
+            "symbol": "BTC",
+            "venue": "hyperliquid",
+            "side": "sell",
+            "size": 0.001,
+            "avg_price": 60_000,
+            "fee": 0.05,
+            "net_pnl": -40.0,
+            "pnl": -40.0,
+            "exit_reason": "freestyle_close",
+            "mode": "paper",
+        }
+    )
+    delivered: list[dict[str, Any]] = []
+    saved = (rt.VenueGateway, rt.JobStore, notify_policy._deliver)
+    rt.VenueGateway = lambda **kwargs: rt.StubVenueGateway(marks=HORMUZ_MARKS)  # type: ignore[assignment]
+    rt.JobStore = lambda: store  # type: ignore[assignment]
+    notify_policy._deliver = (  # type: ignore[assignment]
+        lambda title, body, channels: delivered.append(
+            {"title": title, "channels": channels}
+        )
+        or {"delivery": dict.fromkeys(channels, "sent")}
+    )
+    env_keys = (
+        "WAYFINDER_JOB_MODE",
+        "WAYFINDER_JOB_REVISION",
+        "WAYFINDER_FORWARD_DIR",
+        "WAYFINDER_DRY_RUN",
+    )
+    env_saved = {k: os.environ.get(k) for k in env_keys}
+    try:
+        os.environ["WAYFINDER_JOB_MODE"] = "paper"
+        os.environ["WAYFINDER_JOB_REVISION"] = (
+            store.load("eval-kill-switch").versioning.get("active_revision") or ""
+        )
+        os.environ.pop("WAYFINDER_FORWARD_DIR", None)
+        os.environ.pop("WAYFINDER_DRY_RUN", None)
+        with Sandbox():
+            payload = rt.run_freestyle_tick(root)
+    finally:
+        rt.VenueGateway, rt.JobStore, notify_policy._deliver = saved  # type: ignore[assignment]
+        for key, value in env_saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    store.write_json(
+        "eval-kill-switch",
+        "state/eval_tick.json",
+        {"payload": payload, "delivered": delivered},
+    )
+
+
+def validate_kill_switch_trip(workspace: Path) -> dict[str, Any]:
+    """A daily-loss kill switch trips on the next tick: the halt latches with
+    source risk_limits, openers are refused, the owner is notified."""
+    job_id = "eval-kill-switch"
+    data = _job_yaml(workspace, job_id)
+    root = workspace / ".wayfinder" / "jobs" / job_id
+    tick = _read(root / "state" / "eval_tick.json")
+    payload = tick.get("payload") or {}
+    halt = _read(root / "state" / "halt.json")
+    kinds = {str(e.get("kind")) for e in payload.get("guard_events") or []}
+    checks = [
+        _check("job_created", bool(data)),
+        _check("tick_ran", payload.get("ok") is True, error=payload.get("error")),
+        _check(
+            "risk_halt_guard",
+            "risk_halt" in kinds,
+            guard_events=payload.get("guard_events"),
+        ),
+        _check(
+            "halt_latched_by_risk_limits",
+            halt.get("source") == "risk_limits"
+            and "max_daily_loss_usd" in str(halt.get("reason")),
+            halt=halt,
+        ),
+        _check(
+            "opener_refused",
+            any(
+                a.get("status") == "refused" and "halted" in str(a.get("reason"))
+                for a in payload.get("actions") or []
+            ),
+        ),
+        _check(
+            "owner_notified",
+            any("risk halt" in d.get("title", "") for d in tick.get("delivered") or []),
+            delivered=tick.get("delivered"),
+        ),
+        _check(
+            "notification_journaled",
+            "notification_sent" in _journal_types(workspace, job_id),
+        ),
+    ]
+    return _report(checks)
+
+
 CASES: list[LifecycleCase] = [
     LifecycleCase(
         id="starter_paused_readout",
@@ -1033,6 +1325,47 @@ CASES: list[LifecycleCase] = [
         expected=expected_evolution,
         validate=validate_evolution,
     ),
+    LifecycleCase(
+        id="freestyle_defi_refused",
+        stage="creation",
+        job_id="eval-defi-rotator",
+        prompt=(
+            "Build me a freestyle job `eval-defi-rotator` that every 5 minutes swaps 500 USD of USDC into ETH on "
+            "Base when it decides funding looks cheap. Validate it and read me the readout. If something in this "
+            "cannot be done as a freestyle job, say exactly what and why, and do not launch."
+        ),
+        expected=expected_defi_refused,
+        validate=validate_defi_refused,
+    ),
+    LifecycleCase(
+        id="prediction_settles_on_resolution",
+        stage="ongoing",
+        job_id="eval-hormuz-yes",
+        prompt=(
+            "Build a freestyle job `eval-hormuz-yes` that buys 50 USD of YES on "
+            "`polymarket:strait-of-hormuz-closed-2026:YES` whenever the odds are below 30% and we hold none, with a "
+            "50 USD max loss and only the polymarket venue in the SPEC. Set execution_params.freestyle.validation_marks "
+            "so the dry run sees odds 0.25 and a resolution of the market at 1.0 (key "
+            "`resolution:polymarket:polymarket:strait-of-hormuz-closed-2026:YES`). Validate it, then tell me what the "
+            "dry run did tick by tick, including the settlement. Do not launch."
+        ),
+        expected=expected_prediction_settles,
+        validate=validate_prediction_settles,
+    ),
+    LifecycleCase(
+        id="kill_switch_trips_and_alerts",
+        stage="ongoing",
+        job_id="eval-kill-switch",
+        prompt=(
+            "Job `eval-kill-switch` is a launched paper freestyle job with a 25 USD daily loss kill switch, and its "
+            "forward ledger shows a 40 USD loss today. Explain what the next tick will do and why, what the owner "
+            "will be told, and how the owner clears the halt."
+        ),
+        expected=expected_kill_switch_trip,
+        validate=validate_kill_switch_trip,
+        live=False,
+        notes="the tick runs in-process with stub quotes; the prompt is explanatory only",
+    ),
 ]
 
 
@@ -1107,9 +1440,12 @@ def run_case(
         kept = case_dir / "workspace"
         if kept.exists():
             shutil.rmtree(kept)
-        shutil.copytree(
-            workspace / ".wayfinder", kept / ".wayfinder", dirs_exist_ok=True
-        )
+        if (workspace / ".wayfinder").exists():
+            shutil.copytree(
+                workspace / ".wayfinder", kept / ".wayfinder", dirs_exist_ok=True
+            )
+        else:
+            kept.mkdir(parents=True, exist_ok=True)
         judge_result = None
         if judge and jobs_eval is not None:
             rubric = (REPO_ROOT / JUDGE_RUBRIC).read_text(encoding="utf-8")
@@ -1150,6 +1486,43 @@ def run_case(
         "validator": validator,
         "judge": judge_result,
     }
+
+
+def preflight_model_gateway(model: str, env: Mapping[str, str]) -> None:
+    """Fail fast, before any sandbox is copied, when the model gateway rejects
+    the credential the live run would use. The SDK config key can be valid
+    for the paths API and still be refused by the LLM gateway."""
+    if not model.startswith("wayfinder/"):
+        return
+    import httpx
+
+    key = env.get("WAYFINDER_API_KEY") or ""
+    base_url = "https://llm.wayfinder.ai/v1"
+    config_path = REPO_ROOT / ".opencode" / "opencode.json"
+    if config_path.exists():
+        try:
+            provider = (
+                json.loads(config_path.read_text(encoding="utf-8")).get("provider")
+                or {}
+            ).get("wayfinder") or {}
+            base_url = str((provider.get("options") or {}).get("baseURL") or base_url)
+        except ValueError:
+            pass
+    try:
+        response = httpx.get(
+            f"{base_url.rstrip('/')}/models",
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=20,
+        )
+    except httpx.HTTPError as exc:
+        raise SystemExit(
+            f"model gateway {base_url} unreachable: {type(exc).__name__}"
+        ) from exc
+    if response.status_code != 200:
+        raise SystemExit(
+            f"model gateway {base_url} refused the credential (HTTP {response.status_code}); "
+            "the live run needs a valid LLM gateway key in WAYFINDER_API_KEY or config.json system.api_key"
+        )
 
 
 def selected_cases(selection: str, stage: str | None) -> list[LifecycleCase]:
@@ -1200,6 +1573,7 @@ def main(argv: list[str] | None = None) -> int:
     judge_model = args.judge_model
     if jobs_eval is not None:
         jobs_eval.resolve_wayfinder_model_env(args.model, env)
+        preflight_model_gateway(args.model, env)
         if args.judge:
             judge_model = jobs_eval.resolve_judge_model(
                 args.judge_model,
