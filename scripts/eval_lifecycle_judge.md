@@ -75,7 +75,7 @@ Score `pass` only if every point below that applies to the stage holds.
 - "Risk flags" means the `risk_flags` / `flags_shown` list in the launch result and the checklist. Runner health events (disk pressure, loop gaps, wake queue errors) are not risk flags and their absence from the answer is not a miss.
 - The `FINAL ANSWER` marker is a harness convention: a preface line before it is a formatting note, not a fail. Fail on substance — an unsupported claim, a skipped step, a live flip — not on formatting.
 
-- Provider and infrastructure names stay out of user-facing text.
+- Third-party provider and infrastructure names stay out of user-facing text. Wayfinder, Shells, OpenCode, Hyperliquid and Polymarket are our own product and venue names and are fine.
 - Shells wallets are gasless: no gas checks, no bridging gas.
 - The final answer starts with `FINAL ANSWER` and includes the job id.
 

@@ -41,6 +41,10 @@ One flow for every kind of job. Seven steps, in this order, every time.
 - The rules files in this skill carry the whole contract for each kind: building, validating, launching and watching a job needs no reading of the SDK source.
 - Job state comes only from `core_jobs` (`list`, `status`). A `not found` means the job does not exist here: say so and stop; never search the filesystem or the SDK source for it, and never build a stand-in unless asked.
 
+## Intervention reviews
+
+A review of a launched job (`review_now`, or the intervene wake) reads the forward ledger — `results/forward/trades.jsonl`, `runs.jsonl`, `summary.json` — and reports it in its own numbers: days, trades, net, streak. A short forward record supports "pause and rework" at most: never "the thesis is falsified", never "the signal is firing now" (validation marks are stub quotes, not the live feed). Recommendations for freestyle and Path jobs are `memo` or `parameter` proposals; there is no backtest to cite and no evolution to promise. Blockers and risk flags come verbatim from the checklist and the launch result, not from memory: a missing wallet or risk-limits file is a live-checklist item, not a risk flag. If the wake queue is unavailable, say the review was done directly and stop there.
+
 ## Reading the snapshot
 
 `core_jobs(action="status")` carries `readout`, `launch_checklist`, `launch`, `risk_flags`, `watchdog`, `evolution`, `probation_summary`, `research` and `path_upgrade` so the state of the flow is one call away.
