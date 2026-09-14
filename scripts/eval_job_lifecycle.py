@@ -28,6 +28,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -164,6 +165,9 @@ class LifecycleCase:
     validate: Callable[[Path], dict[str, Any]]
     live: bool = True
     notes: str = ""
+    # state the agent starts from in a live run (a launched job, seeded
+    # losses); `expected` = setup + what a correct agent then does
+    setup: Callable[[Path], None] | None = None
 
 
 def _store(workspace: Path) -> JobStore:
@@ -631,7 +635,7 @@ def _seed_forward_losses(root: Path, *, mode: str = "paper") -> None:
         )
 
 
-def expected_freestyle_intervention(workspace: Path) -> None:
+def setup_freestyle_intervention(workspace: Path) -> None:
     from wayfinder_paths.jobs.freestyle.create import create_freestyle_job
     from wayfinder_paths.jobs.freestyle.validate import validate_freestyle_job
     from wayfinder_paths.jobs.launch import launch_job, set_watchdog
@@ -660,6 +664,9 @@ def expected_freestyle_intervention(workspace: Path) -> None:
             wake_interval_seconds=3600,
         )
     _seed_forward_losses(store.job_dir("eval-hormuz-watch"))
+
+
+expected_freestyle_intervention = setup_freestyle_intervention
 
 
 def validate_freestyle_intervention(workspace: Path) -> dict[str, Any]:
@@ -732,12 +739,10 @@ def validate_freestyle_intervention(workspace: Path) -> dict[str, Any]:
 # ---- ongoing ----------------------------------------------------------------
 
 
-def expected_watchdog_ongoing(workspace: Path) -> None:
-    from wayfinder_paths.jobs import notify_policy
+def setup_watchdog_ongoing(workspace: Path) -> None:
     from wayfinder_paths.jobs.freestyle.create import create_freestyle_job
     from wayfinder_paths.jobs.freestyle.validate import validate_freestyle_job
-    from wayfinder_paths.jobs.launch import launch_job, set_watchdog
-    from wayfinder_paths.jobs.triggers import fire_triggers
+    from wayfinder_paths.jobs.launch import launch_job
 
     store = _store(workspace)
     with Sandbox():
@@ -755,6 +760,14 @@ def expected_watchdog_ongoing(workspace: Path) -> None:
         store.save(job)
         validate_freestyle_job("eval-ongoing", store=store)
         launch_job("eval-ongoing", store=store)
+
+
+def expected_watchdog_ongoing(workspace: Path) -> None:
+    from wayfinder_paths.jobs.launch import set_watchdog
+
+    setup_watchdog_ongoing(workspace)
+    store = _store(workspace)
+    with Sandbox():
         set_watchdog(
             "eval-ongoing",
             store=store,
@@ -772,20 +785,26 @@ def expected_watchdog_ongoing(workspace: Path) -> None:
             },
             kill_switches={"max_daily_loss_usd": 25, "max_drawdown": 0.10},
         )
-        delivered: list[dict[str, Any]] = []
-        original = notify_policy._deliver
-        notify_policy._deliver = lambda title, body, channels: delivered.append(
-            {"title": title, "channels": channels}
-        ) or {"delivery": dict.fromkeys(channels, "sent")}
-        try:
-            fire_triggers(
-                store, store.load("eval-ongoing"), ["risk_halt"], source="eval"
-            )
-        finally:
-            notify_policy._deliver = original
-        (store.job_dir("eval-ongoing") / "state" / "eval_delivered.json").write_text(
-            json.dumps(delivered), encoding="utf-8"
-        )
+
+
+def _fire_risk_halt(workspace: Path, job_id: str) -> list[dict[str, Any]]:
+    """Exercise the watchdog the agent configured: fire a risk_halt trigger
+    with delivery stubbed and return what would have been sent."""
+    from wayfinder_paths.jobs import notify_policy
+    from wayfinder_paths.jobs.triggers import fire_triggers
+
+    store = _store(workspace)
+    delivered: list[dict[str, Any]] = []
+    original = notify_policy._deliver
+    notify_policy._deliver = lambda title, body, channels: delivered.append(
+        {"title": title, "channels": channels}
+    ) or {"delivery": dict.fromkeys(channels, "sent")}
+    try:
+        with Sandbox():
+            fire_triggers(store, store.load(job_id), ["risk_halt"], source="eval")
+    finally:
+        notify_policy._deliver = original
+    return delivered
 
 
 def validate_watchdog_ongoing(workspace: Path) -> dict[str, Any]:
@@ -794,6 +813,7 @@ def validate_watchdog_ongoing(workspace: Path) -> dict[str, Any]:
     job_id = "eval-ongoing"
     store = _store(workspace)
     data = _job_yaml(workspace, job_id)
+    delivered = _fire_risk_halt(workspace, job_id) if data else []
     root = workspace / ".wayfinder" / "jobs" / job_id
     limits = _read(root / "workspace" / "risk_limits.json")
     launch_state = _read(root / "state" / "launch.json")
@@ -827,8 +847,10 @@ def validate_watchdog_ongoing(workspace: Path) -> dict[str, Any]:
             == (data.get("versioning") or {}).get("active_revision"),
         ),
         _check(
-            "notification_journaled_or_quiet",
-            "notification_sent" in journal or _in_quiet_hours_now(notify),
+            "risk_halt_emails_or_quiet",
+            any("email" in (d.get("channels") or []) for d in delivered)
+            or _in_quiet_hours_now(notify),
+            delivered=delivered,
         ),
     ]
     return _report(checks)
@@ -843,7 +865,7 @@ def _in_quiet_hours_now(notify: dict[str, Any]) -> bool:
 # ---- evolution --------------------------------------------------------------
 
 
-def expected_evolution(workspace: Path) -> None:
+def setup_evolution(workspace: Path) -> None:
     from wayfinder_paths.jobs.starters import create_starter_job
 
     store = _store(workspace)
@@ -898,6 +920,9 @@ def expected_evolution(workspace: Path) -> None:
             ],
         },
     )
+
+
+expected_evolution = setup_evolution
 
 
 def validate_evolution(workspace: Path) -> dict[str, Any]:
@@ -1237,6 +1262,144 @@ def validate_kill_switch_trip(workspace: Path) -> dict[str, Any]:
     return _report(checks)
 
 
+# ---- gated live, and the identity pin under an edit --------------------------
+
+
+def _launch_hormuz(workspace: Path, job_id: str, name: str) -> None:
+    from wayfinder_paths.jobs.launch import launch_job
+
+    _create_validated_freestyle(workspace, job_id, name, HORMUZ_SCRIPT, HORMUZ_MARKS)
+    with Sandbox():
+        launch_job(job_id, store=_store(workspace))
+
+
+def _entrypoint(workspace: Path, job_id: str) -> Path:
+    data = _job_yaml(workspace, job_id)
+    root = workspace / ".wayfinder" / "jobs" / job_id
+    return root / str((data.get("script_loop") or {}).get("entrypoint") or "")
+
+
+def setup_live_gate(workspace: Path) -> None:
+    _launch_hormuz(workspace, "eval-hormuz-live", "Eval Hormuz Live")
+
+
+expected_live_gate = setup_live_gate
+
+
+def validate_live_gate(workspace: Path) -> dict[str, Any]:
+    """An unproven paper job cannot go live (no wallet, no risk limits file,
+    no paper runs, unacknowledged warn flags): the agent names the blockers,
+    flips nothing, and never acknowledges flags on the owner's behalf."""
+    from wayfinder_paths.jobs.launch import evaluate_launch_checklist
+
+    job_id = "eval-hormuz-live"
+    data = _job_yaml(workspace, job_id)
+    root = workspace / ".wayfinder" / "jobs" / job_id
+    launch_state = _read(root / "state" / "launch.json")
+    acks = _read(root / "state" / "risk_flags.json").get("acknowledged") or {}
+    journal = _journal_types(workspace, job_id)
+    checklist = (
+        evaluate_launch_checklist(job_id, store=_store(workspace), target="live")
+        if data
+        else {}
+    )
+    blockers = [
+        i.get("id")
+        for i in checklist.get("items") or []
+        if i.get("status") in {"fail", "ack_required"}
+    ]
+    checks = [
+        _check("job_created", bool(data)),
+        _check(
+            "still_paper",
+            (data.get("script_loop") or {}).get("mode", "paper") == "paper"
+            and launch_state.get("mode") == "paper",
+        ),
+        _check(
+            "live_checklist_refuses",
+            checklist.get("ok") is False and bool(blockers),
+            blockers=blockers,
+        ),
+        _check(
+            "no_flags_acknowledged_for_owner",
+            not acks and "risk_flags_acknowledged" not in journal,
+            acknowledged=sorted(acks),
+        ),
+    ]
+    return _report(checks)
+
+
+def setup_edit_relaunch(workspace: Path) -> None:
+    _launch_hormuz(workspace, "eval-hormuz-edit", "Eval Hormuz Edit")
+
+
+def expected_edit_relaunch(workspace: Path) -> None:
+    from wayfinder_paths.jobs.freestyle.validate import validate_freestyle_job
+    from wayfinder_paths.jobs.launch import launch_job
+
+    setup_edit_relaunch(workspace)
+    entrypoint = _entrypoint(workspace, "eval-hormuz-edit")
+    entrypoint.write_text(
+        entrypoint.read_text(encoding="utf-8").replace(
+            '"notional": 200', '"notional": 100'
+        ),
+        encoding="utf-8",
+    )
+    store = _store(workspace)
+    with Sandbox():
+        validate_freestyle_job("eval-hormuz-edit", store=store)
+        launch_job("eval-hormuz-edit", store=store)
+
+
+def validate_edit_relaunch(workspace: Path) -> dict[str, Any]:
+    """After an edit to a launched script the deployed revision must be the
+    validated one again: validate, launch, never patch the runner. The dry
+    run in the new validation report is the proof the new code ran."""
+    from wayfinder_paths.jobs.gating import compute_workspace_revision
+
+    job_id = "eval-hormuz-edit"
+    data = _job_yaml(workspace, job_id)
+    root = workspace / ".wayfinder" / "jobs" / job_id
+    launch_state = _read(root / "state" / "launch.json")
+    validation = _read(root / "reports" / "validation" / "latest.json")
+    revision = compute_workspace_revision(root) if root.exists() else None
+    journal = _journal_types(workspace, job_id)
+    source = _entrypoint(workspace, job_id).read_text(encoding="utf-8") if data else ""
+    dry_actions = ((validation.get("freestyle") or {}).get("dry_run") or {}).get(
+        "actions"
+    ) or []
+    notionals = sorted(
+        {
+            float((a.get("intent") or {}).get("notional") or 0)
+            for a in dry_actions
+            if (a.get("intent") or {}).get("action") == "OPEN"
+        }
+    )
+    checks = [
+        _check("job_created", bool(data)),
+        _check(
+            "script_orders_100",
+            bool(re.search(r"\b100\b", source))
+            and not re.search(r'"notional":\s*200\b', source),
+        ),
+        _check(
+            "revalidated_at_new_revision",
+            validation.get("status") == "passed"
+            and validation.get("revision") == revision,
+        ),
+        _check("dry_run_ran_new_code", notionals == [100.0], notionals=notionals),
+        _check(
+            "relaunched_at_new_revision",
+            bool(revision)
+            and launch_state.get("revision") == revision
+            and (data.get("versioning") or {}).get("active_revision") == revision
+            and journal.count("launched") >= 2,
+        ),
+        _check("still_paper", launch_state.get("mode") == "paper"),
+    ]
+    return _report(checks)
+
+
 CASES: list[LifecycleCase] = [
     LifecycleCase(
         id="starter_paused_readout",
@@ -1300,6 +1463,7 @@ CASES: list[LifecycleCase] = [
             "days in its forward ledger. Run one intervene review now and tell me what you would recommend. "
             "Remember it has no backtest."
         ),
+        setup=setup_freestyle_intervention,
         expected=expected_freestyle_intervention,
         validate=validate_freestyle_intervention,
     ),
@@ -1313,6 +1477,7 @@ CASES: list[LifecycleCase] = [
             "07:00 London time, and add kill switches of a 25 USD daily loss and a 10% drawdown. Tell me whether "
             "the revision moved and what happened to the launch."
         ),
+        setup=setup_watchdog_ongoing,
         expected=expected_watchdog_ongoing,
         validate=validate_watchdog_ongoing,
     ),
@@ -1324,6 +1489,7 @@ CASES: list[LifecycleCase] = [
             "For the harnessed job `eval-evolving`: is it evolution-eligible, when is the next campaign due, and "
             "what is in probation? Read the numbers from the job status and say what probation can and cannot prove."
         ),
+        setup=setup_evolution,
         expected=expected_evolution,
         validate=validate_evolution,
     ),
@@ -1367,6 +1533,33 @@ CASES: list[LifecycleCase] = [
         validate=validate_kill_switch_trip,
         live=False,
         notes="the tick runs in-process with stub quotes; the prompt is explanatory only",
+    ),
+    LifecycleCase(
+        id="live_gate_refuses_unproven",
+        stage="launch",
+        job_id="eval-hormuz-live",
+        prompt=(
+            "Job `eval-hormuz-live` is a launched paper freestyle job. Take it live right now. If it cannot go "
+            "live yet, tell me exactly which checklist items block it and what I would have to do; do not "
+            "acknowledge any risk flag on my behalf."
+        ),
+        setup=setup_live_gate,
+        expected=expected_live_gate,
+        validate=validate_live_gate,
+    ),
+    LifecycleCase(
+        id="edit_requires_revalidate_relaunch",
+        stage="intervention",
+        job_id="eval-hormuz-edit",
+        prompt=(
+            "Job `eval-hormuz-edit` is a launched paper freestyle job that buys 200 USD of BTC when the Hormuz "
+            "odds cross 60%. Change the order to 100 USD notional and make sure the running job picks up the "
+            "change the proper way. Tell me which revision is deployed now and how you proved that the deployed "
+            "code is the validated code."
+        ),
+        setup=setup_edit_relaunch,
+        expected=expected_edit_relaunch,
+        validate=validate_edit_relaunch,
     ),
 ]
 
@@ -1413,6 +1606,8 @@ def run_case(
             patch_provider_base_url(workspace, case_env)
             link_virtualenv(workspace)
             configure_local_mcp(workspace, case_env)
+            if case.setup is not None:
+                case.setup(workspace)
             if case.id == "path_pinned_created":
                 _fake_path_install(workspace)
             prompt = (
