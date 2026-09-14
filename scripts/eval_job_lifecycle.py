@@ -17,7 +17,9 @@ what it produced; ``--judge`` adds the repo-grounded pass/fail judge from
 Live runs need the project opencode config (the gitignored ``opencode.json``
 and ``.opencode/opencode.json`` with the wayfinder provider) in this checkout,
 ``WAYFINDER_CONFIG_PATH`` pointing at a config.json whose key the LLM gateway
-accepts, and the opencode binary; the runner checks the gateway first.
+accepts, and the opencode binary; the runner checks the gateway first. Set
+``WAYFINDER_LLM_BASE_URL`` (e.g. the dev gateway) when the key belongs to a
+gateway other than the production one; the sandbox provider is patched to it.
 """
 
 from __future__ import annotations
@@ -1406,7 +1408,10 @@ def run_case(
     with tempfile.TemporaryDirectory(prefix=f"wf-lifecycle-{case.id}-") as tmp:
         workspace = Path(tmp) / "repo"
         if live and case.live and jobs_eval is not None:
-            jobs_eval.copy_workspace(REPO_ROOT, workspace)
+            copy_sandbox(REPO_ROOT, workspace)
+            patch_provider_base_url(workspace, env or {})
+            link_virtualenv(workspace)
+            configure_local_mcp(workspace, env or {})
             if case.id == "path_pinned_created":
                 _fake_path_install(workspace)
             prompt = (
@@ -1488,6 +1493,99 @@ def run_case(
     }
 
 
+LLM_BASE_URL_ENV = "WAYFINDER_LLM_BASE_URL"
+
+
+def patch_provider_base_url(workspace: Path, env: Mapping[str, str]) -> str | None:
+    """Point the sandbox's wayfinder provider at the gateway the credential
+    belongs to (a dev key authenticates on the dev gateway only)."""
+    base_url = str(env.get(LLM_BASE_URL_ENV) or "").strip()
+    config_path = workspace / ".opencode" / "opencode.json"
+    if not base_url or not config_path.exists():
+        return None
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    provider = (data.get("provider") or {}).get("wayfinder")
+    if not isinstance(provider, dict):
+        return None
+    provider.setdefault("options", {})["baseURL"] = base_url
+    config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return base_url
+
+
+SANDBOX_IGNORE = {
+    ".git",
+    ".venv",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".env",
+    ".wayfinder",
+    ".wayfinder_runs",
+    "config.json",
+    "htmlcov",
+    "dist",
+    "build",
+    ".coverage",
+    "node_modules",
+    "coverage.xml",
+}
+
+
+def copy_sandbox(source: Path, destination: Path) -> None:
+    """The jobs eval's workspace copy plus node_modules and coverage output,
+    which a checkout with opencode plugins installed otherwise drags along."""
+
+    def ignore(_directory: str, names: list[str]) -> set[str]:
+        return {name for name in names if name in SANDBOX_IGNORE}
+
+    shutil.copytree(source, destination, ignore=ignore)
+
+
+def link_virtualenv(workspace: Path) -> Path | None:
+    """The sandbox copy excludes .venv; link the checkout's interpreter in so
+    `poetry run` / the MCP server resolve the same dependencies."""
+    # The running interpreter's environment, not a possibly dangling .venv link.
+    # sys.prefix is the environment itself; resolving the interpreter symlink
+    # would land on the base Python, which has none of the SDK's packages.
+    source = Path(sys.prefix)
+    if not (source / "bin" / "python").exists():
+        return None
+    target = workspace / ".venv"
+    if target.exists() or target.is_symlink():
+        return target
+    target.symlink_to(source, target_is_directory=True)
+    return target
+
+
+def configure_local_mcp(workspace: Path, env: Mapping[str, str]) -> Path | None:
+    """The live agent must exercise THIS checkout's job tools: replace the
+    project's wayfinder MCP entry (a remote server on the boxes) with a local
+    stdio server started from the sandbox's own package and interpreter."""
+    config_path = workspace / ".opencode" / "opencode.json"
+    if not config_path.exists():
+        return None
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    python = workspace / ".venv" / "bin" / "python"
+    if not python.exists():
+        python = Path(sys.executable)
+    environment = {
+        key: str(env[key])
+        for key in ("WAYFINDER_CONFIG_PATH", "WAYFINDER_API_KEY")
+        if env.get(key)
+    }
+    environment["WAYFINDER_RUNS_DIR"] = str(workspace / ".wayfinder_runs")
+    mcp = data.setdefault("mcp", {})
+    mcp["wayfinder"] = {
+        "type": "local",
+        "command": [str(python), "-m", "wayfinder_paths.mcp.server"],
+        "environment": environment,
+        "enabled": True,
+    }
+    config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return config_path
+
+
 def preflight_model_gateway(model: str, env: Mapping[str, str]) -> None:
     """Fail fast, before any sandbox is copied, when the model gateway rejects
     the credential the live run would use. The SDK config key can be valid
@@ -1497,9 +1595,9 @@ def preflight_model_gateway(model: str, env: Mapping[str, str]) -> None:
     import httpx
 
     key = env.get("WAYFINDER_API_KEY") or ""
-    base_url = "https://llm.wayfinder.ai/v1"
+    base_url = str(env.get(LLM_BASE_URL_ENV) or "https://llm.wayfinder.ai/v1")
     config_path = REPO_ROOT / ".opencode" / "opencode.json"
-    if config_path.exists():
+    if config_path.exists() and not env.get(LLM_BASE_URL_ENV):
         try:
             provider = (
                 json.loads(config_path.read_text(encoding="utf-8")).get("provider")
