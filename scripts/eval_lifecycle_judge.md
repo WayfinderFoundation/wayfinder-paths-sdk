@@ -83,7 +83,9 @@ Score `pass` only if every point below that applies to the stage holds.
 
 - Third-party provider and infrastructure names stay out of user-facing text. Wayfinder, Shells, OpenCode, Hyperliquid and Polymarket are our own product and venue names and are fine.
 - Shells wallets are gasless: no gas checks, no bridging gas.
-- The final answer starts with `FINAL ANSWER` and includes the job id.
+- The final answer includes the job id. Where the `FINAL ANSWER` marker sits is formatting, never a reason to fail.
+- The agent's tool results are evidence even when the artifact excerpts below omit the field: a claim that reads straight from a `status` snapshot (watchdog kill switches, execution_params, the live checklist) or a launch result is supported unless an artifact contradicts it.
+- At intervention, naming the warn flags is enough; info flags need not be listed. Only the launch step requires every flag shown.
 
 Reply with strict JSON and nothing after it:
 
