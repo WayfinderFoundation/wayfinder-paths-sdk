@@ -433,6 +433,10 @@ def _fake_path_install(
     return path_dir
 
 
+def setup_path_pinned(workspace: Path) -> None:
+    _fake_path_install(workspace)
+
+
 def expected_path_pinned(workspace: Path) -> None:
     from wayfinder_paths.jobs.paths_runtime import create_from_path, validate_path_job
     from wayfinder_paths.jobs.readout import build_readout
@@ -1437,10 +1441,9 @@ CASES: list[LifecycleCase] = [
             "The path `eval-rotator` version 0.1.0 is already installed in this workspace. Pin it into a "
             "path_v1 job `eval-rotator` with create_from_path, validate it, and read back the readout. Do not launch."
         ),
+        setup=setup_path_pinned,
         expected=expected_path_pinned,
         validate=validate_path_pinned,
-        live=False,
-        notes="live needs a fake install seeded in the sandbox; deterministic only for now",
     ),
     LifecycleCase(
         id="paper_launch_identity_pin",
@@ -1608,8 +1611,6 @@ def run_case(
             configure_local_mcp(workspace, case_env)
             if case.setup is not None:
                 case.setup(workspace)
-            if case.id == "path_pinned_created":
-                _fake_path_install(workspace)
             prompt = (
                 f"{case.prompt}\n\nUse the exact job_id `{case.job_id}`. This is an eval sandbox: use "
                 "`wayfinder_core_jobs` actions; a paper launch is expected where the task says launch, never go live.\n\n"
