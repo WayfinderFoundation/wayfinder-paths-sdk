@@ -1529,6 +1529,10 @@ SANDBOX_IGNORE = {
     ".coverage",
     "node_modules",
     "coverage.xml",
+    # the eval itself: the candidate must not read the assertions
+    "eval_job_lifecycle.py",
+    "eval_lifecycle_judge.md",
+    "test_eval_job_lifecycle.py",
 }
 
 

@@ -34,6 +34,7 @@ def create_freestyle_job(
     store: JobStore | None = None,
     compile_job: bool = True,
     initializer_session_id: str | None = None,
+    execution_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Materialize a freestyle job, paused: the tick module lands under
     ``workspace/src`` (the only revision-hashed home), the job compiles into
@@ -64,6 +65,8 @@ def create_freestyle_job(
             else "inline",
         },
     )
+    if execution_params:
+        job.execution_params.update(dict(execution_params))
     job.agent_loop.triggers = list(SCRIPT_JOB_TRIGGERS)
     job.reporting = {**job.reporting, "notify": default_notifications(job)}
     root = store.init_layout(job)

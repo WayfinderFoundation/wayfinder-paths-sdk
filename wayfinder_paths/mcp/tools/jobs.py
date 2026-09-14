@@ -702,6 +702,7 @@ async def core_jobs(
                 compile_job=compile,
                 initializer_session_id=initializer_session_id
                 or _infer_initializer_session(),
+                execution_params=execution_params,
             )
         )
 
