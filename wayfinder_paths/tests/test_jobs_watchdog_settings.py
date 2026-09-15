@@ -228,3 +228,62 @@ def test_fire_triggers_delivers_through_the_policy_once_per_spacing(
         now=datetime(2030, 1, 1, tzinfo=UTC),
     )
     assert len(sent) == 1 and len(delivered) == 2
+
+
+def test_kill_switches_before_first_launch_revalidate_so_the_launch_keeps_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A watchdog riding along with the first launch writes the kill switches
+    before the launch: the job must be re-validated at the new revision, or
+    the launch that follows fails identity on its own settings."""
+    from wayfinder_paths.jobs.gating import compute_workspace_revision
+
+    _patch(monkeypatch)
+    store, job = _freestyle(tmp_path)
+    validate_freestyle_job(job.id, store=store)
+    result = set_watchdog(
+        job.id,
+        store=store,
+        watch_level="intervene",
+        wake_interval_seconds=1800,
+        kill_switches={"max_daily_loss_usd": 25},
+    )
+    assert result["relaunch"] is None and not result.get("warnings")
+    root = store.job_dir(job.id)
+    validation = json.loads(
+        (root / "reports" / "validation" / "latest.json").read_text()
+    )
+    assert validation["revision"] == compute_workspace_revision(root)
+    launched = launch_job(job.id, store=store)
+    assert launched["launched"], launched
+    assert launched["revision"] == validation["revision"]
+
+
+def test_alerts_only_edit_keeps_the_revision_and_never_relaunches(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs.gating import compute_workspace_revision
+
+    _patch(monkeypatch)
+    store, job = _freestyle(tmp_path)
+    validate_freestyle_job(job.id, store=store)
+    launched = launch_job(job.id, store=store)
+    root = store.job_dir(job.id)
+    before = compute_workspace_revision(root)
+    result = set_watchdog(
+        job.id,
+        store=store,
+        triggers=["script_failure", "risk_halt", "runner_loop_gap"],
+        notifications={
+            "channels": ["chat", "email"],
+            "on": ["risk_halt", "script_failure"],
+            "quiet_hours": {"start": "23:00", "end": "06:00", "tz": "America/New_York"},
+        },
+    )
+    assert result["relaunch"] is None and result["restamp"] is None
+    assert compute_workspace_revision(root) == before == launched["revision"]
+    journal = (root / "journal.jsonl").read_text(encoding="utf-8")
+    assert journal.count('"type": "launched"') == 1
+    view = watchdog_view(store.load(job.id), root)
+    assert view["notifications"]["quiet_hours"]["tz"] == "America/New_York"
+    assert "runner_loop_gap" in view["triggers"]
