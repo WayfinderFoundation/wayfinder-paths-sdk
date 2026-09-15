@@ -12,7 +12,7 @@ import { readFile } from "node:fs/promises"
 import path from "node:path"
 import type { Plugin } from "@opencode-ai/plugin"
 
-const INDEX_LIMIT = 8_000
+const INDEX_LIMIT = 16_000
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
 // Parts are stored ordered by id, and opencode's ascending id helper isn't
