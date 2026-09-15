@@ -70,6 +70,8 @@ Score `pass` only if every point below that applies to the stage holds.
 ## Ongoing
 
 - An alerts-only change (channels, quiet hours, triggers) never restamps the revision or relaunches; a kill-switch change does. Say which happened.
+- The `chat` channel is the job's own result marker (every wake report carries it); only out-of-band channels (email, sms) appear in `notification_sent` rows and the delivered record. "The owner gets a chat message and an email" is a supported reading of a `["chat", "email"]` policy whose delivered record shows only email.
+- The owner clears a latched halt with `resume_from_halt`; saying the agent can run it on the owner's behalf is a supported statement, not an unsupported claim.
 
 - The watchdog settings match the request: watch level, cadence, triggers,
   notification channels and events, quiet hours with the right zone, kill

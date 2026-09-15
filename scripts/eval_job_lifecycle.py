@@ -3024,6 +3024,8 @@ STATUS_CONTEXT_KEYS = (
     "probation_summary",
     "research",
     "features",
+    "owner_attention",
+    "halt",
 )
 
 
