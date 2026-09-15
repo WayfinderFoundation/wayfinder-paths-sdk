@@ -464,19 +464,19 @@ def refresh_declared_feeds(
         resolve_execution_spec(root, _load_job_yaml(root))[0]
     )
     specs = [item for item in parse_feature_specs(spec) if item.feed]
-    empty = {
-        "feeds": 0,
+    errors: dict[str, str] = {}
+    totals: dict[str, Any] = {
+        "feeds": len(specs),
         "rows_appended": 0,
         "revised_rows": 0,
         "largest_revision": 0.0,
         "newest_feature_ts": "",
-        "errors": {},
+        "errors": errors,
     }
     if not specs:
-        return empty
+        return totals
     bounds = series_bounds(root / DEFAULT_FEATURES_PATH)
     span = dataset_days(root) or DEFAULT_DAYS
-    totals = dict(empty, feeds=len(specs))
     revised_feeds: list[str] = []
     for item in specs:
         feed = dict(item.feed or {})
@@ -509,7 +509,7 @@ def refresh_declared_feeds(
             )
         error = (metadata.get("errors") or {}).get(item.name)
         if error:
-            totals["errors"][item.name] = error
+            errors[item.name] = str(error)
             continue
         written = append_feature_rows(root, rows, reconcile=True)
         totals["rows_appended"] += written["rows_appended"]
@@ -532,11 +532,9 @@ def refresh_declared_feeds(
                 "feeds": revised_feeds,
             },
         )
-    if totals["errors"]:
+    if errors:
         raise RuntimeError(
             "feed refresh failed: "
-            + "; ".join(
-                f"{name}: {message}" for name, message in totals["errors"].items()
-            )
+            + "; ".join(f"{name}: {message}" for name, message in errors.items())
         )
     return totals

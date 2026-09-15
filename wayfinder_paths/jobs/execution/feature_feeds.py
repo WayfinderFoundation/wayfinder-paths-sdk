@@ -28,6 +28,7 @@ import asyncio
 import math
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from functools import partial
 from typing import Any
 
 import pandas as pd
@@ -414,9 +415,7 @@ async def fetch_yield_rows(
     for feed in feeds:
         name = feed_feature_name(feed)
         try:
-            frame = await _retry(
-                lambda feed=feed: _yield_frame(client, feed, lookback_days)
-            )
+            frame = await _retry(partial(_yield_frame, client, feed, lookback_days))
             column = YIELD_COLUMNS[str(feed["kind"])]
             if column not in frame.columns:
                 raise LookupError(f"{name}: series has no {column} column")
