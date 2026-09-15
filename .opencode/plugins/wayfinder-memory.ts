@@ -1,6 +1,6 @@
 // Wayfinder memory plugin.
 //
-// Shows the agent its persistent memory index (memory/MEMORY.md, one line per
+// Shows the agent its persistent memory index (memory/MEMORY_INDEX.md, one line per
 // saved fact) once per session by appending a synthetic text part to the first
 // user message: the model sees it, the chat UI hides it, and because parts are
 // persisted with the message it becomes fixed history instead of a prompt that
@@ -26,7 +26,7 @@ function partId(): string {
 }
 
 export const WayfinderMemory: Plugin = async ({ directory }) => {
-  const index = path.join(directory, "memory", "MEMORY.md")
+  const index = path.join(directory, "memory", "MEMORY_INDEX.md")
   // Sessions that already carry the index this process lifetime. Cleared on
   // compaction so the next message re-injects a fresh copy; a process restart
   // just re-injects once into sessions that are still active.
@@ -42,7 +42,7 @@ export const WayfinderMemory: Plugin = async ({ directory }) => {
       if (!raw.trim()) return
       const body =
         raw.length > INDEX_LIMIT
-          ? `${raw.slice(0, INDEX_LIMIT)}\n[memory/MEMORY.md is over ${INDEX_LIMIT} characters; only part of it was loaded. Trim the index: one line per entry, detail in topic files.]`
+          ? `${raw.slice(0, INDEX_LIMIT)}\n[memory/MEMORY_INDEX.md is over ${INDEX_LIMIT} characters; only part of it was loaded. Trim the index: one line per entry, detail in topic files.]`
           : raw
       output.parts.push({
         id: partId(),
@@ -50,7 +50,7 @@ export const WayfinderMemory: Plugin = async ({ directory }) => {
         messageID: output.message.id,
         type: "text",
         synthetic: true,
-        text: `<memory>\nWhat you remember about this user, from memory/MEMORY.md. Read a topic file when its line is relevant.\n${body}\n</memory>`,
+        text: `<memory>\nWhat you remember about this user, from memory/MEMORY_INDEX.md. Read a topic file when its line is relevant.\n${body}\n</memory>`,
       })
     },
   }
