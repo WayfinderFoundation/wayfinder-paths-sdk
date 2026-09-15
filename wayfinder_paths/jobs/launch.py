@@ -637,6 +637,50 @@ def set_watchdog(
     }
 
 
+def repin_launch(
+    store: JobStore, job_id: str, *, revision: str, by: str
+) -> dict[str, Any] | None:
+    """An applied proposal moved the workspace: the launch pin follows it so
+    identity (validated == deployed == launched) holds without a re-launch.
+    No-op on a job that was never launched."""
+    launched = store.read_json(job_id, LAUNCH_STATE_PATH, default=None)
+    if not launched or not revision:
+        return None
+    stamp = utc_now_iso()
+    state = {
+        **launched,
+        "revision": revision,
+        "relaunched_at": stamp,
+        "relaunched_by": by,
+    }
+    store.write_json(job_id, LAUNCH_STATE_PATH, state)
+    log_path = store.job_dir(job_id) / LAUNCH_LOG_PATH
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "revision": revision,
+                    "mode": state.get("mode"),
+                    "launched_at": stamp,
+                    "by": by,
+                    "repin": True,
+                }
+            )
+            + "\n"
+        )
+    store.append_journal(
+        job_id,
+        {
+            "type": "launch_repinned",
+            "revision": revision,
+            "from_revision": launched.get("revision"),
+            "by": by,
+        },
+    )
+    return state
+
+
 def store_read_json(path: Path) -> Any:
     if not path.exists():
         return None
@@ -651,6 +695,7 @@ __all__ = [
     "evaluate_launch_checklist",
     "hold_job",
     "launch_job",
+    "repin_launch",
     "set_watchdog",
     "watchdog_view",
 ]

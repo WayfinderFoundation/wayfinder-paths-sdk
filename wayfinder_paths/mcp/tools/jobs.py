@@ -1326,6 +1326,15 @@ async def core_jobs(
                 + ", ".join(REQUIRED_INTENT_FIELDS)
                 + ")",
             )
+        if not memo and str(store.load(job_id).execution_contract or "legacy") in {
+            "freestyle_v1",
+            "path_v1",
+        }:
+            return err(
+                "invalid_request",
+                "propose on a freestyle or Path job requires memo: the owner reads "
+                "it as the rationale when approving from the proposal list",
+            )
         return ok(
             propose_change(
                 store,

@@ -380,11 +380,15 @@ class JobStore:
 
     def _require_scenarios(self, job_id: str) -> bool:
         """Scenario plans are mandatory only for jobs with an enabled script
-        loop — research-only (agent_only) jobs cannot execute scenarios."""
+        loop — research-only (agent_only) jobs cannot execute scenarios, and
+        freestyle/Path jobs have no dataset to replay one through (their
+        candidate evidence is the contract's own dry run)."""
         try:
             job = self.load(job_id)
         except Exception:
             return True
+        if str(job.execution_contract or "legacy") in {"freestyle_v1", "path_v1"}:
+            return False
         return bool(job.script_loop.enabled)
 
     def _ensure_candidate_report_gate(

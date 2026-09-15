@@ -260,7 +260,12 @@ def complete_application(
             ["proposal_restage_requested"],
             source=f"apply:{proposal_id}",
         )
-    sync_all_jobs(store=store)
+    try:
+        sync_all_jobs(store=store)
+    except Exception as exc:  # noqa: BLE001 — a snapshot bug must not fail a finished apply
+        store.append_journal(
+            job_id, {"type": "complete_sync_failed", "error": str(exc)[:300]}
+        )
     return {
         "proposal": proposal,
         "compile": outcome.compile_result,
@@ -580,10 +585,28 @@ def _complete_applied_application(
         store.save(job)
         job = store.load(job_id)
         outcome.compile_result = JobCompiler(store=store).compile(job)
+        contract = str(job.execution_contract or "legacy")
+        if contract in {"freestyle_v1", "path_v1"}:
+            # The launch pin follows the workspace: a launched freestyle/Path
+            # job keeps identity (validated == deployed == launched) without a
+            # second launch, and the next tick runs the promoted revision.
+            from wayfinder_paths.jobs.launch import repin_launch
+
+            repin_launch(
+                store,
+                job_id,
+                revision=str(outcome.promoted_revision or ""),
+                by=f"apply:{proposal_id}",
+            )
         # Observability check, not a rollback path: the candidate just passed
         # backtest+preflight+validation at this exact revision, so a red gate
         # here means artifact stamping broke — surface it in the apply report.
-        post_apply_gate = evaluate_live_gate(job_id, store=store)
+        if contract in {"freestyle_v1", "path_v1"}:
+            from wayfinder_paths.jobs.contracts import evaluate_live_readiness
+
+            post_apply_gate = evaluate_live_readiness(job_id, store=store)
+        else:
+            post_apply_gate = evaluate_live_gate(job_id, store=store)
         sync_all_jobs(store=store)
     except Exception as exc:
         active_workspace = root / "workspace"
@@ -1068,6 +1091,46 @@ def validate_candidate_bundle(
     )
 
 
+def _with_lifecycle_validation(
+    store: JobStore,
+    job_id: str,
+    validation: dict[str, Any],
+    *,
+    candidate_dir: Path,
+) -> dict[str, Any]:
+    """Freestyle and Path candidates have no execution spec to backtest; their
+    evidence is the contract's own ladder (static rules and a sandboxed dry
+    run for a script, pin and manifest and dry run for a Path), run against
+    the candidate. The report is persisted inside the bundle so promotion
+    carries a validation stamped at the promoted revision — without it the
+    launch checklist, the risk flags and the readout all read the pre-apply
+    revision after every apply."""
+    from wayfinder_paths.jobs.contracts import validate_job_for_kind
+
+    report = validate_job_for_kind(job_id, candidate_dir=candidate_dir, store=store)
+    validation_path = candidate_dir / "reports" / "validation" / "latest.json"
+    validation_path.parent.mkdir(parents=True, exist_ok=True)
+    validation_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True, default=str) + "\n",
+        encoding="utf-8",
+    )
+    passed = report.get("status") == "passed"
+    checks = list(validation["checks"])
+    checks.append(
+        {
+            "name": "execution_candidate_validation",
+            "passed": passed,
+            "details": report,
+        }
+    )
+    return {
+        **validation,
+        "status": "passed" if validation["status"] == "passed" and passed else "failed",
+        "checks": checks,
+        "execution_validation": report,
+    }
+
+
 def _with_execution_validation(
     store: JobStore,
     job_id: str,
@@ -1091,6 +1154,12 @@ def _with_execution_validation(
         except Exception:
             pass
     if not has_spec:
+        from wayfinder_paths.jobs.contracts import job_contract
+
+        if job_contract(candidate_dir) in {"freestyle_v1", "path_v1"}:
+            return _with_lifecycle_validation(
+                store, job_id, validation, candidate_dir=candidate_dir
+            )
         return validation
     execution_validation = validate_execution_job(
         job_id,

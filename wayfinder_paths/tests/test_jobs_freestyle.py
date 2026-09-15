@@ -619,3 +619,125 @@ def test_freestyle_candidate_validation_runs_no_legacy_script_checks(
     }
     failed = [c["name"] for c in report["checks"] if not c["passed"]]
     assert not [n for n in failed if not n.startswith("intent_contract")], failed
+
+
+def test_freestyle_code_change_applies_at_the_promoted_revision(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The owner's approve on a freestyle code change must leave the job
+    consistent: the candidate is dry-run at its own revision, the promoted
+    validation report carries that revision, the launch pin follows it and
+    the next tick runs without a revision-drift refusal."""
+    import shutil
+
+    from wayfinder_paths.jobs.application import (
+        claim_application,
+        complete_application,
+    )
+    from wayfinder_paths.jobs.launch import (
+        LAUNCH_STATE_PATH,
+        evaluate_launch_checklist,
+        launch_job,
+    )
+    from wayfinder_paths.jobs.proposals import propose_change
+    from wayfinder_paths.jobs.validation import REQUIRED_INTENT_FIELDS
+    from wayfinder_paths.tests.test_jobs_launch import _patch
+
+    _patch(monkeypatch)
+    store, job = _job(tmp_path)
+    validate_freestyle_job(job.id, store=store)
+    launched = launch_job(job.id, store=store, script_mode="paper")
+    assert launched["launched"], launched
+    root = store.job_dir(job.id)
+
+    # Approve is possible at all: a freestyle proposal has no scenarios to replay.
+    edited = tmp_path / "edited"
+    shutil.copytree(root / "workspace", edited / "workspace")
+    script = edited / "workspace" / "src" / "hormuz_perp.py"
+    script.write_text(
+        script.read_text(encoding="utf-8").replace(
+            '"notional": 200', '"notional": 100'
+        ),
+        encoding="utf-8",
+    )
+    proposal = propose_change(
+        store,
+        job.id,
+        kind="code_change",
+        summary="smaller BTC order",
+        intent_contract={
+            field: [f"{field} noted"] if field != "intent" else "smaller order"
+            for field in REQUIRED_INTENT_FIELDS
+        },
+        candidate_source=edited,
+        memo="## Why\nHalve the order while the odds feed is thin.\n",
+        allow_auto_apply=False,
+    )
+    pid = proposal["proposal_id"]
+    assert proposal["change_summary"].startswith("## Why")
+    report = proposal["candidate_report"]
+    assert report["mode"] == "validation_only"
+    assert report["validation_summary"]["status"] == "passed", report
+    candidate_validation = json.loads(
+        (
+            root
+            / "applications"
+            / pid
+            / "candidate"
+            / "reports"
+            / "validation"
+            / "latest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert candidate_validation["kind"] == "freestyle_v1"
+    assert candidate_validation["revision"] == report["revision"]
+
+    store.approve_proposal(job.id, pid)
+    claim_application(store, job.id, pid)
+    result = complete_application(store, job.id, pid, status="applied")
+    promoted = result["promoted_revision"]
+    assert result["proposal"]["application"]["status"] == "applied", result
+    assert promoted == report["revision"]
+
+    validation = store.read_json(job.id, "reports/validation/latest.json")
+    assert validation["revision"] == promoted and validation["kind"] == "freestyle_v1"
+    launch_state = store.read_json(job.id, LAUNCH_STATE_PATH)
+    assert launch_state["revision"] == promoted
+    assert launch_state["relaunched_by"] == f"apply:{pid}"
+    assert launch_state["by"] == "owner"
+    checklist = evaluate_launch_checklist(job.id, store=store, target="paper")
+    assert checklist["ok"], checklist["reasons"]
+    journal_types = [
+        json.loads(line)["type"]
+        for line in (root / "journal.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert "launch_repinned" in journal_types
+    launches = (root / "versions" / "launches.jsonl").read_text().splitlines()
+    assert json.loads(launches[-1])["repin"] is True
+
+    from wayfinder_paths.jobs.freestyle import runtime as rt
+
+    monkeypatch.setattr(
+        rt,
+        "VenueGateway",
+        lambda **kwargs: rt.StubVenueGateway(
+            marks={
+                "polymarket:polymarket:hormuz-closure-2026:YES": 0.7,
+                "hyperliquid:BTC": 40_000.0,
+            }
+        ),
+    )
+    monkeypatch.setattr(rt, "fire_triggers", lambda *a, **k: None)
+    monkeypatch.setattr(rt, "JobStore", lambda: store)
+    monkeypatch.setenv("WAYFINDER_JOB_MODE", "paper")
+    monkeypatch.setenv("WAYFINDER_JOB_REVISION", promoted)
+    monkeypatch.delenv("WAYFINDER_DRY_RUN", raising=False)
+    monkeypatch.delenv("WAYFINDER_FORWARD_DIR", raising=False)
+    payload = run_freestyle_tick(root)
+    assert payload["ok"], payload
+    assert payload["actions"][0]["intent"]["notional"] == 100
+    journal_types = [
+        json.loads(line)["type"]
+        for line in (root / "journal.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert "revision_drift" not in journal_types
