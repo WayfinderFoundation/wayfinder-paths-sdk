@@ -1427,6 +1427,196 @@ def validate_token_value_trigger(workspace: Path) -> dict[str, Any]:
     return _report(checks)
 
 
+# ---- feature feeds: a token price into a starter's backtest, a yield read -------
+
+WETH_BASE = "base_0x4200000000000000000000000000000000000006"
+TOKEN_FEED_NAME = f"token_price:{WETH_BASE}"
+YIELD_FEED_NAME = "lend_supply_apr:aave-base:USDC"
+
+DEFI_YIELD_SCRIPT = """
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=("hyperliquid",), max_notional_per_tick=200, max_loss_usd=10)
+FEED = "lend_supply_apr:aave-base:USDC"
+
+
+def tick(ctx):
+    rate = ctx.defi_yield(FEED)
+    ctx.state["usdc_supply_apr"] = rate
+    if rate > 0.05 and "BTC" not in ctx.positions:
+        ctx.act({"venue": "hyperliquid", "kind": "market", "symbol": "BTC",
+                 "side": "long", "notional": 100, "max_loss": 10})
+    elif rate < 0.02 and "BTC" in ctx.positions:
+        ctx.act({"venue": "hyperliquid", "kind": "close", "symbol": "BTC"})
+"""
+DEFI_YIELD_MARKS = {"hyperliquid:BTC": 60_000, f"yield:{YIELD_FEED_NAME}": 0.08}
+
+
+class _FakeCandles:
+    """Two days of hourly candles the way the venue serves them: open times
+    in ms, string prices, newest page first, cursor in seconds."""
+
+    async def get_candles(self, coin, interval, *, chain_id, before_timestamp=None):
+        now_ms = int(time.time() * 1000)
+        this_open = now_ms - (now_ms % 3_600_000)
+        rows = [
+            {
+                "t": this_open - 3_600_000 * (48 - index),
+                "o": str(2400 + index),
+                "h": str(2410 + index),
+                "l": str(2390 + index),
+                "c": str(2405.5 + index),
+                "v": "1",
+            }
+            for index in range(49)
+        ]
+        if before_timestamp is not None:
+            rows = [row for row in rows if row["t"] // 1000 <= before_timestamp]
+        return rows[-1000:]
+
+
+def expected_starter_token_feed(workspace: Path) -> None:
+    from wayfinder_paths.jobs.feeds import fetch_token_features
+    from wayfinder_paths.jobs.launch import hold_job
+    from wayfinder_paths.jobs.readout import build_readout
+    from wayfinder_paths.jobs.starters import create_starter_job
+
+    store = _store(workspace)
+    with Sandbox():
+        create_starter_job(
+            "mixed-rsi-snapback-1h",
+            job_id="eval-rsi-token-feed",
+            store=store,
+            compile_job=True,
+        )
+        hold_job("eval-rsi-token-feed", store=store)
+        fetch_token_features(
+            "eval-rsi-token-feed",
+            token_ids=[WETH_BASE],
+            interval="1h",
+            days=2,
+            store=store,
+            client=_FakeCandles(),
+        )
+    build_readout("eval-rsi-token-feed", store=store)
+
+
+def validate_starter_token_feed(workspace: Path) -> dict[str, Any]:
+    """A starter gets an on-chain price feed: rows in the store, the feature
+    declared pinned with its cadence and (no) smoothing, visible in status,
+    and nothing launched."""
+    from wayfinder_paths.jobs.sync import snapshot_job
+
+    job_id = "eval-rsi-token-feed"
+    store = _store(workspace)
+    data = _job_yaml(workspace, job_id)
+    root = workspace / ".wayfinder" / "jobs" / job_id
+    features = ((data.get("execution_spec") or {}).get("data_contract") or {}).get(
+        "features"
+    ) or []
+    declared = next((f for f in features if f.get("name") == TOKEN_FEED_NAME), {})
+    feed = declared.get("feed") or {}
+    rows = 0
+    store_path = root / "state" / "features.jsonl"
+    if store_path.exists():
+        rows = sum(
+            1
+            for line in store_path.read_text(encoding="utf-8").splitlines()
+            if f'"name": "{TOKEN_FEED_NAME}"' in line
+        )
+    status_features: list[dict[str, Any]] = []
+    if data:
+        with Sandbox():
+            status_features = list(
+                snapshot_job(job_id, store=store).get("features") or []
+            )
+    entry = next((f for f in status_features if f.get("name") == TOKEN_FEED_NAME), {})
+    checks = [
+        _check("job_created", bool(data)),
+        _check(
+            "feed_declared_in_contract",
+            feed.get("kind") == "token_price",
+            declared=declared,
+        ),
+        _check(
+            "feed_pinned_to_chain_and_address",
+            feed.get("chain_id") == 8453
+            and str(feed.get("address", "")).startswith("0x4200"),
+        ),
+        _check(
+            "cadence_and_smoothing_declared",
+            declared.get("cadence") == "1h"
+            and declared.get("smoothing") == {"method": "none"},
+        ),
+        _check("feed_rows_written", rows >= 40, rows=rows),
+        _check(
+            "status_shows_the_feed",
+            entry.get("available") is True and entry.get("cadence") == "1h",
+        ),
+        _check("not_launched", not (root / "state" / "launch.json").exists()),
+    ]
+    return _report(checks)
+
+
+def expected_defi_yield_trigger(workspace: Path) -> None:
+    _create_validated_freestyle(
+        workspace,
+        "eval-usdc-yield-watch",
+        "Eval USDC Yield Watch",
+        DEFI_YIELD_SCRIPT,
+        DEFI_YIELD_MARKS,
+    )
+
+
+def validate_defi_yield_trigger(workspace: Path) -> dict[str, Any]:
+    """A script keyed on a DeFi yield reads it through ctx.defi_yield; the
+    dry run answers from the yield mark, buys once, and the validation
+    report carries the read; a yield read is not a venue."""
+    job_id = "eval-usdc-yield-watch"
+    data = _job_yaml(workspace, job_id)
+    root = workspace / ".wayfinder" / "jobs" / job_id
+    validation = _read(root / "reports" / "validation" / "latest.json")
+    dry = (validation.get("freestyle") or {}).get("dry_run") or {}
+    source = _entrypoint(workspace, job_id).read_text(encoding="utf-8") if data else ""
+    opens = [
+        a
+        for a in dry.get("actions") or []
+        if (a.get("intent") or {}).get("action") == "OPEN"
+    ]
+    checks = [
+        _check("job_created", bool(data)),
+        _check(
+            "validation_passed",
+            validation.get("status") == "passed",
+            failed=[
+                c.get("name")
+                for c in validation.get("checks") or []
+                if not c.get("passed")
+            ],
+        ),
+        _check("reads_defi_yield_through_ctx", "ctx.defi_yield(" in source),
+        _check(
+            "dry_run_read_the_yield_mark",
+            float((dry.get("yields") or {}).get(YIELD_FEED_NAME) or 0.0) == 0.08,
+            yields=dry.get("yields"),
+        ),
+        _check(
+            "bought_once_on_high_yield",
+            len(opens) == 1
+            and (opens[0].get("intent") or {}).get("side") == "long"
+            and float((opens[0].get("intent") or {}).get("notional") or 0) == 100.0
+            and opens[0].get("status") == "filled",
+            opens=len(opens),
+        ),
+        _check(
+            "only_hyperliquid_used",
+            set(dry.get("venues_used") or []) == {"hyperliquid"},
+        ),
+        _check("not_launched", not (root / "state" / "launch.json").exists()),
+    ]
+    return _report(checks)
+
+
 # ---- gated live, and the identity pin under an edit --------------------------
 
 
@@ -1754,6 +1944,37 @@ CASES: list[LifecycleCase] = [
         ),
         expected=expected_token_value_trigger,
         validate=validate_token_value_trigger,
+    ),
+    LifecycleCase(
+        id="starter_token_feed_declared",
+        stage="creation",
+        job_id="eval-rsi-token-feed",
+        prompt=(
+            "The starter job `eval-rsi-token-feed` is created paused. Give its backtest ETH's on-chain price "
+            "on Base as a feature: fetch two days of price history for the token id "
+            "`base_0x4200000000000000000000000000000000000006` at 1h into the job with fetch_token_features, "
+            "then tell me what was declared (name, cadence, smoothing, pinned chain and address) and how the "
+            "strategy reads it. Do not launch."
+        ),
+        expected=expected_starter_token_feed,
+        validate=validate_starter_token_feed,
+        live=False,
+        notes="the token candle source needs the dev API host; deterministic with an in-process fake",
+    ),
+    LifecycleCase(
+        id="freestyle_defi_yield_trigger",
+        stage="creation",
+        job_id="eval-usdc-yield-watch",
+        prompt=(
+            "Build a freestyle job `eval-usdc-yield-watch` that every 5 minutes reads the USDC supply rate on "
+            'Aave Base through ctx.defi_yield("lend_supply_apr:aave-base:USDC"); when it is above 5% (0.05 as '
+            "a decimal) and we hold no BTC, go long 100 USD of BTC on Hyperliquid with a 10 USD max loss, and "
+            "close it when the rate falls below 2%. Set validation marks so the dry run sees the rate at 0.08 "
+            "(key `yield:lend_supply_apr:aave-base:USDC`) and BTC at 60000. Validate it and tell me what the dry "
+            "run did tick by tick. Do not launch."
+        ),
+        expected=expected_defi_yield_trigger,
+        validate=validate_defi_yield_trigger,
     ),
 ]
 
