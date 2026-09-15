@@ -464,3 +464,107 @@ def test_dry_run_token_value_trigger_buys_from_the_token_mark(tmp_path: Path) ->
     assert dry["token_values"]["ethereum-base"] == pytest.approx(1950.0)
     # a token read is not a venue: only the perp venue was used
     assert dry["venues_used"] == ["hyperliquid"]
+
+
+YIELD_ROTATE = """
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=("hyperliquid",), max_notional_per_tick=200, max_loss_usd=10)
+FEED = "lend_supply_apr:aave-base:USDC"
+
+
+def tick(ctx):
+    rate = ctx.defi_yield(FEED)
+    ctx.state["usdc_supply_apr"] = rate
+    if rate > 0.05 and "BTC" not in ctx.positions:
+        ctx.act({"venue": "hyperliquid", "kind": "market", "symbol": "BTC",
+                 "side": "long", "notional": 100, "max_loss": 10})
+    elif rate < 0.02 and "BTC" in ctx.positions:
+        ctx.act({"venue": "hyperliquid", "kind": "close", "symbol": "BTC"})
+"""
+YIELD_FEED = "lend_supply_apr:aave-base:USDC"
+
+
+def test_stub_gateway_defi_yield_reads_the_mark_and_defaults_to_zero() -> None:
+    from wayfinder_paths.jobs.freestyle import runtime as rt
+
+    gateway = rt.StubVenueGateway(marks={f"yield:{YIELD_FEED}": 0.08})
+    assert gateway.defi_yield(YIELD_FEED) == pytest.approx(0.08)
+    assert gateway.defi_yield(YIELD_FEED, "24h") == pytest.approx(0.08)
+    assert gateway.defi_yield("yield_apy:sUSDe") == 0.0
+
+
+def test_venue_gateway_defi_yield_uses_latest_snapshots_and_windows(
+    monkeypatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from wayfinder_paths.jobs.freestyle import runtime as rt
+
+    class _Client:
+        async def get_asset_basis(self, *, symbol):
+            return {"asset_id": 1271, "symbol": symbol}
+
+        async def screen_lending(
+            self, *, asset_ids=None, venue=None, limit=100, **kwargs
+        ):
+            return {
+                "data": [
+                    {
+                        "market_id": 911,
+                        "asset_id": 1271,
+                        "venue_name": "aave-base",
+                        "chain_id": 8453,
+                    }
+                ]
+            }
+
+        async def get_market_lending_latest(self, *, market_id, asset_id):
+            assert (market_id, asset_id) == (911, 1271)
+            return SimpleNamespace(net_supply_apr_now=0.045, net_borrow_apr_now=0.065)
+
+        async def get_asset_yield_latest(self, *, asset_id):
+            return None
+
+    monkeypatch.setattr(rt, "DELTA_LAB_CLIENT", _Client())
+
+    async def _rows(feeds, *, days, since=None, client=None):
+        name = "lend_supply_apr:aave-base:USDC"
+        return (
+            [
+                {"timestamp": "t", "name": name, "value": v, "symbol": None}
+                for v in (0.04, 0.05, 0.06)
+            ],
+            {"errors": {}},
+        )
+
+    monkeypatch.setattr(rt, "fetch_yield_rows", _rows)
+    gateway = rt.VenueGateway(mode="paper", params={}, quote_interval="5m")
+    assert gateway.defi_yield(YIELD_FEED) == pytest.approx(0.045)
+    assert gateway.defi_yield("lend_borrow_apr:aave-base:USDC") == pytest.approx(0.065)
+    assert gateway.defi_yield(YIELD_FEED, "24h") == pytest.approx(0.05)
+    with pytest.raises(LookupError, match="no current yield"):
+        gateway.defi_yield("yield_apy:sUSDe")
+    with pytest.raises(LookupError, match="ctx.token_value"):
+        gateway.defi_yield("token_price:ethereum-base")
+    with pytest.raises(ValueError, match="window"):
+        gateway.defi_yield(YIELD_FEED, "soon")
+
+
+def test_dry_run_defi_yield_trigger_opens_from_the_yield_mark(tmp_path: Path) -> None:
+    store, job = _job(
+        tmp_path,
+        YIELD_ROTATE,
+        freestyle={
+            "validation_marks": {"hyperliquid:BTC": 60_000, f"yield:{YIELD_FEED}": 0.08}
+        },
+    )
+    report = validate_freestyle_job(job.id, store=store)
+    assert report["status"] == "passed", [
+        c for c in report["checks"] if not c["passed"]
+    ]
+    dry = report["freestyle"]["dry_run"]
+    opens = [a for a in dry["actions"] if a["intent"]["action"] == "OPEN"]
+    assert len(opens) == 1 and opens[0]["intent"]["side"] == "long"
+    assert dry["yields"][YIELD_FEED] == pytest.approx(0.08)
+    assert dry["venues_used"] == ["hyperliquid"]  # a yield read is not a venue

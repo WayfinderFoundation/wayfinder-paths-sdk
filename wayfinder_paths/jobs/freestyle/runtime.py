@@ -26,8 +26,15 @@ from typing import Any
 
 import pandas as pd
 
+from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.jobs.execution.engine import EngineState
+from wayfinder_paths.jobs.execution.feature_feeds import (
+    LENDING_KINDS,
+    fetch_yield_rows,
+    parse_feed_name,
+    resolve_yield_feed,
+)
 from wayfinder_paths.jobs.execution.job import _load_job_yaml
 from wayfinder_paths.jobs.execution.paper import PaperBroker
 from wayfinder_paths.jobs.execution.primitives import (
@@ -35,6 +42,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     FillEvent,
     OrderIntent,
     PositionLedger,
+    bar_interval_seconds,
 )
 from wayfinder_paths.jobs.execution.risk import check_risk_halt
 from wayfinder_paths.jobs.execution.venues import build_adapter
@@ -133,6 +141,32 @@ class VenueGateway:
             raise LookupError(f"no USD price for token {token_id!r}")
         return float(price)
 
+    def defi_yield(self, name: str, window: str | None = None) -> float:
+        feed = parse_feed_name(name)
+        if feed["kind"] == "token_price":
+            raise LookupError("token prices are read through ctx.token_value")
+        resolved = _run(resolve_yield_feed(feed, client=DELTA_LAB_CLIENT))
+        if window is None:
+            return _latest_yield(name, resolved)
+        seconds = bar_interval_seconds(window)
+        if seconds is None:
+            raise ValueError(f"window {window!r} is not an interval like 24h")
+        since = pd.Timestamp.now(tz="UTC") - pd.Timedelta(seconds=seconds)
+        rows, metadata = _run(
+            fetch_yield_rows(
+                [resolved],
+                days=max(1.0, seconds / 86_400),
+                since=since,
+                client=DELTA_LAB_CLIENT,
+            )
+        )
+        error = (metadata.get("errors") or {}).get(name)
+        if error:
+            raise LookupError(f"no yield history for {name!r}: {error}")
+        if not rows:
+            raise LookupError(f"no yield history for {name!r} in the last {window}")
+        return float(sum(float(row["value"]) for row in rows) / len(rows))
+
     def place(self, intent: OrderIntent, *, price: float, timestamp: str) -> FillEvent:
         return _run(
             self.adapter(intent.venue).broker.place(
@@ -185,6 +219,9 @@ class StubVenueGateway:
     def token_price(self, token_id: str) -> float:
         # A token value is a read, never a traded mark, so it does not drift.
         return float(self.marks.get(f"token:{token_id}", 1.0))
+
+    def defi_yield(self, name: str, window: str | None = None) -> float:
+        return float(self.marks.get(f"yield:{name}", 0.0))
 
     def place(self, intent: OrderIntent, *, price: float, timestamp: str) -> FillEvent:
         broker = self._brokers.get(intent.venue)
@@ -245,6 +282,7 @@ class FreestyleContext:
         self.marks: dict[str, float] = {}
         self.funding_reads: dict[str, float] = {}
         self.token_reads: dict[str, float] = {}
+        self.yield_reads: dict[str, float] = {}
         self.actions: list[dict[str, Any]] = []
         self.fills: list[dict[str, Any]] = []
         self.logs: list[str] = []
@@ -291,6 +329,17 @@ class FreestyleContext:
         price = float(self._gateway.token_price(str(token_id)))
         self.token_reads[str(token_id)] = price
         return price * float(amount)
+
+    def defi_yield(self, name: str, window: str | None = None) -> float:
+        """The current DeFi yield for a feed name — `lend_supply_apr:<venue>:<symbol>`,
+        `lend_borrow_apr:…`, `yield_apy:<symbol>`, `pendle_implied_apy:<venue>:<market_id>`,
+        `boros_fixed_rate:<venue>:<market_id>` — as a decimal per year (0.05 =
+        5%). With a `window` ("24h") it is the trailing mean of the hourly
+        series over it, the number a harnessed feed with mean smoothing
+        carries. A read, never a venue. The dry run reads the `yield:<name>` mark."""
+        value = float(self._gateway.defi_yield(str(name), window))
+        self.yield_reads[f"{name}@{window}" if window else str(name)] = value
+        return value
 
     def log(self, message: str) -> None:
         self.logs.append(str(message)[:500])
@@ -767,6 +816,7 @@ def _one_tick(
             "marks": dict(ctx.marks),
             "funding": dict(ctx.funding_reads),
             "token_values": dict(ctx.token_reads),
+            "yields": dict(ctx.yield_reads),
             "equity": equity,
             "unrealized_pnl": unrealized,
             "actions": list(ctx.actions),
@@ -810,6 +860,7 @@ def _one_tick(
         "marks": dict(ctx.marks),
         "funding": dict(ctx.funding_reads),
         "token_values": dict(ctx.token_reads),
+        "yields": dict(ctx.yield_reads),
         "equity": equity,
         "unrealized_pnl": unrealized,
         "realized_pnl": float(ledger.realized_pnl),
@@ -1034,3 +1085,42 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def _latest_yield(name: str, resolved: Mapping[str, Any]) -> float:
+    kind = str(resolved["kind"])
+    value: Any = None
+    if kind in LENDING_KINDS:
+        latest = _run(
+            DELTA_LAB_CLIENT.get_market_lending_latest(
+                market_id=int(resolved["market_id"]), asset_id=int(resolved["asset_id"])
+            )
+        )
+        if latest is not None:
+            value = (
+                latest.net_supply_apr_now
+                if kind == "lend_supply_apr"
+                else latest.net_borrow_apr_now
+            )
+    elif kind == "yield_apy":
+        latest = _run(
+            DELTA_LAB_CLIENT.get_asset_yield_latest(asset_id=int(resolved["asset_id"]))
+        )
+        value = None if latest is None else latest.apy_base
+    elif kind == "pendle_implied_apy":
+        latest = _run(
+            DELTA_LAB_CLIENT.get_market_pendle_latest(
+                market_id=int(resolved["market_id"])
+            )
+        )
+        value = None if latest is None else (latest.raw or {}).get("implied_apy")
+    else:
+        latest = _run(
+            DELTA_LAB_CLIENT.get_market_boros_latest(
+                market_id=int(resolved["market_id"])
+            )
+        )
+        value = None if latest is None else latest.fixed_rate_mark
+    if value is None:
+        raise LookupError(f"no current yield for {name!r}")
+    return float(value)

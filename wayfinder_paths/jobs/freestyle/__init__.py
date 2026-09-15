@@ -16,10 +16,12 @@ Public surface for script authors::
 Reads: ``ctx.quote(venue, symbol)`` (latest completed-bar close),
 ``ctx.funding(venue, symbol)`` (a perp's latest settled hourly funding rate as a
 decimal, Hyperliquid only), ``ctx.token_value(token_id, amount=1.0)`` (USD
-value of an on-chain token by token id, a read only), ``ctx.positions``,
-``ctx.realized_pnl``, ``ctx.state``. The validation dry run answers the reads
-from stub marks (``<venue>:<symbol>``, ``funding:<venue>:<symbol>``,
-``token:<token_id>``).
+value of an on-chain token by token id, a read only), ``ctx.defi_yield(name,
+window=None)`` (a DeFi yield by feed name — ``lend_supply_apr:<venue>:<symbol>``,
+``yield_apy:<symbol>``, … — as a decimal per year; with a window the trailing
+mean over it), ``ctx.positions``, ``ctx.realized_pnl``, ``ctx.state``. The
+validation dry run answers the reads from stub marks (``<venue>:<symbol>``,
+``funding:<venue>:<symbol>``, ``token:<token_id>``, ``yield:<name>``).
 """
 
 from wayfinder_paths.jobs.freestyle.contract import (
