@@ -759,8 +759,13 @@ async def core_jobs(
 
     if action == "launch":
         if watchdog:
-            # The watchdog settings ride the same compile the launch bakes.
-            set_watchdog(job_id, store=store, **dict(watchdog))
+            # The watchdog settings ride the same compile the launch bakes;
+            # the cadence may be spelled the way set_watchdog's own action
+            # spells it.
+            settings = dict(watchdog)
+            if "agent_wake_seconds" in settings:
+                settings["wake_interval_seconds"] = settings.pop("agent_wake_seconds")
+            set_watchdog(job_id, store=store, **settings)
         return ok(
             launch_job(
                 job_id,

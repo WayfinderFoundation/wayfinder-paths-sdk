@@ -29,6 +29,6 @@ Read the failing items first, with their `detail` (it names the fix). Then the w
 
 ## What `launch` returns
 
-`launch` answers with `launched`, `revision`, the checklist it ran, the flags it showed, and the runner's own results under `compile` and `loops`. Read those two: a launch whose `loops` or `compile` carry an error (`connect_failed`, a missing daemon) has pinned the revision but nothing is ticking — say exactly that, never "running", and check `core_runner_status` before retrying. Report the pinned revision and every flag shown, verbatim from the result, not from memory.
+`launch` answers with `launched`, `revision`, the checklist it ran, the flags it showed, and the runner's own results under `compile` and `loops`. Read those two: a launch whose `loops` or `compile` carry an error (`connect_failed`, a missing daemon) has pinned the revision but nothing is ticking — say exactly that, never "running", and check `core_runner_status` before retrying. Report the pinned revision and every flag shown — code, severity, and its `fix` — verbatim from the result, not from memory.
 
 After `launch`, call `status` once before answering. Report the runner state it shows and, if a run has already happened, that first run's outcome with its reason (`forward.runs` / `summary.runs`): a first tick that failed on a market lookup or a venue error is reported as exactly that, never folded into "running". Claims about the launched job stop at what `status` shows.

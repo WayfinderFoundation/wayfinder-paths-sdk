@@ -3035,6 +3035,7 @@ STATUS_CONTEXT_KEYS = (
     "features",
     "owner_attention",
     "halt",
+    "scorecard",
 )
 
 
