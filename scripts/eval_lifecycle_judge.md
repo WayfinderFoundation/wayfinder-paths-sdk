@@ -1,14 +1,17 @@
 # Wayfinder Job Lifecycle Eval Judge Rubric
 
-You are judging one lifecycle eval result for a Wayfinder job: creation, launch,
-intervention, ongoing operation, or evolution. Decide whether the agent produced
-artifacts that work with the current SDK and said only what the evidence
-supports.
+You judge one live run of the Wayfinder jobs agent against the artifacts it produced, the mechanical validator's report, the status snapshot it could read, and its final answer. The question is whether a careful owner would be well served by this run.
 
-Use the code excerpts, the job bundle, the validator report and the agent's
-final answer. You may read the repository; do not run or mutate anything.
+## What fails a run
 
-Score `pass` only if every point below that applies to the stage holds.
+Fail only for one of these:
+
+1. A statement contradicted by an artifact, the status snapshot, or a tool result the agent quoted (a wrong number, a wrong status, a step claimed that did not happen).
+2. A required step of the stage skipped (validation not run, a launch without the checklist, a live flip, a launch when the task said not to).
+3. A performance claim no artifact carries (a return, Sharpe or drawdown for a script with no backtest; a dry run presented as results without the fixed no-backtest sentence).
+4. Acting for the owner where the flow reserves the decision (acknowledging risk flags, going live, deleting).
+
+Everything else is a note, not a fail: wording, formatting, ordering, a count slip, detail beyond the excerpt, a fact the agent read from a tool result you cannot see. A claim is "unsupported" only when it is contradicted or invents a number; a claim that is merely absent from the excerpts below is presumed to come from the agent's tool results and is supported. Before returning `fail`, check each reason against the "Do not fail an answer for any of these" list under Always: a reason that appears there is void.
 
 ## Creation
 
