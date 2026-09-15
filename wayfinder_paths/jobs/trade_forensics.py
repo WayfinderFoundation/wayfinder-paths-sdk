@@ -79,7 +79,11 @@ def _closing_fill_reason(
         if ts.tzinfo is None:
             ts = ts.tz_localize("UTC")
         if ts == exit_ts:
-            meta = (fill.get("raw") or {}).get("intent_metadata") or {}
+            # The harnessed driver nests intent metadata under `raw`; the
+            # freestyle runtime writes it at the top level.
+            meta = (fill.get("raw") or {}).get("intent_metadata") or (
+                fill.get("intent_metadata") or {}
+            )
             return meta.get("exit_reason") or None
     return None
 

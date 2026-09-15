@@ -1637,7 +1637,9 @@ def archive_cmd(job_id: str) -> None:
 @click.argument("job_id")
 @click.option(
     "--view",
-    type=click.Choice(["all", "legs", "spread", "equity", "drawdown", "performance"]),
+    type=click.Choice(
+        ["all", "legs", "spread", "reads", "equity", "drawdown", "performance"]
+    ),
     default="all",
     show_default=True,
 )
@@ -1682,7 +1684,9 @@ def backtest_view_cmd(
 @click.argument("job_id")
 @click.option(
     "--view",
-    type=click.Choice(["all", "legs", "spread", "equity", "drawdown", "performance"]),
+    type=click.Choice(
+        ["all", "legs", "spread", "reads", "equity", "drawdown", "performance"]
+    ),
     default="all",
     show_default=True,
 )
