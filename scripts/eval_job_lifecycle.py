@@ -2505,7 +2505,1183 @@ def validate_edit_relaunch(workspace: Path) -> dict[str, Any]:
     return _report(checks)
 
 
+# ---- initialization -----------------------------------------------------------
+# Twelve asks in the owner's words across perps, Polymarket, on-chain spot,
+# Hyperliquid spot and DeFi. Some are specified enough to build; some are
+# underspecified on purpose (venue, chain, asset, size, meaning of a trigger)
+# and a correct agent asks instead of guessing; one is an action the runtime
+# has no venue for and must be refused with the fits named.
+
+NY_SWEEP_FVG_SCRIPT = '''"""BTC around the New York open: Asia and London session highs/lows are the
+liquidity levels; a sweep of one of them, a close back inside, a fair value
+gap in the reversal direction and a retracement into that gap is the entry.
+Stop beyond the sweep extreme with a small buffer, target fixed at 2R, one
+position at a time. 5-minute bars, UTC session windows."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pandas as pd
+
+from wayfinder_paths.jobs.execution.primitives import ExecutionContext
+
+
+class NySweepFvgStrategy:
+    default_params: dict[str, Any] = {
+        "symbol": "BTC",
+        "venue": "hyperliquid",
+        "notional_usd": 1000.0,
+        # UTC session windows (New York morning during daylight time).
+        "asia_start_utc": 0.0,
+        "asia_end_utc": 8.0,
+        "london_start_utc": 8.0,
+        "london_end_utc": 13.0,
+        "ny_start_utc": 13.5,
+        "ny_end_utc": 16.0,
+        "sweep_buffer_pct": 0.0005,
+        "reward_r": 2.0,
+        "max_bars_to_retrace": 24,
+    }
+
+    def __init__(self, params: dict[str, Any] | None = None) -> None:
+        self.params = {**self.default_params, **(params or {})}
+        self.warmup_bars = 2
+
+    def precompute(self, frames: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+        return {}
+
+    def decide(self, ctx: ExecutionContext) -> list[dict[str, Any]]:
+        symbol = str(self.params["symbol"])
+        if symbol in ctx.ledger.positions:
+            return []  # one position at a time; the bracket owns the exit
+        frame = ctx.view.symbol_frame(symbol)
+        if frame.empty:
+            return []
+        frame = frame.tail(320).copy()
+        stamps = pd.to_datetime(frame["timestamp"], utc=True)
+        now = stamps.iloc[-1]
+        hour = now.hour + now.minute / 60.0
+        if not (float(self.params["ny_start_utc"]) <= hour < float(self.params["ny_end_utc"])):
+            return []
+        day_key = now.strftime("%Y-%m-%d")
+        state = ctx.strategy_state
+        if state.get("taken_day") == day_key:
+            return []
+        day_mask = (stamps.dt.strftime("%Y-%m-%d") == day_key).values
+        today = frame[day_mask]
+        today_stamps = stamps[day_mask]
+        hours = (today_stamps.dt.hour + today_stamps.dt.minute / 60.0).values
+        levels = self._levels(today, hours)
+        if levels is None:
+            return []
+        ny = today[hours >= float(self.params["ny_start_utc"])].reset_index(drop=True)
+        setup = self._setup(ny, levels)
+        if setup is None or setup["entry_index"] != len(ny) - 1:
+            return []
+        close = float(ny.iloc[-1]["close"])
+        buffer = float(self.params["sweep_buffer_pct"])
+        reward = float(self.params["reward_r"])
+        if setup["side"] == "short":
+            stop = setup["extreme"] * (1.0 + buffer)
+            risk = stop - close
+            if risk <= 0:
+                return []
+            target = close - reward * risk
+            side = "sell"
+        else:
+            stop = setup["extreme"] * (1.0 - buffer)
+            risk = close - stop
+            if risk <= 0:
+                return []
+            target = close + reward * risk
+            side = "buy"
+        size = round(float(self.params["notional_usd"]) / close, 4)
+        if size <= 0:
+            return []
+        state["taken_day"] = day_key
+        return [
+            {
+                "action": "OPEN",
+                "venue": str(self.params["venue"]),
+                "symbol": symbol,
+                "side": side,
+                "size": size,
+                "bracket": {"stop_loss": stop, "take_profit": target},
+                "metadata": {
+                    "entry_reason": "ny_open_sweep_fvg",
+                    "swept_level": setup["level_name"],
+                    "sweep_extreme": setup["extreme"],
+                    "fvg": [setup["zone_low"], setup["zone_high"]],
+                },
+            }
+        ]
+
+    def _levels(self, today: pd.DataFrame, hours: Any) -> dict[str, float] | None:
+        p = self.params
+        asia = today[(hours >= float(p["asia_start_utc"])) & (hours < float(p["asia_end_utc"]))]
+        london = today[
+            (hours >= float(p["london_start_utc"])) & (hours < float(p["london_end_utc"]))
+        ]
+        if asia.empty or london.empty:
+            return None
+        return {
+            "asia_high": float(asia["high"].max()),
+            "asia_low": float(asia["low"].min()),
+            "london_high": float(london["high"].max()),
+            "london_low": float(london["low"].min()),
+        }
+
+    def _setup(self, ny: pd.DataFrame, levels: dict[str, float]) -> dict[str, Any] | None:
+        """liquidity level -> sweep -> reclaim -> FVG -> retracement entry.
+        Returns the first completed setup in today's New York bars."""
+        highs = ny["high"].astype(float).tolist()
+        lows = ny["low"].astype(float).tolist()
+        closes = ny["close"].astype(float).tolist()
+        max_wait = int(self.params["max_bars_to_retrace"])
+        for name, level in levels.items():
+            is_high = name.endswith("high")
+            for i in range(len(ny)):
+                swept = highs[i] > level if is_high else lows[i] < level
+                if not swept:
+                    continue
+                extreme = highs[i] if is_high else lows[i]
+                reclaim = None
+                for j in range(i, len(ny)):
+                    extreme = max(extreme, highs[j]) if is_high else min(extreme, lows[j])
+                    inside = closes[j] < level if is_high else closes[j] > level
+                    if inside:
+                        reclaim = j
+                        break
+                if reclaim is None:
+                    break
+                for k in range(reclaim + 2, len(ny)):
+                    if is_high:
+                        gap = lows[k - 2] > highs[k]  # bearish fair value gap
+                        zone_low, zone_high = highs[k], lows[k - 2]
+                    else:
+                        gap = highs[k - 2] < lows[k]  # bullish fair value gap
+                        zone_low, zone_high = highs[k - 2], lows[k]
+                    if not gap:
+                        continue
+                    for m in range(k + 1, min(len(ny), k + 1 + max_wait)):
+                        retraced = highs[m] >= zone_low if is_high else lows[m] <= zone_high
+                        if retraced:
+                            return {
+                                "side": "short" if is_high else "long",
+                                "level_name": name,
+                                "level": level,
+                                "extreme": extreme,
+                                "zone_low": zone_low,
+                                "zone_high": zone_high,
+                                "entry_index": m,
+                            }
+                    break
+                break
+        return None
+
+
+def build_strategy(params: dict[str, Any] | None = None) -> NySweepFvgStrategy:
+    return NySweepFvgStrategy(params)
+'''
+
+NY_SWEEP_SEQUENCE_MARKERS = (
+    ("session levels", ("asia", "london")),
+    ("sweep", ("sweep",)),
+    ("reclaim", ("reclaim", "back inside", "close back", "inside")),
+    ("fair value gap", ("fvg", "fair value gap", "gap")),
+    ("retracement entry", ("retrace",)),
+    ("stop beyond the sweep extreme", ("stop_loss", "stop")),
+    ("2R target", ("take_profit", "2r", "reward")),
+    ("one position", ("positions",)),
+)
+
+
+def _random_walk_bars(
+    symbol: str,
+    *,
+    start: datetime,
+    count: int,
+    minutes: int,
+    price: float,
+    seed: int,
+    drift: float = 0.0,
+    vol: float = 0.0008,
+) -> list[dict[str, Any]]:
+    import random
+
+    rng = random.Random(seed)
+    rows: list[dict[str, Any]] = []
+    last = price
+    for i in range(count):
+        stamp = start + timedelta(minutes=minutes * i)
+        move = rng.gauss(drift, vol)
+        open_ = last
+        close = open_ * (1.0 + move)
+        high = max(open_, close) * (1.0 + abs(rng.gauss(0, vol / 2)))
+        low = min(open_, close) * (1.0 - abs(rng.gauss(0, vol / 2)))
+        rows.append(
+            {
+                "timestamp": stamp.isoformat(),
+                "symbol": symbol,
+                "open": round(open_, 2),
+                "high": round(high, 2),
+                "low": round(low, 2),
+                "close": round(close, 2),
+                "volume": round(rng.uniform(50, 150), 3),
+            }
+        )
+        last = close
+    return rows
+
+
+def _ny_sweep_day(day: datetime) -> list[dict[str, Any]]:
+    """One crafted day of 5m BTC bars: Asia and London ranges, a New York
+    sweep of the London high, a close back inside, a bearish fair value gap,
+    a retrace into it, then a drive down through the 2R target."""
+
+    def bar(
+        minute_index: int, o: float, h: float, lo: float, c: float
+    ) -> dict[str, Any]:
+        stamp = day + timedelta(minutes=5 * minute_index)
+        return {
+            "timestamp": stamp.isoformat(),
+            "symbol": "BTC",
+            "open": o,
+            "high": h,
+            "low": lo,
+            "close": c,
+            "volume": 100.0,
+        }
+
+    rows: list[dict[str, Any]] = []
+    for i in range(0, 96):  # Asia 00:00-08:00, high 60300 once
+        base = 60000 + 80 * ((i % 7) - 3)
+        rows.append(bar(i, base, base + 60 if i != 40 else 60300, base - 60, base + 20))
+    for i in range(96, 156):  # London 08:00-13:00, high 60450 once
+        base = 60150 + 2 * (i - 96)
+        rows.append(
+            bar(i, base, base + 50 if i != 130 else 60450, base - 50, base + 10)
+        )
+    for i in range(156, 162):  # 13:00-13:30 quiet
+        rows.append(bar(i, 60300, 60340, 60260, 60310))
+    script = [
+        (
+            162,
+            60310,
+            60600,
+            60290,
+            60520,
+        ),  # 13:30 sweeps the London high, closes outside
+        (163, 60520, 60650, 60470, 60480),  # extreme 60650
+        (164, 60480, 60500, 60380, 60400),  # 13:40 close back inside: reclaim
+        (165, 60400, 60420, 60380, 60390),  # a: low 60380
+        (166, 60390, 60395, 60190, 60200),  # b: the displacement candle
+        (
+            167,
+            60200,
+            60330,
+            60250,
+            60300,
+        ),  # c: high 60330 < a.low -> bearish FVG (60330, 60380)
+        (168, 60300, 60360, 60290, 60340),  # 14:00 retrace into the gap -> entry signal
+        (169, 60340, 60350, 60150, 60180),  # fill at the next open, then the drive down
+        (170, 60180, 60200, 59950, 59980),
+        (171, 59980, 60000, 59750, 59780),
+        (172, 59780, 59800, 59550, 59600),  # through the 2R target (~59660)
+    ]
+    for minute_index, o, h, lo, c in script:
+        rows.append(bar(minute_index, o, h, lo, c))
+    for i in range(173, 288):
+        base = 59600 + 10 * ((i % 5) - 2)
+        rows.append(bar(i, base, base + 40, base - 40, base + 5))
+    return rows
+
+
+def _write_input_bars(
+    root: Path, rows: list[dict[str, Any]], *, days: int, interval: str
+) -> None:
+    path = root / "results" / "backtest" / "input_bars.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "metadata": {
+                    "days": days,
+                    "interval": interval,
+                    "source": "eval fixture",
+                },
+                "bars": rows,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _create_harnessed_job(
+    store: JobStore,
+    job_id: str,
+    *,
+    name: str,
+    goal: str,
+    script_source: str,
+    symbols: list[str],
+    interval: str,
+    lookback_bars: int,
+) -> None:
+    from wayfinder_paths.jobs.compiler import JobCompiler
+    from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
+    from wayfinder_paths.jobs.launch import hold_job
+    from wayfinder_paths.jobs.models import WayfinderJob
+
+    job = WayfinderJob.new(
+        job_id,
+        name=name,
+        goal=goal,
+        script="workspace/src/strategy.py",
+        interval_seconds=int(bar_interval_seconds(interval) or 300),
+        timeout_seconds=180,
+        agent_mode="intervene",
+        execution_contract="jobs_v1",
+    )
+    job.execution_spec = {
+        "market_kind": "perp",
+        "view_type": "completed_bars",
+        "bar_model": "completed_only",
+        "fill_model": "next_bar_open",
+        "ohlc_rules": {
+            "use_high_low_for_stops": True,
+            "allow_close_only_entries": False,
+            "same_bar_fill": False,
+            "same_bar_policy": "conservative",
+        },
+        "data_contract": {
+            "candles_source": "sdk_only",
+            "no_external_ccxt": True,
+            "rate_limit_safe": True,
+            "bar_interval": interval,
+            "symbols": list(symbols),
+            "max_bar_age_intervals": 2,
+            "stale_policy": "skip",
+        },
+        "validation": {"mode": "strict", "require_scenarios": False},
+        "venues": ["hyperliquid"],
+    }
+    job.execution_params = {
+        "symbols": list(symbols),
+        "venue": "hyperliquid",
+        "initial_capital": 10_000.0,
+        "fee_bps": 4.5,
+        "slippage_bps": 3.5,
+        "min_trade_notional": 25.0,
+        "lookback_bars": lookback_bars,
+    }
+    store.create_job(job)
+    script = store.job_dir(job_id) / "workspace" / "src" / "strategy.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(script_source, encoding="utf-8")
+    JobCompiler(store=store).compile(job)
+    hold_job(job_id, store=store)
+
+
+def expected_ny_sweep_fvg(workspace: Path) -> None:
+    from wayfinder_paths.jobs.execution.job import backtest_execution_job
+    from wayfinder_paths.jobs.readout import build_readout
+
+    store = _store(workspace)
+    job_id = "eval-btc-ny-sweep"
+    with Sandbox():
+        _create_harnessed_job(
+            store,
+            job_id,
+            name="BTC NY open sweep + FVG",
+            goal=(
+                "Trade BTC around the New York open: sweep of an Asia/London high or low, "
+                "close back inside, fair value gap, retracement entry; stop beyond the sweep "
+                "extreme, 2R target, one position at a time."
+            ),
+            script_source=NY_SWEEP_FVG_SCRIPT,
+            symbols=["BTC"],
+            interval="5m",
+            lookback_bars=320,
+        )
+        day0 = datetime(2026, 9, 7, tzinfo=UTC)
+        rows = _random_walk_bars(
+            "BTC", start=day0, count=288, minutes=5, price=60000.0, seed=7
+        )
+        rows += _ny_sweep_day(day0 + timedelta(days=1))
+        rows += _random_walk_bars(
+            "BTC",
+            start=day0 + timedelta(days=2),
+            count=288,
+            minutes=5,
+            price=59600.0,
+            seed=11,
+        )
+        _write_input_bars(store.job_dir(job_id), rows, days=3, interval="5m")
+        backtest_execution_job(job_id, store=store)
+        build_readout(job_id, store=store)
+
+
+def _backtest_report(root: Path) -> dict[str, Any]:
+    for name in ("latest.json", "summary.json", "report.json", "backtest.json"):
+        report = _read(root / "results" / "backtest" / name)
+        if report:
+            return report
+    return {}
+
+
+def _harnessed_init_checks(
+    workspace: Path, job_id: str, *, symbol: str
+) -> tuple[dict[str, Any], Path, str, list[dict[str, Any]]]:
+    data = _job_yaml(workspace, job_id)
+    root = workspace / ".wayfinder" / "jobs" / job_id
+    entrypoint = str((data.get("script_loop") or {}).get("entrypoint") or "")
+    script = root / entrypoint if entrypoint else root / "missing"
+    source = script.read_text(encoding="utf-8") if script.exists() else ""
+    readout = _read(root / "reports" / "readout" / "latest.json")
+    backtest = _backtest_report(root)
+    backtest_dir = root / "results" / "backtest"
+    declared = ((data.get("execution_spec") or {}).get("data_contract") or {}).get(
+        "symbols"
+    ) or []
+    checks = [
+        _check("job_created", bool(data)),
+        _check("contract_jobs_v1", data.get("execution_contract") == "jobs_v1"),
+        _check(
+            "symbol_declared",
+            symbol in declared
+            or symbol in json.dumps(data.get("execution_params") or {}),
+        ),
+        # A catalog starter's script is an import wrapper around the library
+        # strategy; a custom build defines build_strategy inline.
+        _check("strategy_script_present", "build_strategy" in source),
+        _check(
+            "backtest_report_present",
+            bool(backtest),
+            files=sorted(p.name for p in backtest_dir.glob("*"))
+            if backtest_dir.exists()
+            else [],
+        ),
+        _check("readout_present", bool(readout)),
+        _check("not_launched", not (root / "state" / "launch.json").exists()),
+    ]
+    return data, root, source, checks
+
+
+def validate_ny_sweep_fvg(workspace: Path) -> dict[str, Any]:
+    """The described sequence must be in the code, on BTC perps, as a
+    harnessed job with a backtest report and an honest readout."""
+    _, _, source, checks = _harnessed_init_checks(
+        workspace, "eval-btc-ny-sweep", symbol="BTC"
+    )
+    lowered = source.lower()
+    for label, needles in NY_SWEEP_SEQUENCE_MARKERS:
+        checks.append(
+            _check(
+                f"sequence_{label.replace(' ', '_')}",
+                any(n in lowered for n in needles),
+            )
+        )
+    checks.append(_check("no_freestyle_tick", "def tick(ctx" not in source))
+    return _report(checks)
+
+
+def expected_rsi_v1_backtest(workspace: Path) -> None:
+    from wayfinder_paths.jobs.execution.job import backtest_execution_job
+    from wayfinder_paths.jobs.launch import hold_job
+    from wayfinder_paths.jobs.readout import build_readout
+    from wayfinder_paths.jobs.starters import create_starter_job
+
+    store = _store(workspace)
+    job_id = "eval-btc-rsi-v1"
+    with Sandbox():
+        create_starter_job(
+            "mixed-rsi-snapback-1h", job_id=job_id, store=store, compile_job=True
+        )
+        hold_job(job_id, store=store)
+        job = store.load(job_id)
+        symbols = list((job.execution_params or {}).get("symbols") or ["BTC"])
+        day0 = datetime(2026, 8, 1, tzinfo=UTC)
+        rows: list[dict[str, Any]] = []
+        for index, symbol in enumerate(symbols):
+            rows += _random_walk_bars(
+                symbol,
+                start=day0,
+                count=30 * 24,
+                minutes=60,
+                price=100.0 * (index + 1),
+                seed=20 + index,
+                vol=0.01,
+            )
+        rows.sort(key=lambda r: (r["timestamp"], r["symbol"]))
+        _write_input_bars(store.job_dir(job_id), rows, days=30, interval="1h")
+        backtest_execution_job(job_id, store=store, quick_bars=400)
+        build_readout(job_id, store=store)
+
+
+def validate_rsi_v1_backtest(workspace: Path) -> dict[str, Any]:
+    """A rule the owner wants to see backtested is a harnessed job, not a
+    freestyle script: jobs_v1 on BTC with a backtest report and readout."""
+    _, _, source, checks = _harnessed_init_checks(
+        workspace, "eval-btc-rsi-v1", symbol="BTC"
+    )
+    checks.append(_check("no_freestyle_tick", "def tick(ctx" not in source))
+    checks.append(_check("rsi_in_strategy", "rsi" in source.lower()))
+    return _report(checks)
+
+
+ETH_FUNDING_SHORT_SCRIPT = """
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=("hyperliquid",), max_notional_per_tick=300, max_loss_usd=30)
+SYMBOL = "ETH"
+
+
+def tick(ctx):
+    rate = ctx.funding("hyperliquid", SYMBOL)
+    if rate > 0.0003 and SYMBOL not in ctx.positions:
+        ctx.act({"venue": "hyperliquid", "kind": "market", "symbol": SYMBOL, "side": "short",
+                 "notional": 300, "max_loss": 30})
+    elif rate < 0.0001 and SYMBOL in ctx.positions:
+        ctx.act({"venue": "hyperliquid", "kind": "close", "symbol": SYMBOL, "reason": "funding_normalized"})
+"""
+ETH_FUNDING_SHORT_MARKS = {"hyperliquid:ETH": 2500.0, "funding:hyperliquid:ETH": 0.0004}
+
+FED_CUT_ODDS_SCRIPT = """
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=("polymarket",), max_notional_per_tick=100, max_loss_usd=100)
+MARKET = "polymarket:fed-rate-cut-december-2026:YES"
+
+
+def tick(ctx):
+    odds = ctx.quote("polymarket", MARKET)
+    if odds < 0.30 and MARKET not in ctx.positions:
+        ctx.act({"venue": "polymarket", "kind": "buy", "symbol": MARKET, "notional": 100})
+    elif odds > 0.60 and MARKET in ctx.positions:
+        ctx.act({"venue": "polymarket", "kind": "sell", "symbol": MARKET, "reason": "target_odds"})
+"""
+FED_CUT_ODDS_MARKS = {"polymarket:polymarket:fed-rate-cut-december-2026:YES": 0.25}
+
+SOL_DCA_SCRIPT = """
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=("onchain",), max_notional_per_tick=25)
+TOKEN = "solana-solana"
+
+
+def tick(ctx):
+    # One buy per wake; the cron schedule is the cadence, never a sell.
+    ctx.act({"venue": "onchain", "kind": "buy", "symbol": TOKEN, "notional": 25})
+"""
+SOL_DCA_MARKS = {"onchain:solana-solana": 150.0}
+
+HYPE_SPOT_RANGE_SCRIPT = """
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=("hyperliquid_spot",), max_notional_per_tick=100, max_loss_usd=40)
+PAIR = "HYPE/USDC"
+
+
+def tick(ctx):
+    price = ctx.quote("hyperliquid_spot", PAIR)
+    if price < 20 and PAIR not in ctx.positions:
+        ctx.act({"venue": "hyperliquid_spot", "kind": "buy", "symbol": PAIR, "notional": 100})
+    elif price > 30 and PAIR in ctx.positions:
+        ctx.act({"venue": "hyperliquid_spot", "kind": "sell", "symbol": PAIR, "reason": "target"})
+"""
+HYPE_SPOT_RANGE_MARKS = {"hyperliquid_spot:HYPE/USDC": 18.0}
+
+AAVE_ETH_GATE_SCRIPT = """
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=("onchain",), max_notional_per_tick=500, max_loss_usd=50)
+TOKEN = "ethereum-base"
+FEED = "lend_supply_apr:aave:USDC"
+
+
+def tick(ctx):
+    apr = ctx.defi_yield(FEED)
+    if apr < 0.03 and TOKEN not in ctx.positions:
+        ctx.act({"venue": "onchain", "kind": "buy", "symbol": TOKEN, "notional": 500})
+    elif apr > 0.05 and TOKEN in ctx.positions:
+        ctx.act({"venue": "onchain", "kind": "sell", "symbol": TOKEN, "reason": "yield_back"})
+"""
+AAVE_ETH_GATE_MARKS = {
+    "onchain:ethereum-base": 3000.0,
+    "yield:lend_supply_apr:aave:USDC": 0.02,
+}
+
+
+def _freestyle_init_validator(
+    job_id: str,
+    *,
+    venue: str,
+    symbol_fragment: str,
+    read_needles: tuple[str, ...] = (),
+    forbid: tuple[str, ...] = (),
+    cron: bool = False,
+    require_sell: bool = True,
+) -> Callable[[Path], dict[str, Any]]:
+    def validate(workspace: Path) -> dict[str, Any]:
+        from wayfinder_paths.jobs.freestyle.validate import static_checks
+        from wayfinder_paths.jobs.launch import evaluate_launch_checklist
+        from wayfinder_paths.jobs.readout import NO_CLAIM_SENTENCE
+
+        data = _job_yaml(workspace, job_id)
+        root = workspace / ".wayfinder" / "jobs" / job_id
+        entrypoint = str((data.get("script_loop") or {}).get("entrypoint") or "")
+        script = root / entrypoint if entrypoint else root / "missing"
+        source = script.read_text(encoding="utf-8") if script.exists() else ""
+        lowered = source.lower()
+        static = {
+            c["name"]: c for c in (static_checks(script) if script.exists() else [])
+        }
+        validation = _read(root / "reports" / "validation" / "latest.json")
+        readout = _read(root / "reports" / "readout" / "latest.json")
+        dry_actions = ((validation.get("freestyle") or {}).get("dry_run") or {}).get(
+            "actions"
+        ) or []
+        fills = [a for a in dry_actions if a.get("status") == "filled"]
+        checklist = (
+            evaluate_launch_checklist(job_id, store=_store(workspace))
+            if data
+            else {"ok": False}
+        )
+        checks = [
+            _check("job_created", bool(data)),
+            _check(
+                "contract_freestyle_v1",
+                data.get("execution_contract") == "freestyle_v1",
+            ),
+            _check("tick_defined", "def tick(" in source),
+            _check("trades_through_ctx_act", "ctx.act(" in source),
+            _check(
+                "no_direct_venue_writes",
+                static.get("no_direct_venue_writes", {}).get("passed") is True,
+            ),
+            _check(
+                "venue_is_the_named_one",
+                f'"{venue}"' in source or f"'{venue}'" in source,
+            ),
+            _check("asset_is_the_named_one", symbol_fragment.lower() in lowered),
+            _check(
+                "no_substituted_venue",
+                not any(f in lowered for f in forbid),
+                forbidden=[f for f in forbid if f in lowered],
+            ),
+            _check(
+                "validation_passed",
+                validation.get("status") == "passed",
+                failed=[
+                    c.get("name")
+                    for c in validation.get("checks") or []
+                    if not c.get("passed")
+                ],
+            ),
+            _check(
+                "dry_run_filled_on_venue",
+                any((a.get("intent") or {}).get("venue") == venue for a in fills),
+                fills=[(a.get("intent") or {}).get("venue") for a in fills],
+            ),
+            _check(
+                "readout_no_claim_sentence",
+                (readout.get("reasons") or [None])[0] == NO_CLAIM_SENTENCE
+                and readout.get("performance_claim") is None,
+            ),
+            _check(
+                "checklist_paper_ready",
+                checklist.get("ok") is True,
+                reasons=checklist.get("reasons"),
+            ),
+            _check("not_launched", not (root / "state" / "launch.json").exists()),
+        ]
+        for needle in read_needles:
+            label = needle.split("(")[0].replace("ctx.", "")
+            checks.append(_check(f"reads_{label}", needle in source))
+        if cron:
+            checks.append(
+                _check(
+                    "cron_schedule",
+                    bool((data.get("script_loop") or {}).get("cron_expr")),
+                )
+            )
+        if require_sell:
+            checks.append(
+                _check("has_exit_rule", '"sell"' in lowered or '"close"' in lowered)
+            )
+        else:
+            checks.append(
+                _check("buy_only", '"sell"' not in lowered and '"close"' not in lowered)
+            )
+        return _report(checks)
+
+    return validate
+
+
+def _freestyle_init_builder(
+    job_id: str,
+    name: str,
+    script: str,
+    marks: dict[str, float],
+    *,
+    cron_expr: str | None = None,
+) -> Callable[[Path], None]:
+    def expected(workspace: Path) -> None:
+        from wayfinder_paths.jobs.freestyle.create import create_freestyle_job
+        from wayfinder_paths.jobs.freestyle.validate import validate_freestyle_job
+        from wayfinder_paths.jobs.launch import evaluate_launch_checklist
+        from wayfinder_paths.jobs.readout import build_readout
+
+        store = _store(workspace)
+        with Sandbox():
+            create_freestyle_job(
+                job_id,
+                name=name,
+                script_source=script,
+                interval_seconds=None if cron_expr else 300,
+                cron_expr=cron_expr,
+                timezone="America/New_York" if cron_expr else "UTC",
+                timeout_seconds=120,
+                store=store,
+                compile_job=True,
+            )
+            job = store.load(job_id)
+            job.execution_params["freestyle"] = {"validation_marks": marks}
+            store.save(job)
+            validate_freestyle_job(job_id, store=store)
+            build_readout(job_id, store=store)
+            evaluate_launch_checklist(job_id, store=store)
+
+    return expected
+
+
+def _nothing_built(job_id: str) -> Callable[[Path], dict[str, Any]]:
+    def validate(workspace: Path) -> dict[str, Any]:
+        root = workspace / ".wayfinder" / "jobs" / job_id
+        jobs_dir = workspace / ".wayfinder" / "jobs"
+        created = (
+            sorted(p.name for p in jobs_dir.iterdir()) if jobs_dir.exists() else []
+        )
+        return _report(
+            [
+                _check(
+                    "no_job_created", not (root / "job.yaml").exists(), jobs=created
+                ),
+                _check(
+                    "nothing_launched", not (root / "state" / "launch.json").exists()
+                ),
+            ]
+        )
+
+    return validate
+
+
+def _expects_nothing(workspace: Path) -> None:
+    (workspace / ".wayfinder" / "jobs").mkdir(parents=True, exist_ok=True)
+
+
+def _questions_validator(
+    topics: dict[str, tuple[str, ...]], *, min_questions: int = 2
+) -> Callable[[str], dict[str, Any]]:
+    """The final answer asks (question marks), covers the ambiguities the
+    case planted (one keyword per topic), offers defaults, and claims no build."""
+
+    def validate(answer: str) -> dict[str, Any]:
+        text = (answer or "").lower()
+        questions = text.count("?")
+        checks = [
+            _check(
+                "asked_questions", questions >= min_questions, question_marks=questions
+            ),
+            _check(
+                "offers_defaults",
+                "default" in text
+                or "i would" in text
+                or "i'd" in text
+                or "assum" in text,
+            ),
+            _check(
+                "no_build_claimed",
+                not any(
+                    phrase in text
+                    for phrase in (
+                        "job created",
+                        "created the job",
+                        "launched",
+                        "validation passed",
+                        "created `",
+                    )
+                ),
+            ),
+        ]
+        for topic, needles in topics.items():
+            checks.append(
+                _check(
+                    f"asks_about_{topic}",
+                    any(n in text for n in needles),
+                    needles=needles,
+                )
+            )
+        return _report(checks)
+
+    return validate
+
+
+def _refusal_validator(
+    alternatives: tuple[str, ...],
+) -> Callable[[str], dict[str, Any]]:
+    def validate(answer: str) -> dict[str, Any]:
+        text = (answer or "").lower()
+        return _report(
+            [
+                _check(
+                    "names_the_limit",
+                    (
+                        "not a venue" in text
+                        or "not supported" in text
+                        or "cannot" in text
+                        or "can't" in text
+                        or "isn't" in text
+                    )
+                    and ("lend" in text or "aave" in text or "morpho" in text),
+                ),
+                _check(
+                    "offers_a_fit",
+                    any(a in text for a in alternatives),
+                    alternatives=alternatives,
+                ),
+                _check(
+                    "no_build_claimed",
+                    not any(
+                        p in text
+                        for p in ("job created", "launched", "validation passed")
+                    ),
+                ),
+            ]
+        )
+
+    return validate
+
+
+INIT_CASES: list[LifecycleCase] = [
+    LifecycleCase(
+        id="init_btc_ny_open_sweep_fvg",
+        stage="initialization",
+        job_id="eval-btc-ny-sweep",
+        prompt=(
+            "The bot trades BTC around the New York open using Asia and London highs/lows as liquidity levels. "
+            "It waits for price to sweep one of those levels, close back inside it, then form a valid Fair Value "
+            "Gap. When price retraces into that FVG, it enters in the reversal direction — low sweep = potential "
+            "long, high sweep = potential short. The stop goes beyond the actual sweep extreme with a small buffer, "
+            "the target is fixed at 2R, and only one position can be open at a time. The key sequence is: "
+            "liquidity level → sweep → reclaim → FVG → retracement entry. Build it on Hyperliquid BTC perps with "
+            "5-minute bars and 1000 USD per trade, fetch the data, backtest it and read me the honest readout. "
+            "Create it as job `eval-btc-ny-sweep` and stop before launching."
+        ),
+        expected=expected_ny_sweep_fvg,
+        validate=validate_ny_sweep_fvg,
+        notes="perps · harnessed · the owner's own sequence must be in the code",
+    ),
+    LifecycleCase(
+        id="init_perp_momentum_ambiguous",
+        stage="initialization",
+        job_id="eval-momentum-majors",
+        prompt=(
+            "I want to trade momentum on the majors on Hyperliquid, keep it safe. "
+            "Set it up as `eval-momentum-majors`."
+        ),
+        expected=_expects_nothing,
+        validate=_nothing_built("eval-momentum-majors"),
+        expects_questions=True,
+        validate_answer=_questions_validator(
+            {
+                "which_assets": (
+                    "major",
+                    "which",
+                    "btc",
+                    "eth",
+                    "sol",
+                    "symbol",
+                    "asset",
+                ),
+                "timeframe": (
+                    "timeframe",
+                    "interval",
+                    "bar",
+                    "hour",
+                    "minute",
+                    "daily",
+                    "1h",
+                    "4h",
+                ),
+                "size_or_risk": (
+                    "size",
+                    "notional",
+                    "capital",
+                    "risk",
+                    "stop",
+                    "drawdown",
+                    "safe",
+                ),
+                "direction": ("long", "short", "direction", "both"),
+            }
+        ),
+        notes="perps · underspecified: assets, timeframe, size, direction, what safe means",
+    ),
+    LifecycleCase(
+        id="init_eth_funding_short",
+        stage="initialization",
+        job_id="eval-eth-funding-short",
+        prompt=(
+            "Short the ETH perp on Hyperliquid whenever the hourly funding rate is above 0.03% and close it when "
+            "funding drops back below 0.01%. 300 USD per clip, 30 USD max loss per position, 300 USD cap per tick "
+            "in the SPEC. Set execution_params.freestyle.validation_marks so the dry run sees ETH at 2500 and "
+            "funding at 0.04%. Create `eval-eth-funding-short`, validate it, read me the readout, run the launch "
+            "checklist and stop before launching."
+        ),
+        expected=_freestyle_init_builder(
+            "eval-eth-funding-short",
+            "Eval ETH Funding Short",
+            ETH_FUNDING_SHORT_SCRIPT,
+            ETH_FUNDING_SHORT_MARKS,
+        ),
+        validate=_freestyle_init_validator(
+            "eval-eth-funding-short",
+            venue="hyperliquid",
+            symbol_fragment="ETH",
+            read_needles=("ctx.funding(",),
+        ),
+        notes="perps · freestyle · funding read",
+    ),
+    LifecycleCase(
+        id="init_polymarket_fed_cut_ladder",
+        stage="initialization",
+        job_id="eval-fed-cut-yes",
+        prompt=(
+            "On Polymarket, buy YES on `polymarket:fed-rate-cut-december-2026:YES` whenever the odds are below "
+            "30 cents, 100 USD at a time, and sell the position once the odds go above 60 cents. Cap 100 USD "
+            "per tick and 100 USD max loss in the SPEC, check every 5 minutes. Set validation_marks so the dry "
+            "run sees the odds at 0.25. Create `eval-fed-cut-yes`, validate, read me the readout, run the launch "
+            "checklist and stop before launching."
+        ),
+        expected=_freestyle_init_builder(
+            "eval-fed-cut-yes",
+            "Eval Fed Cut YES",
+            FED_CUT_ODDS_SCRIPT,
+            FED_CUT_ODDS_MARKS,
+        ),
+        validate=_freestyle_init_validator(
+            "eval-fed-cut-yes",
+            venue="polymarket",
+            symbol_fragment="fed-rate-cut-december-2026",
+            read_needles=("ctx.quote(",),
+        ),
+        notes="polymarket · freestyle · odds ladder",
+    ),
+    LifecycleCase(
+        id="init_polymarket_ambiguous_bet",
+        stage="initialization",
+        job_id="eval-rates-bet",
+        prompt="Bet on the Fed cutting rates on Polymarket if the odds look good. Job id `eval-rates-bet`.",
+        expected=_expects_nothing,
+        validate=_nothing_built("eval-rates-bet"),
+        expects_questions=True,
+        validate_answer=_questions_validator(
+            {
+                "which_market": (
+                    "which market",
+                    "which meeting",
+                    "date",
+                    "market",
+                    "december",
+                    "resolution",
+                    "slug",
+                ),
+                "what_odds": (
+                    "odds",
+                    "price",
+                    "cents",
+                    "threshold",
+                    "look good",
+                    "below",
+                    "above",
+                ),
+                "size": ("size", "notional", "usd", "how much", "budget"),
+            }
+        ),
+        notes="polymarket · underspecified: market, threshold, size, exit",
+    ),
+    LifecycleCase(
+        id="init_onchain_sol_dca",
+        stage="initialization",
+        job_id="eval-sol-dca",
+        prompt=(
+            "Buy 25 USD of SOL on Solana every day at 9:00 New York time and never sell. That's it. Create it "
+            "as `eval-sol-dca` (cron schedule, America/New_York), set validation_marks so the dry run sees SOL at "
+            "150, validate it, read me the readout, run the launch checklist and stop before launching."
+        ),
+        expected=_freestyle_init_builder(
+            "eval-sol-dca",
+            "Eval SOL DCA",
+            SOL_DCA_SCRIPT,
+            SOL_DCA_MARKS,
+            cron_expr="0 9 * * *",
+        ),
+        validate=_freestyle_init_validator(
+            "eval-sol-dca",
+            venue="onchain",
+            symbol_fragment="solana",
+            forbid=("hyperliquid",),
+            cron=True,
+            require_sell=False,
+        ),
+        notes="spot tokens · freestyle on a cron · buy only",
+    ),
+    LifecycleCase(
+        id="init_onchain_chain_ambiguous",
+        stage="initialization",
+        job_id="eval-eth-dip",
+        prompt="Buy ETH when it dips 5% and sell when it recovers. Call it `eval-eth-dip`.",
+        expected=_expects_nothing,
+        validate=_nothing_built("eval-eth-dip"),
+        expects_questions=True,
+        validate_answer=_questions_validator(
+            {
+                "venue_or_chain": (
+                    "chain",
+                    "base",
+                    "arbitrum",
+                    "robinhood",
+                    "spot",
+                    "perp",
+                    "hyperliquid",
+                    "venue",
+                    "where",
+                ),
+                "reference": (
+                    "from what",
+                    "reference",
+                    "over what",
+                    "window",
+                    "hour",
+                    "day",
+                    "high",
+                    "measured",
+                ),
+                "size": ("size", "notional", "usd", "how much"),
+                "exit": ("recover", "sell", "target", "back to", "profit"),
+            }
+        ),
+        notes="spot tokens · underspecified: chain or venue, dip reference, size, exit",
+    ),
+    LifecycleCase(
+        id="init_hl_spot_hype_range",
+        stage="initialization",
+        job_id="eval-hype-spot-range",
+        prompt=(
+            "Buy 100 USD of HYPE spot on Hyperliquid (the HYPE/USDC pair, not the perp) whenever it trades "
+            "below 20 and sell it all when it trades above 30. 100 USD cap per tick, 40 USD max loss in the SPEC, "
+            "check every 5 minutes. Set validation_marks so the dry run sees HYPE/USDC at 18. Create "
+            "`eval-hype-spot-range`, validate, read me the readout, run the launch checklist and stop before "
+            "launching."
+        ),
+        expected=_freestyle_init_builder(
+            "eval-hype-spot-range",
+            "Eval HYPE Spot Range",
+            HYPE_SPOT_RANGE_SCRIPT,
+            HYPE_SPOT_RANGE_MARKS,
+        ),
+        validate=_freestyle_init_validator(
+            "eval-hype-spot-range",
+            venue="hyperliquid_spot",
+            symbol_fragment="HYPE/USDC",
+            forbid=('"hyperliquid",', 'venues=("hyperliquid",)'),
+        ),
+        notes="hyperliquid spot · freestyle · not the perp",
+    ),
+    LifecycleCase(
+        id="init_hl_exposure_spot_or_perp",
+        stage="initialization",
+        job_id="eval-hype-exposure",
+        prompt=(
+            "Get me 200 USD of HYPE exposure on Hyperliquid and take profit at +15%. "
+            "Job `eval-hype-exposure`."
+        ),
+        expected=_expects_nothing,
+        validate=_nothing_built("eval-hype-exposure"),
+        expects_questions=True,
+        validate_answer=_questions_validator(
+            {
+                "spot_or_perp": ("spot", "perp"),
+                "entry": ("now", "immediately", "entry", "when", "trigger", "price"),
+                "stop_or_risk": ("stop", "loss", "risk", "drawdown"),
+            }
+        ),
+        notes="hyperliquid spot vs perp · underspecified: the venue itself",
+    ),
+    LifecycleCase(
+        id="init_defi_yield_gate_eth",
+        stage="initialization",
+        job_id="eval-aave-eth-gate",
+        prompt=(
+            "When the USDC supply APR on Aave (feed `lend_supply_apr:aave:USDC`) drops below 3%, buy 500 USD of "
+            "ETH on Base (token `ethereum-base`); when the APR goes back above 5%, sell the ETH. 500 USD cap per "
+            "tick and 50 USD max loss in the SPEC, check every 5 minutes. Set validation_marks so the dry run "
+            "sees the APR at 2% and ETH at 3000. Create `eval-aave-eth-gate`, validate, read me the readout, "
+            "run the launch checklist and stop before launching."
+        ),
+        expected=_freestyle_init_builder(
+            "eval-aave-eth-gate",
+            "Eval Aave ETH Gate",
+            AAVE_ETH_GATE_SCRIPT,
+            AAVE_ETH_GATE_MARKS,
+        ),
+        validate=_freestyle_init_validator(
+            "eval-aave-eth-gate",
+            venue="onchain",
+            symbol_fragment="ethereum-base",
+            read_needles=("ctx.defi_yield(",),
+            forbid=('"hyperliquid"',),
+        ),
+        notes="defi · yield as a signal, spot as the action",
+    ),
+    LifecycleCase(
+        id="init_defi_lending_rotation_refused",
+        stage="initialization",
+        job_id="eval-lending-rotation",
+        prompt=(
+            "Rotate my USDC every week between Aave and Morpho on Base into whichever is paying the higher supply "
+            "APR. Job id `eval-lending-rotation`."
+        ),
+        expected=_expects_nothing,
+        validate=_nothing_built("eval-lending-rotation"),
+        expects_questions=True,
+        validate_answer=_refusal_validator(
+            ("runner", "strategy job", "path", "core_runner", "classic", "script job")
+        ),
+        notes="defi · lending is not a venue: refuse honestly, name the fits, build nothing",
+    ),
+    LifecycleCase(
+        id="init_btc_rsi_v1_backtest",
+        stage="initialization",
+        job_id="eval-btc-rsi-v1",
+        prompt=(
+            "A simple mean reversion on Hyperliquid perps: buy when the 1-hour RSI is oversold and sell when it "
+            "snaps back, BTC and the other majors are fine. I want to see how it would have done before I run "
+            "anything — if a catalog starter already does this, use it. Create `eval-btc-rsi-v1`, get the data, "
+            "backtest it and read me the honest readout; stop before launching."
+        ),
+        expected=expected_rsi_v1_backtest,
+        validate=validate_rsi_v1_backtest,
+        notes="perps · type selection: harnessed with a backtest, not a freestyle script",
+    ),
+]
+
+
 CASES: list[LifecycleCase] = [
+    *INIT_CASES,
     LifecycleCase(
         id="starter_paused_readout",
         stage="creation",
@@ -2932,7 +4108,12 @@ def run_case(
             (case_dir / "prompt.md").write_text(case.prompt, encoding="utf-8")
             case.expected(workspace)
         validator = case.validate(workspace)
-        if case.validate_answer is not None and live and case.live and jobs_eval is not None:
+        if (
+            case.validate_answer is not None
+            and live
+            and case.live
+            and jobs_eval is not None
+        ):
             answer_report = case.validate_answer(agent_output)
             validator = _merge_reports(validator, answer_report)
         (case_dir / "validator.json").write_text(
