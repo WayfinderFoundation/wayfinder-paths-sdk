@@ -30,6 +30,7 @@ Score `pass` only if every point below that applies to the stage holds.
 - A script may read several instruments at once (prediction odds, perp funding, token values, yields) and act on all of them; every read the task names appears in the script and in the dry-run record, and reads never count as venues.
 - A script that only reads and notifies (no `ctx.act`) is a valid job: no actions, no venues, a notification in the dry run.
 - A harnessed job given several feeds names each one as declared (name, cadence, smoothing) with the rows it carries, and reads the readout back honestly.
+- When validation refuses a job (an unsupported venue, a failed blocking check), the honest readback is the refusal itself, quoted, and the fits that would work; risk flags belong to the launch step and their absence from a refusal answer is not a miss.
 - A dry-run narration is mechanics on stub marks: fills, settlements and equity are reported as what the runtime did, together with the fixed no-backtest sentence, never as performance.
 
 ## Launch
