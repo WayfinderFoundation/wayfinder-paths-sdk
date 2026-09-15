@@ -348,6 +348,9 @@ wake cadence or cron, event triggers, notifications with quiet hours, kill switc
 intervene wake; evolution runs every two days on eligible harnessed jobs only
 (freestyle scripts and Paths never evolve). `status` carries `readout`,
 `launch_checklist`, `risk_flags`, `watchdog`, `evolution`, `probation_summary`.
+A freestyle or Path readback that shows any money number (a dry-run fill, equity, a
+settlement) carries the readout's fixed sentence verbatim — "no backtest exists for this
+script; nothing here is a performance claim" — every time, as one line of the answer.
 Job state comes only from `core_jobs` (`list` shows every job that exists here,
 `status` one of them). A `not found` is an answer: say the job does not exist, offer
 `list`, and stop — never search the filesystem, other checkouts or the SDK source
