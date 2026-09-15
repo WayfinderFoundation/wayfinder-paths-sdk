@@ -59,6 +59,10 @@ def build_strategy(params: dict[str, Any] | None = None) -> MyStrategy:
 - A `CLOSE` intent (`{"action": "CLOSE", "venue", "symbol", "side": <opposite>, "size"}`) exits early; otherwise the bracket exits at the stop or the target.
 - Put every number the owner named in `default_params` and quote them back in the readout.
 
+## Fidelity to the owner's sequence
+
+When the owner describes a sequence ("level → sweep → reclaim → gap → retracement entry"), every step is its own condition in `decide`, in that order, and the entry fires on the last step, never on the one before it: a fair value gap forming is not the entry, the price coming back into that gap is. Name each step in the code (a `_sweep`, a `_reclaim`, a `_fvg`, a `_retrace` check, or a state machine with those states) so a reader can match the code to the words, and quote the owner's numbers (buffer, R multiple, one position) back in the readout. Simplifying the rule to make it trade more is a different strategy, not the owner's.
+
 ## What the readout owes the owner
 
 Whether a backtest exists, the window and symbols it covered, the trade count, the net return and max drawdown from `results/backtest/latest.json`, and what is missing before paper or live. Numbers come only from that report.
