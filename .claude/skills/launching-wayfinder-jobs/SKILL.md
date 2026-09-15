@@ -37,6 +37,7 @@ One flow for every kind of job. Seven steps, in this order, every time.
 - Risk flags are shown before every paper launch and journaled. A `block` flag (governance ceiling) cannot be acknowledged. Every `warn` flag must be acknowledged, with a memo, before live.
 - Never patch a runner env var to change mode or revision; `launch`, `set_script_mode` and `set_watchdog` recompile.
 - Never claim a performance number that no artifact carries. The readout's verdict and reasons are the only sentences about performance.
+- Report validation as its `status` plus the names of any failed or warned checks, copied from the report. Never a count of checks ("18/18"): counts are the report's to give, and a miscount is a false claim.
 - Every readback of a freestyle or Path job that shows a money number (a dry-run fill, equity, a settlement) carries the readout's fixed sentence verbatim: "no backtest exists for this script; nothing here is a performance claim". It is one line; it is never optional.
 - Shells wallets are gasless: never check or bridge gas.
 - The rules files in this skill carry the whole contract for each kind: building, validating, launching and watching a job needs no reading of the SDK source.

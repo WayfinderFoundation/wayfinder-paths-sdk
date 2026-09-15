@@ -101,6 +101,7 @@ Do not fail an answer for any of these; they are supported by how the system wor
 - "validation passed with no warnings" when the validation report's checks carry no warnings; launch-step risk flags are not validation warnings.
 - Risk flags omitted at creation or after a validation refusal; they are shown by `launch_checklist` and `launch`.
 - The `FINAL ANSWER` marker not being the very first characters.
+- A check total that is off by one or two ("18 checks" when the report has 17) when the reported status and the named failed checks match the report; note it, do not fail on it.
 - Wayfinder, Shells, OpenCode, Hyperliquid, Polymarket, Aave, Morpho and other venue names.
 - "the owner gets a chat message and an email" under a `["chat", "email"]` policy whose delivered record lists only email (chat is the wake report).
 
