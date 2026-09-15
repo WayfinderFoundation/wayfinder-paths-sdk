@@ -2364,11 +2364,20 @@ def validate_edit_relaunch(workspace: Path) -> dict[str, Any]:
         ),
         _check("dry_run_ran_new_code", notionals == [100.0], notionals=notionals),
         _check(
-            "relaunched_at_new_revision",
+            "deployed_at_new_revision",
             bool(revision)
-            and launch_state.get("revision") == revision
             and (data.get("versioning") or {}).get("active_revision") == revision
-            and journal.count("launched") >= 2,
+            and (
+                # the direct route: validate again, launch again
+                (
+                    launch_state.get("revision") == revision
+                    and journal.count("launched") >= 2
+                )
+                # or the proposal route: propose, approve, apply (promotes the revision)
+                or "proposal_promoted" in journal
+            ),
+            launches=journal.count("launched"),
+            promoted="proposal_promoted" in journal,
         ),
         _check("still_paper", launch_state.get("mode") == "paper"),
     ]

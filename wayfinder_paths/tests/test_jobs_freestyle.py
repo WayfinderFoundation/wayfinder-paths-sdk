@@ -568,3 +568,54 @@ def test_dry_run_defi_yield_trigger_opens_from_the_yield_mark(tmp_path: Path) ->
     assert len(opens) == 1 and opens[0]["intent"]["side"] == "long"
     assert dry["yields"][YIELD_FEED] == pytest.approx(0.08)
     assert dry["venues_used"] == ["hyperliquid"]  # a yield read is not a venue
+
+
+def test_freestyle_candidate_validation_runs_no_legacy_script_checks(
+    tmp_path: Path,
+) -> None:
+    """A code_change proposal on a freestyle job validates the candidate with
+    the freestyle static checks only: the legacy recorder/scenario checks
+    (forward_recorder_imported, scenario_plan_present) would fail every
+    freestyle candidate and block apply."""
+    import shutil
+
+    from wayfinder_paths.jobs.validation import (
+        REQUIRED_INTENT_FIELDS,
+        validate_candidate_application,
+    )
+
+    store, job = _job(tmp_path)
+    job_dir = store.job_dir(job.id)
+    candidate_dir = tmp_path / "candidate"
+    shutil.copytree(job_dir, candidate_dir)
+    script = candidate_dir / "workspace" / "src" / "hormuz_perp.py"
+    script.write_text(
+        script.read_text(encoding="utf-8").replace(
+            '"notional": 200', '"notional": 100'
+        ),
+        encoding="utf-8",
+    )
+    proposal = {
+        "kind": "code_change",
+        "summary": "smaller BTC order",
+        "intent_contract": {
+            field: [f"{field} noted"] if field != "intent" else "smaller order"
+            for field in REQUIRED_INTENT_FIELDS
+        },
+    }
+    report = validate_candidate_application(
+        repo_root=tmp_path,
+        job_dir=job_dir,
+        proposal=proposal,
+        candidate_dir=candidate_dir,
+        skip_behavior_checks=True,
+    )
+    names = {c["name"] for c in report["checks"]}
+    assert "no_direct_venue_writes" in names
+    assert not names & {
+        "forward_recorder_imported",
+        "forward_run_recorded",
+        "scenario_plan_present",
+    }
+    failed = [c["name"] for c in report["checks"] if not c["passed"]]
+    assert not [n for n in failed if not n.startswith("intent_contract")], failed

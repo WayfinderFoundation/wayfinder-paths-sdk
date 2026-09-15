@@ -168,7 +168,10 @@ def validate_candidate_application(
                         script_path=script_path,
                     )
                 )
-        else:
+        elif contract == "legacy":
+            # Only legacy script jobs carry their own recorder and scenario
+            # plan; a freestyle candidate already had its static checks above
+            # and a Path candidate has no script of its own.
             checks.extend(_script_static_checks(script_path))
             checks.extend(_scenario_checks(script_path, proposal))
 

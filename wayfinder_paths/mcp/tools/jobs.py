@@ -54,6 +54,7 @@ from wayfinder_paths.jobs.sync import (
     venue_deposit,
     venue_withdraw,
 )
+from wayfinder_paths.jobs.validation import REQUIRED_INTENT_FIELDS
 from wayfinder_paths.jobs.worker import run_job_worker
 from wayfinder_paths.mcp.utils import catch_errors, err, ok
 from wayfinder_paths.runner.monitor_state import atomic_write_json
@@ -1307,7 +1308,18 @@ async def core_jobs(
         if not kind or not summary or not intent_contract:
             return err(
                 "invalid_request",
-                "propose requires kind, summary, and intent_contract",
+                "propose requires kind, summary, and intent_contract with the fields "
+                + ", ".join(REQUIRED_INTENT_FIELDS),
+            )
+        missing_fields = [f for f in REQUIRED_INTENT_FIELDS if f not in intent_contract]
+        if missing_fields:
+            return err(
+                "invalid_request",
+                "intent_contract is missing "
+                + ", ".join(missing_fields)
+                + " (required: "
+                + ", ".join(REQUIRED_INTENT_FIELDS)
+                + ")",
             )
         return ok(
             propose_change(
