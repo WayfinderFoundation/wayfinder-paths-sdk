@@ -184,6 +184,8 @@ class LifecycleCase:
     # nothing and validate the empty store).
     expects_questions: bool = False
     validate_answer: Callable[[str], dict[str, Any]] | None = None
+    # A harnessed build fetches data and backtests; give it longer than a script.
+    timeout_seconds: int | None = None
 
 
 def _store(workspace: Path) -> JobStore:
@@ -3282,6 +3284,26 @@ def _expects_nothing(workspace: Path) -> None:
     (workspace / ".wayfinder" / "jobs").mkdir(parents=True, exist_ok=True)
 
 
+_BUILD_CLAIM = re.compile(
+    r"\b(job (?:`[^`]*` )?(?:was |is |has been )?created|created the job|i created|"
+    r"launched (?:it|the job|in paper|`)|is (?:now )?launched|validation passed|validated it|"
+    r"paper-launched)\b"
+)
+
+
+def _claims_a_build(text: str) -> bool:
+    """True when the answer affirms a build. Sentences that negate one
+    ("nothing was created, validated, or launched") do not count."""
+    kept = [
+        sentence
+        for sentence in re.split(r"(?<=[.!?\n])\s+", text)
+        if not re.search(
+            r"\b(nothing|not|never|no job|won'?t|will not|did not|didn'?t)\b", sentence
+        )
+    ]
+    return bool(_BUILD_CLAIM.search(" ".join(kept)))
+
+
 def _questions_validator(
     topics: dict[str, tuple[str, ...]], *, min_questions: int = 2
 ) -> Callable[[str], dict[str, Any]]:
@@ -3302,19 +3324,7 @@ def _questions_validator(
                 or "i'd" in text
                 or "assum" in text,
             ),
-            _check(
-                "no_build_claimed",
-                not any(
-                    phrase in text
-                    for phrase in (
-                        "job created",
-                        "created the job",
-                        "launched",
-                        "validation passed",
-                        "created `",
-                    )
-                ),
-            ),
+            _check("no_build_claimed", not _claims_a_build(text)),
         ]
         for topic, needles in topics.items():
             checks.append(
@@ -3352,13 +3362,7 @@ def _refusal_validator(
                     any(a in text for a in alternatives),
                     alternatives=alternatives,
                 ),
-                _check(
-                    "no_build_claimed",
-                    not any(
-                        p in text
-                        for p in ("job created", "launched", "validation passed")
-                    ),
-                ),
+                _check("no_build_claimed", not _claims_a_build(text)),
             ]
         )
 
@@ -3369,6 +3373,7 @@ INIT_CASES: list[LifecycleCase] = [
     LifecycleCase(
         id="init_btc_ny_open_sweep_fvg",
         stage="initialization",
+        timeout_seconds=2400,
         job_id="eval-btc-ny-sweep",
         prompt=(
             "The bot trades BTC around the New York open using Asia and London highs/lows as liquidity levels. "
@@ -3666,6 +3671,7 @@ INIT_CASES: list[LifecycleCase] = [
     LifecycleCase(
         id="init_btc_rsi_v1_backtest",
         stage="initialization",
+        timeout_seconds=2400,
         job_id="eval-btc-rsi-v1",
         prompt=(
             "A simple mean reversion on Hyperliquid perps: buy when the 1-hour RSI is oversold and sell when it "
@@ -4097,7 +4103,7 @@ def run_case(
                 cwd=workspace,
                 env=case_env,
                 log_path=log_path,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=max(timeout_seconds, case.timeout_seconds or 0),
             )
             stop_sandbox_runner(runner_dir)
             agent_output = jobs_eval.harvest_answer(log_path, db_path, title=title)

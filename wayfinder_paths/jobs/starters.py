@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.jobs.background import spawn_detached_op
+from wayfinder_paths.jobs.execution.spec_defaults import (
+    harnessed_execution_params,
+    harnessed_execution_spec,
+)
 from wayfinder_paths.jobs.models import (
     AgentMode,
     WayfinderJob,
@@ -1787,58 +1791,19 @@ def create_starter_job(
         execution_contract="jobs_v1",
         initializer_session_id=initializer_session_id,
     )
-    job.execution_spec = {
-        "market_kind": "perp",
-        "view_type": "completed_bars",
-        "bar_model": "completed_only",
-        "fill_model": "next_bar_open",
-        "ohlc_rules": {
-            "use_high_low_for_stops": True,
-            "allow_close_only_entries": False,
-            "same_bar_fill": False,
-            "same_bar_policy": "conservative",
-        },
-        "data_contract": {
-            "candles_source": "sdk_only",
-            "no_external_ccxt": True,
-            "rate_limit_safe": True,
-            "bar_interval": definition.timeframe,
-            "symbols": list(definition.symbols),
-            "max_bar_age_intervals": 2,
-            "stale_policy": "skip",
-            **(
-                {"features": [copy.deepcopy(dict(f)) for f in definition.features]}
-                if definition.features
-                else {}
-            ),
-        },
-        "validation": {
-            "mode": "strict",
-            "require_scenarios": False,
-            **(
-                {
-                    "robustness_plan": copy.deepcopy(
-                        STARTER_ROBUSTNESS_PLANS[definition.id]
-                    )
-                }
-                if definition.id in STARTER_ROBUSTNESS_PLANS
-                else {}
-            ),
-        },
-        "venues": ["hyperliquid"],
-    }
+    job.execution_spec = harnessed_execution_spec(
+        list(definition.symbols),
+        definition.timeframe,
+        features=definition.features or None,
+        robustness_plan=STARTER_ROBUSTNESS_PLANS.get(definition.id),
+    )
     job.execution_params = {
         **configured_params,
-        "symbols": list(definition.symbols),
-        "venue": "hyperliquid",
-        "initial_capital": 10_000.0,
-        "fee_bps": 4.5,
-        "slippage_bps": 3.5,
-        "min_trade_notional": 25.0,
-        "leverage": selected_leverage,
-        # Without this the driver's default 200-bar window caps ctx.bar_index
-        # below warmup for most starters and they never trade.
-        "lookback_bars": starter_lookback_bars(definition),
+        **harnessed_execution_params(
+            list(definition.symbols),
+            lookback_bars=starter_lookback_bars(definition),
+            leverage=selected_leverage,
+        ),
     }
     job.controller["starter"] = {
         "id": definition.id,

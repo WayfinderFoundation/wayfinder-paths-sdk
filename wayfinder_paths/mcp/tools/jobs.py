@@ -23,6 +23,11 @@ from wayfinder_paths.jobs.execution.op_process import (
     process_identity_fields,
     recorded_process_alive,
 )
+from wayfinder_paths.jobs.execution.spec_defaults import (
+    harnessed_execution_params,
+    harnessed_execution_spec,
+    interval_label,
+)
 from wayfinder_paths.jobs.freestyle.create import create_freestyle_job
 from wayfinder_paths.jobs.halt import clear_halt, request_halt
 from wayfinder_paths.jobs.launch import (
@@ -485,6 +490,8 @@ async def core_jobs(
 
     Typical flow:
       - `create` with `script` + `interval_seconds` for script-only jobs.
+      - `create` with `symbols` + `bar_interval` (jobs_v1) seeds the harnessed data contract
+        and paper execution params so `fetch_dataset` and `backtest_job` run without editing job.yaml.
         Jobs default to `execution_contract="jobs_v1"` (decide()/build_strategy
         driven by the SDK tick driver); pass `execution_contract="legacy"` only
         for a real standalone script that runs top-to-bottom.
@@ -678,6 +685,27 @@ async def core_jobs(
             initializer_session_id=initializer_session_id
             or _infer_initializer_session(),
         )
+        if job.execution_contract == "jobs_v1":
+            # A custom harnessed build gets the same data contract a catalog
+            # starter does, from the symbols and bar interval it names — no
+            # job.yaml surgery before fetch_dataset/backtest_job can run.
+            declared = [
+                str(x)
+                for x in (symbols or (execution_params or {}).get("symbols") or [])
+            ]
+            if declared:
+                job.execution_spec = harnessed_execution_spec(
+                    declared,
+                    bar_interval or interval_label(int(interval_seconds or 3600)),
+                )
+                job.execution_params = {
+                    **harnessed_execution_params(declared),
+                    **dict(execution_params or {}),
+                }
+            elif execution_params:
+                job.execution_params = dict(execution_params)
+        elif execution_params:
+            job.execution_params = dict(execution_params)
         job_path = store.create_job(job)
         result: dict[str, Any] = {"job": job.to_dict(), "job_yaml": str(job_path)}
         entrypoint = store.resolve_script_entrypoint(job.id, job.to_dict())
