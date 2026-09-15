@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
+from wayfinder_paths.core.utils.brap import normalize_swap_token
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.mcp.utils import (
     catch_errors,
@@ -115,6 +116,8 @@ async def onchain_quote_swap(
     except Exception as exc:  # noqa: BLE001
         return err("token_error", str(exc))
 
+    from_meta = normalize_swap_token(from_meta)
+    to_meta = normalize_swap_token(to_meta)
     from_chain_id = from_meta.get("chain_id")
     to_chain_id = to_meta.get("chain_id")
     from_token_addr = str(from_meta.get("address") or "").strip() or None

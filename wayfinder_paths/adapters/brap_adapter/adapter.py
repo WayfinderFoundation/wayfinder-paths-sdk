@@ -11,6 +11,7 @@ from wayfinder_paths.core.clients.LedgerClient import TransactionRecord
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants.chains import SVM_CHAIN_IDS
 from wayfinder_paths.core.utils.brap import (
+    normalize_swap_token,
     prepare_brap_transactions,
     uses_solver_approvals,
 )
@@ -165,6 +166,8 @@ class BRAPAdapter(BaseAdapter):
         quote: dict[str, Any],
         strategy_name: str | None = None,
     ) -> tuple[bool, Any]:
+        from_token = normalize_swap_token(from_token)
+        to_token = normalize_swap_token(to_token)
         chain_id = from_token["chain"]["id"]
         if chain_id in SVM_CHAIN_IDS:
             return (False, "Use onchain_swap for Solana-source execution.")
