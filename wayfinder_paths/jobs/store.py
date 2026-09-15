@@ -12,6 +12,7 @@ import yaml
 from wayfinder_paths.jobs.failures import classify_failure
 from wayfinder_paths.jobs.forward import default_forward_summary
 from wayfinder_paths.jobs.models import (
+    NO_BACKTEST_CONTRACTS,
     ApplicationStatus,
     WayfinderJob,
     safe_job_id,
@@ -387,7 +388,7 @@ class JobStore:
             job = self.load(job_id)
         except Exception:
             return True
-        if str(job.execution_contract or "legacy") in {"freestyle_v1", "path_v1"}:
+        if str(job.execution_contract or "legacy") in NO_BACKTEST_CONTRACTS:
             return False
         return bool(job.script_loop.enabled)
 

@@ -802,3 +802,21 @@ def test_last_tick_file_feeds_the_freestyle_snapshot_block(
     plain = WayfinderJob.new("plain", script="strategy.py", interval_seconds=60)
     store.create_job(plain)
     assert snapshot_job(plain.id, store=store)["freestyle"] is None
+
+
+def test_backtest_monitors_do_not_apply_to_freestyle_jobs(tmp_path: Path) -> None:
+    """The replication and counterfactual monitors need a backtest book; on a
+    freestyle job they must say "not applicable" instead of journaling a
+    *_failed entry on every wake (seen on the dev box after the first apply)."""
+    from wayfinder_paths.jobs.counterfactual import counterfactual_job
+    from wayfinder_paths.jobs.replication import replication_job
+
+    store, job = _job(tmp_path)
+    replication = replication_job(job.id, store=store)
+    counterfactual = counterfactual_job(job.id, store=store)
+    assert replication["available"] is False
+    assert "not applicable" in replication["reason"]
+    assert counterfactual["available"] is False
+    assert "not applicable" in counterfactual["reason"]
+    journal = store.read_jsonl(job.id, "journal.jsonl", limit=100)
+    assert not [row for row in journal if str(row.get("type", "")).endswith("_failed")]

@@ -28,6 +28,10 @@ EXECUTION_CONTRACTS: tuple[str, ...] = ("legacy", "jobs_v1", "freestyle_v1", "pa
 # scripts stay outside it; jobs_v1 additionally owns backtest, preflight,
 # warm-fork ticks and evolution.
 LIFECYCLE_CONTRACTS: frozenset[str] = frozenset({"jobs_v1", "freestyle_v1", "path_v1"})
+# Contracts whose evidence is the script's own dry run: no dataset, no
+# backtest, so the backtest-derived monitors (replication, counterfactual,
+# scenario plans) do not apply to them.
+NO_BACKTEST_CONTRACTS: frozenset[str] = frozenset({"freestyle_v1", "path_v1"})
 JobKind = Literal["script_only", "script_agent", "agent_only"]
 JobHealth = Literal["green", "yellow", "red", "unknown"]
 ProposalStatus = Literal["pending", "approved", "rejected"]
