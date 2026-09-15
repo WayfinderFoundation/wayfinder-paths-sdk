@@ -12,6 +12,7 @@ import yaml
 
 from wayfinder_paths.jobs.background import op_running
 from wayfinder_paths.jobs.execution.features import (
+    feature_gaps,
     load_feature_rows,
     merge_features,
     parse_feature_specs,
@@ -456,7 +457,11 @@ def _load_dataset(
             {
                 **dataset.metadata,
                 "features": [item.name for item in specs],
-                "feature_coverage": _feature_coverage(dataset.bars, frames),
+                "feature_coverage": _feature_coverage(
+                    dataset.bars,
+                    frames,
+                    cadences={item.name: item.cadence_seconds for item in specs},
+                ),
             },
             market_events,
         )
@@ -505,7 +510,12 @@ def _events_in_window(
     return [event for event in events if start <= pd.Timestamp(event.timestamp) <= end]
 
 
-def _feature_coverage(bars: Any, frames: Mapping[str, Any]) -> dict[str, Any]:
+def _feature_coverage(
+    bars: Any,
+    frames: Mapping[str, Any],
+    *,
+    cadences: Mapping[str, int | None] | None = None,
+) -> dict[str, Any]:
     """Per-feature span vs the bars span. A feature that covers only the tail
     of the dataset silently handicaps that signal in any comparison (a 1-year
     funding file against 6 years of candles condemned a signal in a live
@@ -529,6 +539,9 @@ def _feature_coverage(bars: Any, frames: Mapping[str, Any]) -> dict[str, Any]:
             "rows": int(len(frame)),
             "coverage_fraction": round(max(0.0, overlap) / bars_span, 3),
         }
+        cadence = (cadences or {}).get(name)
+        if cadence is not None:
+            coverage[name]["gaps"] = feature_gaps(frame, cadence)
     return coverage
 
 
