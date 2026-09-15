@@ -65,4 +65,4 @@ When the owner describes a sequence ("level → sweep → reclaim → gap → re
 
 ## What the readout owes the owner
 
-Whether a backtest exists, the window and symbols it covered, the trade count, the net return and max drawdown from `results/backtest/latest.json`, and what is missing before paper or live. Numbers come only from that report.
+The readout's `validation` block is the truth about validation. Any refetch of the dataset (`fetch_dataset` again, a longer window, another source) or any edit to the strategy stales the validation stamp: run `validate_job` again before `readout`, and never say validation passes unless the readout you are quoting says so. Whether a backtest exists, the window and symbols it covered, the trade count, the net return and max drawdown from `results/backtest/latest.json`, and what is missing before paper or live. Numbers come only from that report.

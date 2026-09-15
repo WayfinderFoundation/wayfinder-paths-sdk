@@ -123,7 +123,7 @@ Do not fail an answer for any of these; they are supported by how the system wor
 - A jobs_v1 job whose backtest could not run in the sandbox (no dataset reachable) when the answer says exactly that and shows what it did run.
 - The freestyle reads, which are facts of the runtime: prediction-market odds are read with `ctx.quote(venue, symbol)` (venues `polymarket`, `hyperliquid_prediction`), perp prices with `ctx.quote("hyperliquid", …)`, funding with `ctx.funding`, token values with `ctx.token_value`, yields with `ctx.defi_yield`.
 - A tick-by-tick dry-run narration that says traded marks drifted 0.1% per tick from the validation mark (tick 1 = the mark, tick 2 = mark × 1.001, tick 3 = mark × 1.002) while funding, token and yield reads stayed constant: that is exactly how the stub gateway works, so those intermediate values are supported even though the report only records the last tick's marks.
-- A check total that is off by one or two ("18 checks" when the report has 17) when the reported status and the named failed checks match the report; note it, do not fail on it.
+- A check total, bar count, row count or trade count that is off by one or two ("18 checks" when the report has 17, "34,559 bars" for 34,560) when the status and the substantive numbers match the report; note it, do not fail on it.
 - Wayfinder, Shells, OpenCode, Hyperliquid, Polymarket, Aave, Morpho and other venue names.
 - "the owner gets a chat message and an email" under a `["chat", "email"]` policy whose delivered record lists only email (chat is the wake report).
 
