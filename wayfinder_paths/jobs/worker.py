@@ -4,6 +4,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -2040,8 +2041,26 @@ def run_job_worker(
     return report
 
 
+# A loaded box answers the OpenCode health probe late rather than not at all
+# (the dev box served /session in ~7 s while /global/health missed the 10 s
+# client timeout): three of four watchdog wakes in one hour were dropped as
+# "OpenCode server unavailable" on a server that was up. Probe a few times
+# before giving up — the wake has minutes, not seconds.
+_OPENCODE_HEALTH_ATTEMPTS = 3
+_OPENCODE_HEALTH_RETRY_SECONDS = 5.0
+
+
+def _opencode_reachable() -> bool:
+    for attempt in range(_OPENCODE_HEALTH_ATTEMPTS):
+        if OPENCODE_CLIENT.healthy():
+            return True
+        if attempt + 1 < _OPENCODE_HEALTH_ATTEMPTS:
+            time.sleep(_OPENCODE_HEALTH_RETRY_SECONDS)
+    return False
+
+
 def _ensure_worker_session(job_id: str, mode: str) -> str | None:
-    if not OPENCODE_CLIENT.healthy():
+    if not _opencode_reachable():
         return None
     controller_session_id = os.environ.get("OPENCODE_SESSION_ID") or os.environ.get(
         "OPENCODE_SESSIONID"
