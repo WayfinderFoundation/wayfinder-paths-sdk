@@ -1,3 +1,5 @@
+from eth_utils import to_checksum_address
+
 CHAIN_ID_ETHEREUM = 1
 CHAIN_ID_BASE = 8453
 CHAIN_ID_ARBITRUM = 42161
@@ -11,6 +13,8 @@ CHAIN_ID_KATANA = 747474
 CHAIN_ID_MONAD = 143
 CHAIN_ID_MEGAETH = 4326
 CHAIN_ID_ROBINHOOD = 4663
+CHAIN_ID_ARC_TESTNET = 5042002
+ARC_USDC_ADDRESS = to_checksum_address("0x3600000000000000000000000000000000000000")
 # Internal chain id for Solana mainnet-beta. Li.Fi's external id
 # 1151111081099710 maps to/from 900 at service boundaries only.
 CHAIN_ID_SOLANA = 900
@@ -31,6 +35,7 @@ CHAIN_CODE_TO_ID = {
     "monad": CHAIN_ID_MONAD,
     "megaeth": CHAIN_ID_MEGAETH,
     "robinhood": CHAIN_ID_ROBINHOOD,
+    "arc-testnet": CHAIN_ID_ARC_TESTNET,
     "solana": CHAIN_ID_SOLANA,
 }
 
@@ -58,6 +63,8 @@ SUPPORTED_CHAINS = [
     CHAIN_ID_MEGAETH,
     CHAIN_ID_ROBINHOOD,
 ]
+
+# Explicit opt-in only: never include testnets in all-chain portfolio scans.
 
 # Chains where remote-wallet transactions are gas-sponsored: the backend
 # broadcasts them and gas is covered, so local nonce/gas handling and the
@@ -91,7 +98,11 @@ MIN_PRIORITY_FEE_BY_CHAIN_ID: dict[int, int] = {
     CHAIN_ID_POLYGON: 25 * 10**9,
 }
 
+# Arc enforces a max-fee admission floor, not a priority-fee floor.
+MIN_MAX_FEE_BY_CHAIN_ID: dict[int, int] = {CHAIN_ID_ARC_TESTNET: 20 * 10**9}
+
 CHAIN_EXPLORER_URLS: dict[int, str] = {
+    CHAIN_ID_ARC_TESTNET: "https://testnet.arcscan.app/",
     CHAIN_ID_ETHEREUM: "https://etherscan.io/",
     CHAIN_ID_ARBITRUM: "https://arbiscan.io/",
     CHAIN_ID_BASE: "https://basescan.org/",

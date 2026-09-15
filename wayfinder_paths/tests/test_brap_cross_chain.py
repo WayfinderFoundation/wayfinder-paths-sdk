@@ -8,6 +8,7 @@ import pytest
 
 from wayfinder_paths.adapters.brap_adapter.adapter import BRAPAdapter
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
+from wayfinder_paths.core.constants.chains import ARC_USDC_ADDRESS, CHAIN_ID_ARC_TESTNET
 from wayfinder_paths.mcp.tools.execute import onchain_swap
 from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
 
@@ -104,27 +105,31 @@ async def test_token_id_swap_passes_recipient_through_adapter_to_client() -> Non
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("chain_id", [4663, CHAIN_ID_ARC_TESTNET])
 @pytest.mark.parametrize("value", [RELAYER_FEE, str(RELAYER_FEE), hex(RELAYER_FEE)])
 async def test_mcp_execution_quote_round_trips_router_fee_and_approval(
     value: int | str,
+    chain_id: int,
 ) -> None:
     from_token = {
         "token_id": "from",
         "symbol": "PONS",
-        "address": TOKEN,
-        "chain_id": 4663,
-        "chain": {"id": 4663},
+        "address": "0x" + "0" * 40 if chain_id == CHAIN_ID_ARC_TESTNET else TOKEN,
+        "chain_id": chain_id,
+        "chain": {"id": chain_id},
         "decimals": 18,
     }
     to_token = {
         "token_id": "to",
         "symbol": "STONK",
-        "address": SVM,
-        "chain_id": 900,
-        "chain": {"id": 900},
+        "address": TOKEN if chain_id == CHAIN_ID_ARC_TESTNET else SVM,
+        "chain_id": CHAIN_ID_ARC_TESTNET if chain_id == CHAIN_ID_ARC_TESTNET else 900,
+        "chain": {
+            "id": CHAIN_ID_ARC_TESTNET if chain_id == CHAIN_ID_ARC_TESTNET else 900
+        },
         "decimals": 6,
     }
-    calldata = {"to": ROUTER, "data": "0x1234", "value": value, "chainId": 4663}
+    calldata = {"to": ROUTER, "data": "0x1234", "value": value, "chainId": chain_id}
     quote = {
         "provider": "lifi",
         "input_amount": "1000",
@@ -149,7 +154,7 @@ async def test_mcp_execution_quote_round_trips_router_fee_and_approval(
         ),
         patch.object(
             BRAP_CLIENT, "get_quote", new=AsyncMock(return_value={"best_quote": quote})
-        ),
+        ) as request,
         patch(
             "wayfinder_paths.adapters.brap_adapter.adapter.ensure_allowance",
             new=AsyncMock(return_value=(True, "0xapproval")),
@@ -178,9 +183,13 @@ async def test_mcp_execution_quote_round_trips_router_fee_and_approval(
     assert tx["to"] == ROUTER
     assert tx["value"] == RELAYER_FEE
     assert tx["data"] == calldata["data"]
-    assert tx["chainId"] == 4663
+    assert tx["chainId"] == chain_id
     assert approve.await_args.kwargs["spender"] == SPENDER
     assert approve.await_args.kwargs["amount"] == 1000
+    if chain_id == CHAIN_ID_ARC_TESTNET:
+        assert request.await_args.kwargs["from_token"] == ARC_USDC_ADDRESS
+        assert request.await_args.kwargs["from_amount"] == "1000000"
+        assert approve.await_args.kwargs["token_address"] == ARC_USDC_ADDRESS
     assert calldata["value"] == value  # Do not mutate the provider's quote.
 
 
@@ -256,7 +265,10 @@ async def test_missing_destination_stops_before_balance_quote_or_broadcast() -> 
 
 
 @pytest.mark.asyncio
-async def test_robinhood_to_solana_execution_keeps_recipient_and_native_fee() -> None:
+@pytest.mark.parametrize("chain_id", [4663, CHAIN_ID_ARC_TESTNET])
+async def test_execution_keeps_recipient_and_native_fee(chain_id) -> None:
+    arc = chain_id == CHAIN_ID_ARC_TESTNET
+    recipient = EVM if arc else SVM
     quote = {
         "provider": "lifi",
         "input_amount": "1000000",
@@ -265,7 +277,7 @@ async def test_robinhood_to_solana_execution_keeps_recipient_and_native_fee() ->
             "to": ROUTER,
             "data": "0x1234",
             "value": str(RELAYER_FEE),
-            "chainId": 4663,
+            "chainId": chain_id,
         },
     }
     with (
@@ -279,8 +291,16 @@ async def test_robinhood_to_solana_execution_keeps_recipient_and_native_fee() ->
             "wayfinder_paths.mcp.tools.execute.TokenResolver.resolve_token_meta",
             new=AsyncMock(
                 side_effect=[
-                    {"chain_id": 4663, "address": TOKEN, "decimals": 6},
-                    {"chain_id": 900, "address": SVM, "decimals": 6},
+                    {
+                        "chain_id": chain_id,
+                        "address": "native" if arc else TOKEN,
+                        "decimals": 18 if arc else 6,
+                    },
+                    {
+                        "chain_id": chain_id if arc else 900,
+                        "address": TOKEN if arc else SVM,
+                        "decimals": 6,
+                    },
                 ]
             ),
         ),
@@ -290,7 +310,7 @@ async def test_robinhood_to_solana_execution_keeps_recipient_and_native_fee() ->
         ),
         patch(
             "wayfinder_paths.mcp.tools.execute.find_wallet_leg_for_chain",
-            new=AsyncMock(return_value={"address": SVM}),
+            new=AsyncMock(return_value={"address": recipient}),
         ),
         patch(
             "wayfinder_paths.mcp.tools.execute._token_balance",
@@ -302,7 +322,7 @@ async def test_robinhood_to_solana_execution_keeps_recipient_and_native_fee() ->
         patch(
             "wayfinder_paths.mcp.tools.execute._ensure_allowance",
             new=AsyncMock(return_value=(True, None)),
-        ),
+        ) as approve,
         patch(
             "wayfinder_paths.mcp.tools.execute._broadcast",
             new=AsyncMock(return_value=(True, {"txn_hash": "0xtest"})),
@@ -312,11 +332,16 @@ async def test_robinhood_to_solana_execution_keeps_recipient_and_native_fee() ->
             wallet_label="main", from_token="from", to_token="to", amount="1.0"
         )
     assert result["ok"]
-    assert result["result"]["recipient"] == SVM
-    assert get_quote.await_args.kwargs["to_wallet"] == SVM
+    assert result["result"]["recipient"] == recipient
+    assert get_quote.await_args.kwargs["to_wallet"] == recipient
     assert send.await_args.args[1]["value"] == RELAYER_FEE
     assert send.await_args.args[1]["to"] == ROUTER
-    assert send.await_args.kwargs["chain_id"] == 4663
+    assert send.await_args.kwargs["chain_id"] == chain_id
+    if arc:
+        assert get_quote.await_args.kwargs["from_token"] == ARC_USDC_ADDRESS
+        assert get_quote.await_args.kwargs["from_amount"] == "1000000"
+        assert approve.await_args.kwargs["token_address"] == ARC_USDC_ADDRESS
+        assert approve.await_args.kwargs["amount"] == 1000000
 
 
 @pytest.mark.asyncio

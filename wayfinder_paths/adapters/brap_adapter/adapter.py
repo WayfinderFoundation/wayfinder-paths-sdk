@@ -9,8 +9,9 @@ from wayfinder_paths.core.adapters.models import SWAP
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.clients.LedgerClient import TransactionRecord
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
-from wayfinder_paths.core.constants.chains import SVM_CHAIN_IDS
+from wayfinder_paths.core.constants.chains import CHAIN_ID_ARC_TESTNET, SVM_CHAIN_IDS
 from wayfinder_paths.core.utils.brap import (
+    normalize_swap_token,
     prepare_brap_transactions,
     uses_solver_approvals,
 )
@@ -73,17 +74,22 @@ class BRAPAdapter(BaseAdapter):
                 to_token.get("decimals") or 18,
             )
 
+        chain_id = from_token.get("chain_id") or (from_token.get("chain") or {}).get(
+            "id"
+        )
+        # Arc normalization replaces the native interface: its DB row ID no
+        # longer describes the six-decimal swap amounts. Record the address ID.
+        token_key = "token_id" if chain_id == CHAIN_ID_ARC_TESTNET else "id"
         operation_data = SWAP(
             adapter=self.adapter_type,
-            from_token_id=str(from_token.get("id")),
-            to_token_id=str(to_token.get("id")),
+            from_token_id=str(from_token.get(token_key)),
+            to_token_id=str(to_token.get(token_key)),
             from_amount=str(quote.get("input_amount")),
             to_amount=str(quote.get("output_amount")),
             from_amount_usd=from_amount_usd,
             to_amount_usd=to_amount_usd,
             transaction_hash=tx_hash,
-            transaction_chain_id=from_token.get("chain_id")
-            or (from_token.get("chain") or {}).get("id"),
+            transaction_chain_id=chain_id,
             transaction_status=None,
             transaction_receipt=None,
         )
@@ -165,6 +171,8 @@ class BRAPAdapter(BaseAdapter):
         quote: dict[str, Any],
         strategy_name: str | None = None,
     ) -> tuple[bool, Any]:
+        from_token = normalize_swap_token(from_token)
+        to_token = normalize_swap_token(to_token)
         chain_id = from_token["chain"]["id"]
         if chain_id in SVM_CHAIN_IDS:
             return (False, "Use onchain_swap for Solana-source execution.")

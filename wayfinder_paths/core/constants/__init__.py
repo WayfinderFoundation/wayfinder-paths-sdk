@@ -24,6 +24,7 @@ from wayfinder_paths.core.constants.base import (
 from wayfinder_paths.core.constants.chains import (
     CHAIN_CODE_TO_ID,
     CHAIN_ID_ARBITRUM,
+    CHAIN_ID_ARC_TESTNET,
     CHAIN_ID_AVALANCHE,
     CHAIN_ID_BASE,
     CHAIN_ID_BSC,
@@ -108,6 +109,7 @@ __all__ = [
     "CHAIN_ID_MONAD",
     "CHAIN_ID_MEGAETH",
     "CHAIN_ID_ROBINHOOD",
+    "CHAIN_ID_ARC_TESTNET",
     "SUPPORTED_CHAINS",
     "POA_MIDDLEWARE_CHAIN_IDS",
     "PRE_EIP_1559_CHAIN_IDS",

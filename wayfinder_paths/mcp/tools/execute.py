@@ -9,6 +9,7 @@ from solders.transaction import VersionedTransaction
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.utils.brap import (
+    normalize_swap_token,
     prepare_brap_transactions,
     uses_solver_approvals,
 )
@@ -335,6 +336,8 @@ async def onchain_swap(
     except Exception as exc:  # noqa: BLE001
         return err("token_error", str(exc))
 
+    from_meta = normalize_swap_token(from_meta)
+    to_meta = normalize_swap_token(to_meta)
     from_chain_id = from_meta.get("chain_id")
     to_chain_id = to_meta.get("chain_id")
     from_token_addr = str(from_meta.get("address") or "").strip() or None
