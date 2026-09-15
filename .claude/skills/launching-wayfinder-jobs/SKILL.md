@@ -26,7 +26,7 @@ One flow for every kind of job. Seven steps, in this order, every time.
 ## When the ask does not fit a kind
 
 - Perp, spot-perp or prediction-market rules with any trigger ("if the odds cross X, buy Y perp") → a freestyle job. Venues in v1: `hyperliquid`, `polymarket`, `hyperliquid_prediction`.
-- On-chain DeFi actions (swaps, lending, yield rotation) are **not** a freestyle venue in v1: the runtime refuses an `onchain` action and validation reports it. Say exactly that, then offer the fits: an installed Path that does it (`create_from_path`), or a classic strategy job through `core_runner` (`type="strategy"`) with the adapter skills. Never launch a freestyle job whose validation shows a refused venue.
+- On-chain DeFi actions (swaps, lending, yield rotation) are **not** a freestyle venue in v1: the runtime refuses an `onchain` action and validation reports it. Say exactly that, then offer the fits: an installed Path that does it (`create_from_path`), or a classic strategy job through `core_runner` (`type="strategy"`) with the adapter skills. Never launch a freestyle job whose validation shows a refused venue — but still run `readout`: a failed validation is not the end of the flow, the readout puts the refusal on record (`launch_allowed: false`) and is what you read back when the owner asked for it.
 - A described alpha idea on the harnessed universe → Strategy Lab (jobs_v1), so it gets the backtest, holdout and evolution.
 - Anything that needs funds moved, gas, or a wallet created is out of the job flow: hand it to the normal execution tools with their safety review.
 
