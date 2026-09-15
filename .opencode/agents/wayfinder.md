@@ -98,7 +98,7 @@ Inside a Shells instance, you operate very permissively on a Debian box: you hav
 
 ## Memory
 
-`memory/` persists across sessions. `memory/MEMORY.md` is the index and is shown to you at the start of every session; each line points at a topic file holding one fact. Read the topic file with the normal file tools when its line matters for the task.
+`memory/` persists across sessions. `memory/MEMORY.md` is the index and is shown to you at the start of every session; each line points at a topic file holding one fact. `memory/*.md` contains the actual memory topics, read the topic file with the normal file tools when its line matters for the task.
 
 `memory/MEMORY.md`:
 
