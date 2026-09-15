@@ -741,3 +741,64 @@ def test_freestyle_code_change_applies_at_the_promoted_revision(
         for line in (root / "journal.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert "revision_drift" not in journal_types
+
+
+def test_last_tick_file_feeds_the_freestyle_snapshot_block(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A real tick leaves a one-row record; the snapshot's `freestyle` block
+    reads it (never ticks.jsonl) together with the validation dry run."""
+    from wayfinder_paths.jobs.health import FREESTYLE_LAST_TICK_PATH
+    from wayfinder_paths.jobs.sync import snapshot_job
+    from wayfinder_paths.tests.test_jobs_launch import _patch
+
+    _patch(monkeypatch)
+    store, job = _job(tmp_path)
+    root = store.job_dir(job.id)
+    validate_freestyle_job(job.id, store=store)
+    before = snapshot_job(job.id, store=store)
+    block = before["freestyle"]
+    assert block["contract"] == "freestyle_v1" and block["last_tick"] is None
+    assert block["dry_run"]["ticks"] == 3
+    assert block["dry_run"]["no_claim"].startswith("no backtest exists")
+    assert block["spec"]["venues"]
+    assert before["path"] is None
+
+    from wayfinder_paths.jobs.freestyle import runtime as rt
+
+    monkeypatch.setattr(
+        rt,
+        "VenueGateway",
+        lambda **kwargs: rt.StubVenueGateway(
+            marks={
+                "polymarket:polymarket:hormuz-closure-2026:YES": 0.7,
+                "hyperliquid:BTC": 40_000.0,
+            }
+        ),
+    )
+    monkeypatch.setattr(rt, "fire_triggers", lambda *a, **k: None)
+    monkeypatch.setattr(rt, "JobStore", lambda: store)
+    monkeypatch.setenv("WAYFINDER_JOB_MODE", "paper")
+    monkeypatch.delenv("WAYFINDER_DRY_RUN", raising=False)
+    monkeypatch.delenv("WAYFINDER_JOB_REVISION", raising=False)
+    monkeypatch.delenv("WAYFINDER_FORWARD_DIR", raising=False)
+    payload = run_freestyle_tick(root)
+    assert payload["ok"] and payload["ts"]
+    record = json.loads((root / FREESTYLE_LAST_TICK_PATH).read_text())
+    assert record["status"] == "ok" and record["mode"] == "paper"
+    assert record["reads"]["marks"]["hyperliquid:BTC"] == pytest.approx(40_000.0)
+    assert record["actions"][0]["status"] == "filled"
+    assert record["actions"][0]["symbol"] == "BTC"
+
+    after = snapshot_job(job.id, store=store)
+    last = after["freestyle"]["last_tick"]
+    assert last["reads"]["marks"]["polymarket:polymarket:hormuz-closure-2026:YES"] == (
+        pytest.approx(0.7)
+    )
+    assert after["freestyle"]["counts"]["ticks"] == 1
+    assert after["heartbeat"]["last_tick"]["status"] == "ok"
+    assert after["heartbeat"]["last_tick"]["ts"] == record["ts"]
+    # A jobs_v1 job never carries the block.
+    plain = WayfinderJob.new("plain", script="strategy.py", interval_seconds=60)
+    store.create_job(plain)
+    assert snapshot_job(plain.id, store=store)["freestyle"] is None

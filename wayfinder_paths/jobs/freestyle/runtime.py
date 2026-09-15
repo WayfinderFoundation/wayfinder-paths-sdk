@@ -55,6 +55,7 @@ from wayfinder_paths.jobs.freestyle.contract import (
 )
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.halt import read_halt, request_halt
+from wayfinder_paths.jobs.health import FREESTYLE_LAST_TICK_PATH
 from wayfinder_paths.jobs.models import WayfinderJob, utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.triggers import fire_triggers
@@ -701,6 +702,15 @@ def _run_ticks(
             equity=last.get("equity"),
             dry_run=dry_run,
         )
+        if not dry_run:
+            # One row, overwritten every tick: what the snapshot (and so the
+            # UI) shows as "the last tick" without tailing ticks.jsonl.
+            from wayfinder_paths.jobs.freestyle.telemetry import compact_tick
+
+            atomic_write_json(
+                root / FREESTYLE_LAST_TICK_PATH,
+                compact_tick(last, revision=revision or None),
+            )
         for key, bucket in accumulated.items():
             bucket.extend(last.get(key) or [])
         if not last.get("ok"):
@@ -849,6 +859,7 @@ def _one_tick(
     _deliver_notifications(ctx, dry_run)
     return {
         "ok": ok,
+        "ts": ts,
         "status": status,
         "error": error,
         "timed_out": timed_out,
