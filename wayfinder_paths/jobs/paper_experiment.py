@@ -597,10 +597,12 @@ def _maybe_adjudicate_proposals(
         candidate_stats = _proposal_stats(
             store.job_dir(job_id) / str(proposal["candidate"]["stream"]),
             after=pd.Timestamp(proposal["queued_at"]),
+            capital=_experiment_capital(store, job_id),
         )
         reference_stats = _proposal_stats(
             store.job_dir(job_id) / str(proposal["reference"]["stream"]),
             after=pd.Timestamp(proposal["queued_at"]),
+            capital=_experiment_capital(store, job_id),
         )
         verdict = _proposal_verdict(
             store,
@@ -717,7 +719,9 @@ def _common_proposal_bars(
     return sorted(streams[0] & streams[1])
 
 
-def _proposal_stats(stream: Path, *, after: pd.Timestamp) -> dict[str, Any]:
+def _proposal_stats(
+    stream: Path, *, after: pd.Timestamp, capital: float = 10_000.0
+) -> dict[str, Any]:
     pnls: list[float] = []
     path = stream / "trades.jsonl"
     if path.exists():
@@ -742,7 +746,6 @@ def _proposal_stats(stream: Path, *, after: pd.Timestamp) -> dict[str, Any]:
                 )
             except (TypeError, ValueError):
                 continue
-    capital = 10_000.0
     equity = peak = capital
     drawdown = 0.0
     for pnl in pnls:
@@ -1082,7 +1085,7 @@ def _verdict_report(
 ) -> dict[str, Any]:
     daily = {arm: _daily_pnl(store, job_id, state, arm) for arm in EXPERIMENT_ARMS}
     days = sorted(set(daily["control"]) & set(daily["evolution"]))
-    capital = 10_000.0
+    capital = _experiment_capital(store, job_id)
     deltas = [
         math.log1p(daily["evolution"][day] / capital)
         - math.log1p(daily["control"][day] / capital)
@@ -1167,6 +1170,11 @@ def _daily_pnl(
         for day, pnl in _daily_pnl_for_stream(stream, since=since, until=until).items():
             totals[day] = totals.get(day, 0.0) + pnl
     return totals
+
+
+def _experiment_capital(store: JobStore, job_id: str) -> float:
+    job = store.load(job_id)
+    return float((job.execution_params or {}).get("initial_capital") or 10_000.0)
 
 
 def _max_drawdown(daily: dict[str, float], capital: float) -> float:

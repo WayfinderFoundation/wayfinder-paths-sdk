@@ -418,3 +418,93 @@ def test_refresh_extends_stale_dataset_with_recorded_provenance(
         job.id, store=store, derive=healthy, refresh_dataset=False
     )
     assert len(fetches) == 1
+
+
+def test_refresh_runs_declared_feeds_after_derive_and_counts_their_failures(
+    tmp_path,
+) -> None:
+    from wayfinder_paths.jobs.derived_features import (
+        REFRESH_STAMP_PATH,
+        refresh_derived_features_if_stale,
+    )
+    from wayfinder_paths.jobs.models import WayfinderJob
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("feeds-refresh-demo", agent_mode="intervene")
+    store.save(job)
+    order: list[str] = []
+
+    def fake_derive(job_id, **kwargs):
+        order.append("derive")
+        return {
+            "rows_appended": 7,
+            "sets": list(kwargs["sets"]),
+            "newest_feature_ts": "2026-01-01T00:00:00+00:00",
+        }
+
+    def fake_feeds(job_id, **kwargs):
+        order.append("feeds")
+        return {
+            "feeds": 2,
+            "rows_appended": 5,
+            "revised_rows": 1,
+            "newest_feature_ts": "2026-01-02T00:00:00+00:00",
+            "errors": {},
+        }
+
+    result = refresh_derived_features_if_stale(
+        job.id, store=store, derive=fake_derive, feeds=fake_feeds
+    )
+    assert order == ["derive", "feeds"]
+    assert result["refreshed"] is True and result["rows_appended"] == 12
+    assert result["feeds"] == 2 and result["revised_rows"] == 1
+    stamp = store.read_json(job.id, REFRESH_STAMP_PATH)
+    assert (
+        stamp["rows_appended"] == 12
+        and stamp["feeds"] == 2
+        and stamp["revised_rows"] == 1
+    )
+    assert stamp["newest_feature_ts"] == "2026-01-02T00:00:00+00:00"
+
+    # a failing feed refresh counts toward degradation while derive stays fine
+    store.write_json(job.id, REFRESH_STAMP_PATH, {})
+
+    def broken_feeds(job_id, **kwargs):
+        raise RuntimeError("feed refresh failed: lend_supply_apr:aave-base:USDC: 502")
+
+    degraded = refresh_derived_features_if_stale(
+        job.id, store=store, derive=fake_derive, feeds=broken_feeds
+    )
+    assert (
+        degraded["refreshed"] is False
+        and "feeds: feed refresh failed" in degraded["reason"]
+    )
+    journal = (store.job_dir(job.id) / "journal.jsonl").read_text(encoding="utf-8")
+    assert (
+        "derived_features_refresh_failed" in journal
+        and "feeds: feed refresh failed" in journal
+    )
+    assert store.read_json(job.id, REFRESH_STAMP_PATH)["consecutive_failures"] == 1
+
+
+def test_refresh_without_declared_feeds_touches_no_feed_source(tmp_path) -> None:
+    """A job that declares no feeds refreshes exactly as before: the feed
+    step returns without I/O and the stamp carries no feed keys."""
+    from wayfinder_paths.jobs.derived_features import (
+        REFRESH_STAMP_PATH,
+        refresh_derived_features_if_stale,
+    )
+    from wayfinder_paths.jobs.models import WayfinderJob
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("no-feeds-demo", agent_mode="intervene")
+    store.save(job)
+    result = refresh_derived_features_if_stale(
+        job.id,
+        store=store,
+        derive=lambda job_id, **kwargs: {"rows_appended": 1, "sets": []},
+    )
+    assert result == {"refreshed": True, "rows_appended": 1}
+    assert "feeds" not in store.read_json(job.id, REFRESH_STAMP_PATH)

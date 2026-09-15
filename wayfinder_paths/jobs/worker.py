@@ -4,6 +4,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,10 @@ from loguru import logger
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.core.config import is_opencode_instance
 from wayfinder_paths.jobs.derived_features import refresh_derived_features_if_stale
+from wayfinder_paths.jobs.execution.features import summarize_features
+from wayfinder_paths.jobs.execution.job import _load_job_yaml
+from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
 from wayfinder_paths.jobs.failures import disk_used_pct
 from wayfinder_paths.jobs.forward import is_forward_empty
 from wayfinder_paths.jobs.ledger import tail_ledger
@@ -25,6 +30,7 @@ from wayfinder_paths.jobs.models import (
     JOB_EVOLUTION_DESIGNER_AGENT_NAME,
     JOB_EVOLUTION_WORKER_AGENT_NAME,
     JOB_WORKER_AGENT_NAME,
+    NO_BACKTEST_CONTRACTS,
     AgentMode,
     normalize_agent_mode,
     utc_now_iso,
@@ -364,6 +370,9 @@ def _research_substrate_block(root: Path) -> dict[str, Any]:
             )
         except ValueError:
             pass
+    declared = _declared_feeds(root)
+    if declared:
+        block["declared_feeds"] = declared
     if block:
         block["_basis"] = (
             "Substrate freshness, read from disk THIS wake. Any agenda/"
@@ -373,9 +382,41 @@ def _research_substrate_block(root: Path) -> dict[str, Any]:
             "Never repeat a staleness claim from memory when this block "
             "contradicts it. To advance the dataset yourself: "
             "wayfinder job fetch-dataset (derived columns re-derive "
-            "automatically as part of the build)."
+            "automatically as part of the build). Declared token/yield feeds "
+            "(declared_feeds) refresh on the hourly stamp; to add one: "
+            "core_jobs fetch_token_features / fetch_yield_features "
+            "(wayfinder job fetch-token-features / fetch-yield-features)."
         )
     return block
+
+
+def _declared_feeds(root: Path) -> list[dict[str, Any]]:
+    """Freshness of every declared token/yield feed: name, cadence,
+    smoothing, newest stamp, age, gaps and revisions — from disk."""
+    if not (root / "job.yaml").exists():
+        return []
+    spec_data, _ = resolve_execution_spec(root, _load_job_yaml(root))
+    if not spec_data:
+        return []
+    try:
+        summary = summarize_features(root, ExecutionSpec.from_dict(spec_data))
+    except ValueError:
+        return []
+    keys = (
+        "name",
+        "available",
+        "cadence",
+        "smoothing",
+        "latest_timestamp",
+        "age_seconds",
+        "gaps",
+        "revised_rows",
+    )
+    return [
+        {key: entry.get(key) for key in keys}
+        for entry in summary or []
+        if entry.get("cadence")
+    ]
 
 
 _IDEATION_PATH = "research/ideation/latest.json"
@@ -861,6 +902,30 @@ def _build_worker_prompt_sections(
             "never satisfies the constitution.\n"
         )
     )
+    job_contract = str(
+        (snapshot.get("job") or {}).get("execution_contract") or "legacy"
+    )
+    if job_contract == "freestyle_v1":
+        kind_rule = (
+            "- THIS JOB IS A FREESTYLE SCRIPT (contract freestyle_v1): the module exposes "
+            "`tick(ctx)` and trades only through `ctx.act`; there is no backtest, no "
+            "walk-forward and no evolution for it. Research reads the forward ledger "
+            "(results/forward) and external context; a recommended change is a "
+            "proposal with a memo: `code_change` carrying the candidate script, or "
+            "`params_update` for ctx.params. A halt or pause is recommended with the "
+            "ledger's numbers and left to the owner. Never state a performance number "
+            "that no artifact carries.\n"
+        )
+    elif job_contract == "path_v1":
+        kind_rule = (
+            "- THIS JOB RUNS AN INSTALLED PATH COMPONENT pinned by version and bundle "
+            "hash (job.yaml `source`); the Path's code is third-party and is never "
+            "edited in place. Recommend a version move by memo, or a `params_update` "
+            "proposal for workspace/config/params.json; there is no backtest and no "
+            "evolution.\n"
+        )
+    else:
+        kind_rule = ""
     memory_md = _read_text(root / "memory.md", max_chars=6000)
     # The research prior library: idea families, prior strengths, archetype
     # mapping, and test paths. Lives in the STABLE prefix so it prompt-caches
@@ -1001,6 +1066,7 @@ def _build_worker_prompt_sections(
         "Rules:\n"
         "- Monitor mode is read-only except reports/memory.\n"
         f"- {intervene_scope}\n"
+        f"{kind_rule}"
         "- Proposals stage ONLY `workspace/` + `job.yaml`; code outside `workspace/` "
         "cannot be versioned, proposed, or promoted. If the active script entrypoint "
         "resolves outside `workspace/`, your FIRST proposal must migrate it into "
@@ -1765,7 +1831,9 @@ def prepare_job_worker_prompt(
     # Ideation accountability: journal freshly produced expedition artifacts
     # (owner-visible bucket counts) and escalate once when the daily research
     # expedition is >48h overdue. Never raises.
-    _ideation_bookkeeping(store, job.id)
+    if job.execution_contract not in NO_BACKTEST_CONTRACTS:
+        # Ideation is evolution machinery; freestyle scripts and Paths never evolve.
+        _ideation_bookkeeping(store, job.id)
 
     prompt_sections = _build_worker_prompt_sections(
         store=store,
@@ -1962,6 +2030,7 @@ def run_job_worker(
         queued=queued,
         error=error,
         apply_proposal_id=apply_proposal_id,
+        stamp_check=queued,
         cache={
             "prompt_cache_key": session_id,
             "stable_prefix_hash": prompt_sections["stable_prefix_hash"],
@@ -1976,8 +2045,26 @@ def run_job_worker(
     return report
 
 
+# A loaded box answers the OpenCode health probe late rather than not at all
+# (the dev box served /session in ~7 s while /global/health missed the 10 s
+# client timeout): three of four watchdog wakes in one hour were dropped as
+# "OpenCode server unavailable" on a server that was up. Probe a few times
+# before giving up — the wake has minutes, not seconds.
+_OPENCODE_HEALTH_ATTEMPTS = 3
+_OPENCODE_HEALTH_RETRY_SECONDS = 5.0
+
+
+def _opencode_reachable() -> bool:
+    for attempt in range(_OPENCODE_HEALTH_ATTEMPTS):
+        if OPENCODE_CLIENT.healthy():
+            return True
+        if attempt + 1 < _OPENCODE_HEALTH_ATTEMPTS:
+            time.sleep(_OPENCODE_HEALTH_RETRY_SECONDS)
+    return False
+
+
 def _ensure_worker_session(job_id: str, mode: str) -> str | None:
-    if not OPENCODE_CLIENT.healthy():
+    if not _opencode_reachable():
         return None
     controller_session_id = os.environ.get("OPENCODE_SESSION_ID") or os.environ.get(
         "OPENCODE_SESSIONID"
@@ -2619,6 +2706,7 @@ def _write_report(
     apply_proposal_id: str | None = None,
     cache: dict[str, Any] | None = None,
     wake_context: dict[str, Any] | None = None,
+    stamp_check: bool = True,
 ) -> dict[str, Any]:
     report_dir = (
         store.job_dir(job_id) / "reports" / ("apply" if apply_proposal_id else mode)
@@ -2662,14 +2750,23 @@ def _write_report(
             + "\n",
             encoding="utf-8",
         )
-    scorecard_updates: dict[str, Any] = {
-        "health": status,
-        "last_agent_check_at": report["created_at"],
-        "last_agent_mode": mode,
-        "last_agent_summary": report["summary"],
-    }
-    if cache is not None:
-        scorecard_updates["last_agent_cache"] = cache
+    if stamp_check:
+        scorecard_updates: dict[str, Any] = {
+            "health": status,
+            "last_agent_check_at": report["created_at"],
+            "last_agent_mode": mode,
+            "last_agent_summary": report["summary"],
+        }
+        if cache is not None:
+            scorecard_updates["last_agent_cache"] = cache
+    else:
+        # A wake that never reached OpenCode is not a check: leave the last
+        # real check (and the agent's own summary) in place and record the
+        # failure beside it, where the heartbeat flags it as agent_wake_failed.
+        scorecard_updates = {
+            "last_agent_wake_error": error or summary,
+            "last_agent_wake_error_at": report["created_at"],
+        }
     store.refresh_scorecard(
         job_id,
         scorecard_updates,

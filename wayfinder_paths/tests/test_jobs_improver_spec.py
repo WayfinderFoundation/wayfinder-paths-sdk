@@ -45,7 +45,8 @@ def test_defaults_match_legacy_literals(tmp_path) -> None:
     assert spec.probation_max_size_fraction == 0.5
     assert abs(sum(spec.island_weights.values()) - 1.0) < 1e-9
     assert 0 < spec.exploration_floor < 1
-    assert spec.evolution["allowed_job_ids"] == ["majors-5m-lab"]
+    assert spec.evolution["allowed_job_ids"] == []  # fleet-wide by default
+    assert spec.evolution["start_interval_hours"] == 48
 
 
 def test_file_override_changes_values_and_revision(tmp_path) -> None:

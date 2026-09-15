@@ -838,19 +838,13 @@ def fetch_funding_features(
             handle.write(json.dumps({**row, "written_at": written_at}) + "\n")
             appended += 1
 
-    declared = False
-    target = spec_path if spec_path is not None else root / "execution_spec.json"
-    if rows and target.exists():
-        spec_doc = json.loads(target.read_text(encoding="utf-8"))
-        contract = spec_doc.setdefault("data_contract", {})
-        features = contract.setdefault("features", [])
-        if not any(
-            isinstance(item, dict) and item.get("name") == "funding"
-            for item in features
-        ):
-            features.append({"name": "funding"})
-            target.write_text(json.dumps(spec_doc, indent=2) + "\n", encoding="utf-8")
-            declared = True
+    # Declared through the job model: an embedded spec is what the compiler
+    # rewrites execution_spec.json from, so a file-only edit would be lost.
+    from wayfinder_paths.jobs.feeds import declare_features
+
+    declared = bool(rows) and bool(
+        declare_features(store, job_id, [{"name": "funding"}])
+    )
 
     result: dict[str, Any] = {
         "rows_fetched": len(rows),

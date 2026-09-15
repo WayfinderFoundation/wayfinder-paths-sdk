@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.jobs.improver.spec import revision_stamp
-from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.models import NO_BACKTEST_CONTRACTS, utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
 COUNTERFACTUAL_PATH = "results/forward/counterfactual.json"
@@ -93,6 +93,11 @@ def counterfactual_job(
     simulate: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     store = store or JobStore()
+    contract = str(store.load(job_id).execution_contract or "legacy")
+    if contract in NO_BACKTEST_CONTRACTS:
+        return _unavailable(
+            f"not applicable: {contract} jobs have no backtest book to replay"
+        )
     root = store.job_dir(job_id)
 
     promotion = last_promotion(root)

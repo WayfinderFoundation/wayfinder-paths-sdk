@@ -101,6 +101,9 @@ def _job(tmp_path, job_id: str) -> tuple[JobStore, str]:
                 "evolution": {
                     "generated_programs": 12,
                     "investigation_design_enabled": False,
+                    # The fleet default is 48h; these compatibility tests
+                    # re-start campaigns a day apart.
+                    "start_interval_hours": 24,
                 }
             }
         ),
@@ -183,6 +186,11 @@ def _campaign_design() -> dict[str, Any]:
 
 def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
     other_store, other_id = _job(tmp_path / "other", "other-job")
+    # Evolution is fleet-wide by default; a job-local policy scopes it out.
+    (other_store.job_dir(other_id) / "improver.yaml").write_text(
+        yaml.safe_dump({"evolution": {"excluded_job_ids": [other_id]}}),
+        encoding="utf-8",
+    )
     with pytest.raises(ValueError, match="disabled_or_excluded"):
         start_campaign(
             other_store,
@@ -2744,6 +2752,9 @@ def _evaluatable_job(
                 "evolution": {
                     "generated_programs": 12,
                     "investigation_design_enabled": False,
+                    # The fleet default is 48h; these compatibility tests
+                    # re-start campaigns a day apart.
+                    "start_interval_hours": 24,
                 }
             }
         ),

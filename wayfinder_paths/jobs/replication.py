@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.models import NO_BACKTEST_CONTRACTS, utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
 REPLICATION_PATH = "results/backtest/replication.json"
@@ -31,6 +31,18 @@ _LOCK_TIMEOUT_S = 60.0
 _DECAY_RELATIVE = 0.5
 
 
+def _not_applicable(store: JobStore, job_id: str) -> dict[str, Any] | None:
+    """Freestyle/Path jobs have no backtest to replicate; say so instead of
+    journaling a `replication_failed` on every wake."""
+    contract = str(store.load(job_id).execution_contract or "legacy")
+    if contract not in NO_BACKTEST_CONTRACTS:
+        return None
+    return {
+        "available": False,
+        "reason": f"not applicable: {contract} jobs have no backtest to replicate",
+    }
+
+
 def load_replication(store: JobStore, job_id: str) -> dict[str, Any] | None:
     doc = store.read_json(job_id, REPLICATION_PATH)
     return doc if isinstance(doc, dict) else None
@@ -40,6 +52,9 @@ def replication_job(
     job_id: str, *, store: JobStore | None = None, force: bool = False
 ) -> dict[str, Any]:
     store = store or JobStore()
+    not_applicable = _not_applicable(store, job_id)
+    if not_applicable:
+        return not_applicable
     cached = load_replication(store, job_id)
     if (
         not force

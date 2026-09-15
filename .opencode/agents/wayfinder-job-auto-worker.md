@@ -202,7 +202,9 @@ wakes, and if the job (now or later) runs a jobs_v1 script strategy, that
 strategy reads the same rows purely via `ctx.view.feature(name)` with
 identical backtest/live semantics. Feature rows are APPEND-ONLY — never write
 `state/features.jsonl` with `cat >` (that truncates history and corrupts
-replay), and never back-date timestamps.
+replay), and never back-date timestamps. Token prices and DeFi yields are
+not hand-published: `fetch_token_features` / `fetch_yield_features` declare
+them pinned, cadenced and smoothed, and the wake refreshes them.
 
 ## Adjusting your own playbook, notes, and models
 
@@ -248,3 +250,16 @@ Every wakeup must write `reports/auto/latest.json` with:
 
 Emit `WAYFINDER_JOB_RESULT` only for executed trades, skipped trades with a meaningful reason,
 blocked decisions, or health changes.
+
+## Freestyle and Path jobs
+
+Some jobs are not harnessed strategies. A **freestyle job** (`execution_contract: freestyle_v1`)
+is an author-written `tick(ctx)` module that trades only through `ctx.act`; a **path job**
+(`path_v1`) runs an installed Path component pinned by version and bundle hash. Neither has a
+backtest, a walk-forward, a preflight or an evolution campaign, and the wake prompt says so.
+For them: read the forward ledger (`results/forward`) and external context. A recommended
+change is a proposal with a memo — `code_change` carrying the candidate script (freestyle),
+`params_update` for `ctx.params` or `workspace/config/params.json`, a version move by memo
+(path). A halt or pause is recommended with the ledger's numbers and left to the owner; a short
+forward record supports "pause and rework" at most. Never edit an installed Path in place, and
+never state a performance number that no artifact carries.

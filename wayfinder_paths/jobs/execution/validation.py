@@ -1281,6 +1281,11 @@ def _report(checks: list[dict[str, Any]], *, strict: bool) -> dict[str, Any]:
     }
 
 
+def report_from_checks(checks: list[dict[str, Any]], *, strict: bool) -> dict[str, Any]:
+    """The validation report shape every kind writes to reports/validation."""
+    return _report(checks, strict=strict)
+
+
 def _suggestions(messages: list[str]) -> list[str]:
     suggestions: list[str] = []
     joined = " ".join(messages).lower()

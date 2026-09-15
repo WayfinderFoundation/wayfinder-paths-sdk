@@ -22,7 +22,16 @@ DEFAULT_FORWARD_TICKS = "results/forward/ticks.jsonl"
 DEFAULT_FORWARD_SUMMARY = "results/forward/summary.json"
 
 AgentMode = Literal["off", "monitor", "intervene", "auto"]
-ExecutionContract = Literal["legacy", "jobs_v1"]
+ExecutionContract = Literal["legacy", "jobs_v1", "freestyle_v1", "path_v1"]
+EXECUTION_CONTRACTS: tuple[str, ...] = ("legacy", "jobs_v1", "freestyle_v1", "path_v1")
+# Contracts that enter the validate -> launch -> live-gate lifecycle. legacy
+# scripts stay outside it; jobs_v1 additionally owns backtest, preflight,
+# warm-fork ticks and evolution.
+LIFECYCLE_CONTRACTS: frozenset[str] = frozenset({"jobs_v1", "freestyle_v1", "path_v1"})
+# Contracts whose evidence is the script's own dry run: no dataset, no
+# backtest, so the backtest-derived monitors (replication, counterfactual,
+# scenario plans) do not apply to them.
+NO_BACKTEST_CONTRACTS: frozenset[str] = frozenset({"freestyle_v1", "path_v1"})
 JobKind = Literal["script_only", "script_agent", "agent_only"]
 JobHealth = Literal["green", "yellow", "red", "unknown"]
 ProposalStatus = Literal["pending", "approved", "rejected"]
@@ -47,6 +56,13 @@ def normalize_agent_mode(value: str | None) -> AgentMode:
     if raw in {"off", "monitor", "intervene", "auto"}:
         return raw  # type: ignore[return-value]
     return "off"
+
+
+def coerce_execution_contract(value: Any) -> ExecutionContract:
+    raw = str(value or "legacy").strip()
+    if raw in EXECUTION_CONTRACTS:
+        return raw  # type: ignore[return-value]
+    return "legacy"
 
 
 def default_auto_limits() -> dict[str, Any]:
@@ -203,6 +219,11 @@ class WayfinderJob:
     # Explicit, never inferred: existing free-form jobs carry execution_specs
     # too, so presence of a spec must not switch a job onto the driver wrapper.
     execution_contract: ExecutionContract = "legacy"
+    # Where a non-harnessed job came from: {"kind": "freestyle", ...} or
+    # {"kind": "path", "slug", "version", "bundle_sha256", ...}. Lives in
+    # job.yaml so the workspace revision pins it; omitted from the yaml when
+    # empty so existing jobs keep their revision byte-for-byte.
+    source: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def new(
@@ -221,6 +242,7 @@ class WayfinderJob:
         auto_limits: dict[str, Any] | None = None,
         execution_contract: ExecutionContract = "legacy",
         initializer_session_id: str | None = None,
+        source: dict[str, Any] | None = None,
     ) -> WayfinderJob:
         jid = safe_job_id(job_id)
         normalized_mode = normalize_agent_mode(agent_mode)
@@ -286,6 +308,7 @@ class WayfinderJob:
             name=name or jid.replace("-", " ").title(),
             job_kind=infer_job_kind(script_enabled, normalized_mode),
             execution_contract=execution_contract,
+            source=dict(source or {}),
             controller=controller,
             goal=goal,
             versioning={
@@ -353,9 +376,10 @@ class WayfinderJob:
             reporting=dict(data.get("reporting") or {}),
             execution_spec=dict(data.get("execution_spec") or {}),
             execution_params=dict(data.get("execution_params") or {}),
-            execution_contract=(
-                "jobs_v1" if data.get("execution_contract") == "jobs_v1" else "legacy"
+            execution_contract=coerce_execution_contract(
+                data.get("execution_contract")
             ),
+            source=dict(data.get("source") or {}),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -377,6 +401,7 @@ class WayfinderJob:
             "execution_contract": self.execution_contract,
             "performance": dict(self.performance),
             "reporting": dict(self.reporting),
+            **({"source": dict(self.source)} if self.source else {}),
         }
 
     def touch(self) -> None:

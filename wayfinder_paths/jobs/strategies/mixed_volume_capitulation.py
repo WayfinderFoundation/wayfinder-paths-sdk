@@ -12,7 +12,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     ExecutionContext,
     mark_to_market_equity,
 )
-from wayfinder_paths.jobs.indicators import wilder_rsi
+from wayfinder_paths.jobs.indicators import bounded_span, wilder_rsi
 from wayfinder_paths.jobs.strategies._starter_utils import (
     MEAN_REVERSION_STOP_DEFAULTS,
     add_stop_atr,
@@ -53,6 +53,8 @@ class MixedVolumeCapitulationStrategy:
             max(
                 int(self.params["trend_sma_period"]),
                 int(self.params["volume_median_bars"]),
+                bounded_span(int(self.params["rsi_period"])),
+                bounded_span(int(self.params["stop_atr_period"])),
             )
             + 4
         )
@@ -90,7 +92,9 @@ class MixedVolumeCapitulationStrategy:
             volume = pd.to_numeric(frame["volume"], errors="coerce")
             derived[symbol] = pd.DataFrame(
                 {
-                    "starter_capitulation_rsi": wilder_rsi(close, rsi_period),
+                    "starter_capitulation_rsi": wilder_rsi(
+                        close, rsi_period, window=bounded_span(rsi_period)
+                    ),
                     "starter_trend_sma": close.rolling(
                         trend_bars, min_periods=trend_bars
                     ).mean(),

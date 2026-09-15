@@ -23,9 +23,14 @@ PERFORMANCE_SERIES_KINDS = {
     "unrealized_pnl",
     "pnl",
 }
+# Exogenous reads a freestyle script made (funding, token values, yields) and
+# the declared feature feeds a harnessed strategy conditions on. Charted as
+# their own panes; never candles.
+READ_SERIES_KINDS = {"funding_rate", "token_value", "yield_rate", "feature"}
 VIEW_KINDS = {
     "legs": {"market_price"},
-    "spread": DERIVED_SERIES_KINDS,
+    "spread": DERIVED_SERIES_KINDS | READ_SERIES_KINDS,
+    "reads": READ_SERIES_KINDS,
     "equity": {"equity_curve"},
     "drawdown": {"drawdown_curve"},
     "performance": PERFORMANCE_SERIES_KINDS,
@@ -72,6 +77,27 @@ def summarize_backtest_artifacts(
         "validation": visualization["validation"]
         or (latest["validation"] if latest else {}),
     }
+
+
+def _point_stamps(series: list[dict[str, Any]], index: int) -> list[datetime]:
+    stamps: list[datetime] = []
+    for entry in series:
+        if not entry.get("points"):
+            continue
+        stamp = _parse_ts(entry["points"][index]["timestamp"])
+        if stamp is not None:
+            stamps.append(stamp)
+    return stamps
+
+
+def _first_point_ts(series: list[dict[str, Any]]) -> datetime | None:
+    stamps = _point_stamps(series, 0)
+    return min(stamps) if stamps else None
+
+
+def _last_point_ts(series: list[dict[str, Any]]) -> datetime | None:
+    stamps = _point_stamps(series, -1)
+    return max(stamps) if stamps else None
 
 
 def order_series_for_display(
@@ -127,8 +153,23 @@ def load_backtest_view(
     start = _parse_ts(from_ts)
     end = _parse_ts(to_ts)
     kinds = VIEW_KINDS.get(view)
+    source_series = list(visualization["series"])
+    if kinds is None or kinds & READ_SERIES_KINDS:
+        try:
+            from wayfinder_paths.jobs.forward_artifacts import feature_series
+
+            source_series.extend(
+                feature_series(
+                    store,
+                    job_id,
+                    start=_first_point_ts(source_series),
+                    end=_last_point_ts(source_series),
+                )
+            )
+        except Exception:  # noqa: BLE001 — a feature store must never hide the run
+            pass
     selected_series = []
-    for series in visualization["series"]:
+    for series in source_series:
         if requested and series["name"] not in requested:
             continue
         if kinds is not None and series["kind"] not in kinds:

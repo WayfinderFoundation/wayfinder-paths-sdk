@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 from collections.abc import Callable, Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -123,6 +124,18 @@ def load_forward_view(
     markers = _fill_markers(fills)
     trades = _closed_trades(forward_dir, fills)
     series: list[dict[str, Any]] = [_pnl_series(job_id, ticks, store=store)]
+    # The script's own reads (funding, token values, yields) come straight
+    # from the tick rows; a harnessed job's declared feature feeds come from
+    # its feature store. Both are cheap and never hit a venue.
+    series.extend(_read_series(ticks))
+    try:
+        if not _lifecycle_script(store.load(job_id)):
+            first_tick = _parse_ts(
+                str(ticks[0].get("bar_ts") or ticks[0].get("ts")) if ticks else None
+            )
+            series.extend(feature_series(store, job_id, start=first_tick))
+    except Exception:  # noqa: BLE001 — a feature store must never hide the run
+        pass
 
     price_note: str | None = None
     last_closes: dict[str, float] = {}
@@ -300,8 +313,7 @@ def _fill_markers(fills: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         kind = "exit" if fill.get("reduce_only") else "entry"
         mode = str(fill.get("mode") or "paper")
-        raw = fill.get("raw") or {}
-        meta = raw.get("intent_metadata") or {}
+        meta = _intent_metadata(fill)
         reason = meta.get("entry_reason") or meta.get("exit_reason")
         # POSITION direction, not fill side: a buy that reduces closes a
         # SHORT. The chart should say long/short — buy/sell is ambiguous.
@@ -319,6 +331,7 @@ def _fill_markers(fills: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "price": fill.get("avg_price"),
                 "kind": kind,
                 "mode": mode,
+                "venue": fill.get("venue"),
                 "label": f"{mode} {direction} {kind}"
                 + (f": {reason}" if reason else ""),
             }
@@ -345,7 +358,7 @@ def _closed_trades(
     trades: list[dict[str, Any]] = []
     for trade in rows:
         symbol = str(trade.get("symbol") or "")
-        exit_raw = trade.get("closed_at") or trade.get("timestamp")
+        exit_raw = trade.get("closed_at") or trade.get("timestamp") or trade.get("ts")
         if not exit_raw:
             continue
         exit_ts = pd.Timestamp(str(exit_raw))
@@ -357,10 +370,11 @@ def _closed_trades(
             entry_ts = pd.Timestamp(str(entry.get("timestamp")))
             if entry_ts.tzinfo is None:
                 entry_ts = entry_ts.tz_localize("UTC")
-        entry_meta = ((entry or {}).get("raw") or {}).get("intent_metadata") or {}
+        entry_meta = _intent_metadata(entry or {})
         trades.append(
             {
                 "symbol": symbol,
+                "venue": trade.get("venue") or (entry or {}).get("venue"),
                 "direction": position_side_of_close(str(trade.get("side"))),
                 "entry_ts": entry_ts.isoformat() if entry_ts is not None else None,
                 "entry_price": (entry or {}).get("avg_price"),
@@ -402,12 +416,17 @@ def _pnl_series(
         if not timestamp or "realized_pnl" not in ledger:
             continue
         realized = float(ledger.get("realized_pnl") or 0.0)
+        # A freestyle tick marks its book to market and records the equity;
+        # the harnessed driver records realized PnL only.
+        equity = tick.get("equity")
+        value = float(equity) if equity is not None else initial_capital + realized
         points.append(
             {
                 "timestamp": str(timestamp),
-                "value": initial_capital + realized,
-                "equity": initial_capital + realized,
+                "value": value,
+                "equity": value,
                 "realized_pnl": realized,
+                "unrealized_pnl": tick.get("unrealized_pnl"),
                 "mode": tick.get("mode"),
             }
         )
@@ -419,7 +438,266 @@ def _pnl_series(
     }
 
 
+def _intent_metadata(fill: Mapping[str, Any]) -> dict[str, Any]:
+    """The harnessed driver nests intent metadata under the fill's `raw`;
+    the freestyle runtime writes it at the top level."""
+    raw = fill.get("raw") or {}
+    meta = raw.get("intent_metadata") if isinstance(raw, dict) else None
+    return dict(meta or fill.get("intent_metadata") or {})
+
+
+def _lifecycle_script(job: Any) -> bool:
+    return not job.execution_spec and str(job.execution_contract or "legacy") in {
+        "freestyle_v1",
+        "path_v1",
+    }
+
+
+def _split_mark_key(key: str) -> tuple[str | None, str]:
+    venue, _, symbol = str(key).partition(":")
+    return (venue, symbol) if symbol else (None, venue)
+
+
+def _mark_series(ticks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One market_price series per `venue:symbol` mark a freestyle script read."""
+    by_key: dict[str, list[dict[str, Any]]] = {}
+    for tick in ticks:
+        timestamp = tick.get("bar_ts") or tick.get("ts")
+        if not timestamp:
+            continue
+        for key, value in (tick.get("marks") or {}).items():
+            try:
+                mark = float(value)
+            except (TypeError, ValueError):
+                continue
+            by_key.setdefault(str(key), []).append(
+                {"timestamp": str(timestamp), "value": mark, "close": mark}
+            )
+    series = []
+    for key, points in by_key.items():
+        venue, symbol = _split_mark_key(key)
+        series.append(
+            {
+                "name": f"{symbol}_price",
+                "kind": "market_price",
+                "symbol": symbol,
+                "venue": venue,
+                "points": points,
+            }
+        )
+    return series
+
+
+def _read_series(ticks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Funding, token-value and yield reads as their own series."""
+    buckets: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for tick in ticks:
+        timestamp = tick.get("bar_ts") or tick.get("ts")
+        if not timestamp:
+            continue
+        for field in ("funding", "token_values", "yields"):
+            for key, value in (tick.get(field) or {}).items():
+                try:
+                    number = float(value)
+                except (TypeError, ValueError):
+                    continue
+                buckets.setdefault((field, str(key)), []).append(
+                    {"timestamp": str(timestamp), "value": number}
+                )
+    series = []
+    for (field, key), points in buckets.items():
+        if field == "funding":
+            venue, symbol = _split_mark_key(key)
+            series.append(
+                {
+                    "name": f"{symbol}_funding",
+                    "kind": "funding_rate",
+                    "symbol": symbol,
+                    "venue": venue,
+                    "key": key,
+                    "points": points,
+                }
+            )
+        elif field == "token_values":
+            series.append(
+                {
+                    "name": f"token:{key}",
+                    "kind": "token_value",
+                    "symbol": None,
+                    "venue": None,
+                    "key": key,
+                    "points": points,
+                }
+            )
+        else:
+            series.append(
+                {
+                    "name": f"yield:{key}",
+                    "kind": "yield_rate",
+                    "symbol": None,
+                    "venue": None,
+                    "key": key,
+                    "points": points,
+                }
+            )
+    return series
+
+
+def feature_series(
+    store: JobStore,
+    job_id: str,
+    *,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """A harnessed job's declared feature feeds (state/features.jsonl) as
+    `feature` series, one per feature (and per symbol when rows are keyed)."""
+    import pandas as pd
+
+    from wayfinder_paths.jobs.execution.features import (
+        load_feature_rows,
+        parse_feature_specs,
+    )
+    from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+
+    job = store.load(job_id)
+    if not job.execution_spec:
+        return []
+    specs = parse_feature_specs(ExecutionSpec.from_dict(dict(job.execution_spec)))
+    if not specs:
+        return []
+    frames = load_feature_rows([store.job_dir(job_id)], specs)
+    series: list[dict[str, Any]] = []
+    for item in specs:
+        frame = frames.get(item.name)
+        if frame is None or frame.empty:
+            continue
+        if start is not None:
+            frame = frame[frame["timestamp"] >= pd.Timestamp(start)]
+        if end is not None:
+            frame = frame[frame["timestamp"] <= pd.Timestamp(end)]
+        symbols = (
+            [s for s in frame["symbol"].unique() if isinstance(s, str) and s]
+            if "symbol" in frame.columns
+            else []
+        )
+        groups: list[tuple[str | None, Any]] = (
+            [(symbol, frame[frame["symbol"] == symbol]) for symbol in symbols]
+            if symbols
+            else [(None, frame)]
+        )
+        for symbol, group in groups:
+            points = [
+                {"timestamp": pd.Timestamp(ts).isoformat(), "value": float(value)}
+                for ts, value in zip(group["timestamp"], group["value"], strict=True)
+                if pd.notna(value)
+            ]
+            series.append(
+                {
+                    "name": f"feature:{item.name}" + (f":{symbol}" if symbol else ""),
+                    "kind": "feature",
+                    "symbol": symbol,
+                    "venue": None,
+                    "key": item.name,
+                    "points": points,
+                }
+            )
+    return series
+
+
 def _fetch_price_series(
+    job_id: str, ticks: list[dict[str, Any]], *, store: JobStore
+) -> list[dict[str, Any]]:
+    """Price series covering the forward window. A harnessed job fetches
+    candles through the venue feed its execution spec names; a freestyle or
+    Path script has no spec, so its series are the marks it read (candles
+    for hyperliquid symbols when the feed answers)."""
+    job = store.load(job_id)
+    if _lifecycle_script(job):
+        return _freestyle_price_series(job, ticks, store=store)
+    return _fetch_spec_price_series(job_id, ticks, store=store)
+
+
+def _freestyle_price_series(
+    job: Any, ticks: list[dict[str, Any]], *, store: JobStore
+) -> list[dict[str, Any]]:
+    series = _mark_series(ticks)
+    hl_symbols = [
+        str(entry["symbol"]) for entry in series if entry.get("venue") == "hyperliquid"
+    ]
+    if hl_symbols:
+        try:
+            bars = _fetch_hyperliquid_bars(job, hl_symbols, ticks, store=store)
+        except Exception:  # noqa: BLE001 — marks are the fallback chart
+            bars = {}
+        for entry in series:
+            points = bars.get(str(entry["symbol"]))
+            if points:
+                entry["points"] = points
+    return series
+
+
+def _fetch_hyperliquid_bars(
+    job: Any, symbols: list[str], ticks: list[dict[str, Any]], *, store: JobStore
+) -> dict[str, list[dict[str, Any]]]:
+    import pandas as pd
+
+    from wayfinder_paths.jobs.execution.primitives import (
+        CompletedBarsView,
+        bar_interval_seconds,
+    )
+    from wayfinder_paths.jobs.execution.venues import build_adapter
+
+    validation = (
+        store.read_json(job.id, "reports/validation/latest.json", default={}) or {}
+    )
+    interval = str(
+        ((validation.get("freestyle") or {}).get("spec") or {}).get("quote_interval")
+        or "5m"
+    )
+    interval_seconds = bar_interval_seconds(interval) or 300
+    now = pd.Timestamp.now(tz="UTC")
+    first_ts = _parse_ts(
+        str(ticks[0].get("bar_ts") or ticks[0].get("ts")) if ticks else None
+    )
+    if first_ts is not None:
+        window_bars = math.ceil(
+            (now - pd.Timestamp(first_ts)).total_seconds() / interval_seconds
+        )
+    else:
+        window_bars = _MAX_PRICE_BARS
+    lookback_bars = min(max(window_bars + _WARMUP_BARS, _WARMUP_BARS), _MAX_PRICE_BARS)
+
+    async def _fetch() -> CompletedBarsView:
+        adapter = build_adapter(
+            "hyperliquid", mode="paper", params=dict(job.execution_params or {})
+        )
+        return await adapter.feed.get_completed_bars(
+            symbols, interval, lookback_bars=lookback_bars, as_of=now
+        )
+
+    frame = asyncio.run(_fetch()).to_frame()
+    out: dict[str, list[dict[str, Any]]] = {}
+    for symbol in symbols:
+        symbol_frame = frame[frame["symbol"] == symbol]
+        out[symbol] = [
+            {
+                "timestamp": row.timestamp.isoformat(),
+                "value": float(row.close),
+                "open": float(row.open),
+                "high": float(row.high),
+                "low": float(row.low),
+                "close": float(row.close),
+                "volume": float(row.volume)
+                if "volume" in symbol_frame.columns and pd.notna(row.volume)
+                else None,
+            }
+            for row in symbol_frame.itertuples()
+        ]
+    return out
+
+
+def _fetch_spec_price_series(
     job_id: str, ticks: list[dict[str, Any]], *, store: JobStore
 ) -> list[dict[str, Any]]:
     """OHLC market_price series covering the forward window, fetched through

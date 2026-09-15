@@ -1018,6 +1018,47 @@ def test_mcp_create_defaults_to_jobs_v1(tmp_path: Path, monkeypatch) -> None:
     assert "workspace/src/" in result["result"]["hint"]
 
 
+def test_mcp_create_seeds_the_harnessed_contract_from_symbols(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """create(symbols=…, bar_interval=…) gives a custom jobs_v1 build the same
+    data contract a starter gets, so fetch_dataset/backtest_job can run
+    without job.yaml surgery; explicit execution_params win over defaults."""
+    import asyncio
+
+    from wayfinder_paths.mcp.tools import jobs as jobs_tools
+
+    monkeypatch.setattr("wayfinder_paths.jobs.compiler.RunnerBridge", _FakeBridge)
+    monkeypatch.setattr(jobs_tools, "JobStore", lambda: JobStore(repo_root=tmp_path))
+    monkeypatch.setattr(jobs_tools, "sync_all_jobs", lambda store=None: None)
+
+    result = asyncio.run(
+        jobs_tools.core_jobs(
+            action="create",
+            job_id="ny-sweep",
+            script="strategy.py",
+            interval_seconds=300,
+            symbols=["BTC"],
+            execution_params={"initial_capital": 2_000.0, "lookback_bars": 320},
+        )
+    )
+    assert result["ok"], result
+    job = JobStore(repo_root=tmp_path).load("ny-sweep")
+    contract = job.execution_spec["data_contract"]
+    assert contract["symbols"] == ["BTC"] and contract["bar_interval"] == "5m"
+    assert job.execution_spec["venues"] == ["hyperliquid"]
+    assert job.execution_params["initial_capital"] == 2_000.0
+    assert job.execution_params["lookback_bars"] == 320
+    assert job.execution_params["fee_bps"] == 4.5
+
+    bare = asyncio.run(
+        jobs_tools.core_jobs(
+            action="create", job_id="bare", script="strategy.py", interval_seconds=3600
+        )
+    )
+    assert bare["ok"] and JobStore(repo_root=tmp_path).load("bare").execution_spec == {}
+
+
 def test_mcp_records_bounded_remediation_progress(tmp_path: Path, monkeypatch) -> None:
     import asyncio
 

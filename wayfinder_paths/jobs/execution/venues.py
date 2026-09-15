@@ -90,6 +90,27 @@ class NativeProtectionResult:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class FundingSnapshot:
+    """A perp's funding as the venue last settled it: `rate` is the latest
+    hourly rate as a decimal (0.0001 = 0.01% per hour, positive = longs pay),
+    `history` the settled (time_ms, rate) pairs in the lookback, oldest first."""
+
+    symbol: str
+    rate: float
+    time_ms: int
+    history: tuple[tuple[int, float], ...] = ()
+
+
+@runtime_checkable
+class FundingFeed(Protocol):
+    """Optional feed extension for venues that settle funding (perps)."""
+
+    async def get_funding(
+        self, symbol: str, *, lookback_hours: int = 24
+    ) -> FundingSnapshot: ...
+
+
 @runtime_checkable
 class MarketDataFeed(Protocol):
     async def get_completed_bars(
