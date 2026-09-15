@@ -3021,6 +3021,9 @@ def stop_sandbox_runner(runner_dir: Path) -> None:
 
 STATUS_CONTEXT_KEYS = (
     "execution_contract",
+    "heartbeat",
+    "issues",
+    "freestyle",
     "script_loop",
     "execution_params",
     "launch",

@@ -304,6 +304,13 @@ and is revision-bound — schema changes must ride a proposal. Model artifacts
 belong in `workspace/models/` (see `wayfinder_paths.jobs.strategies.models`)
 and also ship via proposals.
 
+`core_jobs(action="status")` carries `heartbeat` (runner loops, last tick, last
+wake, launch identity, halt) and `issues` (a sorted list of what is wrong, each
+with a code, severity and message): a wake report reads `issues` before
+diagnosing anything itself and quotes the code; an empty list with a recent
+`last_tick` is "all clear". Freestyle/Path jobs add `freestyle` (the script's
+limits, the last tick's reads and actions, the dry run).
+
 Token prices and DeFi yields are feeds with their own verbs: `core_jobs`
 `fetch_token_features` (`token_price:<token_id>`) and `fetch_yield_features`
 (`lend_supply_apr:<venue>:<symbol>[:<market>]`, `lend_borrow_apr:…`,

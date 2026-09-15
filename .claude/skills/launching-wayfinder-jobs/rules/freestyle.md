@@ -41,6 +41,10 @@ Static: `tick` present and sync, no direct venue writes (`hyperliquid_place_*`, 
 
 When you narrate a dry run, say it ran on stub marks: its fills, settlements and equity are the runtime's mechanics, not performance. Any money number from a dry run travels with the readout's fixed sentence — "no backtest exists for this script; nothing here is a performance claim".
 
+## What the owner sees
+
+Every real tick overwrites `state/freestyle_last_tick.json` (status, equity, positions, the reads it made under `reads.marks|funding|token_values|yields`, its actions with status and reason, guard events, notifications). `status.freestyle` carries that record with the script's limits, the forward counts and the validation dry run (with the fixed sentence as `no_claim`), and the UI shows it as the freestyle panel. The forward chart draws the marks the script read as price series (candles for Hyperliquid symbols when the feed answers, a probability line for a prediction market) and the funding, token-value and yield reads as their own panes (`forward-view --view reads`), with entry and exit markers from the fills. An applied `code_change` proposal is dry-run again at the candidate revision and re-pins the launch, so `launch_checklist` identity stays green and the next tick runs the promoted script.
+
 ## Paper, live, identity
 
 Paper fills go through the venue's paper broker (taker fee and slippage assumptions per venue); live fills through the venue's real broker with the job's `wallet_label`. The ledger lives in `state/freestyle_ledger.json`; a mode flip archives it. Every tick compares the runner's baked revision with the workspace hash and refuses to run on drift. Live needs a wallet, `risk_limits.json` with a daily-loss or drawdown cap, `min_paper_runs` paper runs (default 20) and every warn flag acknowledged.

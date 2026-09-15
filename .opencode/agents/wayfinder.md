@@ -347,7 +347,11 @@ wake cadence or cron, event triggers, notifications with quiet hours, kill switc
 `launch(script_mode="live", confirm_live=true)`. Research runs alongside in the
 intervene wake; evolution runs every two days on eligible harnessed jobs only
 (freestyle scripts and Paths never evolve). `status` carries `readout`,
-`launch_checklist`, `risk_flags`, `watchdog`, `evolution`, `probation_summary`.
+`launch_checklist`, `risk_flags`, `watchdog`, `evolution`, `probation_summary`,
+`heartbeat` (runner loops, last tick, last wake, launch identity, halt) and
+`issues` (what is wrong, by code and severity — read it first when asked how a
+job is doing and repeat the code and message); freestyle/Path jobs add
+`freestyle` (limits, the last tick's reads and actions, the dry run) and `path`.
 A freestyle or Path readback that shows any money number (a dry-run fill, equity, a
 settlement) carries the readout's fixed sentence verbatim — "no backtest exists for this
 script; nothing here is a performance claim" — every time, as one line of the answer.

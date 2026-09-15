@@ -49,4 +49,4 @@ A review of a launched job (`review_now`, or the intervene wake) reads the forwa
 
 ## Reading the snapshot
 
-`core_jobs(action="status")` carries `readout`, `launch_checklist`, `launch`, `risk_flags`, `watchdog`, `evolution`, `probation_summary`, `research` and `path_upgrade` so the state of the flow is one call away.
+`core_jobs(action="status")` carries `readout`, `launch_checklist`, `launch`, `risk_flags`, `watchdog`, `evolution`, `probation_summary`, `research` and `path_upgrade` so the state of the flow is one call away. It also carries `heartbeat` (runner loops, last tick, last wake, launch identity, halt) and `issues` (what is wrong, by code and severity — read this first when asked whether a job is healthy; quote the code and message, never invent a diagnosis), and for freestyle/Path jobs `freestyle` (the script's limits, the last tick's reads and actions, the dry run) and `path` (the pin). See `rules/watchdog.md`.
