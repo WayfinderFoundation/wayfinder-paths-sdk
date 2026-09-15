@@ -29,11 +29,27 @@ def tick(ctx):
 - `ctx.act(action)` is the only trade seam. `kind` is `market | limit | buy` (open) or `close | sell | redeem` (reduce). Every open needs `notional` or `size`; put `max_loss` on it. It returns `ActionResult` (`filled | resting | rejected | refused`, with a reason). Halted jobs refuse openers and still allow exits.
 - `ctx.state` is a dict that persists between ticks. `ctx.notify(title, body)` sends one notification per key per tick. `ctx.halt(reason)` latches the kill switch.
 - `ctx.custom(label, coro)` is the escape hatch for venue calls the runtime cannot paper; it is skipped in paper mode and flagged (`custom_actions`).
-- Supported venues: `hyperliquid`, `polymarket`, `hyperliquid_prediction`. On-chain swaps are not a venue yet; an `onchain` action is refused and validation reports it.
+- Supported venues: `hyperliquid` (perps), `onchain` (spot), `polymarket`, `hyperliquid_prediction`. Lending, yield rotation and other DeFi actions are reads (`ctx.defi_yield`), not venues: such an action is refused and validation reports it.
+- `onchain` is spot through the swap router. The symbol is a token id (`ethereum-robinhood`, `usd-coin-polygon`, `robinhood_0x…`), `ctx.quote("onchain", token_id)` is its USD price, `kind: "buy"` with a USD `notional` opens a long-only inventory position (`ctx.positions[token_id]`, size in tokens, `avg_price` in USD) and `kind: "sell"` closes it. No shorts, no limit orders. Paper fills at the price with 30 bps fee and 50 bps slippage (override with `execution_params.freestyle.venue_params.onchain`); live quotes then swaps on the job wallet, USDC in and USDC out on the token's own chain (`quote_token` in `venue_params.onchain` overrides the USDC id), gas sponsored — the wallet needs USDC on that chain before live. The owner's canonical example: buy ETH on Robinhood chain under 2000, sell above 2500:
+
+```python
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=("onchain",), max_notional_per_tick=250, max_loss_usd=50)
+TOKEN = "ethereum-robinhood"
+
+
+def tick(ctx):
+    price = ctx.quote("onchain", TOKEN)
+    if price < 2000 and TOKEN not in ctx.positions:
+        ctx.act({"venue": "onchain", "kind": "buy", "symbol": TOKEN, "notional": 200})
+    elif price > 2500 and TOKEN in ctx.positions:
+        ctx.act({"venue": "onchain", "kind": "sell", "symbol": TOKEN, "reason": "target"})
+```
 
 ## Dry-run marks
 
-The validation dry run quotes from stub marks. Pass them at creation: `create_freestyle(..., execution_params={"freestyle": {"validation_marks": {...}}, "initial_capital": 1000})`. Keys are `<venue>:<symbol>` (for a prediction market the symbol itself starts with `polymarket:`, so the key reads `polymarket:polymarket:<market>:YES`); unknown symbols quote 100 (perps) or 0.5 (prediction); traded marks drift 0.1% per tick so mark-to-market is exercised (report the fill's `reference_price` as the mark, and the dry run's `marks` as what the last tick saw), while funding, token and yield reads do not drift. A key `funding:<venue>:<symbol>` is what `ctx.funding` reads (default 0). A key `token:<token_id>` is what `ctx.token_value` reads (default 1). A key `yield:<name>` is what `ctx.defi_yield` reads (default 0). A key `resolution:<venue>:<symbol>` settles that market at the given value from the second tick on, so a script can be seen buying on tick one and settling on tick two. Never put a real key or a wallet in execution_params.
+The validation dry run quotes from stub marks. Pass them at creation: `create_freestyle(..., execution_params={"freestyle": {"validation_marks": {...}}, "initial_capital": 1000})`. Keys are `<venue>:<symbol>` (for a prediction market the symbol itself starts with `polymarket:`, so the key reads `polymarket:polymarket:<market>:YES`); unknown symbols quote 100 (perps) or 0.5 (prediction); traded marks drift 0.1% per tick so mark-to-market is exercised (report the fill's `reference_price` as the mark, and the dry run's `marks` as what the last tick saw), while funding, token and yield reads do not drift. An `onchain:<token_id>` key is the spot price the dry run sees (it falls back to `token:<token_id>`, then 100). A key `funding:<venue>:<symbol>` is what `ctx.funding` reads (default 0). A key `token:<token_id>` is what `ctx.token_value` reads (default 1). A key `yield:<name>` is what `ctx.defi_yield` reads (default 0). A key `resolution:<venue>:<symbol>` settles that market at the given value from the second tick on, so a script can be seen buying on tick one and settling on tick two. Never put a real key or a wallet in execution_params.
 
 ## What validation checks
 

@@ -8,11 +8,13 @@ from typing import Any
 from wayfinder_paths.jobs.execution.primitives import OrderIntent
 
 # Venues the freestyle runtime can quote and fill (paper through the venue's
-# paper broker, live through its real broker). On-chain swaps are not a
-# venue in the execution registry yet, so they are refused with that reason.
+# paper broker, live through its real broker). `onchain` is spot: token ids
+# bought and sold through the swap router, long-only. Lending, yield and
+# other DeFi actions are reads (ctx.defi_yield), not venues.
 SUPPORTED_VENUES: frozenset[str] = frozenset(
-    {"hyperliquid", "polymarket", "hyperliquid_prediction"}
+    {"hyperliquid", "polymarket", "hyperliquid_prediction", "onchain"}
 )
+SPOT_VENUES: frozenset[str] = frozenset({"onchain"})
 OPEN_KINDS: frozenset[str] = frozenset({"market", "limit", "buy"})
 CLOSE_KINDS: frozenset[str] = frozenset({"close", "sell", "redeem"})
 ACTION_KINDS: frozenset[str] = OPEN_KINDS | CLOSE_KINDS
@@ -102,7 +104,8 @@ def normalize_action(
     if venue not in SUPPORTED_VENUES:
         raise ValueError(
             f"venue {venue!r} is not supported by the freestyle runtime "
-            f"(supported: {sorted(SUPPORTED_VENUES)}); on-chain swaps are not a venue yet"
+            f"(supported: {sorted(SUPPORTED_VENUES)}); lending and yield actions "
+            "are reads, not venues"
         )
     if kind not in ACTION_KINDS:
         raise ValueError(
@@ -143,6 +146,16 @@ def normalize_action(
         raise ValueError(
             f"side must be long/short (or buy/sell), got {data.get('side')!r}"
         )
+    if venue in SPOT_VENUES:
+        if side == "short":
+            raise ValueError(
+                f"{venue} is spot: it holds tokens and cannot short; "
+                "'sell' closes what you hold"
+            )
+        if kind == "limit":
+            raise ValueError(
+                f"{venue} swaps fill at market; limit orders are not supported"
+            )
     size = _float_or_none(data.get("size"))
     notional = _float_or_none(data.get("notional"))
     if (size is None or size <= 0) and (notional is None or notional <= 0):

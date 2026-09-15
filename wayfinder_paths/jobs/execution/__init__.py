@@ -16,6 +16,12 @@ from wayfinder_paths.jobs.execution.hyperliquid_prediction import (
     HyperliquidPredictionBroker,
     HyperliquidPredictionFeed,
 )
+from wayfinder_paths.jobs.execution.onchain import (
+    ONCHAIN_CAPABILITIES,
+    OnchainMarketFeed,
+    OnchainSwapBroker,
+    OnchainVenueAdapter,
+)
 from wayfinder_paths.jobs.execution.polymarket import (
     POLYMARKET_CAPABILITIES,
     PolymarketBroker,
@@ -70,6 +76,10 @@ from wayfinder_paths.jobs.execution.venues import (
 __all__ = [
     "DEFAULT_INITIAL_CAPITAL",
     "HYPERLIQUID_PREDICTION_CAPABILITIES",
+    "ONCHAIN_CAPABILITIES",
+    "OnchainMarketFeed",
+    "OnchainSwapBroker",
+    "OnchainVenueAdapter",
     "POLYMARKET_CAPABILITIES",
     "VENUE_REGISTRY",
     "BacktestBroker",

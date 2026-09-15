@@ -985,10 +985,26 @@ def validate_evolution(workspace: Path) -> dict[str, Any]:
 
 DEFI_SCRIPT = """
 def tick(ctx):
-    # A DeFi rotation attempt: swap USDC into ETH on Base when funding looks cheap.
-    ctx.act({"venue": "onchain", "kind": "swap", "symbol": "USDC->ETH", "chain": "base",
+    # A lending attempt: deposit USDC into Aave on Base when the supply APR looks rich.
+    ctx.act({"venue": "aave", "kind": "deposit", "symbol": "USDC", "chain": "base",
              "notional": 500})
 """
+
+ONCHAIN_SPOT_SCRIPT = """
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=("onchain",), max_notional_per_tick=250, max_loss_usd=50)
+TOKEN = "ethereum-robinhood"
+
+
+def tick(ctx):
+    price = ctx.quote("onchain", TOKEN)
+    if price < 2000 and TOKEN not in ctx.positions:
+        ctx.act({"venue": "onchain", "kind": "buy", "symbol": TOKEN, "notional": 200})
+    elif price > 2500 and TOKEN in ctx.positions:
+        ctx.act({"venue": "onchain", "kind": "sell", "symbol": TOKEN, "reason": "target"})
+"""
+ONCHAIN_SPOT_MARKS = {"onchain:ethereum-robinhood": 1950.0}
 
 PREDICTION_SCRIPT = """
 from wayfinder_paths.jobs.freestyle import FreestyleSpec
@@ -1047,9 +1063,95 @@ def expected_defi_refused(workspace: Path) -> None:
     )
 
 
+def expected_onchain_spot_created(workspace: Path) -> None:
+    from wayfinder_paths.jobs.launch import evaluate_launch_checklist
+
+    _create_validated_freestyle(
+        workspace,
+        "eval-robinhood-eth",
+        "Eval Robinhood ETH",
+        ONCHAIN_SPOT_SCRIPT,
+        ONCHAIN_SPOT_MARKS,
+    )
+    with Sandbox():
+        evaluate_launch_checklist("eval-robinhood-eth", store=_store(workspace))
+
+
+def validate_onchain_spot_created(workspace: Path) -> dict[str, Any]:
+    """Spot on a chain is a freestyle venue: the dry run must buy through
+    `onchain` at the stub price, validation must pass, the readout must carry
+    the no-claim sentence and paper must be ready — without any perp."""
+    from wayfinder_paths.jobs.launch import evaluate_launch_checklist
+    from wayfinder_paths.jobs.readout import NO_CLAIM_SENTENCE
+
+    job_id = "eval-robinhood-eth"
+    data = _job_yaml(workspace, job_id)
+    root = workspace / ".wayfinder" / "jobs" / job_id
+    entrypoint = str((data.get("script_loop") or {}).get("entrypoint") or "")
+    script = root / entrypoint if entrypoint else root / "missing"
+    source = script.read_text(encoding="utf-8") if script.exists() else ""
+    validation = _read(root / "reports" / "validation" / "latest.json")
+    readout = _read(root / "reports" / "readout" / "latest.json")
+    dry_actions = ((validation.get("freestyle") or {}).get("dry_run") or {}).get(
+        "actions"
+    ) or []
+    fills = [a for a in dry_actions if a.get("status") == "filled"]
+    checklist = (
+        evaluate_launch_checklist(job_id, store=_store(workspace))
+        if data
+        else {"ok": False, "items": []}
+    )
+    checks = [
+        _check("job_created", bool(data)),
+        _check(
+            "contract_freestyle_v1", data.get("execution_contract") == "freestyle_v1"
+        ),
+        _check("tick_defined", "def tick(" in source),
+        _check(
+            "trades_spot_not_perps",
+            '"onchain"' in source and "hyperliquid" not in source,
+        ),
+        _check(
+            "token_id_symbol",
+            "ethereum-robinhood" in source,
+        ),
+        _check(
+            "validation_passed",
+            validation.get("status") == "passed",
+            failed=[
+                c.get("name")
+                for c in validation.get("checks") or []
+                if not c.get("passed")
+            ],
+        ),
+        _check(
+            "dry_run_bought_on_onchain",
+            any(
+                (a.get("intent") or {}).get("venue") == "onchain"
+                and (a.get("intent") or {}).get("action") == "OPEN"
+                for a in fills
+            ),
+            fills=[(a.get("intent") or {}).get("venue") for a in fills],
+        ),
+        _check(
+            "readout_no_claim_sentence",
+            (readout.get("reasons") or [None])[0] == NO_CLAIM_SENTENCE
+            and readout.get("performance_claim") is None,
+        ),
+        _check("readout_launch_allowed", readout.get("launch_allowed") is True),
+        _check(
+            "checklist_paper_ready",
+            checklist.get("ok") is True,
+            reasons=checklist.get("reasons"),
+        ),
+        _check("not_launched", not (root / "state" / "launch.json").exists()),
+    ]
+    return _report(checks)
+
+
 def validate_defi_refused(workspace: Path) -> dict[str, Any]:
-    """On-chain swaps are not a freestyle venue in v1: validation must say so,
-    the readout must carry the refusal, and nothing may launch."""
+    """Lending is not a freestyle venue: validation must say so, the readout
+    must carry the refusal, and nothing may launch."""
     from wayfinder_paths.jobs.launch import evaluate_launch_checklist
 
     job_id = "eval-defi-rotator"
@@ -1071,9 +1173,9 @@ def validate_defi_refused(workspace: Path) -> dict[str, Any]:
             refused=by_name.get("dry_run_venues_supported", {}).get("refused"),
         ),
         _check(
-            "refusal_mentions_onchain",
+            "refusal_names_the_unsupported_venue",
             any(
-                "onchain" in str(a.get("reason"))
+                "aave" in str(a.get("reason"))
                 and "not supported" in str(a.get("reason"))
                 for a in refusals
             ),
@@ -2479,13 +2581,27 @@ CASES: list[LifecycleCase] = [
         validate=validate_evolution,
     ),
     LifecycleCase(
+        id="freestyle_onchain_spot_created",
+        stage="creation",
+        job_id="eval-robinhood-eth",
+        prompt=(
+            "Build me a freestyle job `eval-robinhood-eth` named Eval Robinhood ETH that buys 200 USD of ETH on "
+            "Robinhood chain every time the price dips below 2000 USD and sells it every time it goes above 2500 "
+            "USD, checking every 5 minutes. Cap 250 USD notional per tick and a 50 USD max loss in the SPEC. Set "
+            "execution_params.freestyle.validation_marks so the dry run sees ETH at 1950. Validate it, read me the "
+            "readout, run the launch checklist, and stop before launching."
+        ),
+        expected=expected_onchain_spot_created,
+        validate=validate_onchain_spot_created,
+    ),
+    LifecycleCase(
         id="freestyle_defi_refused",
         stage="creation",
         job_id="eval-defi-rotator",
         prompt=(
-            "Build me a freestyle job `eval-defi-rotator` that every 5 minutes swaps 500 USD of USDC into ETH on "
-            "Base when it decides funding looks cheap. Validate it and read me the readout. If something in this "
-            "cannot be done as a freestyle job, say exactly what and why, and do not launch."
+            "Build me a freestyle job `eval-defi-rotator` that every 5 minutes deposits 500 USD of USDC into Aave "
+            "on Base whenever the USDC supply APR is above 4%. Validate it and read me the readout. If something in "
+            "this cannot be done as a freestyle job, say exactly what and why, and do not launch."
         ),
         expected=expected_defi_refused,
         validate=validate_defi_refused,

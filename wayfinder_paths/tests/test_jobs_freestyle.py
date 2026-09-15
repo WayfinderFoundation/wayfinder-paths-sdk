@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -830,3 +831,252 @@ def test_backtest_monitors_do_not_apply_to_freestyle_jobs(tmp_path: Path) -> Non
         if str(row.get("type", "")).endswith("_failed")
         or row.get("type") == "data_feed_degraded"
     ]
+
+
+ONCHAIN_SCRIPT = """
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=("onchain",), max_notional_per_tick=250, max_loss_usd=50)
+TOKEN = "ethereum-robinhood"
+
+
+def tick(ctx):
+    price = ctx.quote("onchain", TOKEN)
+    if price < 2000 and TOKEN not in ctx.positions:
+        ctx.act({"venue": "onchain", "kind": "buy", "symbol": TOKEN, "notional": 200})
+    elif price > 2500 and TOKEN in ctx.positions:
+        ctx.act({"venue": "onchain", "kind": "sell", "symbol": TOKEN, "reason": "target"})
+"""
+
+
+def _paper_env(monkeypatch, store) -> None:
+    from wayfinder_paths.jobs.freestyle import runtime as rt
+
+    monkeypatch.setattr(rt, "fire_triggers", lambda *a, **k: None)
+    monkeypatch.setattr(rt, "JobStore", lambda: store)
+    monkeypatch.setenv("WAYFINDER_JOB_MODE", "paper")
+    monkeypatch.delenv("WAYFINDER_DRY_RUN", raising=False)
+    monkeypatch.delenv("WAYFINDER_JOB_REVISION", raising=False)
+    monkeypatch.delenv("WAYFINDER_FORWARD_DIR", raising=False)
+
+
+def test_onchain_spot_buys_below_and_sells_above_in_paper(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The owner's ask: buy ETH on Robinhood chain under 2000, sell above 2500.
+    In paper the swap fills at the token's USD price with the venue's fee and
+    slippage; the inventory is a long-only position in the same ledger."""
+    from wayfinder_paths.jobs.freestyle import runtime as rt
+
+    store, job = _job(tmp_path, source=ONCHAIN_SCRIPT)
+    root = store.job_dir(job.id)
+    _paper_env(monkeypatch, store)
+    monkeypatch.setattr(
+        rt,
+        "VenueGateway",
+        lambda **kwargs: rt.StubVenueGateway(
+            marks={"onchain:ethereum-robinhood": 1950.0}
+        ),
+    )
+    payload = run_freestyle_tick(root)
+    assert payload["ok"], payload
+    ledger = json.loads((root / LEDGER_PATH).read_text())
+    held = ledger["ledger"]["positions"]["ethereum-robinhood"]
+    assert held["side"] == "long" and held["metadata"]["venue"] == "onchain"
+    # 200 USD sized at the 1950 mark; the fill itself carries 50 bps slippage.
+    assert held["size"] == pytest.approx(200 / 1950, rel=1e-6)
+    assert held["avg_price"] == pytest.approx(1950 * 1.005, rel=1e-6)
+    fill = json.loads(
+        (root / "results" / "forward" / "fills.jsonl").read_text().splitlines()[-1]
+    )
+    assert fill["venue"] == "onchain" and fill["status"] == "filled"
+
+    monkeypatch.setattr(
+        rt,
+        "VenueGateway",
+        lambda **kwargs: rt.StubVenueGateway(
+            marks={"onchain:ethereum-robinhood": 2600.0}
+        ),
+    )
+    payload = run_freestyle_tick(root)
+    assert payload["ok"] and "ethereum-robinhood" not in payload["positions"]
+    trade = json.loads(
+        (root / "results" / "forward" / "trades.jsonl").read_text().splitlines()[-1]
+    )
+    assert trade["venue"] == "onchain" and trade["net_pnl"] > 0
+    assert trade["exit_reason"] == "target"
+
+
+def test_onchain_refuses_shorts_and_limit_orders() -> None:
+    with pytest.raises(ValueError, match="cannot short"):
+        normalize_action(
+            {
+                "venue": "onchain",
+                "kind": "market",
+                "symbol": "ethereum-robinhood",
+                "side": "short",
+                "notional": 100,
+            }
+        )
+    with pytest.raises(ValueError, match="limit orders"):
+        normalize_action(
+            {
+                "venue": "onchain",
+                "kind": "limit",
+                "symbol": "ethereum-robinhood",
+                "notional": 100,
+                "limit_price": 1900,
+            }
+        )
+    buy = normalize_action(
+        {
+            "venue": "onchain",
+            "kind": "buy",
+            "symbol": "ethereum-robinhood",
+            "notional": 100,
+        }
+    )
+    assert buy.action == "OPEN" and buy.side == "long"
+
+
+def test_onchain_dry_run_quotes_the_token_stub_when_no_venue_mark() -> None:
+    from wayfinder_paths.jobs.freestyle.runtime import StubVenueGateway
+
+    gateway = StubVenueGateway(marks={"token:ethereum-robinhood": 1900.0})
+    assert gateway.quote("onchain", "ethereum-robinhood") == pytest.approx(1900.0)
+    assert StubVenueGateway(marks={"onchain:ethereum-robinhood": 2100.0}).quote(
+        "onchain", "ethereum-robinhood"
+    ) == pytest.approx(2100.0)
+
+
+def test_onchain_adapter_paper_and_live_construction() -> None:
+    from wayfinder_paths.jobs.execution.paper import PaperBroker
+    from wayfinder_paths.jobs.execution.venues import build_adapter
+
+    paper = build_adapter("onchain", mode="paper", params={"fee_bps": 30.0})
+    assert isinstance(paper.broker, PaperBroker)
+    assert paper.capabilities.market_kind == "spot"
+    assert paper.capabilities.supports_shorts is False
+    with pytest.raises(ValueError, match="wallet_label"):
+        build_adapter("onchain", mode="live", params={})
+
+
+def test_onchain_live_broker_quotes_then_swaps_on_the_job_wallet() -> None:
+    from wayfinder_paths.jobs.execution.onchain import OnchainSwapBroker, human_amount
+    from wayfinder_paths.jobs.execution.primitives import OrderIntent
+
+    calls: dict[str, Any] = {}
+
+    async def quote(**kwargs):
+        calls["quote"] = kwargs
+        return {
+            "ok": True,
+            "result": {
+                "quote": {
+                    "best_quote": {
+                        "input_amount_usd": 200.0,
+                        "output_amount": "100000000000000000",
+                        "output_amount_usd": 199.4,
+                        "fee_estimate": 0.6,
+                    }
+                },
+                "suggested_swap_request": {**kwargs, "recipient": None},
+            },
+        }
+
+    async def swap(**kwargs):
+        calls["swap"] = kwargs
+        return {
+            "ok": True,
+            "result": {
+                "status": "confirmed",
+                "effects": {"swap": {"txn_hash": "0xabc"}},
+            },
+        }
+
+    async def details(symbol):
+        return {"decimals": 18, "chain": {"code": "robinhood", "id": 4663}}
+
+    broker = OnchainSwapBroker(
+        wallet_label="job-wallet", quote=quote, swap=swap, token_details=details
+    )
+    buy = OrderIntent(
+        action="OPEN",
+        venue="onchain",
+        symbol="ethereum-robinhood",
+        side="long",
+        notional=200.0,
+        client_order_id="fs-1",
+    )
+    fill = asyncio.run(
+        broker.place(buy, timestamp="2026-09-15T00:00:00+00:00", price=2000.0)
+    )
+    assert calls["quote"] == {
+        "wallet_label": "job-wallet",
+        "from_token": "usd-coin-robinhood",
+        "to_token": "ethereum-robinhood",
+        "amount": "200.0",
+        "slippage_bps": 50,
+    }
+    assert calls["swap"]["from_token"] == "usd-coin-robinhood"
+    assert fill.status == "filled" and fill.order_id == "0xabc"
+    assert fill.filled_size == pytest.approx(0.1)  # raw 1e17 wei -> 0.1 ETH
+    assert fill.avg_price == pytest.approx(2000.0)  # 200 USD / 0.1 ETH
+    assert fill.fee == pytest.approx(0.6)
+
+    sell = OrderIntent(
+        action="CLOSE",
+        venue="onchain",
+        symbol="ethereum-robinhood",
+        side="sell",
+        size=0.1,
+        reduce_only=True,
+        client_order_id="fs-2",
+    )
+    fill = asyncio.run(
+        broker.place(sell, timestamp="2026-09-15T01:00:00+00:00", price=2600.0)
+    )
+    assert calls["quote"]["from_token"] == "ethereum-robinhood"
+    assert calls["quote"]["to_token"] == "usd-coin-robinhood"
+    assert calls["quote"]["amount"] == "0.1"
+    assert fill.status == "filled" and fill.filled_size == pytest.approx(0.1)
+    assert fill.avg_price == pytest.approx(1994.0)  # output USD / tokens sold
+
+    async def failed_swap(**kwargs):
+        return {"ok": True, "result": {"status": "failed", "error": "reverted"}}
+
+    broker = OnchainSwapBroker(
+        wallet_label="job-wallet", quote=quote, swap=failed_swap, token_details=details
+    )
+    fill = asyncio.run(
+        broker.place(buy, timestamp="2026-09-15T02:00:00+00:00", price=2000.0)
+    )
+    assert fill.status == "rejected" and "reverted" in str(fill.error)
+
+    async def no_quote(**kwargs):
+        return {
+            "ok": False,
+            "error": {"code": "quote_error", "message": "No quotes available"},
+        }
+
+    broker = OnchainSwapBroker(
+        wallet_label="job-wallet", quote=no_quote, swap=swap, token_details=details
+    )
+    fill = asyncio.run(
+        broker.place(buy, timestamp="2026-09-15T03:00:00+00:00", price=2000.0)
+    )
+    assert fill.status == "rejected" and "No quotes available" in str(fill.error)
+
+    short = OrderIntent(
+        action="OPEN",
+        venue="onchain",
+        symbol="ethereum-robinhood",
+        side="short",
+        notional=200.0,
+    )
+    fill = asyncio.run(
+        broker.place(short, timestamp="2026-09-15T04:00:00+00:00", price=2000.0)
+    )
+    assert fill.status == "rejected" and "cannot short" in str(fill.error)
+    assert human_amount("0.25", 18) == pytest.approx(0.25)
+    assert human_amount("250000000000000000", 18) == pytest.approx(0.25)

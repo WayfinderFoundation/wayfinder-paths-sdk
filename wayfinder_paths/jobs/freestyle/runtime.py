@@ -72,6 +72,8 @@ DEFAULT_VENUE_PARAMS: dict[str, dict[str, float]] = {
     "hyperliquid": {"fee_bps": 4.5, "slippage_bps": 5.0},
     "hyperliquid_prediction": {"fee_bps": 0.0, "slippage_bps": 0.0},
     "polymarket": {"fee_bps": 0.0, "slippage_bps": 0.0},
+    # Router fee plus a pool's typical impact on a small spot swap.
+    "onchain": {"fee_bps": 30.0, "slippage_bps": 50.0},
 }
 
 
@@ -205,6 +207,9 @@ class StubVenueGateway:
         if resolved is not None and self.tick_index >= 1:
             return float(resolved)
         base = self.marks.get(f"{venue}:{symbol}", self.marks.get(symbol))
+        if base is None and venue == "onchain":
+            # A spot symbol is a token id; the token read's stub is its price.
+            base = self.marks.get(f"token:{symbol}")
         if base is None:
             base = 0.5 if venue in {"polymarket", "hyperliquid_prediction"} else 100.0
         # A gentle drift so a multi-tick dry run exercises mark-to-market.
