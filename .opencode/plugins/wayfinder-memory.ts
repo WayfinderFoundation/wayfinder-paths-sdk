@@ -39,18 +39,20 @@ export const WayfinderMemory: Plugin = async ({ directory }) => {
       if (injected.has(sessionID)) return
       injected.add(sessionID)
       const raw = await readFile(index, "utf8").catch(() => "")
-      if (!raw.trim()) return
-      const body =
-        raw.length > INDEX_LIMIT
+      // An explicit empty marker stops the model from listing memory/ to find out
+      // whether it exists before its first save.
+      const body = !raw.trim()
+        ? "memory/ is empty: no memories saved yet."
+        : raw.length > INDEX_LIMIT
           ? `${raw.slice(0, INDEX_LIMIT)}\n[memory/MEMORY_INDEX.md is over ${INDEX_LIMIT} characters; only part of it was loaded. Trim the index: one line per entry, detail in topic files.]`
-          : raw
+          : `What you remember about this user, from memory/MEMORY_INDEX.md. Read a topic file when its line is relevant.\n${raw}`
       output.parts.push({
         id: partId(),
         sessionID,
         messageID: output.message.id,
         type: "text",
         synthetic: true,
-        text: `<memory>\nWhat you remember about this user, from memory/MEMORY_INDEX.md. Read a topic file when its line is relevant.\n${body}\n</memory>`,
+        text: `<memory>\n${body}\n</memory>`,
       })
     },
   }
