@@ -3021,11 +3021,13 @@ STATUS_CONTEXT_KEYS = (
     "watchdog",
     "gate",
     "evolution",
+    "probation_summary",
     "research",
+    "features",
 )
 
 
-def status_context(workspace: Path, job_id: str, *, max_chars: int = 12_000) -> str:
+def status_context(workspace: Path, job_id: str, *, max_chars: int = 20_000) -> str:
     """What `core_jobs(status)` showed the agent: the judge only sees tool
     calls in the transcript, not their results, so the snapshot keys the
     agent quotes (watchdog, checklist, flags, launch) travel as context."""
