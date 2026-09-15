@@ -3339,6 +3339,15 @@ def _questions_validator(
     return validate
 
 
+# "not a venue", "no freestyle venue exists", "isn't a supported venue", "has no
+# venue", "not supported", "cannot be built": the shape of the statement, not
+# one fixed phrase.
+_NO_VENUE = re.compile(
+    r"(no (?:\w+ ){0,2}venue|not an? (?:\w+ ){0,2}venue|isn'?t an? (?:\w+ ){0,2}venue|"
+    r"has no venue|not supported|cannot|can'?t be built|is out\b|refus)"
+)
+
+
 def _refusal_validator(
     alternatives: tuple[str, ...],
 ) -> Callable[[str], dict[str, Any]]:
@@ -3348,13 +3357,7 @@ def _refusal_validator(
             [
                 _check(
                     "names_the_limit",
-                    (
-                        "not a venue" in text
-                        or "not supported" in text
-                        or "cannot" in text
-                        or "can't" in text
-                        or "isn't" in text
-                    )
+                    bool(_NO_VENUE.search(text))
                     and ("lend" in text or "aave" in text or "morpho" in text),
                 ),
                 _check(
