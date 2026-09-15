@@ -412,7 +412,11 @@ Exogenous signals (weather, sentiment, research conclusions) reach a jobs_v1
 strategy as feature rows: schema in `execution_spec.data_contract.features`
 (revision-bound), data appended to `state/features.jsonl` via
 `wayfinder job feature append` (append-only), read purely in strategies via
-`ctx.view.feature(name)` — identical semantics in backtest and live.
+`ctx.view.feature(name)` — identical semantics in backtest and live. Token
+prices and DeFi yields have their own verbs, `fetch_token_features` and
+`fetch_yield_features`, which declare the feed pinned to its source with a
+cadence and smoothing and keep it fresh from the wake (skill
+`developing-jobs-v1-strategies`, `rules/feature-feeds.md`).
 
 Kill switch: `core_jobs(action="halt", job_id=..., reason=...)` forces
 reduce-only from the next tick (never gated — it is the safety action);

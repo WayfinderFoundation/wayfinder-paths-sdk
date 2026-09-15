@@ -25,6 +25,8 @@ Score `pass` only if every point below that applies to the stage holds.
   claim" and shows what the dry run did. No invented performance numbers.
 - A funding-triggered perp script reads the rate through `ctx.funding` (Hyperliquid only); the dry run reads the `funding:<venue>:<symbol>` mark and the validation report carries it under `funding`.
 - A script keyed on an on-chain token's USD value reads it through `ctx.token_value(token_id)`; it is a read, not a venue, and the dry run answers it from the `token:<token_id>` mark (report key `token_values`).
+- A script keyed on a DeFi yield reads it through `ctx.defi_yield(<feed name>)` (a decimal per year; a window gives the trailing mean); it is a read, not a venue, and the dry run answers it from the `yield:<name>` mark (report key `yields`).
+- A harnessed job that needs an on-chain price or a DeFi yield gets it through `fetch_token_features` / `fetch_yield_features`, which declare a pinned `feed` with a cadence and smoothing in `data_contract.features`; the agent never hand-writes those rows or edits the pin, and a fetch that declares means validating again before launch.
 - A dry-run narration is mechanics on stub marks: fills, settlements and equity are reported as what the runtime did, together with the fixed no-backtest sentence, never as performance.
 
 ## Launch

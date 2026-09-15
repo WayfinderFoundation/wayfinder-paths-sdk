@@ -202,7 +202,9 @@ wakes, and if the job (now or later) runs a jobs_v1 script strategy, that
 strategy reads the same rows purely via `ctx.view.feature(name)` with
 identical backtest/live semantics. Feature rows are APPEND-ONLY — never write
 `state/features.jsonl` with `cat >` (that truncates history and corrupts
-replay), and never back-date timestamps.
+replay), and never back-date timestamps. Token prices and DeFi yields are
+not hand-published: `fetch_token_features` / `fetch_yield_features` declare
+them pinned, cadenced and smoothed, and the wake refreshes them.
 
 ## Adjusting your own playbook, notes, and models
 

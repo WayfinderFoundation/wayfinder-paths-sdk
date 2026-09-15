@@ -304,6 +304,17 @@ and is revision-bound — schema changes must ride a proposal. Model artifacts
 belong in `workspace/models/` (see `wayfinder_paths.jobs.strategies.models`)
 and also ship via proposals.
 
+Token prices and DeFi yields are feeds with their own verbs: `core_jobs`
+`fetch_token_features` (`token_price:<token_id>`) and `fetch_yield_features`
+(`lend_supply_apr:<venue>:<symbol>[:<market>]`, `lend_borrow_apr:…`,
+`yield_apy:<symbol>`, `pendle_implied_apy:<venue>:<market_id>`,
+`boros_fixed_rate:<venue>:<market_id>`). They declare the feature pinned to
+its source ids with a cadence and a smoothing (yields: a trailing-day mean
+by default), refresh on the hourly wake stamp with revisions reconciled, and
+the substrate block's `declared_feeds` shows their freshness — never hand-
+write their rows or edit the pin. Skill: `developing-jobs-v1-strategies`
+`rules/feature-feeds.md`.
+
 Feature columns flow into RESEARCH too: `signal-scan` merges declared
 features onto the bars at every scanned timeframe, so workspace signals can
 condition on them (`funding < 0`, session windows, cross-symbol context).
