@@ -189,3 +189,51 @@ def test_snapshot_survives_a_broken_detector(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.setattr(health, "build_heartbeat", boom)
     snapshot = snapshot_job(job.id, store=store)
     assert snapshot["heartbeat"] is None and snapshot["issues"] == []
+
+
+def test_unqueued_wake_is_flagged_without_masking_the_last_check(
+    tmp_path: Path,
+) -> None:
+    store, job = _job(tmp_path)
+    checked = (datetime.now(UTC) - timedelta(minutes=20)).isoformat()
+    failed = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+    heartbeat = {
+        "loops": {"agent": {"enabled": True, "consecutive_failures": 0}},
+        "runner_reachable": True,
+    }
+    issues = health.build_issues(
+        store,
+        job.id,
+        job,
+        heartbeat=heartbeat,
+        scorecard={
+            "last_agent_check_at": checked,
+            "last_agent_wake_error": "OpenCode server unavailable",
+            "last_agent_wake_error_at": failed,
+        },
+        features=None,
+        risk_flags=None,
+        launch_checklist=None,
+        proposals=[],
+    )
+    failed_issue = next(i for i in issues if i["code"] == "agent_wake_failed")
+    assert "OpenCode server unavailable" in failed_issue["message"]
+    assert failed_issue["since"] == failed
+
+    # A later real check clears it.
+    issues = health.build_issues(
+        store,
+        job.id,
+        job,
+        heartbeat=heartbeat,
+        scorecard={
+            "last_agent_check_at": datetime.now(UTC).isoformat(),
+            "last_agent_wake_error": "OpenCode server unavailable",
+            "last_agent_wake_error_at": failed,
+        },
+        features=None,
+        risk_flags=None,
+        launch_checklist=None,
+        proposals=[],
+    )
+    assert "agent_wake_failed" not in [i["code"] for i in issues]

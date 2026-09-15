@@ -2030,6 +2030,7 @@ def run_job_worker(
         queued=queued,
         error=error,
         apply_proposal_id=apply_proposal_id,
+        stamp_check=queued,
         cache={
             "prompt_cache_key": session_id,
             "stable_prefix_hash": prompt_sections["stable_prefix_hash"],
@@ -2705,6 +2706,7 @@ def _write_report(
     apply_proposal_id: str | None = None,
     cache: dict[str, Any] | None = None,
     wake_context: dict[str, Any] | None = None,
+    stamp_check: bool = True,
 ) -> dict[str, Any]:
     report_dir = (
         store.job_dir(job_id) / "reports" / ("apply" if apply_proposal_id else mode)
@@ -2748,14 +2750,23 @@ def _write_report(
             + "\n",
             encoding="utf-8",
         )
-    scorecard_updates: dict[str, Any] = {
-        "health": status,
-        "last_agent_check_at": report["created_at"],
-        "last_agent_mode": mode,
-        "last_agent_summary": report["summary"],
-    }
-    if cache is not None:
-        scorecard_updates["last_agent_cache"] = cache
+    if stamp_check:
+        scorecard_updates: dict[str, Any] = {
+            "health": status,
+            "last_agent_check_at": report["created_at"],
+            "last_agent_mode": mode,
+            "last_agent_summary": report["summary"],
+        }
+        if cache is not None:
+            scorecard_updates["last_agent_cache"] = cache
+    else:
+        # A wake that never reached OpenCode is not a check: leave the last
+        # real check (and the agent's own summary) in place and record the
+        # failure beside it, where the heartbeat flags it as agent_wake_failed.
+        scorecard_updates = {
+            "last_agent_wake_error": error or summary,
+            "last_agent_wake_error_at": report["created_at"],
+        }
     store.refresh_scorecard(
         job_id,
         scorecard_updates,

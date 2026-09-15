@@ -360,6 +360,24 @@ def build_issues(
                 since=agent.get("last_ok_at"),
                 scope="agent",
             )
+        # A wake the worker could not hand to OpenCode exits 0 for the runner,
+        # so it never shows up as a runner failure — the scorecard carries
+        # it beside (not over) the last real check.
+        wake_error_at = _parse_iso(scorecard.get("last_agent_wake_error_at"))
+        check_at = _parse_iso(scorecard.get("last_agent_check_at"))
+        if (
+            not failures
+            and wake_error_at
+            and (check_at is None or wake_error_at > check_at)
+        ):
+            add(
+                "agent_wake_failed",
+                "warn",
+                f"the last agent wake could not start: {scorecard.get('last_agent_wake_error') or 'OpenCode did not answer'}",
+                since=scorecard.get("last_agent_wake_error_at"),
+                scope="agent",
+                fix="check OpenCode on the box; the wake is retried on the next schedule or trigger",
+            )
         interval = int(agent.get("wake_interval_seconds") or 0)
         due = _parse_iso(agent.get("next_run_at"))
         if reachable and due and interval and (now - due).total_seconds() > interval:
