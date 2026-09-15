@@ -818,5 +818,15 @@ def test_backtest_monitors_do_not_apply_to_freestyle_jobs(tmp_path: Path) -> Non
     assert "not applicable" in replication["reason"]
     assert counterfactual["available"] is False
     assert "not applicable" in counterfactual["reason"]
+    from wayfinder_paths.jobs.derived_features import refresh_derived_features_if_stale
+
+    refresh = refresh_derived_features_if_stale(job.id, store=store)
+    assert refresh["refreshed"] is False
+    assert "not applicable" in refresh["reason"]
     journal = store.read_jsonl(job.id, "journal.jsonl", limit=100)
-    assert not [row for row in journal if str(row.get("type", "")).endswith("_failed")]
+    assert not [
+        row
+        for row in journal
+        if str(row.get("type", "")).endswith("_failed")
+        or row.get("type") == "data_feed_degraded"
+    ]

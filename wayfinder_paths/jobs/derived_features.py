@@ -32,7 +32,7 @@ from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
 from wayfinder_paths.jobs.indicators import panel_breadth
-from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.models import NO_BACKTEST_CONTRACTS, utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
 CORR_BARS = 12
@@ -451,6 +451,15 @@ def refresh_derived_features_if_stale(
     `data_feed_degraded` event (owner-visible via the decision log) carrying
     the structured cause; recovery journals `data_feed_recovered` once."""
     store = store or JobStore()
+    contract = str(store.load(job_id).execution_contract or "legacy")
+    if contract in NO_BACKTEST_CONTRACTS:
+        # Freestyle/Path jobs have no dataset or research features to
+        # refresh; on the dev box every wake journaled a failed refresh and
+        # then a "data feed degraded" alarm for a feed that does not exist.
+        return {
+            "refreshed": False,
+            "reason": f"not applicable: {contract} jobs have no dataset to refresh",
+        }
     stamp = store.read_json(job_id, REFRESH_STAMP_PATH) or {}
     refreshed_at = str(stamp.get("refreshed_at") or "")
     if refreshed_at:

@@ -30,6 +30,7 @@ from wayfinder_paths.jobs.models import (
     JOB_EVOLUTION_DESIGNER_AGENT_NAME,
     JOB_EVOLUTION_WORKER_AGENT_NAME,
     JOB_WORKER_AGENT_NAME,
+    NO_BACKTEST_CONTRACTS,
     AgentMode,
     normalize_agent_mode,
     utc_now_iso,
@@ -1830,7 +1831,9 @@ def prepare_job_worker_prompt(
     # Ideation accountability: journal freshly produced expedition artifacts
     # (owner-visible bucket counts) and escalate once when the daily research
     # expedition is >48h overdue. Never raises.
-    _ideation_bookkeeping(store, job.id)
+    if job.execution_contract not in NO_BACKTEST_CONTRACTS:
+        # Ideation is evolution machinery; freestyle scripts and Paths never evolve.
+        _ideation_bookkeeping(store, job.id)
 
     prompt_sections = _build_worker_prompt_sections(
         store=store,
