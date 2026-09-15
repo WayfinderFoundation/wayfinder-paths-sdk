@@ -613,9 +613,17 @@ def set_watchdog(
                     by=by,
                 )
             else:
-                warnings.append(
-                    "kill switches changed the workspace: re-run validate before launching"
-                )
+                # Not launched yet: validate now so the launch that follows
+                # (or rides along with these settings) finds the validation
+                # stamp at the new revision instead of a stale one.
+                from wayfinder_paths.jobs.contracts import validate_job_for_kind
+
+                report = validate_job_for_kind(job_id, store=store)
+                if report.get("status") != "passed":
+                    warnings.append(
+                        "kill switches changed the workspace and validation now fails: "
+                        "fix the job before launching"
+                    )
     sync_all_jobs(store=store)
     return {
         "job_id": job_id,

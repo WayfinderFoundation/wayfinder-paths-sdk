@@ -27,6 +27,9 @@ Score `pass` only if every point below that applies to the stage holds.
 - A script keyed on an on-chain token's USD value reads it through `ctx.token_value(token_id)`; it is a read, not a venue, and the dry run answers it from the `token:<token_id>` mark (report key `token_values`).
 - A script keyed on a DeFi yield reads it through `ctx.defi_yield(<feed name>)` (a decimal per year; a window gives the trailing mean); it is a read, not a venue, and the dry run answers it from the `yield:<name>` mark (report key `yields`).
 - A harnessed job that needs an on-chain price or a DeFi yield gets it through `fetch_token_features` / `fetch_yield_features`, which declare a pinned `feed` with a cadence and smoothing in `data_contract.features`; the agent never hand-writes those rows or edits the pin, and a fetch that declares means validating again before launch.
+- A script may read several instruments at once (prediction odds, perp funding, token values, yields) and act on all of them; every read the task names appears in the script and in the dry-run record, and reads never count as venues.
+- A script that only reads and notifies (no `ctx.act`) is a valid job: no actions, no venues, a notification in the dry run.
+- A harnessed job given several feeds names each one as declared (name, cadence, smoothing) with the rows it carries, and reads the readout back honestly.
 - A dry-run narration is mechanics on stub marks: fills, settlements and equity are reported as what the runtime did, together with the fixed no-backtest sentence, never as performance.
 
 ## Launch
@@ -63,6 +66,8 @@ Score `pass` only if every point below that applies to the stage holds.
 
 ## Ongoing
 
+- An alerts-only change (channels, quiet hours, triggers) never restamps the revision or relaunches; a kill-switch change does. Say which happened.
+
 - The watchdog settings match the request: watch level, cadence, triggers,
   notification channels and events, quiet hours with the right zone, kill
   switches in `workspace/risk_limits.json` (drawdown stored negative).
@@ -72,6 +77,8 @@ Score `pass` only if every point below that applies to the stage holds.
   inside quiet hours, one per event per hour.
 
 ## Evolution
+
+- Watch level and evolution are one trade-off: a monitor-only harnessed job is evolution-ineligible; intervene or auto makes it eligible again. The answer names the eligibility both ways and the next campaign due time.
 
 - Eligibility is read from the job, not assumed: harnessed at intervene/auto
   with a canonical dataset is eligible; a freestyle or Path job never is.

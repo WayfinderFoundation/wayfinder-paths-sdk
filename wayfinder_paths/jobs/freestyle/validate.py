@@ -381,6 +381,7 @@ def validate_freestyle_job(
                     "funding": result.get("funding") or {},
                     "token_values": result.get("token_values") or {},
                     "yields": result.get("yields") or {},
+                    "marks": result.get("marks") or {},
                     "notifications": result.get("notifications") or [],
                     "logs": result.get("logs") or [],
                     "error": outcome.get("error"),

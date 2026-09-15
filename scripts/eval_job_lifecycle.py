@@ -1475,21 +1475,29 @@ class _FakeCandles:
         return rows[-1000:]
 
 
-def expected_starter_token_feed(workspace: Path) -> None:
-    from wayfinder_paths.jobs.feeds import fetch_token_features
+def _paused_starter(workspace: Path, job_id: str) -> None:
     from wayfinder_paths.jobs.launch import hold_job
-    from wayfinder_paths.jobs.readout import build_readout
     from wayfinder_paths.jobs.starters import create_starter_job
 
     store = _store(workspace)
     with Sandbox():
         create_starter_job(
-            "mixed-rsi-snapback-1h",
-            job_id="eval-rsi-token-feed",
-            store=store,
-            compile_job=True,
+            "mixed-rsi-snapback-1h", job_id=job_id, store=store, compile_job=True
         )
-        hold_job("eval-rsi-token-feed", store=store)
+        hold_job(job_id, store=store)
+
+
+def setup_starter_token_feed(workspace: Path) -> None:
+    _paused_starter(workspace, "eval-rsi-token-feed")
+
+
+def expected_starter_token_feed(workspace: Path) -> None:
+    from wayfinder_paths.jobs.feeds import fetch_token_features
+    from wayfinder_paths.jobs.readout import build_readout
+
+    setup_starter_token_feed(workspace)
+    store = _store(workspace)
+    with Sandbox():
         fetch_token_features(
             "eval-rsi-token-feed",
             token_ids=[WETH_BASE],
@@ -1514,23 +1522,20 @@ def validate_starter_token_feed(workspace: Path) -> dict[str, Any]:
     features = ((data.get("execution_spec") or {}).get("data_contract") or {}).get(
         "features"
     ) or []
-    declared = next((f for f in features if f.get("name") == TOKEN_FEED_NAME), {})
+    # the agent may name the token either way; both resolve to WETH on Base
+    declared = next(
+        (f for f in features if str(f.get("name", "")).startswith("token_price:")), {}
+    )
+    token_name = str(declared.get("name") or TOKEN_FEED_NAME)
     feed = declared.get("feed") or {}
-    rows = 0
-    store_path = root / "state" / "features.jsonl"
-    if store_path.exists():
-        rows = sum(
-            1
-            for line in store_path.read_text(encoding="utf-8").splitlines()
-            if f'"name": "{TOKEN_FEED_NAME}"' in line
-        )
+    rows = _feature_rows(root, token_name)
     status_features: list[dict[str, Any]] = []
     if data:
         with Sandbox():
             status_features = list(
                 snapshot_job(job_id, store=store).get("features") or []
             )
-    entry = next((f for f in status_features if f.get("name") == TOKEN_FEED_NAME), {})
+    entry = next((f for f in status_features if f.get("name") == token_name), {})
     checks = [
         _check("job_created", bool(data)),
         _check(
@@ -1613,6 +1618,621 @@ def validate_defi_yield_trigger(workspace: Path) -> dict[str, Any]:
             set(dry.get("venues_used") or []) == {"hyperliquid"},
         ),
         _check("not_launched", not (root / "state" / "launch.json").exists()),
+    ]
+    return _report(checks)
+
+
+def _feature_rows(root: Path, name: str) -> int:
+    store_path = root / "state" / "features.jsonl"
+    if not store_path.exists():
+        return 0
+    return sum(
+        1
+        for line in store_path.read_text(encoding="utf-8").splitlines()
+        if f'"name": "{name}"' in line
+    )
+
+
+# ---- many instruments in one script, a yield spread, the HL prediction venue ----
+
+MULTI_SIGNAL_SCRIPT = """
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=("polymarket", "hyperliquid"), max_notional_per_tick=200, max_loss_usd=10)
+MARKET = "polymarket:strait-of-hormuz-closed-2026:YES"
+
+
+def tick(ctx):
+    odds = ctx.quote("polymarket", MARKET)
+    funding = ctx.funding("hyperliquid", "BTC")
+    eth = ctx.token_value("ethereum-base")
+    ctx.state.update({"odds": odds, "funding": funding, "eth": eth})
+    if odds > 0.6 and funding < 0.0001 and eth > 2000 and "BTC" not in ctx.positions:
+        ctx.act({"venue": "hyperliquid", "kind": "market", "symbol": "BTC",
+                 "side": "long", "notional": 100, "max_loss": 10})
+    elif odds < 0.4 and "BTC" in ctx.positions:
+        ctx.act({"venue": "hyperliquid", "kind": "close", "symbol": "BTC"})
+"""
+MULTI_SIGNAL_MARKS = {
+    "polymarket:polymarket:strait-of-hormuz-closed-2026:YES": 0.65,
+    "funding:hyperliquid:BTC": 0.00005,
+    "token:ethereum-base": 2100,
+    "hyperliquid:BTC": 60_000,
+}
+
+YIELD_SPREAD_SCRIPT = """
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=(), max_notional_per_tick=0, max_loss_usd=0)
+BASE = "lend_supply_apr:aave-base:USDC"
+ARB = "lend_supply_apr:aave-arbitrum:USDC"
+
+
+def tick(ctx):
+    base = ctx.defi_yield(BASE)
+    arb = ctx.defi_yield(ARB)
+    ctx.state.update({"aave_base": base, "aave_arbitrum": arb})
+    if base - arb > 0.01:
+        ctx.notify("USDC supply spread", f"aave-base {base:.2%} vs aave-arbitrum {arb:.2%}")
+"""
+YIELD_SPREAD_MARKS = {
+    "yield:lend_supply_apr:aave-base:USDC": 0.06,
+    "yield:lend_supply_apr:aave-arbitrum:USDC": 0.045,
+}
+
+HL_PREDICTION_SCRIPT = """
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=("hyperliquid_prediction",), max_notional_per_tick=50, max_loss_usd=20)
+MARKET = "#12"
+
+
+def tick(ctx):
+    price = ctx.quote("hyperliquid_prediction", MARKET)
+    if price < 0.3 and MARKET not in ctx.positions:
+        ctx.act({"venue": "hyperliquid_prediction", "kind": "buy", "symbol": MARKET,
+                 "notional": 20, "max_loss": 20})
+"""
+HL_PREDICTION_MARKS = {
+    "hyperliquid_prediction:#12": 0.25,
+    "resolution:hyperliquid_prediction:#12": 1.0,
+}
+
+
+def expected_multi_signal(workspace: Path) -> None:
+    _create_validated_freestyle(
+        workspace,
+        "eval-multi-signal",
+        "Eval Multi Signal",
+        MULTI_SIGNAL_SCRIPT,
+        MULTI_SIGNAL_MARKS,
+    )
+
+
+def validate_multi_signal(workspace: Path) -> dict[str, Any]:
+    """One script reading three instruments — prediction odds, perp funding,
+    an on-chain token value — and trading a perp on all three."""
+    job_id = "eval-multi-signal"
+    data = _job_yaml(workspace, job_id)
+    root = workspace / ".wayfinder" / "jobs" / job_id
+    validation = _read(root / "reports" / "validation" / "latest.json")
+    dry = (validation.get("freestyle") or {}).get("dry_run") or {}
+    source = _entrypoint(workspace, job_id).read_text(encoding="utf-8") if data else ""
+    opens = [
+        a
+        for a in dry.get("actions") or []
+        if (a.get("intent") or {}).get("action") == "OPEN"
+    ]
+    checks = [
+        _check("job_created", bool(data)),
+        _check(
+            "validation_passed",
+            validation.get("status") == "passed",
+            failed=[
+                c.get("name")
+                for c in validation.get("checks") or []
+                if not c.get("passed")
+            ],
+        ),
+        _check(
+            "reads_odds_funding_and_token_value",
+            all(
+                read in source
+                for read in ("ctx.quote(", "ctx.funding(", "ctx.token_value(")
+            ),
+        ),
+        _check(
+            "dry_run_read_all_three",
+            any(k.startswith("polymarket:") for k in dry.get("marks") or {})
+            and (dry.get("funding") or {}).get("hyperliquid:BTC") is not None
+            and bool((dry.get("token_values") or {}).get("ethereum-base")),
+            marks=dry.get("marks"),
+            funding=dry.get("funding"),
+            token_values=dry.get("token_values"),
+        ),
+        _check(
+            "went_long_once_on_all_three",
+            len(opens) == 1
+            and (opens[0].get("intent") or {}).get("side") == "long"
+            and float((opens[0].get("intent") or {}).get("notional") or 0) == 100.0
+            and opens[0].get("status") == "filled",
+            opens=len(opens),
+        ),
+        _check(
+            "both_venues_used",
+            set(dry.get("venues_used") or []) == {"polymarket", "hyperliquid"},
+            venues_used=dry.get("venues_used"),
+        ),
+        _check("not_launched", not (root / "state" / "launch.json").exists()),
+    ]
+    return _report(checks)
+
+
+def expected_yield_spread(workspace: Path) -> None:
+    _create_validated_freestyle(
+        workspace,
+        "eval-yield-spread",
+        "Eval Yield Spread",
+        YIELD_SPREAD_SCRIPT,
+        YIELD_SPREAD_MARKS,
+    )
+
+
+def validate_yield_spread(workspace: Path) -> dict[str, Any]:
+    """Two venues' yields compared, a notification and no trade: reads are
+    not venues, and a script may trade nothing."""
+    job_id = "eval-yield-spread"
+    data = _job_yaml(workspace, job_id)
+    root = workspace / ".wayfinder" / "jobs" / job_id
+    validation = _read(root / "reports" / "validation" / "latest.json")
+    dry = (validation.get("freestyle") or {}).get("dry_run") or {}
+    source = _entrypoint(workspace, job_id).read_text(encoding="utf-8") if data else ""
+    yields = dry.get("yields") or {}
+    checks = [
+        _check("job_created", bool(data)),
+        _check(
+            "validation_passed",
+            validation.get("status") == "passed",
+            failed=[
+                c.get("name")
+                for c in validation.get("checks") or []
+                if not c.get("passed")
+            ],
+        ),
+        _check(
+            "reads_two_yields_and_notifies",
+            source.count("ctx.defi_yield(") >= 2 and "ctx.notify(" in source,
+        ),
+        _check(
+            "dry_run_read_both_venues",
+            float(yields.get("lend_supply_apr:aave-base:USDC") or 0) == 0.06
+            and float(yields.get("lend_supply_apr:aave-arbitrum:USDC") or 0) == 0.045,
+            yields=yields,
+        ),
+        _check(
+            "notified_on_the_spread",
+            bool(dry.get("notifications")),
+            notifications=dry.get("notifications"),
+        ),
+        _check(
+            "no_trade_no_venue", not dry.get("actions") and not dry.get("venues_used")
+        ),
+        _check("not_launched", not (root / "state" / "launch.json").exists()),
+    ]
+    return _report(checks)
+
+
+def expected_hl_prediction(workspace: Path) -> None:
+    _create_validated_freestyle(
+        workspace,
+        "eval-hl-prediction",
+        "Eval HL Prediction",
+        HL_PREDICTION_SCRIPT,
+        HL_PREDICTION_MARKS,
+    )
+
+
+def validate_hl_prediction(workspace: Path) -> dict[str, Any]:
+    """The Hyperliquid prediction venue: bought at tick one, settled at
+    resolution on tick two, flat after."""
+    job_id = "eval-hl-prediction"
+    data = _job_yaml(workspace, job_id)
+    root = workspace / ".wayfinder" / "jobs" / job_id
+    validation = _read(root / "reports" / "validation" / "latest.json")
+    dry = (validation.get("freestyle") or {}).get("dry_run") or {}
+    actions = dry.get("actions") or []
+    opens = [
+        a
+        for a in actions
+        if (a.get("intent") or {}).get("action") == "OPEN"
+        and a.get("status") == "filled"
+    ]
+    settles = [
+        a
+        for a in actions
+        if (a.get("intent") or {}).get("action") == "CLOSE"
+        and ((a.get("intent") or {}).get("metadata") or {}).get("exit_reason")
+        == "resolution"
+    ]
+    checks = [
+        _check("job_created", bool(data)),
+        _check(
+            "validation_passed",
+            validation.get("status") == "passed",
+            failed=[
+                c.get("name")
+                for c in validation.get("checks") or []
+                if not c.get("passed")
+            ],
+        ),
+        _check(
+            "bought_once",
+            len(opens) == 1
+            and (opens[0].get("intent") or {}).get("venue") == "hyperliquid_prediction",
+        ),
+        _check(
+            "settled_on_resolution",
+            len(settles) == 1 and settles[0].get("status") == "filled",
+        ),
+        _check(
+            "settle_price_is_resolution_value",
+            bool(settles)
+            and float((settles[0].get("fill") or {}).get("avg_price") or 0) == 1.0,
+        ),
+        _check("flat_after_settle", not (dry.get("positions") or {})),
+        _check(
+            "only_prediction_venue_used",
+            set(dry.get("venues_used") or []) == {"hyperliquid_prediction"},
+        ),
+        _check("not_launched", not (root / "state" / "launch.json").exists()),
+    ]
+    return _report(checks)
+
+
+# ---- a starter with three feeds ---------------------------------------------
+
+
+class _FakeYields:
+    async def get_asset_basis(self, *, symbol):
+        return {"asset_id": 1271, "symbol": symbol}
+
+    async def screen_lending(self, *, asset_ids=None, venue=None, limit=100, **kwargs):
+        rows = [
+            {
+                "market_id": 911,
+                "asset_id": 1271,
+                "venue_name": "aave-base",
+                "chain_id": 8453,
+                "market_external_id": "0xaave",
+                "market_label": "Aave Base",
+            },
+            {
+                "market_id": 909,
+                "asset_id": 1271,
+                "venue_name": "aave-arbitrum",
+                "chain_id": 42161,
+                "market_external_id": "0xaave-arb",
+                "market_label": "Aave Arbitrum",
+            },
+        ]
+        return {
+            "data": [
+                r for r in rows if venue is None or r["venue_name"].startswith(venue)
+            ]
+        }
+
+    async def get_market_lending_ts(self, *, market_id, asset_id, lookback_days=30):
+        import pandas as pd
+
+        end = pd.Timestamp.now(tz="UTC").floor("h") - pd.Timedelta(hours=1)
+        stamps = pd.date_range(end=end, periods=48, freq="h")
+        return pd.DataFrame(
+            {
+                "supply_apr": [0.04 + 0.0005 * i for i in range(48)],
+                "borrow_apr": [0.07] * 48,
+            },
+            index=pd.DatetimeIndex(stamps, name="ts"),
+        )
+
+
+def setup_starter_multi_feed(workspace: Path) -> None:
+    _paused_starter(workspace, "eval-rsi-feeds")
+
+
+def expected_starter_multi_feed(workspace: Path) -> None:
+    from wayfinder_paths.jobs.feeds import (
+        append_feature_rows,
+        declare_features,
+        fetch_token_features,
+        fetch_yield_features,
+    )
+    from wayfinder_paths.jobs.readout import build_readout
+
+    setup_starter_multi_feed(workspace)
+    store = _store(workspace)
+    root = store.job_dir("eval-rsi-feeds")
+    with Sandbox():
+        now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+        funding_rows = [
+            {
+                "timestamp": (now - timedelta(hours=8 * i)).isoformat(),
+                "name": "funding",
+                "value": 0.0001,
+                "symbol": symbol,
+            }
+            for i in range(6)
+            for symbol in ("BTC", "ETH")
+        ]
+        append_feature_rows(root, funding_rows)
+        declare_features(store, "eval-rsi-feeds", [{"name": "funding"}])
+        fetch_token_features(
+            "eval-rsi-feeds",
+            token_ids=[WETH_BASE],
+            interval="1h",
+            days=2,
+            store=store,
+            client=_FakeCandles(),
+        )
+        fetch_yield_features(
+            "eval-rsi-feeds",
+            feeds=[YIELD_FEED_NAME],
+            days=2,
+            store=store,
+            client=_FakeYields(),
+        )
+    build_readout("eval-rsi-feeds", store=store)
+
+
+def validate_starter_multi_feed(workspace: Path) -> dict[str, Any]:
+    """A harnessed starter given three feeds — funding, a token price, a
+    lending rate — each declared with rows in the store, and a readout."""
+    job_id = "eval-rsi-feeds"
+    data = _job_yaml(workspace, job_id)
+    root = workspace / ".wayfinder" / "jobs" / job_id
+    features = ((data.get("execution_spec") or {}).get("data_contract") or {}).get(
+        "features"
+    ) or []
+    names = [str(f.get("name")) for f in features]
+    token = next((n for n in names if n.startswith("token_price:")), None)
+    lending = next((n for n in names if n.startswith("lend_supply_apr:")), None)
+    checks = [
+        _check("job_created", bool(data)),
+        _check(
+            "funding_declared_with_rows",
+            "funding" in names and _feature_rows(root, "funding") > 0,
+        ),
+        _check(
+            "token_price_declared_with_rows",
+            token is not None and _feature_rows(root, token) > 0,
+            token=token,
+        ),
+        _check(
+            "lending_rate_declared_with_rows",
+            lending is not None and _feature_rows(root, lending) > 0,
+            lending=lending,
+        ),
+        _check(
+            "feeds_carry_cadence_and_pin",
+            all(
+                f.get("cadence") and (f.get("feed") or {}).get("kind")
+                for f in features
+                if str(f.get("name")) != "funding"
+            ),
+            features=features,
+        ),
+        _check(
+            "readout_written", (root / "reports" / "readout" / "latest.json").exists()
+        ),
+        _check("not_launched", not (root / "state" / "launch.json").exists()),
+    ]
+    return _report(checks)
+
+
+# ---- watchdogs at launch and edited alone; evolution eligibility --------------
+
+
+def setup_watchdog_at_launch(workspace: Path) -> None:
+    _create_validated_freestyle(
+        workspace, "eval-hormuz-wd", "Eval Hormuz Watchdog", HORMUZ_SCRIPT, HORMUZ_MARKS
+    )
+
+
+def expected_watchdog_at_launch(workspace: Path) -> None:
+    from wayfinder_paths.jobs.launch import launch_job, set_watchdog
+
+    setup_watchdog_at_launch(workspace)
+    store = _store(workspace)
+    with Sandbox():
+        set_watchdog(
+            "eval-hormuz-wd",
+            store=store,
+            watch_level="intervene",
+            wake_interval_seconds=1800,
+            triggers=["script_failure", "risk_halt"],
+            notifications={
+                "channels": ["email"],
+                "on": ["risk_halt"],
+                "quiet_hours": {
+                    "start": "22:00",
+                    "end": "07:00",
+                    "tz": "Europe/London",
+                },
+            },
+            kill_switches={"max_daily_loss_usd": 25},
+        )
+        launch_job("eval-hormuz-wd", store=store)
+
+
+def validate_watchdog_at_launch(workspace: Path) -> dict[str, Any]:
+    """A paper launch with the watchdog riding along: level, cadence,
+    triggers, alerts with quiet hours and a kill switch, all at one pinned
+    and validated revision."""
+    from wayfinder_paths.jobs.gating import compute_workspace_revision
+    from wayfinder_paths.jobs.launch import watchdog_view
+
+    job_id = "eval-hormuz-wd"
+    store = _store(workspace)
+    data = _job_yaml(workspace, job_id)
+    root = workspace / ".wayfinder" / "jobs" / job_id
+    view = watchdog_view(store.load(job_id), root) if data else {}
+    notify = view.get("notifications") or {}
+    limits = _read(root / "workspace" / "risk_limits.json")
+    launch_state = _read(root / "state" / "launch.json")
+    validation = _read(root / "reports" / "validation" / "latest.json")
+    revision = compute_workspace_revision(root) if root.exists() else None
+    checks = [
+        _check("job_created", bool(data)),
+        _check(
+            "launched_in_paper",
+            launch_state.get("mode") == "paper"
+            and "launched" in _journal_types(workspace, job_id),
+        ),
+        _check("watch_level_intervene", view.get("watch_level") == "intervene"),
+        _check("cadence_1800", view.get("wake_interval_seconds") == 1800),
+        _check(
+            "triggers_set",
+            set(view.get("triggers") or []) >= {"script_failure", "risk_halt"},
+        ),
+        _check(
+            "email_on_risk_halt_with_quiet_hours",
+            "email" in (notify.get("channels") or [])
+            and "risk_halt" in (notify.get("on") or [])
+            and (notify.get("quiet_hours") or {}).get("tz") == "Europe/London",
+        ),
+        _check("daily_loss_kill_switch", limits.get("max_daily_loss_usd") == 25),
+        _check(
+            "pinned_at_the_validated_revision",
+            bool(revision)
+            and launch_state.get("revision") == revision
+            and validation.get("revision") == revision
+            and (data.get("versioning") or {}).get("active_revision") == revision,
+        ),
+    ]
+    return _report(checks)
+
+
+def setup_notifications_edit(workspace: Path) -> None:
+    from wayfinder_paths.jobs.launch import set_watchdog
+
+    _launch_hormuz(workspace, "eval-hormuz-notify", "Eval Hormuz Notify")
+    with Sandbox():
+        set_watchdog(
+            "eval-hormuz-notify",
+            store=_store(workspace),
+            notifications={"channels": ["email"], "on": ["risk_halt"]},
+        )
+
+
+def expected_notifications_edit(workspace: Path) -> None:
+    from wayfinder_paths.jobs.launch import set_watchdog
+
+    setup_notifications_edit(workspace)
+    with Sandbox():
+        set_watchdog(
+            "eval-hormuz-notify",
+            store=_store(workspace),
+            triggers=["script_failure", "risk_halt", "runner_loop_gap"],
+            notifications={
+                "channels": ["chat", "email"],
+                "on": ["risk_halt", "script_failure"],
+                "quiet_hours": {
+                    "start": "23:00",
+                    "end": "06:00",
+                    "tz": "America/New_York",
+                },
+            },
+        )
+
+
+def validate_notifications_edit(workspace: Path) -> dict[str, Any]:
+    """Alerts and triggers change without touching the workspace: the
+    deployed revision stays, no relaunch, kill switches untouched."""
+    from wayfinder_paths.jobs.gating import compute_workspace_revision
+    from wayfinder_paths.jobs.launch import watchdog_view
+
+    job_id = "eval-hormuz-notify"
+    store = _store(workspace)
+    data = _job_yaml(workspace, job_id)
+    root = workspace / ".wayfinder" / "jobs" / job_id
+    view = watchdog_view(store.load(job_id), root) if data else {}
+    notify = view.get("notifications") or {}
+    launch_state = _read(root / "state" / "launch.json")
+    revision = compute_workspace_revision(root) if root.exists() else None
+    journal = _journal_types(workspace, job_id)
+    checks = [
+        _check("job_created", bool(data)),
+        _check(
+            "channels_chat_and_email",
+            set(notify.get("channels") or []) == {"chat", "email"},
+        ),
+        _check(
+            "on_risk_halt_and_script_failure",
+            set(notify.get("on") or []) >= {"risk_halt", "script_failure"},
+        ),
+        _check(
+            "quiet_hours_new_york",
+            (notify.get("quiet_hours") or {}).get("tz") == "America/New_York",
+        ),
+        _check(
+            "runner_loop_gap_trigger", "runner_loop_gap" in (view.get("triggers") or [])
+        ),
+        _check(
+            "kill_switches_untouched",
+            not (root / "workspace" / "risk_limits.json").exists(),
+        ),
+        _check(
+            "revision_unchanged_no_relaunch",
+            bool(revision)
+            and launch_state.get("revision") == revision
+            and journal.count("launched") == 1,
+            launches=journal.count("launched"),
+        ),
+    ]
+    return _report(checks)
+
+
+def expected_evolution_watch_level(workspace: Path) -> None:
+    from wayfinder_paths.jobs.launch import set_watchdog
+
+    setup_evolution(workspace)
+    store = _store(workspace)
+    with Sandbox():
+        set_watchdog("eval-evolving", store=store, watch_level="monitor")
+        set_watchdog(
+            "eval-evolving",
+            store=store,
+            watch_level="intervene",
+            wake_interval_seconds=7200,
+        )
+
+
+def validate_evolution_watch_level(workspace: Path) -> dict[str, Any]:
+    """Watch level and evolution are one trade-off: monitor-only makes a
+    harnessed job ineligible; back at intervene with a 2-hour wake it is
+    eligible again."""
+    from wayfinder_paths.jobs.evolution_view import evolution_snapshot
+
+    job_id = "eval-evolving"
+    store = _store(workspace)
+    data = _job_yaml(workspace, job_id)
+    loop = data.get("agent_loop") or {}
+    journal = _journal_types(workspace, job_id)
+    snapshot = evolution_snapshot(store, job_id, store.load(job_id)) if data else {}
+    eligibility = snapshot.get("eligibility") or {}
+    checks = [
+        _check("job_created", bool(data)),
+        _check("back_at_intervene", loop.get("mode") == "intervene"),
+        _check("wake_every_two_hours", loop.get("wake_interval_seconds") == 7200),
+        _check(
+            "watchdog_set_twice",
+            journal.count("watchdog_set") >= 2,
+            sets=journal.count("watchdog_set"),
+        ),
+        _check(
+            "eligible_again",
+            eligibility.get("eligible") is True,
+            eligibility=eligibility,
+        ),
     ]
     return _report(checks)
 
@@ -1885,10 +2505,10 @@ CASES: list[LifecycleCase] = [
             "forward ledger shows a 40 USD loss today. Explain what the next tick will do and why, what the owner "
             "will be told, and how the owner clears the halt."
         ),
+        setup=expected_kill_switch_trip,
         expected=expected_kill_switch_trip,
         validate=validate_kill_switch_trip,
-        live=False,
-        notes="the tick runs in-process with stub quotes; the prompt is explanatory only",
+        notes="the setup runs the tripping tick in-process; the agent reads the halt and explains it",
     ),
     LifecycleCase(
         id="live_gate_refuses_unproven",
@@ -1957,9 +2577,9 @@ CASES: list[LifecycleCase] = [
             "strategy reads it. Do not launch."
         ),
         expected=expected_starter_token_feed,
+        setup=setup_starter_token_feed,
         validate=validate_starter_token_feed,
-        live=False,
-        notes="the token candle source needs the dev API host; deterministic with an in-process fake",
+        notes="live runs need the eval config pointed at the API host the key is valid for",
     ),
     LifecycleCase(
         id="freestyle_defi_yield_trigger",
@@ -1975,6 +2595,106 @@ CASES: list[LifecycleCase] = [
         ),
         expected=expected_defi_yield_trigger,
         validate=validate_defi_yield_trigger,
+    ),
+    LifecycleCase(
+        id="freestyle_multi_signal_perp",
+        stage="creation",
+        job_id="eval-multi-signal",
+        prompt=(
+            "Build a freestyle job `eval-multi-signal` that every 5 minutes reads three things: the Polymarket odds "
+            "on `polymarket:strait-of-hormuz-closed-2026:YES`, BTC's funding rate on Hyperliquid, and ETH's USD value "
+            "on Base (token id `ethereum-base`). Go long 100 USD of BTC on Hyperliquid with a 10 USD max loss when the "
+            "odds are above 60%, funding is below 0.01% per hour (0.0001) and ETH is above 2000 USD, and close when "
+            "the odds fall below 40%. Set validation marks so the dry run sees odds 0.65, funding 0.00005 (key "
+            "`funding:hyperliquid:BTC`), ETH at 2100 (key `token:ethereum-base`) and BTC at 60000. Validate it and "
+            "tell me what the dry run read and did, tick by tick. Do not launch."
+        ),
+        expected=expected_multi_signal,
+        validate=validate_multi_signal,
+    ),
+    LifecycleCase(
+        id="freestyle_yield_spread_notify",
+        stage="creation",
+        job_id="eval-yield-spread",
+        prompt=(
+            "Build a freestyle job `eval-yield-spread` that every hour compares the USDC supply rate on Aave Base "
+            "(`lend_supply_apr:aave-base:USDC`) with Aave Arbitrum (`lend_supply_apr:aave-arbitrum:USDC`) and notifies "
+            "me when Base pays more than one percentage point over Arbitrum. It trades nothing. Set validation marks so "
+            "the dry run sees 0.06 on Base and 0.045 on Arbitrum (keys `yield:<feed name>`). Validate it and tell me "
+            "what the dry run read and whether it notified. Do not launch."
+        ),
+        expected=expected_yield_spread,
+        validate=validate_yield_spread,
+    ),
+    LifecycleCase(
+        id="freestyle_hl_prediction_settles",
+        stage="creation",
+        job_id="eval-hl-prediction",
+        prompt=(
+            "Build a freestyle job `eval-hl-prediction` that buys 20 USD of the Hyperliquid prediction market `#12` "
+            "(venue `hyperliquid_prediction`) whenever its price is below 0.30 and we hold none, with a 20 USD max "
+            "loss. Set validation marks so the dry run sees the price at 0.25 and a resolution of the market at 1.0 "
+            "(key `resolution:hyperliquid_prediction:#12`). Validate it and tell me what the dry run did tick by tick, "
+            "including the settlement. Do not launch."
+        ),
+        expected=expected_hl_prediction,
+        validate=validate_hl_prediction,
+    ),
+    LifecycleCase(
+        id="starter_multi_feed_readout",
+        stage="creation",
+        job_id="eval-rsi-feeds",
+        prompt=(
+            "The starter job `eval-rsi-feeds` is created paused. Give its backtest three feeds: Hyperliquid funding "
+            "(fetch_funding), ETH's on-chain price on Base (fetch_token_features with token id `ethereum-base`), and "
+            "the USDC supply rate on Aave Base (fetch_yield_features with `lend_supply_apr:aave-base:USDC`), two days "
+            "each. Then read the readout and tell me what each feed declared (name, cadence, smoothing), how many rows "
+            "each carries, and what the readout says. Do not launch."
+        ),
+        setup=setup_starter_multi_feed,
+        expected=expected_starter_multi_feed,
+        validate=validate_starter_multi_feed,
+        notes="live runs need the eval config pointed at the API host the key is valid for; funding comes from the exchange",
+    ),
+    LifecycleCase(
+        id="watchdog_rides_along_with_launch",
+        stage="launch",
+        job_id="eval-hormuz-wd",
+        prompt=(
+            "Job `eval-hormuz-wd` is a validated, paused freestyle script. Launch it in PAPER with the watchdog "
+            "riding along: intervene watch level, wake every 30 minutes, triggers script_failure and risk_halt, email "
+            "on risk_halt with quiet hours 22:00 to 07:00 London time, and a 25 USD daily-loss kill switch. Report the "
+            "pinned revision, the watchdog as set, and every risk flag shown."
+        ),
+        setup=setup_watchdog_at_launch,
+        expected=expected_watchdog_at_launch,
+        validate=validate_watchdog_at_launch,
+    ),
+    LifecycleCase(
+        id="watchdog_notifications_only_edit",
+        stage="ongoing",
+        job_id="eval-hormuz-notify",
+        prompt=(
+            "Job `eval-hormuz-notify` is a launched paper freestyle job that emails me on risk halts. Change the alerts "
+            "only: chat and email, on risk_halt and script_failure, quiet hours 23:00 to 06:00 New York time, and add "
+            "the runner_loop_gap trigger. Do not touch the kill switches. Tell me whether the deployed revision changed."
+        ),
+        setup=setup_notifications_edit,
+        expected=expected_notifications_edit,
+        validate=validate_notifications_edit,
+    ),
+    LifecycleCase(
+        id="evolution_watch_level_tradeoff",
+        stage="evolution",
+        job_id="eval-evolving",
+        prompt=(
+            "Set `eval-evolving` to a monitor-only watch level and tell me what that does to its evolution "
+            "eligibility. Then put it back to intervene with a 2-hour wake and confirm it is eligible again, "
+            "with the next campaign due time."
+        ),
+        setup=setup_evolution,
+        expected=expected_evolution_watch_level,
+        validate=validate_evolution_watch_level,
     ),
 ]
 
