@@ -1285,6 +1285,72 @@ def fetch_funding_cmd(job_id: str, days: int, exchange: str, quote: str | None) 
 
 
 @job_cli.command(
+    name="fetch-token-features",
+    help="Fetch an on-chain token's USD price history into the job's feature "
+    "store as token_price:<token_id> (coarsened to the bar interval, pinned to "
+    "chain and address) and declare it — as-of merged onto the bars in "
+    "backtest AND live, refreshed hourly from the wake.",
+)
+@click.argument("job_id")
+@click.option("--token-id", "token_ids", multiple=True, required=True)
+@click.option(
+    "--interval",
+    default=None,
+    help="Candle interval override (1m, 5m, 15m, 1h, 4h, 1d).",
+)
+@click.option(
+    "--days",
+    type=float,
+    default=None,
+    help="History to backfill (default: the dataset's span).",
+)
+def fetch_token_features_cmd(
+    job_id: str, token_ids: tuple[str, ...], interval: str | None, days: float | None
+) -> None:
+    from wayfinder_paths.jobs.feeds import fetch_token_features
+
+    result = fetch_token_features(
+        job_id,
+        token_ids=list(token_ids),
+        interval=interval,
+        days=days,
+        store=JobStore(),
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="fetch-yield-features",
+    help="Fetch DeFi yield history by feed name (lend_supply_apr:<venue>:<symbol>"
+    "[:<market>], lend_borrow_apr:…, yield_apy:<symbol>, "
+    "pendle_implied_apy:<venue>:<market_id>, boros_fixed_rate:<venue>:<market_id>) "
+    "into the job's feature store and declare it with its cadence and smoothing "
+    "(default: a trailing-day mean). Decimals per year; about seven months of "
+    "hourly history.",
+)
+@click.argument("job_id")
+@click.option("--feed", "feeds", multiple=True, required=True)
+@click.option(
+    "--days",
+    type=float,
+    default=None,
+    help="History to backfill (default: the dataset's span, capped by retention).",
+)
+@click.option(
+    "--smoothing", default=None, help="none | mean:24h | ewm:12h (default mean:24h)."
+)
+def fetch_yield_features_cmd(
+    job_id: str, feeds: tuple[str, ...], days: float | None, smoothing: str | None
+) -> None:
+    from wayfinder_paths.jobs.feeds import fetch_yield_features
+
+    result = fetch_yield_features(
+        job_id, feeds=list(feeds), days=days, smoothing=smoothing, store=JobStore()
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
     name="robustness-check",
     help="Run advisory neighbor/phase/leverage/walk-forward/scenario evidence.",
 )

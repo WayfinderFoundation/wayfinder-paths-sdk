@@ -447,3 +447,130 @@ def test_backtest_and_driver_agree_on_a_token_price_feature(tmp_path: Path) -> N
     assert key(driver_fills) == key(backtest.trace["fills"])
     report = reconcile_job(job.id, store=store)
     assert report["intent_match_rate"] == 1.0 and report["data_drift_ticks"] == 0
+
+
+# ---- surfaces ----------------------------------------------------------------
+
+
+def test_mcp_actions_dispatch_to_the_feed_ops(monkeypatch) -> None:
+    from wayfinder_paths.mcp.tools import jobs as jobs_tools
+
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    async def fake_run(op: str, kwargs: dict[str, Any]) -> dict[str, Any]:
+        seen.append((op, kwargs))
+        return {"ok": True, "result": {"op": op}}
+
+    monkeypatch.setattr(jobs_tools, "_run_job_op", fake_run)
+    monkeypatch.setattr(jobs_tools, "JobStore", lambda: object())
+    result = asyncio.run(
+        jobs_tools.core_jobs(
+            action="fetch_token_features",
+            job_id="j",
+            token_ids=["ethereum-base"],
+            bar_interval="1h",
+        )
+    )
+    assert result["ok"] and seen[-1] == (
+        "fetch_token_features",
+        {"job_id": "j", "token_ids": ["ethereum-base"], "interval": "1h", "days": None},
+    )
+    result = asyncio.run(
+        jobs_tools.core_jobs(
+            action="fetch_yield_features",
+            job_id="j",
+            feeds=[LEND_NAME],
+            days=90,
+            smoothing="none",
+        )
+    )
+    assert seen[-1] == (
+        "fetch_yield_features",
+        {"job_id": "j", "feeds": [LEND_NAME], "days": 90, "smoothing": "none"},
+    )
+    missing = asyncio.run(
+        jobs_tools.core_jobs(action="fetch_yield_features", job_id="j")
+    )
+    assert missing["ok"] is False and "needs feeds" in json.dumps(missing)
+
+
+def test_cli_verbs_round_trip(monkeypatch) -> None:
+    from click.testing import CliRunner
+
+    from wayfinder_paths.jobs import cli as cli_module
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_token(job_id, **kwargs):
+        calls.append(
+            (
+                "token",
+                {"job_id": job_id, **{k: v for k, v in kwargs.items() if k != "store"}},
+            )
+        )
+        return {"rows_appended": 3}
+
+    def fake_yield(job_id, **kwargs):
+        calls.append(
+            (
+                "yield",
+                {"job_id": job_id, **{k: v for k, v in kwargs.items() if k != "store"}},
+            )
+        )
+        return {"rows_appended": 5}
+
+    monkeypatch.setattr(feeds, "fetch_token_features", fake_token)
+    monkeypatch.setattr(feeds, "fetch_yield_features", fake_yield)
+    monkeypatch.setattr(cli_module, "JobStore", lambda: object())
+    runner = CliRunner()
+    out = runner.invoke(
+        cli_module.job_cli,
+        [
+            "fetch-token-features",
+            "demo",
+            "--token-id",
+            "ethereum-base",
+            "--interval",
+            "1h",
+            "--days",
+            "7",
+        ],
+    )
+    assert out.exit_code == 0, out.output
+    assert json.loads(out.output)["result"]["rows_appended"] == 3
+    assert calls[-1] == (
+        "token",
+        {
+            "job_id": "demo",
+            "token_ids": ["ethereum-base"],
+            "interval": "1h",
+            "days": 7.0,
+        },
+    )
+    out = runner.invoke(
+        cli_module.job_cli,
+        ["fetch-yield-features", "demo", "--feed", LEND_NAME, "--smoothing", "ewm:12h"],
+    )
+    assert out.exit_code == 0, out.output
+    assert calls[-1] == (
+        "yield",
+        {"job_id": "demo", "feeds": [LEND_NAME], "days": None, "smoothing": "ewm:12h"},
+    )
+
+
+def test_wake_substrate_lists_declared_feeds(tmp_path: Path) -> None:
+    from wayfinder_paths.jobs.worker import _research_substrate_block
+
+    store, job_id = _make_job(tmp_path)
+    root = store.job_dir(job_id)
+    assert "declared_feeds" not in _research_substrate_block(root)
+    client = _lending_client()
+    feeds.fetch_yield_features(job_id, feeds=[LEND_NAME], store=store, client=client)
+    block = _research_substrate_block(root)
+    entry = block["declared_feeds"][0]
+    assert entry["name"] == LEND_NAME and entry["cadence"] == "1h"
+    assert (
+        entry["smoothing"] == {"method": "mean", "window": "24h"}
+        and entry["available"] is True
+    )
+    assert "fetch_yield_features" in block["_basis"] and "EVERY wake" in block["_basis"]

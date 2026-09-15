@@ -13,6 +13,10 @@ from loguru import logger
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.core.config import is_opencode_instance
 from wayfinder_paths.jobs.derived_features import refresh_derived_features_if_stale
+from wayfinder_paths.jobs.execution.features import summarize_features
+from wayfinder_paths.jobs.execution.job import _load_job_yaml
+from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
 from wayfinder_paths.jobs.failures import disk_used_pct
 from wayfinder_paths.jobs.forward import is_forward_empty
 from wayfinder_paths.jobs.ledger import tail_ledger
@@ -364,6 +368,9 @@ def _research_substrate_block(root: Path) -> dict[str, Any]:
             )
         except ValueError:
             pass
+    declared = _declared_feeds(root)
+    if declared:
+        block["declared_feeds"] = declared
     if block:
         block["_basis"] = (
             "Substrate freshness, read from disk THIS wake. Any agenda/"
@@ -373,9 +380,41 @@ def _research_substrate_block(root: Path) -> dict[str, Any]:
             "Never repeat a staleness claim from memory when this block "
             "contradicts it. To advance the dataset yourself: "
             "wayfinder job fetch-dataset (derived columns re-derive "
-            "automatically as part of the build)."
+            "automatically as part of the build). Declared token/yield feeds "
+            "(declared_feeds) refresh on the hourly stamp; to add one: "
+            "core_jobs fetch_token_features / fetch_yield_features "
+            "(wayfinder job fetch-token-features / fetch-yield-features)."
         )
     return block
+
+
+def _declared_feeds(root: Path) -> list[dict[str, Any]]:
+    """Freshness of every declared token/yield feed: name, cadence,
+    smoothing, newest stamp, age, gaps and revisions — from disk."""
+    if not (root / "job.yaml").exists():
+        return []
+    spec_data, _ = resolve_execution_spec(root, _load_job_yaml(root))
+    if not spec_data:
+        return []
+    try:
+        summary = summarize_features(root, ExecutionSpec.from_dict(spec_data))
+    except ValueError:
+        return []
+    keys = (
+        "name",
+        "available",
+        "cadence",
+        "smoothing",
+        "latest_timestamp",
+        "age_seconds",
+        "gaps",
+        "revised_rows",
+    )
+    return [
+        {key: entry.get(key) for key in keys}
+        for entry in summary or []
+        if entry.get("cadence")
+    ]
 
 
 _IDEATION_PATH = "research/ideation/latest.json"

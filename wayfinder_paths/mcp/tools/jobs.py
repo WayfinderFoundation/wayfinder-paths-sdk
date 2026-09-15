@@ -82,6 +82,8 @@ JobAction = Literal[
     "set_watchdog",
     "fetch_dataset",
     "fetch_funding",
+    "fetch_token_features",
+    "fetch_yield_features",
     "pair_check",
     "signal_check",
     "signal_scan",
@@ -423,6 +425,9 @@ async def core_jobs(
     background: bool | None = None,
     op: str | None = None,
     days: int = 14,
+    token_ids: list[str] | None = None,
+    feeds: list[str] | None = None,
+    smoothing: str | None = None,
     include_funding: bool = False,
     dataset_source: Literal["venues", "ccxt"] = "venues",
     exchange: str = "binance",
@@ -538,7 +543,22 @@ async def core_jobs(
         use `include_funding=True` for same-window perp carry),
         `fetch_funding` (historical funding rates into the job's feature
         store — first-class carry data, as-of merged onto the bars as a
-        `funding` column), `backtest_job` (runs DETACHED by
+        `funding` column), `fetch_token_features` (an on-chain token's USD
+        price history into the feature store as `token_price:<token_id>`,
+        `token_ids=["ethereum-base", "polygon_0x…"]`, coarsened to the bar
+        interval, pinned to chain and address; `days` defaults to the
+        dataset's span), `fetch_yield_features` (DeFi yield history by feed
+        name, `feeds=["lend_supply_apr:<venue>:<symbol>[:<market>]",
+        "lend_borrow_apr:…", "yield_apy:<symbol>",
+        "pendle_implied_apy:<venue>:<market_id>",
+        "boros_fixed_rate:<venue>:<market_id>"]`, decimals per year, about
+        seven months of hourly history, declared with its cadence and a
+        trailing-day mean by default — `smoothing="none"|"mean:24h"|"ewm:12h"`;
+        discover venues and markets with `research_search_lending`,
+        `research_search_delta_lab_markets`, `research_search_delta_lab_instruments`;
+        `status` lists what a job declares under `features`; both feeds
+        refresh hourly from the wake and as-of merge into backtest and live
+        alike), `backtest_job` (runs DETACHED by
         default — it returns immediately; poll `op_status` until done, or
         pass `background=False` only for quick_bars-sized runs),
         `backtest_diagnose` (ranked next steps), `experiments` (param grid via
@@ -935,6 +955,38 @@ async def core_jobs(
         return await _run_job_op(
             "fetch_funding",
             {"job_id": job_id, "days": days, "exchange": exchange, "quote": quote},
+        )
+
+    if action == "fetch_token_features":
+        if not token_ids:
+            return err(
+                "invalid_request",
+                "fetch_token_features needs token_ids (e.g. ['ethereum-base'])",
+            )
+        return await _run_job_op(
+            "fetch_token_features",
+            {
+                "job_id": job_id,
+                "token_ids": list(token_ids),
+                "interval": bar_interval,
+                "days": days if days != 14 else None,
+            },
+        )
+
+    if action == "fetch_yield_features":
+        if not feeds:
+            return err(
+                "invalid_request",
+                "fetch_yield_features needs feeds (e.g. ['lend_supply_apr:aave-base:USDC'])",
+            )
+        return await _run_job_op(
+            "fetch_yield_features",
+            {
+                "job_id": job_id,
+                "feeds": list(feeds),
+                "days": days if days != 14 else None,
+                "smoothing": smoothing,
+            },
         )
 
     if action == "pair_check":
