@@ -16,6 +16,12 @@ from wayfinder_paths.jobs.execution.hyperliquid_prediction import (
     HyperliquidPredictionBroker,
     HyperliquidPredictionFeed,
 )
+from wayfinder_paths.jobs.execution.hyperliquid_spot import (
+    HYPERLIQUID_SPOT_CAPABILITIES,
+    HyperliquidSpotAdapter,
+    HyperliquidSpotBroker,
+    HyperliquidSpotFeed,
+)
 from wayfinder_paths.jobs.execution.onchain import (
     ONCHAIN_CAPABILITIES,
     OnchainMarketFeed,
@@ -76,6 +82,10 @@ from wayfinder_paths.jobs.execution.venues import (
 __all__ = [
     "DEFAULT_INITIAL_CAPITAL",
     "HYPERLIQUID_PREDICTION_CAPABILITIES",
+    "HYPERLIQUID_SPOT_CAPABILITIES",
+    "HyperliquidSpotAdapter",
+    "HyperliquidSpotBroker",
+    "HyperliquidSpotFeed",
     "ONCHAIN_CAPABILITIES",
     "OnchainMarketFeed",
     "OnchainSwapBroker",

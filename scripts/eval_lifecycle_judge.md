@@ -13,6 +13,17 @@ Fail only for one of these:
 
 Everything else is a note, not a fail: wording, formatting, ordering, a count slip, detail beyond the excerpt, a fact the agent read from a tool result you cannot see. A claim is "unsupported" only when it is contradicted or invents a number; a claim that is merely absent from the excerpts below is presumed to come from the agent's tool results and is supported. Before returning `fail`, check each reason against the "Do not fail an answer for any of these" list under Always: a reason that appears there is void.
 
+## Initialization
+
+The owner describes a strategy in their own words; the run is judged on whether the agent turned it into the right thing, or asked the right questions.
+
+- The kind fits the ask: a harnessed alpha idea on perps (a rule set over bars, or anything the owner wants to see backtested) is a `jobs_v1` job built through the Strategy Lab tools with a dataset fetched and a backtest run (a `backtest_job` call and its report, or an honest statement of what stopped it); a trigger → action rule on a named venue is a freestyle job; a matching catalog starter is a valid answer for a starter-shaped ask.
+- The venue and the asset are the ones the owner named. Spot on a chain is `onchain` with that chain's token id; spot on Hyperliquid is `hyperliquid_spot` with the pair; a perp is `hyperliquid`; odds are `polymarket` or `hyperliquid_prediction`. Building a perp when spot was asked (or the reverse), or moving to another chain or asset without saying so and getting a yes, fails the run.
+- Lending, yield rotation and other DeFi actions beyond a swap are reads, not venues: the honest answer names that, offers the fits (an installed Path, a classic strategy job through the runner), and builds no freestyle job for the action. A yield used as a signal for a trade on a supported venue is a normal freestyle job.
+- When the case expects questions (the harness prompt says so), the right run asks them and creates nothing: each question names something that changes the build (venue or chain, asset, size, direction, timeframe, what the trigger means) and offers the default the agent would take; a run that builds on a silent assumption instead fails. When the harness prompt forbids questions, taking a stated default is right, and a sensible default is not a fail.
+- The strategy the agent wrote does what the owner described. For a described sequence (levels → sweep → reclaim → gap → retracement entry, stop and target rules, one position at a time) every step is present in the code and the parameters match the words; a script that implements a different, simpler rule and presents it as the ask fails.
+- Backtest help: for a harnessed job the readout says whether a backtest exists, what window and symbols it covered and what is missing; performance numbers come only from the backtest report. For a freestyle job the fixed no-backtest sentence is used and the dry run is described as mechanics.
+
 ## Creation
 
 - The job exists with the right contract: `jobs_v1` for a starter or a Strategy
@@ -105,6 +116,8 @@ Do not fail an answer for any of these; they are supported by how the system wor
 - "validation passed with no warnings" when the validation report's checks carry no warnings; launch-step risk flags are not validation warnings.
 - Risk flags omitted at creation or after a validation refusal; they are shown by `launch_checklist` and `launch`.
 - The `FINAL ANSWER` marker not being the very first characters.
+- A final answer that asks clarifying questions and creates nothing, when the harness prompt invited questions: that is the correct outcome for an underspecified ask, not a skipped step.
+- A jobs_v1 job whose backtest could not run in the sandbox (no dataset reachable) when the answer says exactly that and shows what it did run.
 - The freestyle reads, which are facts of the runtime: prediction-market odds are read with `ctx.quote(venue, symbol)` (venues `polymarket`, `hyperliquid_prediction`), perp prices with `ctx.quote("hyperliquid", …)`, funding with `ctx.funding`, token values with `ctx.token_value`, yields with `ctx.defi_yield`.
 - A tick-by-tick dry-run narration that says traded marks drifted 0.1% per tick from the validation mark (tick 1 = the mark, tick 2 = mark × 1.001, tick 3 = mark × 1.002) while funding, token and yield reads stayed constant: that is exactly how the stub gateway works, so those intermediate values are supported even though the report only records the last tick's marks.
 - A check total that is off by one or two ("18 checks" when the report has 17) when the reported status and the named failed checks match the report; note it, do not fail on it.

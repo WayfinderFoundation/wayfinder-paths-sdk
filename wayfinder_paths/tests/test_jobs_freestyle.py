@@ -1080,3 +1080,150 @@ def test_onchain_live_broker_quotes_then_swaps_on_the_job_wallet() -> None:
     assert fill.status == "rejected" and "cannot short" in str(fill.error)
     assert human_amount("0.25", 18) == pytest.approx(0.25)
     assert human_amount("250000000000000000", 18) == pytest.approx(0.25)
+
+
+HL_SPOT_SCRIPT = """
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=("hyperliquid_spot",), max_notional_per_tick=150, max_loss_usd=40)
+PAIR = "HYPE/USDC"
+
+
+def tick(ctx):
+    price = ctx.quote("hyperliquid_spot", PAIR)
+    if price < 20 and PAIR not in ctx.positions:
+        ctx.act({"venue": "hyperliquid_spot", "kind": "buy", "symbol": PAIR, "notional": 100})
+    elif price > 30 and PAIR in ctx.positions:
+        ctx.act({"venue": "hyperliquid_spot", "kind": "sell", "symbol": PAIR, "reason": "target"})
+"""
+
+
+def test_hyperliquid_spot_buys_and_sells_in_paper(tmp_path: Path, monkeypatch) -> None:
+    from wayfinder_paths.jobs.freestyle import runtime as rt
+
+    store, job = _job(tmp_path, source=HL_SPOT_SCRIPT)
+    root = store.job_dir(job.id)
+    _paper_env(monkeypatch, store)
+    monkeypatch.setattr(
+        rt,
+        "VenueGateway",
+        lambda **kwargs: rt.StubVenueGateway(
+            marks={"hyperliquid_spot:HYPE/USDC": 18.0}
+        ),
+    )
+    payload = run_freestyle_tick(root)
+    assert payload["ok"], payload
+    held = json.loads((root / LEDGER_PATH).read_text())["ledger"]["positions"][
+        "HYPE/USDC"
+    ]
+    assert held["side"] == "long" and held["metadata"]["venue"] == "hyperliquid_spot"
+    assert held["size"] == pytest.approx(100 / 18.0, rel=1e-6)
+    monkeypatch.setattr(
+        rt,
+        "VenueGateway",
+        lambda **kwargs: rt.StubVenueGateway(
+            marks={"hyperliquid_spot:HYPE/USDC": 31.0}
+        ),
+    )
+    payload = run_freestyle_tick(root)
+    assert payload["ok"] and "HYPE/USDC" not in payload["positions"]
+    trade = json.loads(
+        (root / "results" / "forward" / "trades.jsonl").read_text().splitlines()[-1]
+    )
+    assert trade["venue"] == "hyperliquid_spot" and trade["net_pnl"] > 0
+    with pytest.raises(ValueError, match="cannot short"):
+        normalize_action(
+            {
+                "venue": "hyperliquid_spot",
+                "kind": "market",
+                "symbol": "HYPE/USDC",
+                "side": "short",
+                "notional": 50,
+            }
+        )
+
+
+def test_hyperliquid_spot_live_broker_submits_a_spot_market_order(monkeypatch) -> None:
+    from wayfinder_paths.jobs.execution import hyperliquid as hl
+    from wayfinder_paths.jobs.execution.hyperliquid_spot import (
+        HyperliquidSpotBroker,
+        HyperliquidSpotFeed,
+    )
+    from wayfinder_paths.jobs.execution.primitives import OrderIntent
+    from wayfinder_paths.mcp.tools import hyperliquid as hl_tools
+
+    calls: dict[str, Any] = {}
+
+    async def place_market_order(**kwargs):
+        calls.update(kwargs)
+        return {
+            "ok": True,
+            "result": {
+                "effects": [
+                    {
+                        "label": "place_market_order",
+                        "result": {
+                            "status": "ok",
+                            "response": {
+                                "type": "order",
+                                "data": {
+                                    "statuses": [
+                                        {
+                                            "filled": {
+                                                "totalSz": "5.0",
+                                                "avgPx": "20.0",
+                                                "oid": 77,
+                                            }
+                                        }
+                                    ]
+                                },
+                            },
+                        },
+                    }
+                ]
+            },
+        }
+
+    async def no_fee(fill, **kwargs):
+        fill.fee = 0.07
+
+    monkeypatch.setattr(hl_tools, "hyperliquid_place_market_order", place_market_order)
+    monkeypatch.setattr(hl, "_attach_fill_fee", no_fee)
+    broker = HyperliquidSpotBroker(wallet_label="job-wallet")
+    buy = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid_spot",
+        symbol="HYPE/USDC",
+        side="long",
+        notional=100.0,
+        client_order_id="fs-1",
+    )
+    fill = asyncio.run(
+        broker.place(buy, timestamp="2026-09-15T00:00:00+00:00", price=20.0)
+    )
+    assert calls["asset_name"] == "HYPE/USDC" and calls["is_buy"] is True
+    assert calls["usd_amount"] == 100.0 and calls["wallet_label"] == "job-wallet"
+    assert fill.status == "filled" and fill.filled_size == pytest.approx(5.0)
+    assert fill.avg_price == pytest.approx(20.0)
+
+    short = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid_spot",
+        symbol="HYPE/USDC",
+        side="short",
+        notional=100.0,
+    )
+    fill = asyncio.run(
+        broker.place(short, timestamp="2026-09-15T00:00:00+00:00", price=20.0)
+    )
+    assert fill.status == "rejected" and "cannot short" in str(fill.error)
+
+    async def mids(symbols):
+        return {"HYPE/USDC": 21.5}
+
+    view = asyncio.run(
+        HyperliquidSpotFeed(mids=mids).get_completed_bars(
+            ["HYPE/USDC"], "5m", lookback_bars=2
+        )
+    )
+    assert view.latest("HYPE/USDC")["close"] == pytest.approx(21.5)

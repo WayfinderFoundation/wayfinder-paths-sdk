@@ -49,7 +49,14 @@ from wayfinder_paths.jobs.store import JobStore
 
 JUDGE_RUBRIC = "scripts/eval_lifecycle_judge.md"
 OUTPUT_DIR = ".wayfinder_runs/evals/job_lifecycle"
-STAGES = ("creation", "launch", "intervention", "ongoing", "evolution")
+STAGES = (
+    "initialization",
+    "creation",
+    "launch",
+    "intervention",
+    "ongoing",
+    "evolution",
+)
 
 HORMUZ_SCRIPT = """
 from wayfinder_paths.jobs.freestyle import FreestyleSpec
@@ -170,6 +177,13 @@ class LifecycleCase:
     # state the agent starts from in a live run (a launched job, seeded
     # losses); `expected` = setup + what a correct agent then does
     setup: Callable[[Path], None] | None = None
+    # The request is deliberately underspecified: a correct agent asks its
+    # clarifying questions and builds nothing. The live prompt then invites
+    # questions instead of forbidding them, and `validate_answer` judges the
+    # harvested final answer (live runs only; deterministic runs build
+    # nothing and validate the empty store).
+    expects_questions: bool = False
+    validate_answer: Callable[[str], dict[str, Any]] | None = None
 
 
 def _store(workspace: Path) -> JobStore:
@@ -188,6 +202,11 @@ def _report(checks: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
 
 def _check(name: str, passed: Any, **detail: Any) -> dict[str, Any]:
     return {"name": name, "passed": bool(passed), **detail}
+
+
+def _merge_reports(*reports: dict[str, Any]) -> dict[str, Any]:
+    checks = [c for r in reports for c in r.get("checks") or []]
+    return _report(checks)
 
 
 def _job_yaml(workspace: Path, job_id: str) -> dict[str, Any]:
@@ -2877,8 +2896,19 @@ def run_case(
                 "The job tools are already configured for this sandbox: do not read, print, search for or edit "
                 "configuration files, environment variables, or anything outside this directory. "
                 "If a job the task names does not exist here, say so and stop. "
-                "Eval harness instruction: finish in this single run. Do not output a progress checkpoint or ask "
-                "follow-up questions. The final answer must start with `FINAL ANSWER` and include the job id."
+                + (
+                    "Eval harness instruction: finish in this single run. If the request leaves out something "
+                    "that changes what you would build (the venue or chain, the asset, the size, the direction, "
+                    "the timeframe, what a trigger means), ask the owner your clarifying questions in the final "
+                    "answer — numbered, each with the default you would take — and create nothing. If it is "
+                    "specified enough to build, build it and state any assumption you made. The final answer "
+                    "must start with `FINAL ANSWER`."
+                    if case.expects_questions
+                    else "Eval harness instruction: finish in this single run. Do not output a progress "
+                    "checkpoint or ask follow-up questions; if something is unspecified, take the most "
+                    "sensible default and say so. The final answer must start with `FINAL ANSWER` and "
+                    "include the job id."
+                )
             )
             (case_dir / "prompt.md").write_text(prompt, encoding="utf-8")
             title = f"eval/lifecycle/{case.id}/{uuid.uuid4().hex[:8]}"
@@ -2902,6 +2932,9 @@ def run_case(
             (case_dir / "prompt.md").write_text(case.prompt, encoding="utf-8")
             case.expected(workspace)
         validator = case.validate(workspace)
+        if case.validate_answer is not None and live and case.live and jobs_eval is not None:
+            answer_report = case.validate_answer(agent_output)
+            validator = _merge_reports(validator, answer_report)
         (case_dir / "validator.json").write_text(
             json.dumps(validator, indent=2, default=str) + "\n", encoding="utf-8"
         )

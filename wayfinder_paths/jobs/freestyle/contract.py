@@ -12,9 +12,17 @@ from wayfinder_paths.jobs.execution.primitives import OrderIntent
 # bought and sold through the swap router, long-only. Lending, yield and
 # other DeFi actions are reads (ctx.defi_yield), not venues.
 SUPPORTED_VENUES: frozenset[str] = frozenset(
-    {"hyperliquid", "polymarket", "hyperliquid_prediction", "onchain"}
+    {
+        "hyperliquid",
+        "hyperliquid_spot",
+        "polymarket",
+        "hyperliquid_prediction",
+        "onchain",
+    }
 )
-SPOT_VENUES: frozenset[str] = frozenset({"onchain"})
+# Spot venues hold tokens: long-only, no limit orders. `onchain` symbols are
+# token ids on any chain; `hyperliquid_spot` symbols are pairs like HYPE/USDC.
+SPOT_VENUES: frozenset[str] = frozenset({"onchain", "hyperliquid_spot"})
 OPEN_KINDS: frozenset[str] = frozenset({"market", "limit", "buy"})
 CLOSE_KINDS: frozenset[str] = frozenset({"close", "sell", "redeem"})
 ACTION_KINDS: frozenset[str] = OPEN_KINDS | CLOSE_KINDS

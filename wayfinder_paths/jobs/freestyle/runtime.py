@@ -74,6 +74,7 @@ DEFAULT_VENUE_PARAMS: dict[str, dict[str, float]] = {
     "polymarket": {"fee_bps": 0.0, "slippage_bps": 0.0},
     # Router fee plus a pool's typical impact on a small spot swap.
     "onchain": {"fee_bps": 30.0, "slippage_bps": 50.0},
+    "hyperliquid_spot": {"fee_bps": 7.0, "slippage_bps": 10.0},
 }
 
 
