@@ -45,7 +45,10 @@ from wayfinder_paths.jobs.models import (
 )
 from wayfinder_paths.jobs.paths_runtime import create_from_path
 from wayfinder_paths.jobs.proposals import propose_change
-from wayfinder_paths.jobs.readout import build_readout, default_holdout_bars
+from wayfinder_paths.jobs.readout import (
+    build_readout,
+    feasible_holdout,
+)
 from wayfinder_paths.jobs.regime_health import regime_health_job
 from wayfinder_paths.jobs.risk_flags import acknowledge_risk_flags
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
@@ -821,33 +824,54 @@ async def core_jobs(
                         "full": False,
                     },
                 )
-                started["experiments"] = await _start_background_op(
+                holdout = feasible_holdout(
                     store,
                     job_id,
-                    "experiments",
-                    {
-                        "job_id": job_id,
-                        "grid": {},
-                        "rank_by": rank_by,
-                        "workers": workers,
-                        "parallel": parallel,
-                        "walk_forward": {
-                            "test_bars": wf_test_bars
-                            or default_holdout_bars(store, job_id),
-                            "train_bars": wf_train_bars,
-                            "folds": wf_folds,
-                            "anchored": False,
+                    test_bars=wf_test_bars,
+                    folds=wf_folds,
+                    train_bars=wf_train_bars,
+                )
+                if holdout:
+                    started["experiments"] = await _start_background_op(
+                        store,
+                        job_id,
+                        "experiments",
+                        {
+                            "job_id": job_id,
+                            "grid": {},
+                            "rank_by": rank_by,
+                            "workers": workers,
+                            "parallel": parallel,
+                            "walk_forward": holdout,
+                            "quick_bars": None,
+                            "full": False,
                         },
-                        "quick_bars": None,
-                        "full": False,
-                    },
-                )
-                started["robustness_check"] = await _start_background_op(
-                    store,
-                    job_id,
-                    "robustness_check",
-                    {"job_id": job_id, "candidate_dir": None, "robustness_plan": None},
-                )
+                    )
+                else:
+                    started["experiments"] = {
+                        "skipped": "no dataset large enough for a holdout yet: run "
+                        "fetch_dataset first, then refresh again"
+                    }
+                declared_plan = (
+                    (store.load(job_id).execution_spec or {}).get("validation") or {}
+                ).get("robustness_plan")
+                if declared_plan:
+                    started["robustness_check"] = await _start_background_op(
+                        store,
+                        job_id,
+                        "robustness_check",
+                        {
+                            "job_id": job_id,
+                            "candidate_dir": None,
+                            "robustness_plan": None,
+                        },
+                    )
+                else:
+                    started["robustness_check"] = {
+                        "skipped": "no robustness plan declared for this job; run "
+                        'robustness_check with robustness_plan (e.g. {"leverage": [1, 2, 3]}) '
+                        "to add that evidence"
+                    }
             else:
                 started["validate"] = validate_job_for_kind(job_id, store=store)
         result = build_readout(job_id, store=store)

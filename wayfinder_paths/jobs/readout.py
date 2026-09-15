@@ -276,6 +276,55 @@ def _cost_coverage(stats: dict[str, Any], capital: float) -> dict[str, Any]:
     }
 
 
+def dataset_bar_count(store: JobStore, job_id: str) -> int:
+    """Unique completed-bar timestamps in the job's fetched dataset (0 when
+    none has been fetched)."""
+    doc = store.read_json(job_id, "results/backtest/input_bars.json", default=None)
+    rows = doc.get("bars") if isinstance(doc, dict) else doc
+    if not isinstance(rows, list):
+        return 0
+    return len({str(row.get("timestamp")) for row in rows if isinstance(row, dict)})
+
+
+def feasible_holdout(
+    store: JobStore,
+    job_id: str,
+    *,
+    test_bars: int | None = None,
+    folds: int = 3,
+    train_bars: int | None = None,
+    warmup_bars: int = 60,
+) -> dict[str, Any] | None:
+    """A walk-forward window that fits the dataset: the requested test
+    window (default the last ~15%) and fold count, shrunk until
+    ``folds * test + train`` fits. None when no dataset large enough exists
+    yet — the caller skips the holdout instead of launching an op that can
+    only fail (a refresh used to burn the agent's steps that way)."""
+    from wayfinder_paths.jobs.execution.walk_forward import DEFAULT_WF_TRAIN_MULTIPLE
+
+    total = dataset_bar_count(store, job_id)
+    if total <= 0:
+        return None
+    test = int(test_bars or max(48, int(total * 0.15)))
+    folds = max(1, int(folds))
+    for _ in range(8):
+        train = int(train_bars or max(warmup_bars, DEFAULT_WF_TRAIN_MULTIPLE * test))
+        if folds * test + train <= total:
+            return {
+                "test_bars": test,
+                "train_bars": train_bars,
+                "folds": folds,
+                "anchored": False,
+            }
+        if folds > 1:
+            folds -= 1
+            continue
+        test = int(test * 0.6)
+        if test < 24:
+            return None
+    return None
+
+
 def default_holdout_bars(
     store: JobStore, job_id: str, *, fraction: float = 0.15
 ) -> int:
