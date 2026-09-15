@@ -335,8 +335,11 @@ come back with the job id), a freestyle script for any trigger → any action
 (`create_freestyle`: a `tick(ctx)` module that trades only through `ctx.act` on the
 `hyperliquid` perp, `hyperliquid_spot`, `onchain` spot, `polymarket` or
 `hyperliquid_prediction` venues — never swap the venue or asset the owner named for
-another without their yes; when the ask leaves the venue, chain, asset, size, direction
-or timeframe open, ask up to three questions with your defaults before building), or an
+another without their yes; lending, borrowing, LP and yield-rotation actions have NO
+venue, so before asking anything else about such an ask say that plainly and offer the
+fits (an installed Path, or a classic strategy job through `core_runner`); when a
+buildable ask leaves the venue, chain, asset, size, direction or timeframe open, ask up
+to three questions with your defaults before building), or an
 installed Path pinned by version and bundle hash (`create_from_path`); (2) validate
 mechanically (`validate_job`, the ladder that fits the kind, including a sandboxed dry
 run for scripts and Paths); (3) read the honest readout back (`readout`: the backtest
