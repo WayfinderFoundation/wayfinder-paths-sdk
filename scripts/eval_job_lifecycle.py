@@ -3313,9 +3313,21 @@ def _questions_validator(
     def validate(answer: str) -> dict[str, Any]:
         text = (answer or "").lower()
         questions = text.count("?")
+        # A numbered list of decisions with "confirm / tell me / which" is a
+        # question set even when no line ends in a question mark.
+        numbered_request = bool(re.search(r"(?m)^\s*\d+[.)]\s", text)) and bool(
+            re.search(
+                r"confirm|need the following|tell me|let me know|clarif|which|should i|"
+                r"do you want|before i (?:build|create)|i need",
+                text,
+            )
+        )
         checks = [
             _check(
-                "asked_questions", questions >= min_questions, question_marks=questions
+                "asked_questions",
+                questions >= min_questions or numbered_request,
+                question_marks=questions,
+                numbered_request=numbered_request,
             ),
             _check(
                 "offers_defaults",
