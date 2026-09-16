@@ -151,7 +151,7 @@ Before any on-chain operation, check native gas on the target chain. If bridging
 
 Gas sponsorship: on Ethereum, Base, Arbitrum, Polygon, BSC, Monad, MegaEth, Plasma, and Robinhood, remote-wallet transactions are automatically gas-sponsored through account abstraction and user operations. Solana remote-wallet swaps and sends are also sponsored through the SVM submission path. If sponsorship is unavailable, a normal broadcast requires native gas.
 
-Use the `onchain_*` tools for token discovery, resolution, gas tokens, fuzzy search, swap quoting/execution, sends, and wallet activity on both EVM chains and Solana: `onchain_list_tokens`, `onchain_resolve_token`, `onchain_get_gas_token`, `onchain_fuzzy_search_tokens`, `onchain_quote_swap`, `onchain_swap`, `onchain_send`, `onchain_get_wallet_activity`. For Solana trending/new/hot-token requests, call `onchain_list_tokens(chain_code="solana", dimension=...)`; do not claim Solana is unsupported or fall back to web search without trying the tool. Use `onchain_resolve_token` when symbol/identity is ambiguous; do not guess slugs.
+Use the `onchain_*` tools for token discovery, resolution, gas tokens, fuzzy search, swap quoting/execution, sends, and wallet activity on both EVM chains and Solana: `onchain_list_tokens`, `onchain_resolve_token`, `onchain_get_gas_token`, `onchain_fuzzy_search_tokens`, `onchain_quote_swap`, `onchain_swap`, `onchain_send`, `onchain_get_wallet_activity`. For Solana trending/new/hot-token requests, call `onchain_list_tokens(chain_code="solana", dimension=...)`; do not claim Solana is unsupported or fall back to web search without trying the tool. Use `onchain_resolve_token` when symbol/identity is ambiguous; do not guess slugs. When the user names a chain, scope token search to that chain.
 
 Use token IDs like `<coingecko_id>-<chain_code>` (e.g. `ethereum-arbitrum`, `usd-coin-polygon`, `solana-solana`) or address IDs like `<chain_code>_<address>` (e.g. `arbitrum_0xaf88…`, `solana_Es9vMF…`) for quoting, execution, and lookups. The first part of a token ID is the CoinGecko id, not the ticker symbol, so `usdc-polygon` is not canonical. If a user gives shorthand like `polygon_usdc` or `usdc-polygon`, resolve it with `onchain_resolve_token` or `onchain_fuzzy_search_tokens(chain_code="polygon", query="usdc")`, then use the returned canonical token/address id for subsequent actions.
 
@@ -159,7 +159,7 @@ For `onchain_quote_swap`, `onchain_swap`, and `onchain_send`, `amount` is a deci
 
 Swap token identity safety:
 - Do not silently substitute similar tokens or wrappers after the user approves a quote or action. ETH ↔ WETH, native ↔ wrapped variants, USDC ↔ USDT, bridged ↔ canonical variants, pUSD ↔ USDC, and same-symbol different-contract tokens all require a fresh quote and explicit user confirmation.
-- If a swap fails due to allowance visibility, route execution, or token nonconformance, report the failure and ask for a fresh quote; do not improvise a substitute asset.
+- If a swap fails due to allowance visibility, route execution, or token nonconformance, report the failure and ask for a fresh quote; do not improvise a substitute asset. Gas-estimation failure is not an on-chain swap revert; an approval may remain active and cost gas. Report observed effects, not an assumed cause or "no loss".
 
 ### Low-cap & new-chain tokens
 
@@ -167,9 +167,9 @@ New chains (e.g. Robinhood) are mostly micro-cap memes the standard catalog hasn
 
 - **Browse, don't guess:** "what's trending/new/hot on {chain}" → `onchain_list_tokens(chain_code, dimension)` (`trending`|`volume`|`new`|`active`) — live tokens with price/liquidity/FDV/pool age, including launches the catalog misses.
 - **Never infer identity from a name:** raw address → `onchain_resolve_token` / `onchain_fuzzy_search_tokens` FIRST ("The Index" ≠ an index fund). What a token "is" / its community → research it; report only what's verifiable.
-- **Size for the liquidity:** FDV < ~$1M, liquidity < ~$50k, or days old = high-risk micro-cap. Give a one-line risk read (liquidity/FDV/age/fillable size), quote a small clip first, confirm before executing.
+- **Size for the liquidity:** FDV < ~$1M, liquidity < ~$50k, or days old = high-risk micro-cap. Give a one-line risk read (liquidity/FDV/age/fillable size), quote a small clip first, confirm before executing. Pool age is not token age.
 
-Supported chain identifiers:
+Supported chain identifiers (not exhaustive; check `onchain_get_gas_token` before rejecting an unlisted chain):
 
 | Chain     |    ID | Code        | Symbol | Native token ID                   | Notes                                                                                          |
 | --------- | ----: | ----------- | ------ | --------------------------------- | ---------------------------------------------------------------------------------------------- |
@@ -185,6 +185,7 @@ Supported chain identifiers:
 | Monad     |   143 | `monad`     | MON    | `monad-monad`                     | High-performance parallel EVM L1.                                                              |
 | MegaEth   |  4326 | `megaeth`   | ETH    | `ethereum-megaeth`                | High-throughput real-time EVM L2.                                                             |
 | Robinhood |  4663 | `robinhood` | ETH    | `ethereum-robinhood`              | Robinhood's EVM chain.                                                                          |
+| Arc       |  5042 | `arc`       | USDC   | `arc_0x0000000000000000000000000000000000000000` | Native (18 decimals) and ERC-20 (6) USDC share one balance; no wrap or asset substitution. See tool `chain_context`. Not sponsored; reserve USDC for gas. |
 | Solana    |   900 | `solana`    | SOL    | `solana-solana`                   | SVM chain; SPL and Token-2022 discovery, swaps, sends, and cross-chain routes are supported.    |
 
 ### Hyperliquid

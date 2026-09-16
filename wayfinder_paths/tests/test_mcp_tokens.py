@@ -6,7 +6,12 @@ import httpx
 import pytest
 
 from wayfinder_paths.core.clients.TokenClient import TokenClient
-from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
+from wayfinder_paths.core.constants import ZERO_ADDRESS
+from wayfinder_paths.core.constants.chains import (
+    ARC_USDC_ADDRESS,
+    CHAIN_ID_ARC,
+    CHAIN_ID_SOLANA,
+)
 from wayfinder_paths.core.utils.svm_tokens import SOL_DECIMALS
 from wayfinder_paths.mcp.tools.tokens import (
     onchain_fuzzy_search_tokens,
@@ -62,6 +67,61 @@ async def test_get_gas_token_happy_path():
 
     assert out["ok"] is True
     assert out["result"]["symbol"] == "ETH"
+    assert "chain_context" not in out["result"]
+
+
+@pytest.mark.asyncio
+async def test_arc_tools_explain_one_balance_without_extra_requests() -> None:
+    gas_token = {
+        "chain": {"id": CHAIN_ID_ARC, "code": "arc", "name": "Arc"},
+        "symbol": "USDC",
+        "address": ZERO_ADDRESS,
+        "decimals": 18,
+    }
+    assets = {"chain_code": "arc", "assets": [], "settlement_assets": []}
+    with (
+        patch("wayfinder_paths.mcp.utils._report_tool_metric"),
+        patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT") as client,
+    ):
+        client.get_gas_token = AsyncMock(return_value=gas_token)
+        client.get_canonical_assets = AsyncMock(return_value=assets)
+        gas = await onchain_get_gas_token("arc")
+        settlement = await onchain_get_settlement_assets("arc")
+
+    client.get_gas_token.assert_awaited_once_with("arc")
+    client.get_canonical_assets.assert_awaited_once_with("arc")
+    assert len(client.mock_calls) == 2
+    assert gas["ok"] and settlement["ok"]
+    context = gas["result"]["chain_context"]
+    assert settlement["result"]["chain_context"] == context
+    assert context["chain_id"] == CHAIN_ID_ARC
+    assert context["chain_code"] == "arc"
+    assert context["gas_sponsored"] is False
+    assert context["usdc"] == {
+        "native": {"address": ZERO_ADDRESS, "decimals": 18},
+        "erc20": {"address": ARC_USDC_ADDRESS, "decimals": 6},
+        "shared_balance": True,
+        "wrapping_required": False,
+    }
+    # Enrichment must not mutate cached backend results or native gas units.
+    assert "chain_context" not in gas_token
+    assert "chain_context" not in assets
+    assert gas["result"]["decimals"] == gas_token["decimals"] == 18
+
+
+@pytest.mark.asyncio
+async def test_arc_lookup_failure_does_not_imply_runtime_support() -> None:
+    with (
+        patch("wayfinder_paths.mcp.utils._report_tool_metric"),
+        patch(
+            "wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT.get_gas_token",
+            new=AsyncMock(side_effect=ValueError("Arc is disabled")),
+        ),
+    ):
+        result = await onchain_get_gas_token("arc")
+    assert result["ok"] is False
+    assert "result" not in result
+    assert result["error"]["message"] == "Arc is disabled"
 
 
 @pytest.mark.asyncio
@@ -198,6 +258,7 @@ async def test_get_settlement_assets_happy_path():
 
     assert out["ok"] is True
     assert out["result"]["settlement_assets"][0]["symbol"] == "USDT0"
+    assert "chain_context" not in out["result"]
     fake_client.get_canonical_assets.assert_awaited_once_with("hyperevm")
 
 

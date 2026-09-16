@@ -582,7 +582,7 @@ def test_primary_agent_warns_against_silent_similar_token_substitution() -> None
 
 
 def test_core_agent_prompts_include_solana_execution_guidance() -> None:
-    for filename in ("wayfinder.md", "wayfinder-baseline.md"):
+    for filename in ("wayfinder.md", "wayfinder-baseline.md", "wayfinder-mobile.md"):
         text = (SDK_ROOT / ".opencode" / "agents" / filename).read_text(
             encoding="utf-8"
         )
@@ -591,6 +591,22 @@ def test_core_agent_prompts_include_solana_execution_guidance() -> None:
         assert "Solana remote-wallet swaps and sends are also sponsored" in text
         assert "| Solana    |   900 | `solana`" in text
         assert "wallet ring with an EVM leg" in text
+
+
+def test_core_agent_prompts_include_arc_without_weakening_swap_safety() -> None:
+    for agent in ("wayfinder", "wayfinder-baseline", "wayfinder-mobile"):
+        text = _agent_text(agent)
+        assert "| Arc       |  5042 | `arc`" in text
+        assert "| Ethereum  |     1 | `ethereum`" in text
+        assert "| Solana    |   900 | `solana`" in text
+        assert "share one balance; no wrap or asset substitution" in text
+        assert "Not sponsored; reserve USDC for gas" in text
+        assert "scope token search to that chain" in text
+        assert "before rejecting an unlisted chain" in text
+        assert "ETH ↔ WETH" in text
+        assert "fresh quote and explicit user confirmation" in text
+        assert "Gas-estimation failure is not an on-chain swap revert" in text
+        assert "an approval may remain active and cost gas" in text
 
 
 def test_stable_apy_research_and_adapter_docs_are_current() -> None:
