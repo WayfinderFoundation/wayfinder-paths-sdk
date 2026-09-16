@@ -211,7 +211,7 @@ jobs:
           echo "::error::Configure the dev-only WAYFINDER_TEST_API_KEY secret; Arc execution is not verified."
           exit 1
         fi
-        poetry run pytest wayfinder_paths/adapters/test_arc_fork.py -q --no-cov --maxfail=1
+        poetry run pytest wayfinder_paths/adapters/test_arc_fork.py wayfinder_paths/adapters/test_existing_chains_fork.py -q --no-cov --maxfail=1
     - name: Report fork coverage unavailable for untrusted PR
       if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
       run: echo 'Arc fork execution was NOT run on this external PR; no credentials were exposed.' >> "$GITHUB_STEP_SUMMARY"

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from wayfinder_paths.adapters.uniswap_adapter.adapter import UniswapAdapter
+from wayfinder_paths.core.constants.contracts import UNISWAP_V3_FACTORY, UNISWAP_V3_NPM
 from wayfinder_paths.core.utils.uniswap_v3_math import tick_to_price, ticks_for_range
 
 OWNER = "0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa"
@@ -21,6 +22,14 @@ def _make_adapter(chain_id: int = 8453) -> UniswapAdapter:
         sign_callback=AsyncMock(return_value=b"signed"),
         wallet_address=OWNER,
     )
+
+
+@pytest.fixture(params=[1, 8453, 4663], ids=["ethereum", "base", "robinhood"])
+def adapter(request: pytest.FixtureRequest) -> UniswapAdapter:
+    instance = _make_adapter(chain_id=request.param)
+    assert instance.npm_address == UNISWAP_V3_NPM[request.param]
+    assert instance.factory_address == UNISWAP_V3_FACTORY[request.param]
+    return instance
 
 
 class _FakeCall:
@@ -118,8 +127,7 @@ class TestConstruction:
 
 class TestAddLiquidity:
     @pytest.mark.asyncio
-    async def test_success(self):
-        adapter = _make_adapter()
+    async def test_success(self, adapter: UniswapAdapter) -> None:
         with (
             patch(
                 f"{BASE_MODULE}.ensure_allowance", new_callable=AsyncMock
@@ -141,12 +149,17 @@ class TestAddLiquidity:
             assert ok is True
             assert tx == "0xtxhash"
             assert mock_allow.await_count == 2
+            for call in mock_allow.await_args_list:
+                assert call.kwargs["chain_id"] == adapter.chain_id
+                assert call.kwargs["spender"] == UNISWAP_V3_NPM[adapter.chain_id]
             mock_encode.assert_awaited_once()
+            assert mock_encode.await_args is not None
+            assert mock_encode.await_args.kwargs["chain_id"] == adapter.chain_id
+            assert mock_encode.await_args.kwargs["target"] == adapter.npm_address
             mock_send.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_auto_orders_tokens(self):
-        adapter = _make_adapter()
+    async def test_auto_orders_tokens(self, adapter: UniswapAdapter) -> None:
         with (
             patch(f"{BASE_MODULE}.ensure_allowance", new_callable=AsyncMock),
             patch(
@@ -166,8 +179,7 @@ class TestAddLiquidity:
             assert int(params[0], 16) < int(params[1], 16)
 
     @pytest.mark.asyncio
-    async def test_tick_rounding(self):
-        adapter = _make_adapter()
+    async def test_tick_rounding(self, adapter: UniswapAdapter) -> None:
         with (
             patch(f"{BASE_MODULE}.ensure_allowance", new_callable=AsyncMock),
             patch(
@@ -190,8 +202,7 @@ class TestAddLiquidity:
 
 class TestIncreaseLiquidity:
     @pytest.mark.asyncio
-    async def test_success(self):
-        adapter = _make_adapter()
+    async def test_success(self, adapter: UniswapAdapter) -> None:
         npm = _FakeNpm()
 
         with (
@@ -221,8 +232,7 @@ class TestIncreaseLiquidity:
 
 class TestRemoveLiquidity:
     @pytest.mark.asyncio
-    async def test_multicall(self):
-        adapter = _make_adapter()
+    async def test_multicall(self, adapter: UniswapAdapter) -> None:
         npm = _FakeNpm()
 
         with (
@@ -245,14 +255,15 @@ class TestRemoveLiquidity:
             assert ok is True
             assert tx == "0xtx_rm"
             call_kwargs = mock_encode.call_args.kwargs
+            assert call_kwargs["chain_id"] == adapter.chain_id
+            assert call_kwargs["target"] == adapter.npm_address
             assert call_kwargs["fn_name"] == "multicall"
             assert len(call_kwargs["args"][0]) == 3
 
 
 class TestCollectFees:
     @pytest.mark.asyncio
-    async def test_success(self):
-        adapter = _make_adapter()
+    async def test_success(self, adapter: UniswapAdapter) -> None:
         with (
             patch(
                 f"{BASE_MODULE}.encode_call",
@@ -269,58 +280,63 @@ class TestCollectFees:
             assert ok is True
             assert tx == "0xtx_col"
             assert mock_encode.call_args.kwargs["fn_name"] == "collect"
+            assert mock_encode.await_args is not None
+            assert mock_encode.await_args.kwargs["chain_id"] == adapter.chain_id
+            assert mock_encode.await_args.kwargs["target"] == adapter.npm_address
 
 
 class TestGetPosition:
     @pytest.mark.asyncio
-    async def test_returns_position_with_token_id(self):
-        adapter = _make_adapter()
+    async def test_returns_position_with_token_id(
+        self, adapter: UniswapAdapter
+    ) -> None:
         npm = _FakeNpm()
 
         with patch(f"{BASE_MODULE}.web3_from_chain_id", return_value=_Web3Ctx(npm)):
             ok, pos = await adapter.get_position(42)
             assert ok is True
-            assert pos["token_id"] == 42
+            assert isinstance(pos, dict)
+            assert dict(pos)["token_id"] == 42
             assert pos["liquidity"] == 5000
             assert pos["fee"] == 3000
 
 
 class TestGetPositions:
     @pytest.mark.asyncio
-    async def test_returns_list(self):
-        adapter = _make_adapter()
+    async def test_returns_list(self, adapter: UniswapAdapter) -> None:
         npm = _FakeNpm(balance=1, token_ids=[99])
 
         with patch(f"{BASE_MODULE}.web3_from_chain_id", return_value=_Web3Ctx(npm)):
             ok, positions = await adapter.get_positions()
             assert ok is True
+            assert isinstance(positions, list)
             assert len(positions) == 1
             assert positions[0]["token_id"] == 99
 
 
 class TestGetUncollectedFees:
     @pytest.mark.asyncio
-    async def test_simulates_collect(self):
-        adapter = _make_adapter()
+    async def test_simulates_collect(self, adapter: UniswapAdapter) -> None:
         npm = _FakeNpm()
 
         with patch(f"{BASE_MODULE}.web3_from_chain_id", return_value=_Web3Ctx(npm)):
             ok, fees = await adapter.get_uncollected_fees(42)
             assert ok is True
+            assert isinstance(fees, dict)
             assert fees["amount0"] == 1000
             assert fees["amount1"] == 2000
 
 
 class TestGetPool:
     @pytest.mark.asyncio
-    async def test_returns_pool_address(self):
-        adapter = _make_adapter()
+    async def test_returns_pool_address(self, adapter: UniswapAdapter) -> None:
         pool_addr = "0x4444444444444444444444444444444444444444"
         factory = _FakeFactory(pool_addr)
 
         with patch(f"{BASE_MODULE}.web3_from_chain_id", return_value=_Web3Ctx(factory)):
             ok, result = await adapter.get_pool(TOKEN_A, TOKEN_B, 3000)
             assert ok is True
+            assert result is not None
             assert result.lower() == pool_addr.lower()
 
 

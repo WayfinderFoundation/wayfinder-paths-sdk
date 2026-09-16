@@ -4,6 +4,28 @@ import httpx
 import pytest
 
 from wayfinder_paths.core.clients.MorphoClient import MorphoClient
+from wayfinder_paths.core.constants.morpho_contracts import MORPHO_BY_CHAIN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chain_id", [1, 8453])
+async def test_core_discovery_preserves_existing_public_allocators(
+    chain_id: int,
+) -> None:
+    expected = MORPHO_BY_CHAIN[chain_id]
+    core = {
+        "address": expected["morpho"],
+        "chain": {"id": chain_id, "network": expected["network"]},
+    }
+    payload = {
+        "morphoBlues": {"items": [core]},
+        "publicAllocators": {
+            "items": [{"address": expected["public_allocator"], "morphoBlue": core}]
+        },
+    }
+    async with MorphoClient() as client:
+        with patch.object(client, "_post", AsyncMock(return_value=payload)):
+            assert (await client.get_morpho_by_chain())[chain_id] == expected
 
 
 @pytest.mark.asyncio

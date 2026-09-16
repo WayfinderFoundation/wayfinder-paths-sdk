@@ -615,9 +615,15 @@ async def test_claim_rewards_defaults_to_merkl_only(adapter):
 
 
 @pytest.mark.asyncio
-async def test_vault_deposit_approves_asset_and_calls_deposit(adapter):
+@pytest.mark.parametrize("chain_id", [1, CHAIN_ID_BASE])
+@pytest.mark.parametrize("action", ["deposit", "mint", "withdraw", "redeem"])
+async def test_vault_actions_preserve_chain_and_raw_units(
+    adapter: MorphoAdapter, chain_id: int, action: str
+) -> None:
     vault = "0x1111111111111111111111111111111111111111"
     asset = "0x2222222222222222222222222222222222222222"
+    entering = action in {"deposit", "mint"}
+    unit = "assets" if action in {"deposit", "withdraw"} else "shares"
 
     with (
         patch.object(adapter, "_vault_asset", new=AsyncMock(return_value=asset)),
@@ -627,29 +633,42 @@ async def test_vault_deposit_approves_asset_and_calls_deposit(adapter):
         ) as mock_allow,
         patch(
             "wayfinder_paths.core.adapters.erc4626.encode_call",
-            new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
+            new=AsyncMock(return_value={"chainId": chain_id}),
         ) as mock_encode,
         patch(
             "wayfinder_paths.core.adapters.erc4626.send_transaction",
             new=AsyncMock(return_value="0xabc"),
-        ),
+        ) as mock_send,
     ):
-        ok, tx = await adapter.vault_deposit(
-            chain_id=CHAIN_ID_BASE,
+        ok, tx = await getattr(adapter, f"vault_{action}")(
+            chain_id=chain_id,
             vault_address=vault,
-            assets=123,
+            **{unit: 123},
         )
 
     assert ok is True
     assert tx == "0xabc"
 
-    _args, allow_kwargs = mock_allow.await_args
-    assert allow_kwargs["token_address"] == asset
-    assert allow_kwargs["spender"].lower() == vault.lower()
+    if entering:
+        mock_allow.assert_awaited_once()
+        assert mock_allow.await_args is not None
+        allow_kwargs = mock_allow.await_args.kwargs
+        assert allow_kwargs["token_address"] == asset
+        assert allow_kwargs["spender"].lower() == vault.lower()
+        assert allow_kwargs["chain_id"] == chain_id
+        assert allow_kwargs["amount"] == (123 if action == "deposit" else MAX_UINT256)
+    else:
+        mock_allow.assert_not_awaited()
 
+    assert mock_encode.await_args is not None
     _args, encode_kwargs = mock_encode.await_args
-    assert encode_kwargs["fn_name"] == "deposit"
-    assert encode_kwargs["args"][0] == 123
+    assert encode_kwargs["fn_name"] == action
+    assert encode_kwargs["chain_id"] == chain_id
+    assert encode_kwargs["target"].lower() == vault.lower()
+    assert encode_kwargs["args"] == [123, adapter.wallet_address] + (
+        [] if entering else [adapter.wallet_address]
+    )
+    mock_send.assert_awaited_once_with({"chainId": chain_id}, adapter.sign_callback)
 
 
 @pytest.mark.asyncio
