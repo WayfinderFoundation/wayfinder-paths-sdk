@@ -12,8 +12,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from eth_abi import decode as abi_decode
+from web3 import AsyncWeb3
 
-from wayfinder_paths.adapters.uniswap_adapter import v4
+from wayfinder_paths.adapters.uniswap_adapter import UniswapAdapter, v4
 from wayfinder_paths.adapters.uniswap_adapter.v4 import (
     NATIVE_ADDRESS,
     PoolKey,
@@ -23,6 +24,7 @@ from wayfinder_paths.adapters.uniswap_adapter.v4 import (
     _sorted_currencies,
     best_pool,
 )
+from wayfinder_paths.core.constants.contracts import UNISWAP_V4_UNIVERSAL_ROUTER
 
 # Live Robinhood (4663) INDEX/ETH 1% pool, from its Initialize event.
 INDEX = "0x56910d4409f3a0c78c64dd8d0545ff0705389870"
@@ -92,24 +94,75 @@ async def test_best_pool_ranks_by_liquidity_not_fee():
 
 
 @pytest.mark.asyncio
-async def test_v4_quote_uses_best_pool_and_returns_output():
-    class _Host(UniswapV4SwapMixin):
-        chain_id = 4663
-        owner = "0x0000000000000000000000000000000000000001"
-        sign_callback = None
-
+@pytest.mark.parametrize("chain_id", [1, 8453, 4663])
+async def test_v4_quote_uses_best_pool_and_returns_output(chain_id: int) -> None:
+    adapter = UniswapAdapter({"chain_id": chain_id}, wallet_address=INDEX)
     deep = V4Pool(
         PoolKey(NATIVE_ADDRESS, INDEX, 10000, 200, HOOK), liquidity=44_721 * 10**18
     )
     with (
-        patch.object(v4, "best_pool", AsyncMock(return_value=deep)),
+        patch.object(v4, "best_pool", AsyncMock(return_value=deep)) as discover,
         patch.object(v4, "quote_exact_in", AsyncMock(return_value=9_549 * 10**18)),
     ):
-        ok, result = await _Host().v4_quote(NATIVE_ADDRESS, INDEX, 3 * 10**15)
+        ok, result = await adapter.v4_quote(NATIVE_ADDRESS, INDEX, 3 * 10**15)
+    discover.assert_awaited_once_with(chain_id, NATIVE_ADDRESS, INDEX)
     assert ok is True
     assert result["amount_out"] == 9_549 * 10**18
     assert result["pool_id"] == KNOWN_POOL_ID
     assert result["fee"] == 10000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chain_id", [1, 8453, 4663])
+@pytest.mark.parametrize("native_in", [True, False])
+async def test_v4_swap_preserves_chain_router_value_and_slippage(
+    chain_id: int, native_in: bool
+) -> None:
+    adapter = UniswapAdapter({"chain_id": chain_id}, wallet_address=INDEX)
+    pool = V4Pool(PoolKey(NATIVE_ADDRESS, INDEX, 10000, 200, HOOK), liquidity=10**18)
+    token_in, token_out = (
+        (NATIVE_ADDRESS, INDEX) if native_in else (INDEX, NATIVE_ADDRESS)
+    )
+    web3: AsyncWeb3 = AsyncWeb3()
+    context = AsyncMock()
+    context.__aenter__.return_value = web3
+    with (
+        patch.object(web3.eth, "get_transaction_count", AsyncMock(return_value=7)),
+        patch.object(v4, "best_pool", AsyncMock(return_value=pool)),
+        patch.object(v4, "quote_exact_in", AsyncMock(return_value=1000)),
+        patch.object(v4, "web3_from_chain_id", return_value=context),
+        patch.object(adapter, "_chain_deadline", AsyncMock(return_value=123456)),
+        patch.object(adapter, "_permit2_approve", AsyncMock()) as permit,
+        patch.object(
+            v4, "ensure_allowance", AsyncMock(return_value=(True, None))
+        ) as allow,
+        patch.object(v4, "send_transaction", AsyncMock(return_value="0xtx")) as send,
+    ):
+        ok, result = await adapter.v4_swap_exact_in(
+            token_in=token_in, token_out=token_out, amount_in=100, slippage_bps=100
+        )
+    assert ok, result
+    assert send.await_args is not None
+    tx = send.await_args.args[0]
+    assert tx["chainId"] == chain_id
+    assert tx["to"] == UNISWAP_V4_UNIVERSAL_ROUTER[chain_id]
+    assert tx["value"] == (100 if native_in else 0)
+    commands, inputs, deadline = abi_decode(
+        ["bytes", "bytes[]", "uint256"], bytes.fromhex(tx["data"][10:])
+    )
+    assert commands == b"\x10" and deadline == 123456
+    _, params = abi_decode(["bytes", "bytes[]"], inputs[0])
+    assert abi_decode(["address", "uint256"], params[1]) == (token_in, 100)
+    assert abi_decode(["address", "uint256"], params[2]) == (token_out, 990)
+    if native_in:
+        allow.assert_not_awaited()
+        permit.assert_not_awaited()
+    else:
+        assert allow.await_args is not None
+        assert allow.await_args.kwargs["chain_id"] == chain_id
+        permit.assert_awaited_once_with(
+            web3.to_checksum_address(token_in), UNISWAP_V4_UNIVERSAL_ROUTER[chain_id]
+        )
 
 
 @pytest.mark.asyncio
@@ -142,7 +195,7 @@ def test_all_v4_address_maps_agree_on_chains():
     )
 
     chains = set(UNISWAP_V4_POOL_MANAGER)
-    assert chains == {1, 8453, 42161, 4663}
+    assert chains == {1, 8453, 42161, 4663, 5042}
     assert set(UNISWAP_V4_UNIVERSAL_ROUTER) == chains
     assert set(UNISWAP_V4_QUOTER) == chains
     assert set(UNISWAP_V4_STATE_VIEW) == chains

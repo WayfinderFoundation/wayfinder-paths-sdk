@@ -18,3 +18,8 @@ Use this skill when you are:
 - [rules/high-value-reads.md](rules/high-value-reads.md) - Markets/vaults + user snapshots
 - [rules/execution-opportunities.md](rules/execution-opportunities.md) - Lend/borrow/collateral/rewards/vault ops
 - [rules/gotchas.md](rules/gotchas.md) - Market keys, shares-based full-close, bundler/allocator config
+
+Arc mainnet (5042) supports core Morpho market/vault operations. Core deployment
+discovery does not depend on public allocators: Arc has no configured public
+allocator, so do not use allocator/reallocation operations there. USDC market
+amounts use its 6-decimal ERC-20 interface, not native gas's 18 decimals.

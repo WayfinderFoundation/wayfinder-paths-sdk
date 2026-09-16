@@ -33,8 +33,8 @@ class UniswapV3BaseAdapter(BaseAdapter):
         config: dict[str, Any],
         *,
         chain_id: int,
-        npm_address: str,
-        factory_address: str,
+        npm_address: str | None,
+        factory_address: str | None,
         owner: str,
         sign_callback=None,
         factory_abi: list[dict[str, Any]] | None = None,
@@ -42,10 +42,28 @@ class UniswapV3BaseAdapter(BaseAdapter):
         super().__init__(adapter_name, config)
         self.sign_callback = sign_callback
         self.chain_id = int(chain_id)
-        self.npm_address = to_checksum_address(str(npm_address))
-        self.factory_address = to_checksum_address(str(factory_address))
+        self._npm_address = to_checksum_address(npm_address) if npm_address else None
+        self._factory_address = (
+            to_checksum_address(factory_address) if factory_address else None
+        )
         self.owner = to_checksum_address(str(owner))
         self._factory_abi = factory_abi or UNISWAP_V3_FACTORY_ABI
+
+    @property
+    def npm_address(self) -> str:
+        if self._npm_address is None:
+            raise ValueError(
+                f"Uniswap V3 is not deployed on chain {self.chain_id}; use v4 methods"
+            )
+        return self._npm_address
+
+    @property
+    def factory_address(self) -> str:
+        if self._factory_address is None:
+            raise ValueError(
+                f"Uniswap V3 is not deployed on chain {self.chain_id}; use v4 methods"
+            )
+        return self._factory_address
 
     def _tick_spacing_for_fee(self, fee: int) -> int:
         spacing = TICK_SPACING.get(int(fee))

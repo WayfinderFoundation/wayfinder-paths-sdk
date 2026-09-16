@@ -4,6 +4,48 @@ import httpx
 import pytest
 
 from wayfinder_paths.core.clients.MorphoClient import MorphoClient
+from wayfinder_paths.core.constants.morpho_contracts import MORPHO_BY_CHAIN
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chain_id", [1, 8453])
+async def test_core_discovery_preserves_existing_public_allocators(
+    chain_id: int,
+) -> None:
+    expected = MORPHO_BY_CHAIN[chain_id]
+    core = {
+        "address": expected["morpho"],
+        "chain": {"id": chain_id, "network": expected["network"]},
+    }
+    payload = {
+        "morphoBlues": {"items": [core]},
+        "publicAllocators": {
+            "items": [{"address": expected["public_allocator"], "morphoBlue": core}]
+        },
+    }
+    async with MorphoClient() as client:
+        with patch.object(client, "_post", AsyncMock(return_value=payload)):
+            assert (await client.get_morpho_by_chain())[chain_id] == expected
+
+
+@pytest.mark.asyncio
+async def test_core_discovery_does_not_require_a_public_allocator():
+    # Arc's live morphoBlues row exists without a publicAllocators row.
+    core = "0x34CD04070dD72b14E241112F6d83812Df5Af7fCD"
+    payload = {
+        "morphoBlues": {
+            "items": [{"address": core, "chain": {"id": 5042, "network": "arc"}}]
+        },
+        "publicAllocators": {"items": []},
+    }
+    client = MorphoClient()
+    with patch.object(client, "_post", AsyncMock(return_value=payload)) as post:
+        assert await client.get_morpho_address(chain_id=5042) == core
+        assert (await client.get_morpho_by_chain())[5042] == {
+            "network": "arc",
+            "morpho": core,
+        }
+    assert "morphoBlues" in post.await_args.kwargs["query"]
 
 
 def _http_400(body: dict) -> MagicMock:

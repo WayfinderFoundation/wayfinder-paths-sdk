@@ -1,0 +1,6 @@
+{
+  "markets": {
+    "description": "Read Arc main and forex reserves before choosing a reserve ID.",
+    "code": "from wayfinder_paths.adapters.aave_v4_adapter.adapter import AaveV4Adapter\n\nadapter = AaveV4Adapter()\nfor spoke in ('main', 'forex'):\n    ok, markets = await adapter.get_markets(spoke=spoke)\n    print(spoke, ok, markets)"
+  }
+}

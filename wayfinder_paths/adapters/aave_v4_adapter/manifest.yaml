@@ -1,0 +1,13 @@
+schema_version: "0.1"
+entrypoint: "wayfinder_paths.adapters.aave_v4_adapter.adapter.AaveV4Adapter"
+capabilities:
+  - "aave_v4.markets.read"
+  - "aave_v4.positions.read"
+  - "aave_v4.supply"
+  - "aave_v4.withdraw"
+  - "aave_v4.borrow"
+  - "aave_v4.repay"
+  - "aave_v4.collateral"
+  - "aave_v4.tokenized.deposit"
+  - "aave_v4.tokenized.redeem"
+dependencies: []
