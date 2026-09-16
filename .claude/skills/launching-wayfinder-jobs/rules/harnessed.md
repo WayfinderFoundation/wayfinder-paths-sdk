@@ -28,7 +28,7 @@ class MyStrategy:
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         self.params = {**self.default_params, **(params or {})}
-        self.warmup_bars = 2  # bars needed before the first decision
+        self.warmup_bars = 2  # the bars decide() reads each tick — declare what it really needs
 
     def precompute(self, frames: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
         return {}  # optional derived columns per symbol; {} when decide() computes what it needs
@@ -53,7 +53,7 @@ def build_strategy(params: dict[str, Any] | None = None) -> MyStrategy:
     return MyStrategy(params)
 ```
 
-- `ctx.view.symbol_frame(symbol)` is the completed-bar history handed to this tick (bounded by `execution_params.lookback_bars`); the last row is the latest completed bar and the fill happens at the next bar's open.
+- `ctx.view.symbol_frame(symbol)` is the completed-bar history handed to this tick, bounded by `execution_params.lookback_bars` when set, else by the strategy's own `warmup_bars`; the last row is the latest completed bar and the fill happens at the next bar's open. Declare `warmup_bars` as the bars `decide()` really reads (a session strategy that looks back over Asia and London on 5m bars needs ~320, not 2): grids and walk-forward folds hand `decide()` exactly the declared window, so an under-declared strategy trades nothing in the readout's holdout.
 - `ctx.ledger.positions` (symbol → position with `side`, `size`, `avg_price`) is the book; `ctx.strategy_state` is a dict that persists across ticks for your own bookkeeping (a "taken today" flag, a pending setup).
 - Session logic (Asia, London, New York) uses the bar timestamps in UTC; keep the windows as params so they can be tuned.
 - A `CLOSE` intent (`{"action": "CLOSE", "venue", "symbol", "side": <opposite>, "size"}`) exits early; otherwise the bracket exits at the stop or the target.

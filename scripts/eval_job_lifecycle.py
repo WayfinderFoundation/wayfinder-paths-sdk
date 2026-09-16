@@ -2552,7 +2552,7 @@ class NySweepFvgStrategy:
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         self.params = {**self.default_params, **(params or {})}
-        self.warmup_bars = 2
+        self.warmup_bars = 320  # the window decide() reads; grids hand it exactly this
 
     def precompute(self, frames: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
         return {}

@@ -21,6 +21,7 @@ from wayfinder_paths.jobs.execution.optimize import is_search_space, run_optuna_
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.execution.simulator import (
     PreparedExecutionDataset,
+    expand_param_grid,
     run_execution_grid,
     simulate_execution,
     write_backtest_artifacts,
@@ -217,6 +218,17 @@ def _backtest_execution_job_locked(
                 'dimensions with {"type": ...}); pass --optimizer optuna or '
                 "provide a dict-of-lists grid"
             )
+        # Cells ride on the job's execution_params exactly like the full
+        # backtest below does; a bare cell would drop lookback/capital/leverage
+        # and every strategy knob the job pinned, so folds would evaluate a
+        # different strategy than latest.json (an empty grid is one base cell).
+        base_params = dict(job_data.get("execution_params") or {})
+        if optimizer == "optuna":
+            param_grid = {**base_params, **param_grid}
+        else:
+            param_grid = [
+                {**base_params, **cell} for cell in expand_param_grid(param_grid)
+            ]
         if optimizer == "optuna":
             result = run_optuna_search(
                 script,

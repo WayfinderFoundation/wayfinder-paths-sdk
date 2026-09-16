@@ -356,3 +356,27 @@ def test_walk_forward_kill_switch_forces_recompute(
     second = _grid_backtest(store, job_id, tmp_path)
     assert len(calls) == 2
     assert "reused" not in second["walk_forward"]
+
+
+def test_walk_forward_folds_carry_the_job_execution_params(tmp_path: Path) -> None:
+    """A holdout with an empty grid (the readout's refresh) must evaluate the
+    same strategy as latest.json: the job's execution_params ride under every
+    fold cell instead of a bare `{}` that drops lookback and capital."""
+    store, job_id = _make_bundle(tmp_path)
+    job = store.load(job_id)
+    job.execution_params = {**job.execution_params, "lookback_bars": 9}
+    store.save(job)
+
+    outcome = run_experiment(
+        job_id,
+        {},
+        walk_forward={"folds": 2, "test_bars": 50, "anchored": True},
+        store=store,
+    )
+
+    folds = outcome["backtest"]["walk_forward"]["folds"]
+    assert len(folds) == 2
+    for fold in folds:
+        assert fold["params"]["lookback_bars"] == 9
+        assert fold["params"]["symbols"] == ["BTC"]
+        assert fold["params"]["initial_capital"] == 10_000.0

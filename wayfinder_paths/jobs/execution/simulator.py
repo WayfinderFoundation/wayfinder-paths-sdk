@@ -830,6 +830,22 @@ def _effective_workers(workers: int, parallel: str) -> int:
     return max(1, min(workers, cap))
 
 
+def expand_param_grid(
+    param_grid: Mapping[str, list[Any]] | list[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Grid cells as explicit param dicts: a dict-of-lists becomes its cartesian
+    product (an empty grid is the single empty cell), a list passes through."""
+    match param_grid:
+        case list():
+            return [dict(item) for item in param_grid]
+        case _:
+            keys = list(param_grid.keys())
+            return [
+                dict(zip(keys, combo, strict=True))
+                for combo in itertools.product(*(param_grid[key] for key in keys))
+            ]
+
+
 def run_execution_grid(
     script_entrypoint: str | Path,
     dataset: PreparedExecutionDataset,
@@ -842,15 +858,7 @@ def run_execution_grid(
     top_n_artifacts: int = 10,
 ) -> ExecutionGridResult:
     check_rank_key(rank_by)
-    match param_grid:
-        case list():
-            params_list = [dict(item) for item in param_grid]
-        case _:
-            keys = list(param_grid.keys())
-            params_list = [
-                dict(zip(keys, combo, strict=True))
-                for combo in itertools.product(*(param_grid[key] for key in keys))
-            ]
+    params_list = expand_param_grid(param_grid)
     grid_id = uuid.uuid4().hex[:12]
     # Never spawn more workers than the box has cores — oversubscribing a
     # 2-vCPU Fly machine pegs it (each process also reloads pandas + a copy of
