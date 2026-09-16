@@ -32,7 +32,9 @@ Arc is not gas-sponsored. Keep native USDC for gas and do not add native and
 ERC-20 USDC balances together. Supply approvals use only the requested amount.
 No actions create leverage automatically, select a strategy, or sweep positions.
 
-Unit regressions run in the normal Adapter Tests job. Arc integration checks
-add live read-only deployment checks and fork-only execution (no mainnet sends).
-Fork checks require a dev `WAYFINDER_TEST_API_KEY` secret; missing credentials
-or unsupported Arc forks are failures, not successful empty tests.
+Mocked write-path regressions run in the normal Adapter Tests job. The Arc
+integration job adds live read-only deployment, reserve/position, discovery and
+quote checks on every check-in. It needs no API key and never sends transactions.
+Gorlami does not support Arc, so full Arc transaction execution is not covered.
+The separate existing-chain fork scenarios remain manual tests, not part of the
+Arc CI job.

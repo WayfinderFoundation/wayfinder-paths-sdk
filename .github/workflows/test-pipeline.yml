@@ -177,7 +177,8 @@ jobs:
     - name: Run adapter tests
       run: poetry run pytest wayfinder_paths/adapters/ -v --maxfail=5 -m "not local"
 
-  # Check-in checks, not a scheduled canary. Only ephemeral forks may execute.
+  # Check-in checks, not a scheduled canary. Arc has no Gorlami fork endpoint:
+  # keep this job read-only; write-path regressions run in Adapter Tests.
   arc-integration:
     name: Arc Mainnet Integration
     runs-on: ubuntu-latest
@@ -202,19 +203,8 @@ jobs:
     - run: poetry install --no-interaction
     - name: Public read-only deployment and adapter checks
       run: poetry run pytest wayfinder_paths/adapters/test_arc_live.py -q --no-cov
-    - name: Fork execution (trusted check-ins only)
-      if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-      env:
-        WAYFINDER_API_KEY: ${{ secrets.WAYFINDER_TEST_API_KEY }}
-      run: |
-        if [ -z "$WAYFINDER_API_KEY" ]; then
-          echo "::error::Configure the dev-only WAYFINDER_TEST_API_KEY secret; Arc execution is not verified."
-          exit 1
-        fi
-        poetry run pytest wayfinder_paths/adapters/test_arc_fork.py wayfinder_paths/adapters/test_existing_chains_fork.py -q --no-cov --maxfail=1
-    - name: Report fork coverage unavailable for untrusted PR
-      if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
-      run: echo 'Arc fork execution was NOT run on this external PR; no credentials were exposed.' >> "$GITHUB_STEP_SUMMARY"
+    - name: Report execution coverage boundary
+      run: echo 'Arc checks cover live read-only deployments, discovery and quotes plus mocked write-path regressions in Adapter Tests. Full Arc transaction execution is NOT verified; Gorlami does not support Arc.' >> "$GITHUB_STEP_SUMMARY"
 
   # MCP Tests
   mcp-tests:
