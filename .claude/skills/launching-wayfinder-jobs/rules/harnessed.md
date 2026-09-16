@@ -63,6 +63,10 @@ def build_strategy(params: dict[str, Any] | None = None) -> MyStrategy:
 
 When the owner describes a sequence ("level → sweep → reclaim → gap → retracement entry"), every step is its own condition in `decide`, in that order, and the entry fires on the last step, never on the one before it: a fair value gap forming is not the entry, the price coming back into that gap is. Name each step in the code (a `_sweep`, a `_reclaim`, a `_fvg`, a `_retrace` check, or a state machine with those states) so a reader can match the code to the words, and quote the owner's numbers (buffer, R multiple, one position) back in the readout. Simplifying the rule to make it trade more is a different strategy, not the owner's.
 
+## Terms of art carry definitions
+
+"Valid fair value gap", "liquidity sweep", "displacement", "reclaim" are trading terms with standard meanings; the owner is not asking for the loosest literal reading. A valid FVG is a three-bar gap left by a displacement candle and large enough to matter (a `min_gap_bps` parameter, default around 10 bps of price on 5-minute BTC; any-size gaps trade noise and a backtest of them says nothing about the idea). A sweep takes liquidity beyond the level (a wick through it), a reclaim is a close back inside. Put each definition behind a named parameter, say which reading you took in the readout, and when a definition would change the verdict, say so and offer the alternative rather than presenting the loosest reading as the owner's strategy.
+
 ## What the readout owes the owner
 
 The readout's `validation` block is the truth about validation. Any refetch of the dataset (`fetch_dataset` again, a longer window, another source) or any edit to the strategy stales the validation stamp: run `validate_job` again before `readout`, and never say validation passes unless the readout you are quoting says so. Whether a backtest exists, the window and symbols it covered, the trade count, the net return and max drawdown from `results/backtest/latest.json`, and what is missing before paper or live. Numbers come only from that report.

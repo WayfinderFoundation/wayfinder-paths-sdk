@@ -2544,6 +2544,10 @@ class NySweepFvgStrategy:
         "sweep_buffer_pct": 0.0005,
         "reward_r": 2.0,
         "max_bars_to_retrace": 24,
+        # "valid" fair value gap: a displacement-sized gap, not any 3-bar gap.
+        # On real 5m BTC any gap trades noise (13% wins); >= 10 bps of price
+        # is where the sequence starts to behave like the described setup.
+        "min_gap_bps": 10.0,
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -2666,6 +2670,10 @@ class NySweepFvgStrategy:
                         zone_low, zone_high = highs[k - 2], lows[k]
                     if not gap:
                         continue
+                    if (zone_high - zone_low) / zone_low * 1e4 < float(
+                        self.params["min_gap_bps"]
+                    ):
+                        continue
                     for m in range(k + 1, min(len(ny), k + 1 + max_wait)):
                         retraced = highs[m] >= zone_low if is_high else lows[m] <= zone_high
                         if retraced:
@@ -2692,6 +2700,10 @@ NY_SWEEP_SEQUENCE_MARKERS = (
     ("sweep", ("sweep",)),
     ("reclaim", ("reclaim", "back inside", "close back", "inside")),
     ("fair value gap", ("fvg", "fair value gap", "gap")),
+    (
+        "valid gap definition",
+        ("min_gap", "min_fvg", "gap_bps", "displacement", "gap_min", "fvg_min"),
+    ),
     ("retracement entry", ("retrace",)),
     ("stop beyond the sweep extreme", ("stop_loss", "stop")),
     ("2R target", ("take_profit", "2r", "reward")),
@@ -2777,17 +2789,17 @@ def _ny_sweep_day(day: datetime) -> list[dict[str, Any]]:
         ),  # 13:30 sweeps the London high, closes outside
         (163, 60520, 60650, 60470, 60480),  # extreme 60650
         (164, 60480, 60500, 60380, 60400),  # 13:40 close back inside: reclaim
-        (165, 60400, 60420, 60380, 60390),  # a: low 60380
-        (166, 60390, 60395, 60190, 60200),  # b: the displacement candle
+        (165, 60400, 60420, 60390, 60395),  # a: low 60380
+        (166, 60395, 60398, 60150, 60160),  # b: the displacement candle
         (
             167,
-            60200,
-            60330,
-            60250,
+            60160,
             60300,
+            60200,
+            60280,
         ),  # c: high 60330 < a.low -> bearish FVG (60330, 60380)
-        (168, 60300, 60360, 60290, 60340),  # 14:00 retrace into the gap -> entry signal
-        (169, 60340, 60350, 60150, 60180),  # fill at the next open, then the drive down
+        (168, 60280, 60340, 60270, 60320),  # 14:00 retrace into the gap -> entry signal
+        (169, 60320, 60330, 60150, 60180),  # fill at the next open, then the drive down
         (170, 60180, 60200, 59950, 59980),
         (171, 59980, 60000, 59750, 59780),
         (172, 59780, 59800, 59550, 59600),  # through the 2R target (~59660)
