@@ -6,6 +6,7 @@ from typing import Any
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.utils.brap import normalize_swap_token
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
+from wayfinder_paths.mcp.chain_context import with_chain_context
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
@@ -103,6 +104,8 @@ async def onchain_quote_swap(
     Returns:
         `{preview, quote: {best_quote, quote_count, providers}, suggested_swap_request, ...}`.
         `preview` flags `⚠ RECIPIENT DIFFERS FROM SENDER` when applicable.
+        Optional `chain_context` explains known same-asset interface mappings;
+        these do not require wrapping or substitute a different asset.
     """
     ring = await load_wallet_ring(wallet_label)
     if not ring:
@@ -277,4 +280,4 @@ async def onchain_quote_swap(
         # Keep the legacy compact calldata string for existing consumers, but
         # expose the complete quote for scripts without dropping fees or SVM data.
         result["execution_quote"] = best_quote
-    return ok(result)
+    return ok(with_chain_context(result, from_chain_id, to_chain_id))

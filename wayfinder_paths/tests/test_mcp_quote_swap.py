@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from wayfinder_paths.core.constants import ZERO_ADDRESS
+from wayfinder_paths.core.constants.chains import ARC_USDC_ADDRESS, CHAIN_ID_ARC
 from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
 
 EVM_ADDRESS = "0x000000000000000000000000000000000000dEaD"
@@ -90,6 +92,7 @@ async def test_quote_swap_returns_compact_best_quote_by_default():
 
     assert out["ok"] is True
     res = out["result"]
+    assert "chain_context" not in res
     assert "raw" not in res["quote"]
     assert "execution_quote" not in res
 
@@ -103,6 +106,89 @@ async def test_quote_swap_returns_compact_best_quote_by_default():
     assert best["safety_warnings"][0]["code"] == "output_market_data_unavailable"
     assert best["output_validation"]["identity"]["suspicious"] is False
     assert fake_brap.get_quote.await_args.kwargs["allow_unverified_output"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "from_chain,to_chain,source_address,source_decimals",
+    [
+        (CHAIN_ID_ARC, CHAIN_ID_ARC, ZERO_ADDRESS, 18),
+        (CHAIN_ID_ARC, CHAIN_ID_ARC, ARC_USDC_ADDRESS, 6),
+        (CHAIN_ID_ARC, 8453, ZERO_ADDRESS, 18),
+        (8453, CHAIN_ID_ARC, ZERO_ADDRESS, 18),
+        (8453, 8453, ARC_USDC_ADDRESS, 6),
+    ],
+)
+async def test_quote_arc_context_preserves_amounts_and_execution_request(
+    from_chain: int, to_chain: int, source_address: str, source_decimals: int
+) -> None:
+    tolly = "0xbc43ce8dec648ea298c4275559b81d6261c90b67"
+    from_token = {
+        "token_id": f"source_{source_address}",
+        "chain_id": from_chain,
+        "address": source_address,
+        "decimals": source_decimals,
+        "symbol": "USDC" if from_chain == CHAIN_ID_ARC else "ETH",
+    }
+    to_token = {
+        "token_id": f"destination_{tolly}",
+        "chain_id": to_chain,
+        "address": tolly,
+        "decimals": 18,
+        "symbol": "TOLLY",
+    }
+    with (
+        patch("wayfinder_paths.mcp.utils._report_tool_metric"),
+        patch(
+            "wayfinder_paths.mcp.tools.quotes.load_wallet_ring",
+            new=AsyncMock(return_value=[{"address": EVM_ADDRESS}]),
+        ) as wallet,
+        patch(
+            "wayfinder_paths.mcp.tools.quotes.TokenResolver.resolve_token_meta",
+            new=AsyncMock(side_effect=[from_token, to_token]),
+        ) as resolve,
+        patch(
+            "wayfinder_paths.mcp.tools.quotes.BRAP_CLIENT.get_quote",
+            new=AsyncMock(return_value={"best_quote": {"provider": "lifi"}}),
+        ) as quote,
+    ):
+        response = await onchain_quote_swap(
+            wallet_label="main",
+            from_token="source",
+            to_token="destination",
+            amount="0.25",
+        )
+
+    assert response["ok"]
+    result = response["result"]
+    wallet.assert_awaited_once_with("main")
+    assert resolve.await_count == 2
+    quote.assert_awaited_once()
+    normalized = from_chain == CHAIN_ID_ARC and source_address == ZERO_ADDRESS
+    decimals = 6 if normalized else source_decimals
+    assert quote.await_args.kwargs["from_amount"] == str(10**decimals // 4)
+    assert quote.await_args.kwargs["from_token"] == (
+        ARC_USDC_ADDRESS if normalized else source_address
+    )
+    assert result["suggested_swap_request"] == {
+        "wallet_label": "main",
+        "from_token": f"arc_{ARC_USDC_ADDRESS}"
+        if normalized
+        else from_token["token_id"],
+        "to_token": to_token["token_id"],
+        "amount": "0.25",
+        "slippage_bps": 50,
+        "recipient": EVM_ADDRESS,
+        "allow_unverified_output": False,
+    }
+    assert from_token["decimals"] == source_decimals
+    if CHAIN_ID_ARC in (from_chain, to_chain):
+        context = result["chain_context"]
+        assert context["chain_id"] == CHAIN_ID_ARC
+        assert context["usdc"]["shared_balance"] is True
+        assert context["usdc"]["wrapping_required"] is False
+    else:
+        assert "chain_context" not in result
 
 
 @pytest.mark.asyncio
