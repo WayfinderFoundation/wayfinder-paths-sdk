@@ -4,7 +4,7 @@ from typing import Any
 
 from eth_utils import to_checksum_address
 
-from wayfinder_paths.core.constants.chains import ARC_USDC_ADDRESS, CHAIN_ID_ARC_TESTNET
+from wayfinder_paths.core.constants.chains import ARC_USDC_ADDRESS, CHAIN_ID_ARC
 from wayfinder_paths.core.utils.tokens import is_native_token
 from wayfinder_paths.core.utils.web3 import get_transaction_chain_id
 
@@ -12,13 +12,15 @@ from wayfinder_paths.core.utils.web3 import get_transaction_chain_id
 def normalize_swap_token(token: dict[str, Any]) -> dict[str, Any]:
     """Use Arc's ERC-20 USDC interface for swaps, without changing gas metadata."""
     chain_id = token.get("chain_id") or (token.get("chain") or {}).get("id")
-    if chain_id != CHAIN_ID_ARC_TESTNET or not is_native_token(token.get("address")):
+    if chain_id != CHAIN_ID_ARC or not is_native_token(token.get("address")):
         return token
     return {
         **token,
         "address": ARC_USDC_ADDRESS,
         "decimals": 6,
-        "token_id": f"arc-testnet_{ARC_USDC_ADDRESS}",
+        # The original DB id described native (18-decimal) USDC, not this interface.
+        "id": f"arc_{ARC_USDC_ADDRESS}",
+        "token_id": f"arc_{ARC_USDC_ADDRESS}",
     }
 
 

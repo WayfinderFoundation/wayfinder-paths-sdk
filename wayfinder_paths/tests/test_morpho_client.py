@@ -6,6 +6,26 @@ import pytest
 from wayfinder_paths.core.clients.MorphoClient import MorphoClient
 
 
+@pytest.mark.asyncio
+async def test_core_discovery_does_not_require_a_public_allocator():
+    # Arc's live morphoBlues row exists without a publicAllocators row.
+    core = "0x34CD04070dD72b14E241112F6d83812Df5Af7fCD"
+    payload = {
+        "morphoBlues": {
+            "items": [{"address": core, "chain": {"id": 5042, "network": "arc"}}]
+        },
+        "publicAllocators": {"items": []},
+    }
+    client = MorphoClient()
+    with patch.object(client, "_post", AsyncMock(return_value=payload)) as post:
+        assert await client.get_morpho_address(chain_id=5042) == core
+        assert (await client.get_morpho_by_chain())[5042] == {
+            "network": "arc",
+            "morpho": core,
+        }
+    assert "morphoBlues" in post.await_args.kwargs["query"]
+
+
 def _http_400(body: dict) -> MagicMock:
     """A mocked httpx response that raises HTTPStatusError(400) on raise_for_status."""
     resp = MagicMock()

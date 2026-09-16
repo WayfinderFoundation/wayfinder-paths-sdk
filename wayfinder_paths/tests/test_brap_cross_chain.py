@@ -8,7 +8,7 @@ import pytest
 
 from wayfinder_paths.adapters.brap_adapter.adapter import BRAPAdapter
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
-from wayfinder_paths.core.constants.chains import ARC_USDC_ADDRESS, CHAIN_ID_ARC_TESTNET
+from wayfinder_paths.core.constants.chains import ARC_USDC_ADDRESS, CHAIN_ID_ARC
 from wayfinder_paths.mcp.tools.execute import onchain_swap
 from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
 
@@ -105,7 +105,7 @@ async def test_token_id_swap_passes_recipient_through_adapter_to_client() -> Non
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("chain_id", [4663, CHAIN_ID_ARC_TESTNET])
+@pytest.mark.parametrize("chain_id", [4663, CHAIN_ID_ARC])
 @pytest.mark.parametrize("value", [RELAYER_FEE, str(RELAYER_FEE), hex(RELAYER_FEE)])
 async def test_mcp_execution_quote_round_trips_router_fee_and_approval(
     value: int | str,
@@ -114,7 +114,7 @@ async def test_mcp_execution_quote_round_trips_router_fee_and_approval(
     from_token = {
         "token_id": "from",
         "symbol": "PONS",
-        "address": "0x" + "0" * 40 if chain_id == CHAIN_ID_ARC_TESTNET else TOKEN,
+        "address": "0x" + "0" * 40 if chain_id == CHAIN_ID_ARC else TOKEN,
         "chain_id": chain_id,
         "chain": {"id": chain_id},
         "decimals": 18,
@@ -122,11 +122,9 @@ async def test_mcp_execution_quote_round_trips_router_fee_and_approval(
     to_token = {
         "token_id": "to",
         "symbol": "STONK",
-        "address": TOKEN if chain_id == CHAIN_ID_ARC_TESTNET else SVM,
-        "chain_id": CHAIN_ID_ARC_TESTNET if chain_id == CHAIN_ID_ARC_TESTNET else 900,
-        "chain": {
-            "id": CHAIN_ID_ARC_TESTNET if chain_id == CHAIN_ID_ARC_TESTNET else 900
-        },
+        "address": TOKEN if chain_id == CHAIN_ID_ARC else SVM,
+        "chain_id": CHAIN_ID_ARC if chain_id == CHAIN_ID_ARC else 900,
+        "chain": {"id": CHAIN_ID_ARC if chain_id == CHAIN_ID_ARC else 900},
         "decimals": 6,
     }
     calldata = {"to": ROUTER, "data": "0x1234", "value": value, "chainId": chain_id}
@@ -186,7 +184,7 @@ async def test_mcp_execution_quote_round_trips_router_fee_and_approval(
     assert tx["chainId"] == chain_id
     assert approve.await_args.kwargs["spender"] == SPENDER
     assert approve.await_args.kwargs["amount"] == 1000
-    if chain_id == CHAIN_ID_ARC_TESTNET:
+    if chain_id == CHAIN_ID_ARC:
         assert request.await_args.kwargs["from_token"] == ARC_USDC_ADDRESS
         assert request.await_args.kwargs["from_amount"] == "1000000"
         assert approve.await_args.kwargs["token_address"] == ARC_USDC_ADDRESS
@@ -265,9 +263,9 @@ async def test_missing_destination_stops_before_balance_quote_or_broadcast() -> 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("chain_id", [4663, CHAIN_ID_ARC_TESTNET])
+@pytest.mark.parametrize("chain_id", [4663, CHAIN_ID_ARC])
 async def test_execution_keeps_recipient_and_native_fee(chain_id) -> None:
-    arc = chain_id == CHAIN_ID_ARC_TESTNET
+    arc = chain_id == CHAIN_ID_ARC
     recipient = EVM if arc else SVM
     quote = {
         "provider": "lifi",

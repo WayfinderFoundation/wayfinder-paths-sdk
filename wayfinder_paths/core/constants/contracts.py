@@ -114,7 +114,12 @@ ROBINHOOD_WETH = to_checksum_address("0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73
 # INDEX/ETH PoolKey → on-chain poolId match and a Blockscout-verified router.
 # Mainnet/Base/Arbitrum are Uniswap's official canonical v4 deployments
 # (docs.uniswap.org), which is why their code sizes match across chains.
+UNISWAP_V4_POSITION_MANAGER: dict[int, str] = {
+    5042: to_checksum_address("0x6049c9a0e26405C0985f9E3685C87d0aE917f82B"),
+}
+
 UNISWAP_V4_POOL_MANAGER: dict[int, str] = {
+    5042: to_checksum_address("0x8366a39CC670B4001A1121B8F6A443A643e40951"),
     1: to_checksum_address("0x000000000004444c5dc75cB358380D2e3dE08A90"),
     8453: to_checksum_address("0x498581fF718922c3f8e6A244956aF099B2652b2b"),
     42161: to_checksum_address("0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32"),
@@ -122,6 +127,7 @@ UNISWAP_V4_POOL_MANAGER: dict[int, str] = {
 }
 
 UNISWAP_V4_UNIVERSAL_ROUTER: dict[int, str] = {
+    5042: to_checksum_address("0x4fcA4a51Ab4F23A7447b3284fBd7D73289A89Fb1"),
     1: to_checksum_address("0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af"),
     8453: to_checksum_address("0x6fF5693b99212Da76ad316178A184AB56D299b43"),
     42161: to_checksum_address("0xA51afAFe0263b40EdaEf0Df8781eA9aa03E381a3"),
@@ -129,6 +135,7 @@ UNISWAP_V4_UNIVERSAL_ROUTER: dict[int, str] = {
 }
 
 UNISWAP_V4_QUOTER: dict[int, str] = {
+    5042: to_checksum_address("0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94"),
     1: to_checksum_address("0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203"),
     8453: to_checksum_address("0x0d5e0F971ED27FBfF6c2837bf31316121532048D"),
     42161: to_checksum_address("0x3972c00f7Ed4885e145823eB7C655375D275A1c5"),
@@ -136,6 +143,7 @@ UNISWAP_V4_QUOTER: dict[int, str] = {
 }
 
 UNISWAP_V4_STATE_VIEW: dict[int, str] = {
+    5042: to_checksum_address("0xF3334192D15450CdD385c8B70e03f9A6bD9E673b"),
     1: to_checksum_address("0x7fFE42C4a5DEeA5b0feC41C94C136Cf115597227"),
     8453: to_checksum_address("0xA3c0c9b65baD0b08107Aa264b0f3dB444b867A71"),
     42161: to_checksum_address("0x76Fd297e2D437cd7f76d50F01Afe6160f86e9990"),

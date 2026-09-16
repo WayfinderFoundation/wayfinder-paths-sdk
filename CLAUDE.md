@@ -77,6 +77,7 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | --------------------- | -------------------------------- |
 | Moonwell              | `/using-moonwell-adapter`        |
 | Aave V3               | `/using-aave-v3-adapter`         |
+| Aave V4 (Arc)         | `wayfinder_paths/adapters/aave_v4_adapter/README.md` |
 | Morpho                | `/using-morpho-adapter`          |
 | Pendle                | `/using-pendle-adapter`          |
 | ether.fi (eETH/weETH) | `/using-etherfi-adapter`         |
@@ -87,7 +88,7 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | BRAP (swaps)          | `/using-brap-adapter`            |
 | Polymarket            | `/using-polymarket-adapter`      |
 | CCXT (CEX)            | `/using-ccxt-adapter`            |
-| Uniswap (V3)          | `/using-uniswap-adapter`         |
+| Uniswap (V3/V4)       | `/using-uniswap-adapter`         |
 | ProjectX (V3 fork)    | `/using-projectx-adapter`        |
 | Alpha Lab             | `/using-alpha-lab`               |
 | Delta Lab             | `/using-delta-lab`               |

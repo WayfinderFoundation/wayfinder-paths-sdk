@@ -5,13 +5,19 @@ from typing import Any
 from eth_utils import to_checksum_address
 
 from wayfinder_paths.adapters.uniswap_adapter.base import UniswapV3BaseAdapter
-from wayfinder_paths.adapters.uniswap_adapter.v4 import UniswapV4SwapMixin
-from wayfinder_paths.core.constants.contracts import UNISWAP_V3_FACTORY, UNISWAP_V3_NPM
+from wayfinder_paths.adapters.uniswap_adapter.v4_positions import (
+    UniswapV4PositionsMixin,
+)
+from wayfinder_paths.core.constants.contracts import (
+    UNISWAP_V3_FACTORY,
+    UNISWAP_V3_NPM,
+    UNISWAP_V4_POOL_MANAGER,
+)
 
-SUPPORTED_CHAIN_IDS = set(UNISWAP_V3_NPM.keys())
+SUPPORTED_CHAIN_IDS = set(UNISWAP_V3_NPM) | set(UNISWAP_V4_POOL_MANAGER)
 
 
-class UniswapAdapter(UniswapV4SwapMixin, UniswapV3BaseAdapter):
+class UniswapAdapter(UniswapV4PositionsMixin, UniswapV3BaseAdapter):
     adapter_type = "UNISWAP"
 
     def __init__(
@@ -24,7 +30,7 @@ class UniswapAdapter(UniswapV4SwapMixin, UniswapV3BaseAdapter):
         chain_id = int(config.get("chain_id", 8453))
         if chain_id not in SUPPORTED_CHAIN_IDS:
             raise ValueError(
-                f"Unsupported chain_id {chain_id} for Uniswap V3. "
+                f"Unsupported chain_id {chain_id} for Uniswap. "
                 f"Supported: {sorted(SUPPORTED_CHAIN_IDS)}"
             )
 
@@ -36,8 +42,8 @@ class UniswapAdapter(UniswapV4SwapMixin, UniswapV3BaseAdapter):
             "uniswap_adapter",
             config,
             chain_id=chain_id,
-            npm_address=UNISWAP_V3_NPM[chain_id],
-            factory_address=UNISWAP_V3_FACTORY[chain_id],
+            npm_address=UNISWAP_V3_NPM.get(chain_id),
+            factory_address=UNISWAP_V3_FACTORY.get(chain_id),
             owner=owner,
             sign_callback=sign_callback,
         )

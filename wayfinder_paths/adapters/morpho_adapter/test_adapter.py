@@ -10,6 +10,23 @@ from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.morpho_constants import MERKL_DISTRIBUTOR_ADDRESS
 
 
+@pytest.mark.asyncio
+async def test_arc_market_core_is_available_but_allocator_is_explicitly_unsupported():
+    from wayfinder_paths.adapters.morpho_adapter import MorphoAdapter
+    from wayfinder_paths.core.constants.morpho_contracts import MORPHO_BY_CHAIN
+
+    adapter = MorphoAdapter({})
+    assert (
+        await adapter._morpho_address(chain_id=5042) == MORPHO_BY_CHAIN[5042]["morpho"]
+    )
+    with patch(
+        "wayfinder_paths.adapters.morpho_adapter.adapter.MORPHO_CLIENT.get_morpho_by_chain",
+        AsyncMock(return_value={5042: MORPHO_BY_CHAIN[5042]}),
+    ):
+        with pytest.raises(ValueError, match="[Aa]llocator"):
+            await adapter._public_allocator_address(chain_id=5042)
+
+
 @pytest.fixture
 def adapter():
     return MorphoAdapter(
@@ -605,15 +622,15 @@ async def test_vault_deposit_approves_asset_and_calls_deposit(adapter):
     with (
         patch.object(adapter, "_vault_asset", new=AsyncMock(return_value=asset)),
         patch(
-            "wayfinder_paths.adapters.morpho_adapter.adapter.ensure_allowance",
+            "wayfinder_paths.core.adapters.erc4626.ensure_allowance",
             new=AsyncMock(return_value=(True, None)),
         ) as mock_allow,
         patch(
-            "wayfinder_paths.adapters.morpho_adapter.adapter.encode_call",
+            "wayfinder_paths.core.adapters.erc4626.encode_call",
             new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
         ) as mock_encode,
         patch(
-            "wayfinder_paths.adapters.morpho_adapter.adapter.send_transaction",
+            "wayfinder_paths.core.adapters.erc4626.send_transaction",
             new=AsyncMock(return_value="0xabc"),
         ),
     ):

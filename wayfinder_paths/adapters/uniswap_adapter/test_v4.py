@@ -142,7 +142,7 @@ def test_all_v4_address_maps_agree_on_chains():
     )
 
     chains = set(UNISWAP_V4_POOL_MANAGER)
-    assert chains == {1, 8453, 42161, 4663}
+    assert chains == {1, 8453, 42161, 4663, 5042}
     assert set(UNISWAP_V4_UNIVERSAL_ROUTER) == chains
     assert set(UNISWAP_V4_QUOTER) == chains
     assert set(UNISWAP_V4_STATE_VIEW) == chains
