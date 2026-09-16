@@ -441,3 +441,48 @@ def test_stop_close_payload_preserves_trigger_and_slippage_evidence() -> None:
     assert payload["stop_slippage_bps"] == 1_000.0
     assert payload["effective_leverage"] == 3
     assert payload["venue_stop_slippage_tolerance_bps"] == 1_000
+
+
+def test_bracket_take_profit_is_not_labelled_a_stop() -> None:
+    # A backtest bracket close carries the engine's exit type, not a strategy
+    # reason; a take-profit used to be aggregated under bracket_stop.
+    bars = _bars(
+        [
+            (100, 100.5, 99.5, 100.0),
+            (100, 101, 99, 100.5),
+            (100.5, 101, 99, 100.0),
+            (100, 101, 99, 100.2),
+        ]
+    )
+    fills = [
+        {
+            "symbol": "LIT",
+            "side": "buy",
+            "reduce_only": False,
+            "timestamp": _ts(0).isoformat(),
+            "avg_price": 100.0,
+        },
+        {
+            "symbol": "LIT",
+            "side": "sell",
+            "reduce_only": True,
+            "timestamp": _ts(2).isoformat(),
+            "avg_price": 101.0,
+            "raw": {
+                "intent_action": "TAKE_PROFIT",
+                "intent_metadata": {
+                    "bracket": {"hit": True, "exit_type": "TAKE_PROFIT"}
+                },
+            },
+        },
+    ]
+    trades = [
+        {
+            "symbol": "LIT",
+            "side": "sell",
+            "price": 101.0,
+            "closed_at": _ts(2).isoformat(),
+        }
+    ]
+    rows = forensics_for_closed_trades({"LIT": bars}, trades, fills, post_bars=(1,))
+    assert rows[0]["exit_reason"] == "bracket_take_profit"

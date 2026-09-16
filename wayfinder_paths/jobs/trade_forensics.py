@@ -29,6 +29,7 @@ STOP_GRID = (0.02, 0.025, 0.03, 0.035)
 # The engine's bracket fills carry no intent metadata — a close without an
 # exit_reason IS the protective stop (strategy closes always label themselves).
 BRACKET_EXIT_REASON = "bracket_stop"
+BRACKET_TAKE_PROFIT_REASON = "bracket_take_profit"
 
 
 def _bps(value: float, entry_price: float) -> float:
@@ -81,10 +82,20 @@ def _closing_fill_reason(
         if ts == exit_ts:
             # The harnessed driver nests intent metadata under `raw`; the
             # freestyle runtime writes it at the top level.
-            meta = (fill.get("raw") or {}).get("intent_metadata") or (
-                fill.get("intent_metadata") or {}
-            )
-            return meta.get("exit_reason") or None
+            raw = fill.get("raw") or {}
+            meta = raw.get("intent_metadata") or (fill.get("intent_metadata") or {})
+            if meta.get("exit_reason"):
+                return str(meta["exit_reason"])
+            # A bracket close carries the engine's exit type instead of a
+            # strategy reason; a take-profit is not a stop.
+            exit_type = str(
+                raw.get("intent_action")
+                or (meta.get("bracket") or {}).get("exit_type")
+                or ""
+            ).upper()
+            if exit_type == "TAKE_PROFIT":
+                return BRACKET_TAKE_PROFIT_REASON
+            return None
     return None
 
 
