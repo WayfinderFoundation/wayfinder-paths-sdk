@@ -10,6 +10,7 @@ import httpx
 import pytest
 from web3 import Web3
 
+import wayfinder_paths.core.utils.web3 as web3_utils
 from wayfinder_paths.adapters.pendle_adapter.adapter import (
     PendleAdapter,
     pendle_api_get,
@@ -924,6 +925,65 @@ class TestPendleAdapter:
         assert best["ok"] is True
         assert best["selectedMarket"]["marketAddress"] == "0xM2"
         assert best["quote"]["effectiveApy"] == 0.09
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("arbitrum_pool_size", [0, 1])
+    async def test_full_user_state_reports_unconfigured_chain_and_continues(
+        self, arbitrum_pool_size: int
+    ) -> None:
+        adapter = PendleAdapter(config={})
+        adapter.fetch_markets = AsyncMock(
+            return_value={
+                "markets": [
+                    {
+                        "name": "PT-Example",
+                        "address": "0x" + "1" * 40,
+                        "pt": "0x" + "2" * 40,
+                    }
+                ]
+            }
+        )
+        # PT balance/decimals, then LP balance/decimals.
+        adapter._multicall_uint256_chunked = AsyncMock(return_value=[100, 18, 0, 18])
+        responses = [
+            httpx.Response(
+                200,
+                json={"size": size},
+                request=httpx.Request("GET", "https://example.invalid/count/"),
+            )
+            for size in (0, arbitrum_pool_size)
+        ]
+        with (
+            patch(
+                "wayfinder_paths.adapters.pendle_adapter.adapter.PENDLE_CHAIN_IDS",
+                {"sonic": 146, "arbitrum": 42161},
+            ),
+            patch.object(web3_utils, "_pool_size_cache", {}),
+            patch.object(web3_utils, "get_rpc_urls", return_value={}),
+            patch.object(web3_utils, "_wayfinder_auth_headers", return_value={}),
+            patch.object(web3_utils.httpx, "get", side_effect=responses) as probe,
+            patch.object(
+                web3_utils, "_get_web3", wraps=web3_utils._get_web3
+            ) as provider,
+        ):
+            ok, state = await adapter.get_full_user_state(account="0x" + "a" * 40)
+
+        assert probe.call_count == 2
+        assert provider.call_count == arbitrum_pool_size
+        assert adapter._multicall_uint256_chunked.await_count == arbitrum_pool_size
+        sonic_error = "chain 146: No RPC endpoints configured for chain 146"
+        if arbitrum_pool_size:
+            assert ok is True
+            assert isinstance(state, dict)
+            assert state["chains"] == [42161]
+            assert state["errors"] == [sonic_error]
+            assert len(state["positions"]) == 1
+            assert state["positions"][0]["balances"]["pt"]["raw"] == 100
+        else:
+            assert ok is False
+            assert state == (
+                f"{sonic_error}; chain 42161: No RPC endpoints configured for chain 42161"
+            )
 
     @pytest.mark.asyncio
     async def test_get_full_user_state_onchain_multicall_filters_zeros(

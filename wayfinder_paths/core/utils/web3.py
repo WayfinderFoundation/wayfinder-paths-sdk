@@ -79,24 +79,29 @@ def _wayfinder_auth_headers() -> dict[str, str]:
 _pool_size_cache: dict[int, int] = {}
 
 
-def _fetch_pool_size(chain_id: int) -> int:
+def _fetch_pool_size(chain_id: int) -> int | None:
     """Probes the proxy for its fan-out width; positive results cached per process.
 
     Synchronous, so the first call per chain blocks the asyncio loop for one
     HTTPS round-trip (~50-200ms). Failures are NOT cached so a transient
     network blip on the very first call doesn't pin the SDK to single-URL
-    fallback for the rest of the process lifetime.
+    fallback for the rest of the process lifetime. Zero means the proxy has no
+    RPCs configured; None means discovery failed. Neither is cached.
     """
     if (cached := _pool_size_cache.get(chain_id)) is not None:
         return cached
     url = f"{get_api_base_url()}/blockchain/rpc/{chain_id}/count/"
     try:
         resp = httpx.get(url, headers=_wayfinder_auth_headers(), timeout=5)
+        resp.raise_for_status()
         size = int(resp.json()["size"])
-    except (httpx.HTTPError, ValueError, KeyError) as exc:
+        if size < 0:
+            raise ValueError("RPC pool size must be non-negative")
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
         logger.warning("RPC pool-size probe failed for chain %s: %s", chain_id, exc)
-        return 0
-    _pool_size_cache[chain_id] = size
+        return None
+    if size > 0:
+        _pool_size_cache[chain_id] = size
     return size
 
 
@@ -109,11 +114,13 @@ def _get_rpcs_for_chain_id(chain_id: int) -> list:
     if rpcs is None:
         base = get_api_base_url()
         n = _fetch_pool_size(chain_id)
-        if n:
-            rpcs = [f"{base}/blockchain/rpc/{chain_id}/{i}/" for i in range(n)]
-        else:
+        if n is None:
             rpcs = [f"{base}/blockchain/rpc/{chain_id}/"]
+        else:
+            rpcs = [f"{base}/blockchain/rpc/{chain_id}/{i}/" for i in range(n)]
 
+    if not rpcs:
+        raise ValueError(f"No RPC endpoints configured for chain {chain_id}")
     if isinstance(rpcs, str):
         return [rpcs]
     return rpcs
