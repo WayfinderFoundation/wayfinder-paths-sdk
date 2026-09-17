@@ -6,6 +6,7 @@ import httpx
 
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID
+from wayfinder_paths.mcp.chain_context import with_chain_context
 from wayfinder_paths.mcp.utils import catch_errors, err, ok
 
 ALL_CHAINS = ("all", "_")
@@ -42,14 +43,17 @@ async def onchain_resolve_token(query: str) -> dict[str, Any]:
 
 @catch_errors
 async def onchain_get_gas_token(chain_code: str) -> dict[str, Any]:
-    """Return the native gas token for a chain, e.g. ETH for base, POL for polygon.
+    """Look up a chain's identity and native gas token; examples are not a support list.
+
+    Returned chain_context, when present, explains chain-specific asset semantics.
+    A successful lookup does not guarantee an executable route or RPC availability.
 
     Args:
-        chain_code: ethereum, base, arbitrum, polygon, bsc, avalanche, plasma,
-            hyperevm, or solana.
+        chain_code: Requested chain code, e.g. base, arc, or solana.
     """
     token = await TOKEN_CLIENT.get_gas_token(chain_code)
-    return ok(token)
+    chain = token.get("chain")
+    return ok(with_chain_context(token, chain["id"] if chain else None))
 
 
 @catch_errors
@@ -64,12 +68,15 @@ async def onchain_get_settlement_assets(chain_code: str) -> dict[str, Any]:
         chain_code: Chain code such as hyperevm, robinhood, base, or solana.
     """
     result = await TOKEN_CLIENT.get_canonical_assets(chain_code)
-    return ok(result)
+    return ok(with_chain_context(result, CHAIN_CODE_TO_ID.get(chain_code)))
 
 
 @catch_errors
 async def onchain_fuzzy_search_tokens(chain_code: str, query: str) -> dict[str, Any]:
     """Fuzzy-search tokens on a chain by symbol, name, or address — use when an exact id isn't known.
+
+    If the user names a chain, search that chain, not all chains. This searches
+    tokens, not blockchain names. A match score is not verification or safety.
 
     Args:
         chain_code: e.g. base or solana. Pass all or _ to search across every chain.

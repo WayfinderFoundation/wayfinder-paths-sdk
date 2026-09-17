@@ -9,4 +9,13 @@ capabilities:
   - "uniswap.positions.list"
   - "uniswap.fees.uncollected"
   - "uniswap.pool.get"
+  - "uniswap.v4.swap"
+  - "uniswap.v4.pool.get"
+  - "uniswap.v4.position.get"
+  - "uniswap.v4.positions.list"
+  - "uniswap.v4.position.mint"
+  - "uniswap.v4.liquidity.increase"
+  - "uniswap.v4.liquidity.decrease"
+  - "uniswap.v4.fees.collect"
+  - "uniswap.v4.position.close"
 dependencies: []

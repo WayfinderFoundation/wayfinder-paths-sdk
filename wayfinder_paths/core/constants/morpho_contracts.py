@@ -7,6 +7,10 @@ from eth_utils import to_checksum_address
 #
 # Note: networks are included for convenience/debugging only.
 MORPHO_BY_CHAIN: dict[int, dict[str, str]] = {
+    5042: {
+        "network": "arc",
+        "morpho": to_checksum_address("0x34CD04070dD72b14E241112F6d83812Df5Af7fCD"),
+    },
     1: {
         "network": "ethereum",
         "morpho": to_checksum_address("0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb"),

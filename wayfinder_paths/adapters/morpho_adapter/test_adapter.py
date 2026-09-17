@@ -10,6 +10,23 @@ from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.morpho_constants import MERKL_DISTRIBUTOR_ADDRESS
 
 
+@pytest.mark.asyncio
+async def test_arc_market_core_is_available_but_allocator_is_explicitly_unsupported():
+    from wayfinder_paths.adapters.morpho_adapter import MorphoAdapter
+    from wayfinder_paths.core.constants.morpho_contracts import MORPHO_BY_CHAIN
+
+    adapter = MorphoAdapter({})
+    assert (
+        await adapter._morpho_address(chain_id=5042) == MORPHO_BY_CHAIN[5042]["morpho"]
+    )
+    with patch(
+        "wayfinder_paths.adapters.morpho_adapter.adapter.MORPHO_CLIENT.get_morpho_by_chain",
+        AsyncMock(return_value={5042: MORPHO_BY_CHAIN[5042]}),
+    ):
+        with pytest.raises(ValueError, match="[Aa]llocator"):
+            await adapter._public_allocator_address(chain_id=5042)
+
+
 @pytest.fixture
 def adapter():
     return MorphoAdapter(
@@ -598,41 +615,60 @@ async def test_claim_rewards_defaults_to_merkl_only(adapter):
 
 
 @pytest.mark.asyncio
-async def test_vault_deposit_approves_asset_and_calls_deposit(adapter):
+@pytest.mark.parametrize("chain_id", [1, CHAIN_ID_BASE])
+@pytest.mark.parametrize("action", ["deposit", "mint", "withdraw", "redeem"])
+async def test_vault_actions_preserve_chain_and_raw_units(
+    adapter: MorphoAdapter, chain_id: int, action: str
+) -> None:
     vault = "0x1111111111111111111111111111111111111111"
     asset = "0x2222222222222222222222222222222222222222"
+    entering = action in {"deposit", "mint"}
+    unit = "assets" if action in {"deposit", "withdraw"} else "shares"
 
     with (
         patch.object(adapter, "_vault_asset", new=AsyncMock(return_value=asset)),
         patch(
-            "wayfinder_paths.adapters.morpho_adapter.adapter.ensure_allowance",
+            "wayfinder_paths.core.adapters.erc4626.ensure_allowance",
             new=AsyncMock(return_value=(True, None)),
         ) as mock_allow,
         patch(
-            "wayfinder_paths.adapters.morpho_adapter.adapter.encode_call",
-            new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
+            "wayfinder_paths.core.adapters.erc4626.encode_call",
+            new=AsyncMock(return_value={"chainId": chain_id}),
         ) as mock_encode,
         patch(
-            "wayfinder_paths.adapters.morpho_adapter.adapter.send_transaction",
+            "wayfinder_paths.core.adapters.erc4626.send_transaction",
             new=AsyncMock(return_value="0xabc"),
-        ),
+        ) as mock_send,
     ):
-        ok, tx = await adapter.vault_deposit(
-            chain_id=CHAIN_ID_BASE,
+        ok, tx = await getattr(adapter, f"vault_{action}")(
+            chain_id=chain_id,
             vault_address=vault,
-            assets=123,
+            **{unit: 123},
         )
 
     assert ok is True
     assert tx == "0xabc"
 
-    _args, allow_kwargs = mock_allow.await_args
-    assert allow_kwargs["token_address"] == asset
-    assert allow_kwargs["spender"].lower() == vault.lower()
+    if entering:
+        mock_allow.assert_awaited_once()
+        assert mock_allow.await_args is not None
+        allow_kwargs = mock_allow.await_args.kwargs
+        assert allow_kwargs["token_address"] == asset
+        assert allow_kwargs["spender"].lower() == vault.lower()
+        assert allow_kwargs["chain_id"] == chain_id
+        assert allow_kwargs["amount"] == (123 if action == "deposit" else MAX_UINT256)
+    else:
+        mock_allow.assert_not_awaited()
 
+    assert mock_encode.await_args is not None
     _args, encode_kwargs = mock_encode.await_args
-    assert encode_kwargs["fn_name"] == "deposit"
-    assert encode_kwargs["args"][0] == 123
+    assert encode_kwargs["fn_name"] == action
+    assert encode_kwargs["chain_id"] == chain_id
+    assert encode_kwargs["target"].lower() == vault.lower()
+    assert encode_kwargs["args"] == [123, adapter.wallet_address] + (
+        [] if entering else [adapter.wallet_address]
+    )
+    mock_send.assert_awaited_once_with({"chainId": chain_id}, adapter.sign_callback)
 
 
 @pytest.mark.asyncio

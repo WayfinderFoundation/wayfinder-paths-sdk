@@ -177,6 +177,35 @@ jobs:
     - name: Run adapter tests
       run: poetry run pytest wayfinder_paths/adapters/ -v --maxfail=5 -m "not local"
 
+  # Check-in checks, not a scheduled canary. Arc has no Gorlami fork endpoint:
+  # keep this job read-only; write-path regressions run in Adapter Tests.
+  arc-integration:
+    name: Arc Mainnet Integration
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    - uses: snok/install-poetry@v1
+      with:
+        version: ${{ env.POETRY_VERSION }}
+        virtualenvs-create: true
+        virtualenvs-in-project: true
+    - uses: actions/cache@v3
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/poetry.lock') }}
+    - run: poetry install --no-interaction
+    - name: Public read-only deployment and adapter checks
+      run: poetry run pytest wayfinder_paths/adapters/test_arc_live.py -q --no-cov
+    - name: Report execution coverage boundary
+      run: echo 'Arc checks cover live read-only deployments, discovery and quotes plus mocked write-path regressions in Adapter Tests. Full Arc transaction execution is NOT verified; Gorlami does not support Arc.' >> "$GITHUB_STEP_SUMMARY"
+
   # MCP Tests
   mcp-tests:
     name: MCP Tests

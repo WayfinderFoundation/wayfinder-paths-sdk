@@ -178,7 +178,10 @@ class MorphoClient(AsyncClientOwner):
 
     async def get_morpho_by_chain(self) -> dict[int, dict[str, str]]:
         query = """
-        query PublicAllocators($first: Int!) {
+        query Deployments($first: Int!) {
+          morphoBlues(first: $first) {
+            items { address chain { id network } }
+          }
           publicAllocators(first: $first) {
             items {
               address
@@ -198,6 +201,13 @@ class MorphoClient(AsyncClientOwner):
         )
 
         by_chain: dict[int, dict[str, str]] = {}
+        for deployment in ((payload or {}).get("morphoBlues") or {}).get("items") or []:
+            chain = deployment.get("chain") or {}
+            if deployment.get("address") and chain.get("id") and chain.get("network"):
+                by_chain[int(chain["id"])] = {
+                    "network": str(chain["network"]),
+                    "morpho": str(deployment["address"]),
+                }
         for item in items:
             if not isinstance(item, dict):
                 continue

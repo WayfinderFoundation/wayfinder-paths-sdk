@@ -549,9 +549,9 @@ def _http_status_error(status: int) -> httpx.HTTPStatusError:
 @pytest.mark.asyncio
 class TestSendSponsoredTransaction:
     @pytest.mark.parametrize("status", [400, 402, 403, 429])
-    @patch("wayfinder_paths.core.utils.transaction.WALLET_CLIENT")
+    @patch("wayfinder_paths.core.utils.transaction._wallet_client")
     async def test_rejection_maps_to_fallback(self, mock_client, status):
-        mock_client.send_privy_transaction_sponsored = AsyncMock(
+        mock_client.return_value.send_privy_transaction_sponsored = AsyncMock(
             side_effect=_http_status_error(status)
         )
         with pytest.raises(SponsorshipUnavailableError):
@@ -559,9 +559,9 @@ class TestSendSponsoredTransaction:
                 RANDOM_USER_0, {"chainId": 1, "to": RANDOM_USER_0}
             )
 
-    @patch("wayfinder_paths.core.utils.transaction.WALLET_CLIENT")
+    @patch("wayfinder_paths.core.utils.transaction._wallet_client")
     async def test_server_error_stays_fatal(self, mock_client):
-        mock_client.send_privy_transaction_sponsored = AsyncMock(
+        mock_client.return_value.send_privy_transaction_sponsored = AsyncMock(
             side_effect=_http_status_error(502)
         )
         with pytest.raises(httpx.HTTPStatusError):
