@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -7,14 +8,18 @@ from web3.middleware import ExtraDataToPOAMiddleware
 from web3.module import Module
 
 from wayfinder_paths.core.config import (
+    CONFIG,
     get_api_base_url,
     get_api_key,
     get_rpc_urls,
+    is_opencode_instance,
+    resolve_config_path,
 )
 from wayfinder_paths.core.constants.chains import (
     CHAIN_ID_HYPEREVM,
     POA_MIDDLEWARE_CHAIN_IDS,
 )
+from wayfinder_paths.core.rpc_recovery import recover_legacy_rpc_overrides
 from wayfinder_paths.core.utils.retry import retry_async
 
 logger = logging.getLogger(__name__)
@@ -102,6 +107,8 @@ def _fetch_pool_size(chain_id: int) -> int:
 
 def _get_rpcs_for_chain_id(chain_id: int) -> list:
     mapping = get_rpc_urls()
+    if mapping and is_opencode_instance():
+        recover_legacy_rpc_overrides(CONFIG, resolve_config_path(), chain_id=chain_id)
     rpcs = mapping.get(str(chain_id))
     if rpcs is None:
         # User overrides
@@ -154,7 +161,7 @@ def get_web3s_from_chain_id(chain_id: int) -> list[AsyncWeb3]:
 
 @asynccontextmanager
 async def web3s_from_chain_id(chain_id: int):
-    web3s = get_web3s_from_chain_id(chain_id)
+    web3s = await _get_async_web3s(chain_id)
     try:
         yield web3s
     finally:
@@ -164,11 +171,18 @@ async def web3s_from_chain_id(chain_id: int):
 
 @asynccontextmanager
 async def web3_from_chain_id(chain_id: int):
-    web3s = get_web3s_from_chain_id(chain_id)
+    web3s = await _get_async_web3s(chain_id)
     try:
         yield web3s[0]
     finally:
         await web3s[0].provider.disconnect()
+
+
+async def _get_async_web3s(chain_id: int) -> list[AsyncWeb3]:
+    # Pool discovery and the rare legacy migration perform synchronous I/O. Keep
+    # those off MCP's event loop, but construct async providers on the calling loop.
+    rpcs = await asyncio.to_thread(_get_rpcs_for_chain_id, chain_id)
+    return [_get_web3(rpc, chain_id) for rpc in rpcs]
 
 
 async def is_contract(chain_id: int, address: str) -> bool:

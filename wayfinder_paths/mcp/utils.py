@@ -14,6 +14,8 @@ from typing import Any
 import yaml
 
 from wayfinder_paths.core.clients.MetricsClient import METRICS_CLIENT
+from wayfinder_paths.core.rpc_recovery import LegacyRPCConfigurationError
+from wayfinder_paths.core.utils.rpc_errors import safe_rpc_error
 from wayfinder_paths.core.utils.wallets import (  # noqa: F401
     SessionExpiredError,
     find_wallet_by_label,
@@ -38,7 +40,11 @@ def ok(result: Any) -> dict[str, Any]:
 def err(code: str, message: str, details: Any | None = None) -> dict[str, Any]:
     return {
         "ok": False,
-        "error": {"code": str(code), "message": str(message), "details": details},
+        "error": {
+            "code": str(code),
+            "message": safe_rpc_error(message),
+            "details": details,
+        },
     }
 
 
@@ -104,6 +110,8 @@ def _wrap(fn: Callable, prefix: str) -> Callable:
                 )
             except SessionExpiredError as exc:
                 result = err("session_expired", str(exc))
+            except LegacyRPCConfigurationError as exc:
+                result = err("rpc_configuration_needs_attention", str(exc))
             except Exception as exc:
                 result = err("error", f"{prefix} {exc}".strip())
             _report_tool_metric(
@@ -126,6 +134,8 @@ def _wrap(fn: Callable, prefix: str) -> Callable:
             )
         except SessionExpiredError as exc:
             result = err("session_expired", str(exc))
+        except LegacyRPCConfigurationError as exc:
+            result = err("rpc_configuration_needs_attention", str(exc))
         except Exception as exc:
             result = err("error", f"{prefix} {exc}".strip())
         _report_tool_metric(fn.__name__, result, (time.perf_counter() - start) * 1000)

@@ -17,9 +17,13 @@ def load_core_config_module(repo_root: Path = REPO_ROOT) -> ModuleType:
     This avoids importing `wayfinder_paths/__init__.py` (and third-party deps)
     before `poetry install` has been run on remote hosts.
     """
-    config_path = repo_root / "wayfinder_paths" / "core" / "config.py"
+    return _load_core_module("config", repo_root)
+
+
+def _load_core_module(name: str, repo_root: Path = REPO_ROOT) -> ModuleType:
+    config_path = repo_root / "wayfinder_paths" / "core" / f"{name}.py"
     spec = importlib.util.spec_from_file_location(
-        "_wayfinder_paths_core_config", config_path
+        f"_wayfinder_paths_core_{name}", config_path
     )
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load config module: {config_path}")
@@ -92,6 +96,12 @@ def ensure_config(
 
     _cfg.write_config_json(config_path, config)
     print(f"Wrote {config_path}")
+    recovery = _load_core_module("rpc_recovery")
+    try:
+        recovery.recover_legacy_rpc_overrides(config, config_path)
+    except recovery.LegacyRPCConfigurationError as exc:
+        # Do not prevent the agent from starting; first RPC use retries recovery.
+        print(str(exc))
 
 
 def ensure_mcp_json(*, config_path: Path, repo_root: Path = REPO_ROOT) -> None:

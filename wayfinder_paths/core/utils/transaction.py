@@ -21,6 +21,7 @@ from wayfinder_paths.core.constants.chains import (
     MIN_PRIORITY_FEE_BY_CHAIN_ID,
     PRE_EIP_1559_CHAIN_IDS,
 )
+from wayfinder_paths.core.utils.rpc_errors import safe_rpc_error
 from wayfinder_paths.core.utils.signing_errors import (
     SESSION_EXPIRED_MESSAGE,
     SessionExpiredError,
@@ -69,6 +70,19 @@ class TransactionRevertedError(RuntimeError):
         self.txn_hash = txn_hash
         self.receipt = receipt or {}
         super().__init__(message or f"Transaction reverted: {txn_hash}")
+
+
+class TransactionConfirmationError(RuntimeError):
+    """Submission succeeded, but its outcome could not be confirmed. Never resend."""
+
+    def __init__(self, chain_id: int, txn_hash: str) -> None:
+        self.chain_id = chain_id
+        self.txn_hash = txn_hash
+        super().__init__(
+            f"Transaction {txn_hash} submitted on chain {chain_id}; confirmation "
+            "is temporarily unavailable. Do not repeat the transaction. "
+            "Check the existing transaction's status."
+        )
 
 
 def _raise_revert_error(
@@ -208,9 +222,9 @@ async def gas_limit_transaction(transaction: dict):
         try:
             return await web3.eth.estimate_gas(transaction, block_identifier="latest")
         except Exception as e:
-            rpc_errors.append(f"{web3.provider.endpoint_uri}: {e}")
+            rpc_errors.append(safe_rpc_error(e))
             logger.info(
-                f"Failed to estimate gas using {web3.provider.endpoint_uri}. Error: {e}"
+                f"Failed to estimate gas on chain {chain_id}: {safe_rpc_error(e)}"
             )
             return 0
 
@@ -354,25 +368,51 @@ async def wait_for_transaction_receipt(
     async def _get_block_number(web3: AsyncWeb3) -> int:
         return await web3.eth.block_number
 
-    async with web3s_from_chain_id(chain_id) as web3s:
+    async with asyncio.timeout(timeout), web3s_from_chain_id(chain_id) as web3s:
         tasks = [
             asyncio.create_task(_wait_for_receipt(web3, txn_hash)) for web3 in web3s
         ]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-        receipt = done.pop().result()
+        try:
+            receipt = None
+            for completed in asyncio.as_completed(tasks):
+                try:
+                    receipt = await completed
+                    if receipt.get("status") not in (0, 1):
+                        receipt = None
+                        raise RuntimeError("Receipt has no confirmed execution status")
+                except Exception as exc:
+                    logger.warning(
+                        "Receipt provider failed on chain {}: {}",
+                        chain_id,
+                        safe_rpc_error(exc),
+                    )
+                    continue
+                break
+            if receipt is None:
+                raise RuntimeError("Transaction receipt unavailable from all providers")
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         if receipt.get("status") == 0:
             raise TransactionRevertedError(txn_hash, receipt)
 
+        if confirmations <= 0:
+            return receipt
+
         target_block = receipt["blockNumber"] + confirmations - 1
-        while (
-            max(await asyncio.gather(*[_get_block_number(w) for w in web3s]))
-            < target_block
-        ):
+        while True:
+            heights = await asyncio.gather(
+                *[_get_block_number(w) for w in web3s], return_exceptions=True
+            )
+            if (
+                max((h for h in heights if isinstance(h, int)), default=-1)
+                >= target_block
+            ):
+                return receipt
             await asyncio.sleep(poll_interval)
-        return receipt
 
 
 async def send_transaction(
@@ -426,6 +466,8 @@ async def send_transaction(
             )
         except TransactionRevertedError as exc:
             _raise_revert_error(txn_hash, exc.receipt, transaction, cause=exc)
+        except Exception as exc:
+            raise TransactionConfirmationError(chain_id, txn_hash) from exc
 
         status = receipt.get("status")
         if status is not None and int(status) == 0:
