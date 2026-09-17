@@ -141,6 +141,7 @@ from wayfinder_paths.mcp.tools.tokens import (
     onchain_list_tokens,
     onchain_resolve_token,
 )
+from wayfinder_paths.mcp.tools.transaction_status import onchain_get_transaction_status
 from wayfinder_paths.mcp.tools.wallets import (
     core_get_wallets,
     core_wallets,
@@ -216,6 +217,7 @@ def build_mcp(
     mcp.tool()(onchain_quote_swap)
     mcp.tool()(onchain_swap)
     mcp.tool()(onchain_send)
+    mcp.tool()(onchain_get_transaction_status)
 
     # ─── polymarket_* ──────────────────────────────────────────────────
     mcp.tool()(polymarket_read)
