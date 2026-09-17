@@ -38,14 +38,11 @@ def ok(result: Any) -> dict[str, Any]:
 
 
 def err(code: str, message: str, details: Any | None = None) -> dict[str, Any]:
-    # Session-expiry messages carry an intentional user-facing renewal link, so
-    # they must bypass the URL-scrubbing that sanitizes raw RPC error text.
-    rendered = str(message) if str(code) == "session_expired" else safe_rpc_error(message)
     return {
         "ok": False,
         "error": {
             "code": str(code),
-            "message": rendered,
+            "message": safe_rpc_error(message),
             "details": details,
         },
     }

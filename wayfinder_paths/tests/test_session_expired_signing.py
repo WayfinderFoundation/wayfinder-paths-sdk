@@ -54,7 +54,7 @@ async def test_catch_errors_surfaces_session_expired_code():
     result = await tool()
     assert result["ok"] is False
     assert result["error"]["code"] == "session_expired"
-    assert "wayfinder.ai/app/shells" in result["error"]["message"]
+    assert "[RPC endpoint]" in result["error"]["message"]
 
 
 @pytest.mark.asyncio
