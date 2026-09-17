@@ -10,7 +10,7 @@ Adapter for Pendle API + Hosted SDK endpoints to support:
 
 - `pendle.markets.read`: Fetch whitelisted markets (`/v2/markets/all`)
 - `pendle.market.snapshot`: Fetch a market snapshot (`/v2/{chainId}/markets/{market}/data`)
-- `pendle.market.history`: Fetch market historical data (`/v2/{chainId}/markets/{market}/historical-data`)
+- `pendle.market.history`: Fetch market historical data (`/v3/{chainId}/markets/{market}/historical-data`)
 - `pendle.prices.ohlcv`: Fetch token OHLCV (`/v4/{chainId}/prices/{token}/ohlcv`)
 - `pendle.prices.assets`: Fetch all asset prices (`/v1/prices/assets`)
 - `pendle.swap.quote`: Build Hosted SDK swap payload (`/v2/sdk/{chainId}/markets/{market}/swap`)
@@ -264,6 +264,9 @@ ok, res = await adapter.execute_convert(
 
 - Market discovery uses `GET /v2/markets/all` with pagination. The raw endpoint
   returns `results`; the adapter normalizes this to `markets` for compatibility.
+- Market history uses `GET /v3/{chainId}/markets/{market}/historical-data`.
+  Pendle documents v3 as backward-compatible with v2 and adds optional APY/fee
+  breakdown flags.
 - “Fixed APY” proxy is `details.impliedApy` from `/v2/markets/all`.
 - Pendle docs recommend `POST /v3/sdk/{chainId}/convert` for new integrations.
   This adapter currently uses the v2 convert endpoint for compatibility.
