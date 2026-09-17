@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from functools import wraps
 from typing import Any
 
 from wayfinder_paths.core.clients.direct.DefiLlamaFreeClient import (
     DEFILLAMA_FREE_CLIENT,
+    DefiLlamaResponseTooLarge,
 )
 from wayfinder_paths.mcp.arg_validation import normalize_enum, normalize_int
-from wayfinder_paths.mcp.utils import catch_errors, ok
+from wayfinder_paths.mcp.utils import catch_errors, err, ok
 
 DATASETS = {
     "protocols",
@@ -25,7 +28,21 @@ DATASETS = {
 }
 
 
+def _catch_oversized_response(
+    function: Callable[..., Any],
+) -> Callable[..., Any]:
+    @wraps(function)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await function(*args, **kwargs)
+        except DefiLlamaResponseTooLarge as exc:
+            return err(exc.code, str(exc), exc.details)
+
+    return wrapper
+
+
 @catch_errors
+@_catch_oversized_response
 async def research_defillama_free(
     dataset: str,
     protocolSlug: str = "_",
