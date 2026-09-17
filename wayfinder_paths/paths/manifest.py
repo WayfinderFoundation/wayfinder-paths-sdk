@@ -96,6 +96,45 @@ class PathAppletConfig:
     manifest_path: str
 
 
+# Panels are author-built static web UI mounted in the Shells workspace grid.
+# Unlike the legacy applet (one per path, shown on the path detail page), a
+# path may declare several panels, each with its own build_dir and declared
+# data capabilities. Everything lives in wfpath.yaml — no per-panel manifest
+# file (the applet's dual-file design is what causes drift).
+_MAX_PANELS = 4
+_PANEL_MIN_SIZE = 160
+_PANEL_MAX_SIZE = 1600
+_MAX_PANEL_ORIGINS = 8
+_ORIGIN_RE = re.compile(r"^(?:https|wss)://[a-z0-9.-]+(?::\d+)?$", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class PathPanelSizeConfig:
+    min_width: int | None
+    min_height: int | None
+
+
+@dataclass(frozen=True)
+class PathPanelPermissionsConfig:
+    external_origins: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PathPanelConfig:
+    panel_id: str
+    name: str
+    build_dir: str
+    entry: str
+    icon: str | None
+    category: str | None
+    description: str | None
+    size: PathPanelSizeConfig
+    capabilities: tuple[str, ...]
+    permissions: PathPanelPermissionsConfig
+    min_protocol: str
+    raw: dict[str, Any]
+
+
 @dataclass(frozen=True)
 class PathSkillClaudeConfig:
     disable_model_invocation: bool | None
@@ -344,6 +383,145 @@ def _parse_agents(raw_obj: Any) -> tuple[PathAgentConfig, ...]:
             )
         )
     return tuple(agents)
+
+
+def _parse_panel_size(raw_obj: Any, *, name: str) -> PathPanelSizeConfig:
+    obj = _ensure_object(raw_obj, name=name)
+    if obj is None:
+        return PathPanelSizeConfig(min_width=None, min_height=None)
+
+    def _dim(key: str) -> int | None:
+        value = obj.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise PathManifestError(f"{name}.{key} must be an integer")
+        if value < _PANEL_MIN_SIZE or value > _PANEL_MAX_SIZE:
+            raise PathManifestError(
+                f"{name}.{key} must be between {_PANEL_MIN_SIZE} and {_PANEL_MAX_SIZE}"
+            )
+        return value
+
+    return PathPanelSizeConfig(
+        min_width=_dim("min_width"), min_height=_dim("min_height")
+    )
+
+
+def _parse_panel_permissions(raw_obj: Any, *, name: str) -> PathPanelPermissionsConfig:
+    obj = _ensure_object(raw_obj, name=name)
+    if obj is None:
+        return PathPanelPermissionsConfig(external_origins=())
+    origins = _parse_string_list(
+        obj.get("external_origins"), name=f"{name}.external_origins"
+    )
+    if len(origins) > _MAX_PANEL_ORIGINS:
+        raise PathManifestError(
+            f"{name}.external_origins allows at most {_MAX_PANEL_ORIGINS} origins"
+        )
+    for origin in origins:
+        if not _ORIGIN_RE.fullmatch(origin):
+            raise PathManifestError(
+                f"{name}.external_origins entry is not a valid https/wss origin: {origin}"
+            )
+    return PathPanelPermissionsConfig(external_origins=tuple(origins))
+
+
+def _parse_panels(
+    raw_obj: Any, *, declared_capabilities: frozenset[str]
+) -> tuple[PathPanelConfig, ...]:
+    """Parse the `panels:` list. Each panel's declared data capabilities must
+    be a subset of the path's top-level `capabilities` — a panel can never
+    request more than the path itself declares, so the reviewer and the user
+    see the full capability set in one authoritative place."""
+    if raw_obj is None:
+        return ()
+    if not isinstance(raw_obj, list):
+        raise PathManifestError("wfpath.yaml panels must be a list")
+    if len(raw_obj) > _MAX_PANELS:
+        raise PathManifestError(
+            f"wfpath.yaml panels allows at most {_MAX_PANELS} panels"
+        )
+    panels: list[PathPanelConfig] = []
+    seen_ids: set[str] = set()
+    for idx, item in enumerate(raw_obj):
+        name = f"wfpath.yaml panels[{idx}]"
+        obj = _ensure_object(item, name=name, required=True)
+        assert obj is not None
+
+        panel_id = str(obj.get("id", "")).strip()
+        if not panel_id:
+            raise PathManifestError(f"{name}.id is required")
+        if not _SLUG_RE.fullmatch(panel_id) or len(panel_id) > 40:
+            raise PathManifestError(
+                f"{name}.id must be slug-safe and at most 40 characters"
+            )
+        if panel_id in seen_ids:
+            raise PathManifestError(
+                f"wfpath.yaml contains duplicate panel id: {panel_id}"
+            )
+        seen_ids.add(panel_id)
+
+        display_name = str(obj.get("name", "")).strip()
+        if not display_name:
+            raise PathManifestError(f"{name}.name is required")
+        if len(display_name) > 64:
+            raise PathManifestError(f"{name}.name must be at most 64 characters")
+
+        build_dir = str(obj.get("build_dir", "")).strip()
+        if not build_dir:
+            raise PathManifestError(f"{name}.build_dir is required")
+        if build_dir.startswith("/") or ".." in Path(build_dir).parts:
+            raise PathManifestError(
+                f"{name}.build_dir must be a relative path without '..'"
+            )
+
+        entry = str(obj.get("entry", "") or "index.html").strip()
+        if entry.startswith("/") or ".." in Path(entry).parts:
+            raise PathManifestError(
+                f"{name}.entry must be a relative path without '..'"
+            )
+
+        description = str(obj.get("description", "")).strip() or None
+        if description is not None and len(description) > 280:
+            raise PathManifestError(
+                f"{name}.description must be at most 280 characters"
+            )
+
+        category = str(obj.get("category", "")).strip() or None
+        if category is not None and not _SLUG_RE.fullmatch(category):
+            raise PathManifestError(f"{name}.category must be slug-safe")
+
+        capabilities = tuple(
+            _parse_string_list(obj.get("capabilities"), name=f"{name}.capabilities")
+        )
+        extra = [c for c in capabilities if c not in declared_capabilities]
+        if extra:
+            raise PathManifestError(
+                f"{name}.capabilities are not declared in the path's top-level "
+                f"capabilities: {', '.join(sorted(extra))}"
+            )
+
+        min_protocol = str(obj.get("min_protocol", "") or "1").strip()
+
+        panels.append(
+            PathPanelConfig(
+                panel_id=panel_id,
+                name=display_name,
+                build_dir=build_dir,
+                entry=entry,
+                icon=str(obj.get("icon", "")).strip() or None,
+                category=category,
+                description=description,
+                size=_parse_panel_size(obj.get("size"), name=f"{name}.size"),
+                capabilities=capabilities,
+                permissions=_parse_panel_permissions(
+                    obj.get("permissions"), name=f"{name}.permissions"
+                ),
+                min_protocol=min_protocol,
+                raw=dict(obj),
+            )
+        )
+    return tuple(panels)
 
 
 def _parse_host_target_config(
@@ -722,6 +900,7 @@ class PathManifest:
     pipeline: PathPipelineConfig | None
     inputs: tuple[PathInputSlotConfig, ...]
     agents: tuple[PathAgentConfig, ...]
+    panels: tuple[PathPanelConfig, ...]
     host: PathHostConfig | None
     raw: dict[str, Any]
 
@@ -821,6 +1000,14 @@ class PathManifest:
         pipeline = _parse_pipeline_config(raw_obj.get("pipeline"))
         inputs = _parse_input_slots(raw_obj.get("inputs"))
         agents = _parse_agents(raw_obj.get("agents"))
+        declared_capabilities = frozenset(
+            _parse_string_list(
+                raw_obj.get("capabilities"), name="wfpath.yaml capabilities"
+            )
+        )
+        panels = _parse_panels(
+            raw_obj.get("panels"), declared_capabilities=declared_capabilities
+        )
         host = _parse_host_config(raw_obj.get("host"))
 
         return PathManifest(
@@ -836,6 +1023,7 @@ class PathManifest:
             pipeline=pipeline,
             inputs=inputs,
             agents=agents,
+            panels=panels,
             host=host,
             raw=raw_obj,
         )
