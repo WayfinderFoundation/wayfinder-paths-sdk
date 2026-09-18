@@ -81,6 +81,7 @@ class RunResult:
     error: str | None = None
     final_answer_issues: list[dict[str, str]] = field(default_factory=list)
     lookup_diagnostics: dict[str, Any] | None = None
+    session_metrics: dict[str, Any] | None = None
 
 
 @dataclass
@@ -228,6 +229,18 @@ def apply_variant_overlays(workspace: Path, variant: Mapping[str, Any]) -> None:
             raise ValueError(f"variant overlay missing path: {variant.get('id')}")
         target = workspace / str(relative)
         target.parent.mkdir(parents=True, exist_ok=True)
+
+        if "content_from_git" in overlay:
+            target.write_text(
+                subprocess.run(
+                    ["git", "show", str(overlay["content_from_git"])],
+                    cwd=repo_root(),
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout
+            )
+            continue
 
         if "content_from" in overlay:
             source = workspace / str(overlay["content_from"])
@@ -391,6 +404,48 @@ def harvest_answer(log_path: Path, db_path: Path, *, title: str, question: str) 
         return answer
     text = log_path.read_text(errors="replace") if log_path.exists() else ""
     return text.strip() or "(no answer harvested)"
+
+
+def collect_session_metrics(db_path: Path, *, title: str) -> dict[str, Any] | None:
+    # Never fall back to matching question text: a failed run must not borrow a
+    # previous arm's answer or usage just because it received the same question.
+    session_id = newest_session_for_title(db_path, title)
+    if not session_id:
+        return None
+    with sqlite3.connect(db_path) as con:
+        messages = [
+            json.loads(row[0])
+            for row in con.execute(
+                "SELECT data FROM message WHERE session_id=? ORDER BY time_created",
+                (session_id,),
+            )
+        ]
+        parts = [
+            json.loads(row[0])
+            for row in con.execute(
+                "SELECT p.data FROM part p JOIN message m ON p.message_id=m.id "
+                "WHERE m.session_id=? ORDER BY m.time_created",
+                (session_id,),
+            )
+        ]
+    assistants = [m for m in messages if m.get("role") == "assistant"]
+    tools = [p for p in parts if p.get("type") == "tool"]
+    return {
+        "session_id": session_id,
+        "completed": any(m.get("finish") == "stop" for m in assistants),
+        "errors": [m["error"] for m in assistants if m.get("error")],
+        "tool_calls": len(tools),
+        "tool_trace": tools,
+        "input_tokens": sum(m.get("tokens", {}).get("input", 0) for m in assistants),
+        "output_tokens": sum(m.get("tokens", {}).get("output", 0) for m in assistants),
+        "reasoning_tokens": sum(
+            m.get("tokens", {}).get("reasoning", 0) for m in assistants
+        ),
+        "cache_read_tokens": sum(
+            m.get("tokens", {}).get("cache", {}).get("read", 0) for m in assistants
+        ),
+        "cost": sum(m.get("cost", 0) for m in assistants),
+    }
 
 
 def find_json(text: str) -> dict[str, Any] | None:
@@ -718,6 +773,27 @@ def write_markdown_report(report: Mapping[str, Any], path: Path) -> None:
             if result.get("final_answer_issues"):
                 status = f"{status} ({len(result['final_answer_issues'])} final-answer issue)"
             lines.append(f"| `{variant_id}` | {status} | {duration} | `{answer}` |")
+        if any(r.get("session_metrics") for r in question["variants"].values()):
+            lines.extend(
+                [
+                    "",
+                    "| Variant | Tool calls | Input | Cache read | Output | Reasoning |",
+                    "| --- | ---: | ---: | ---: | ---: | ---: |",
+                ]
+            )
+            for variant_id, result in question["variants"].items():
+                metrics = result.get("session_metrics") or {}
+                values = [
+                    str(metrics.get(key, "n/a"))
+                    for key in (
+                        "tool_calls",
+                        "input_tokens",
+                        "cache_read_tokens",
+                        "output_tokens",
+                        "reasoning_tokens",
+                    )
+                ]
+                lines.append(f"| `{variant_id}` | " + " | ".join(values) + " |")
         lookup_rows = [
             (variant_id, result.get("lookup_diagnostics"))
             for variant_id, result in question["variants"].items()
@@ -847,6 +923,15 @@ def run_station(args: argparse.Namespace) -> Path:
                     timeout_seconds=args.candidate_timeout_seconds,
                 )
                 answer = harvest_answer(log_path, db_path, title=run_id, question=qtext)
+                metrics = (
+                    collect_session_metrics(db_path, title=run_id)
+                    if config.get("require_session_metrics")
+                    else None
+                )
+                if config.get("require_session_metrics") and (
+                    not metrics or not metrics["completed"] or metrics["errors"]
+                ):
+                    error = error or "no completed model answer; inspect session/log"
                 answer_path.write_text(answer)
                 final_answer_issues = detect_final_answer_issues(answer)
                 lookup_diagnostics = (
@@ -882,6 +967,7 @@ def run_station(args: argparse.Namespace) -> Path:
                 error=error,
                 final_answer_issues=final_answer_issues,
                 lookup_diagnostics=lookup_diagnostics,
+                session_metrics=metrics,
             )
             question_report["variants"][variant_id] = asdict(result)
 

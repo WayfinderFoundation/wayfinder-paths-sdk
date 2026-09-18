@@ -3,9 +3,12 @@ from __future__ import annotations
 import importlib.util
 import json
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import Mock
 
+import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
@@ -211,6 +214,116 @@ def test_eval_station_overlay_can_copy_content_from_workspace_file(
     )
 
     assert target.read_text() == "baseline prompt"
+
+
+def test_eval_station_overlay_loads_pinned_git_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    station = load_eval_station()
+    ref = "3c31c14c6c4b0fb4044c9e77926c84d07fff0ecc"
+    relative = ".opencode/agents/wayfinder-mobile.md"
+    run = Mock(
+        return_value=subprocess.CompletedProcess([], 0, stdout="baseline prompt")
+    )
+    monkeypatch.setattr(station.subprocess, "run", run)
+    station.apply_variant_overlays(
+        tmp_path,
+        {
+            "id": "before",
+            "overlays": [{"path": relative, "content_from_git": f"{ref}:{relative}"}],
+        },
+    )
+    run.assert_called_once_with(
+        ["git", "show", f"{ref}:{relative}"],
+        cwd=REPO,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert (tmp_path / relative).read_text() == "baseline prompt"
+    run.side_effect = subprocess.CalledProcessError(128, ["git", "show"])
+    with pytest.raises(subprocess.CalledProcessError):
+        station.apply_variant_overlays(
+            tmp_path,
+            {
+                "id": "bad",
+                "overlays": [
+                    {"path": relative, "content_from_git": f"{ref}:missing-file"}
+                ],
+            },
+        )
+
+
+def test_eval_station_metrics_use_only_exact_session_and_record_errors(
+    tmp_path: Path,
+) -> None:
+    station = load_eval_station()
+    db = tmp_path / "metrics.db"
+    with sqlite3.connect(db) as con:
+        con.executescript(
+            "CREATE TABLE session (id TEXT, title TEXT, time_updated INTEGER);"
+            "CREATE TABLE message (id TEXT, session_id TEXT, data TEXT, time_created INTEGER);"
+            "CREATE TABLE part (message_id TEXT, data TEXT);"
+            "INSERT INTO session VALUES ('before', 'arm-before', 1);"
+            "INSERT INTO session VALUES ('after', 'arm-after', 2);"
+        )
+        con.execute(
+            "INSERT INTO message VALUES ('m1', 'before', ?, 1)",
+            (
+                json.dumps(
+                    {
+                        "role": "assistant",
+                        "finish": "stop",
+                        "cost": 0.02,
+                        "tokens": {
+                            "input": 100,
+                            "output": 30,
+                            "reasoning": 10,
+                            "cache": {"read": 50},
+                        },
+                    }
+                ),
+            ),
+        )
+        con.execute(
+            "INSERT INTO part VALUES ('m1', ?)",
+            (
+                json.dumps(
+                    {
+                        "type": "tool",
+                        "tool": "wayfinder_core_web_fetch",
+                        "state": {
+                            "status": "completed",
+                            "input": {"urls": "https://moth.example"},
+                        },
+                    }
+                ),
+            ),
+        )
+        con.execute(
+            "INSERT INTO message VALUES ('m2', 'after', ?, 2)",
+            (
+                json.dumps(
+                    {
+                        "role": "assistant",
+                        "error": {"name": "APIError", "message": "Unauthorized"},
+                    }
+                ),
+            ),
+        )
+    before = station.collect_session_metrics(db, title="arm-before")
+    assert before["completed"] is True
+    assert before["tool_calls"] == 1
+    assert before["input_tokens"] == 100
+    assert before["cache_read_tokens"] == 50
+    assert before["output_tokens"] == 30
+    assert before["reasoning_tokens"] == 10
+    assert before["cost"] == 0.02
+    after = station.collect_session_metrics(db, title="arm-after")
+    assert after["completed"] is False
+    assert after["errors"][0]["name"] == "APIError"
+    assert after["tool_calls"] == 0
+    assert station.collect_session_metrics(db, title="missing-arm") is None
 
 
 def test_eval_station_can_patch_workspace_mcp_url(tmp_path: Path) -> None:

@@ -3,11 +3,22 @@
     ".claude/skills/crypto-research/SKILL.md",
     "evals/fixtures/research_source_verification/context.md"
   ],
-  "mcp": { "wayfinder": { "enabled": false } },
+  "mcp": {
+    "wayfinder": {
+      "type": "local",
+      "command": ["{env:WAYFINDER_EVAL_PYTHON}", "-m", "evals.fixtures.research_source_verification.server"],
+      "enabled": true,
+      "timeout": 30000
+    }
+  },
   "permission": "deny",
   "agent": {
-    "wayfinder": { "permission": "deny" },
-    "wayfinder-mobile": { "permission": "deny" }
+    "wayfinder": {
+      "permission": { "*": "deny", "wayfinder_core_web_search": "allow", "wayfinder_core_web_fetch": "allow" }
+    },
+    "wayfinder-mobile": {
+      "permission": { "*": "deny", "wayfinder_core_web_search": "allow", "wayfinder_core_web_fetch": "allow" }
+    }
   },
   "provider": {
     "wayfinder": {
