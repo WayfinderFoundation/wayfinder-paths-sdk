@@ -169,10 +169,16 @@ class ResearchSocialXSearchQuery(TypedDict):
     toDate: str | None
 
 
+class ResearchSocialXSearchEvidence(TypedDict):
+    kind: Literal["social_search_summary"]
+    identityVerification: Literal["not_performed"]
+
+
 class ResearchSocialXSearchResult(TypedDict):
     content: str
     citations: list[Any]
     inlineCitations: list[Any]
+    evidence: NotRequired[ResearchSocialXSearchEvidence]
 
 
 class ResearchSocialXSearchResponse(TypedDict):

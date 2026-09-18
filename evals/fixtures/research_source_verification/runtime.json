@@ -1,0 +1,29 @@
+{
+  "instructions": [
+    ".claude/skills/crypto-research/SKILL.md",
+    "evals/fixtures/research_source_verification/context.md"
+  ],
+  "mcp": { "wayfinder": { "enabled": false } },
+  "permission": "deny",
+  "agent": {
+    "wayfinder": { "permission": "deny" },
+    "wayfinder-mobile": { "permission": "deny" }
+  },
+  "provider": {
+    "wayfinder": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Wayfinder",
+      "options": {
+        "baseURL": "{env:WAYFINDER_EVAL_LLM_URL}",
+        "apiKey": "{env:WAYFINDER_API_KEY}"
+      },
+      "models": {
+        "deepseek-v4-pro": {
+          "name": "DeepSeek V4 Pro",
+          "limit": { "context": 128000, "output": 28000 },
+          "interleaved": { "field": "reasoning_content" }
+        }
+      }
+    }
+  }
+}

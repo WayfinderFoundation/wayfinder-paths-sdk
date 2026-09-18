@@ -375,10 +375,11 @@ def harvest_answer_from_db(db_path: Path, *, title: str, question: str) -> str |
         """SELECT json_extract(p.data,'$.text')
            FROM part p JOIN message m ON p.message_id = m.id
            WHERE m.session_id=? AND json_extract(p.data,'$.type')='text'
+             AND json_extract(m.data,'$.role')='assistant'
            ORDER BY m.time_created ASC""",
         (session_id,),
     ).fetchall()
-    texts = [str(row[0]).strip() for row in rows if row[0] and len(str(row[0])) > 80]
+    texts = [str(row[0]).strip() for row in rows if row[0] and str(row[0]).strip()]
     if not texts:
         return None
     return texts[-1]
@@ -644,7 +645,7 @@ def resolve_judge_pairs(
     variants: list[Mapping[str, Any]], config: Mapping[str, Any]
 ) -> list[tuple[str, str]]:
     configured = config.get("judge_pairs")
-    if configured:
+    if configured is not None:
         return [(str(a), str(b)) for a, b in configured]
     ids = [str(variant["id"]) for variant in variants]
     if len(ids) < 2:

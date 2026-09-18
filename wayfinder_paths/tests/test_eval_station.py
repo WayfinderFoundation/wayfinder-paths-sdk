@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -76,6 +78,46 @@ def test_eval_station_records_duration_outside_judge_prompt() -> None:
             "\ndef copy_workspace", 1
         )[0]
     )
+
+
+def test_eval_station_can_skip_pairwise_judging_for_absolute_regressions() -> None:
+    station = load_eval_station()
+    variants = [{"id": "desktop"}, {"id": "mobile"}]
+    assert station.resolve_judge_pairs(variants, {"judge_pairs": []}) == []
+    assert station.resolve_judge_pairs(variants, {}) == [("desktop", "mobile")]
+
+
+def test_eval_station_never_harvests_user_record_as_answer(tmp_path: Path) -> None:
+    station = load_eval_station()
+    db = tmp_path / "opencode.db"
+    question = "Frozen evidence record. " * 10
+    answer = "No verified offer."
+    with sqlite3.connect(db) as con:
+        con.executescript(
+            "CREATE TABLE session (id TEXT, title TEXT, time_updated INTEGER);"
+            "CREATE TABLE message (id TEXT, session_id TEXT, data TEXT, time_created INTEGER);"
+            "CREATE TABLE part (message_id TEXT, data TEXT);"
+            "INSERT INTO session VALUES ('ses', 'test', 1);"
+        )
+        con.execute(
+            "INSERT INTO message VALUES ('user', 'ses', ?, 1)",
+            (json.dumps({"role": "user"}),),
+        )
+        con.execute(
+            "INSERT INTO part VALUES ('user', ?)",
+            (json.dumps({"type": "text", "text": question}),),
+        )
+    assert station.harvest_answer_from_db(db, title="test", question=question) is None
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "INSERT INTO message VALUES ('assistant', 'ses', ?, 2)",
+            (json.dumps({"role": "assistant"}),),
+        )
+        con.execute(
+            "INSERT INTO part VALUES ('assistant', ?)",
+            (json.dumps({"type": "text", "text": answer}),),
+        )
+    assert station.harvest_answer_from_db(db, title="test", question=question) == answer
 
 
 def test_eval_station_flags_checkpoint_final_answers_without_judge_metadata() -> None:
