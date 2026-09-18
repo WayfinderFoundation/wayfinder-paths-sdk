@@ -3,7 +3,6 @@ description: Hidden lightweight planner for complex Wayfinder workflows; returns
 mode: subagent
 hidden: true
 steps: 8
-temperature: 0.1
 permission:
   "*": deny
   task:

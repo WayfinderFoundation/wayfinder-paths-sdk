@@ -3,7 +3,6 @@ description: Hidden sports worker for live sports data, data analysis and modell
 mode: subagent
 hidden: true
 steps: 28
-temperature: 0.1
 permission:
   task:
     "*": deny
