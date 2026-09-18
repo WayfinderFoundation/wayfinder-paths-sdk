@@ -1,8 +1,9 @@
 # Research source verification
 
-Run the existing station with `WAYFINDER_API_KEY` set in the environment (never
-put a key in this directory). Isolate OpenCode's global config so no user MCP
-servers or plugins are loaded:
+Run from a clean worktree without a root `config.json`, with `WAYFINDER_API_KEY`
+set in the environment (never put a key in this directory). The existing station
+otherwise pins the key from that root config, overriding the environment.
+Isolate OpenCode's global config so no user MCP servers or plugins are loaded:
 
 ```sh
 export XDG_CONFIG_HOME="$(mktemp -d)"
