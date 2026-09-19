@@ -1,14 +1,14 @@
 # Building a custom harnessed strategy (`jobs_v1`) without the Strategy Lab handoff
 
-When the owner describes a rule set over bars on Hyperliquid perps and wants evidence ("backtest it", "show me how it would have done"), build a harnessed job yourself. Do not read the engine or simulator source to work it out; this page is the contract.
+When the owner describes a rule set over bars — on Hyperliquid perps, on-chain spot tokens or Hyperliquid spot pairs — and wants evidence ("backtest it", "show me how it would have done"), build a harnessed job yourself. Do not read the engine or simulator source to work it out; this page is the contract.
 
 ## The five calls
 
 1. **Create the job with its data contract in one call:**
    `core_jobs(action="create", job_id="<id>", name="…", goal="…", script="workspace/src/strategy.py", interval_seconds=<bar seconds>, execution_contract="jobs_v1", symbols=["BTC"], bar_interval="5m", agent_mode="intervene")`
-   `symbols` + `bar_interval` seed `execution_spec.data_contract` (Hyperliquid perps, completed bars, next-bar-open fills) and sensible `execution_params` (10,000 USD paper capital, 4.5 bps fee, 3.5 bps slippage, a lookback window). Override any of those through `execution_params`. The job is created paused.
+   `symbols` + `bar_interval` seed `execution_spec.data_contract` (completed bars, next-bar-open fills on the venue you name) and sensible `execution_params` (10,000 USD paper capital, the venue's taker costs, a lookback window). `venue` picks where it trades: `hyperliquid` perps (default; 4.5 bps fee, 3.5 bps slippage), `onchain` for spot tokens named by token id (`ethereum-robinhood`, `usd-coin-polygon`, `robinhood_0x…`; intervals `1m|5m|15m|1h|4h|1d`; 30 bps fee, 50 bps slippage; long-only, no brackets, no leverage — the engine refuses shorts and limit orders there in backtest, paper and live alike), or `hyperliquid_spot` for pairs (`HYPE/USDC`; 7/10 bps, long-only). Override any of those through `execution_params`. The job is created paused.
 2. **Write the strategy module** at the returned `script_entrypoint` (always `workspace/src/…`), see the contract below.
-3. **Fetch the bars:** `core_jobs(action="fetch_dataset", job_id="<id>", days=<n>)` — pulls the declared symbols at the declared interval into `results/backtest/input_bars.json` (60 days of 5m bars is plenty; the sandbox has the API).
+3. **Fetch the bars:** `core_jobs(action="fetch_dataset", job_id="<id>", days=<n>)` — pulls the declared symbols at the declared interval into `results/backtest/input_bars.json` (60 days of 5m bars is plenty; the sandbox has the API). Ask for 120 days when the readout matters: the evidence gate wants the full target requested. For an `onchain` job the bars come from the on-chain data source's store; a token younger than the window is fine — the dataset records where its history starts and the gate accepts that floor (no `dataset_source="ccxt"` for token ids).
 4. **Backtest:** `core_jobs(action="backtest_job", job_id="<id>", quick_bars=2000)` for a fast pass, then without `quick_bars` for the full window. The report lands under `results/backtest/latest.json` (stats, trades, equity curve).
 5. **Read it back:** `core_jobs(action="readout", job_id="<id>")` then `launch_checklist`; stop before `launch` unless the owner asked to launch.
 

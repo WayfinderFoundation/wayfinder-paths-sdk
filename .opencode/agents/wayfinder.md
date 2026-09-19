@@ -331,7 +331,9 @@ does not want scheduling yet.
 Every job, whatever its kind, goes through the same seven steps: (1) pick or build
 it — an off-the-shelf starter (`starter_strategies` → `create_starter`), a custom
 strategy built with Strategy Lab (task `wayfinder-strategy-lab`, or switch to it and
-come back with the job id), a freestyle script for any trigger → any action
+come back with the job id — harnessed jobs trade Hyperliquid perps, on-chain spot
+tokens or Hyperliquid spot pairs: `create(..., venue="onchain")` for a token id), a
+freestyle script for any trigger → any action
 (`create_freestyle`: a `tick(ctx)` module that trades only through `ctx.act` on the
 `hyperliquid` perp, `hyperliquid_spot`, `onchain` spot, `polymarket` or
 `hyperliquid_prediction` venues — never swap the venue or asset the owner named for

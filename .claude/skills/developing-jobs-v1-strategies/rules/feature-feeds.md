@@ -9,7 +9,7 @@ The feature **schema** is revision-bound: declaring, re-declaring or changing a 
 | verb | what it writes | name |
 |---|---|---|
 | `fetch_funding` (`wayfinder job fetch-funding`) | perp funding settlements per symbol | `funding` |
-| `fetch_token_features` (`fetch-token-features`) | an on-chain token's USD price history, coarsened to the bar interval, pinned to chain and address | `token_price:<token_id>` |
+| `fetch_token_features` (`fetch-token-features`) | an on-chain token's USD price history, read by window from the on-chain data source's store, coarsened to the bar interval, pinned to chain and address | `token_price:<token_id>` |
 | `fetch_yield_features` (`fetch-yield-features`) | DeFi yield history by feed name, pinned to the yield service's ids | `lend_supply_apr:<venue>:<symbol>[:<market>]`, `lend_borrow_apr:…`, `yield_apy:<symbol>`, `pendle_implied_apy:<venue>:<market_id>`, `boros_fixed_rate:<venue>:<market_id>` |
 | `wayfinder job feature append` | one hand-published row (research conclusions, briefs) | anything else |
 

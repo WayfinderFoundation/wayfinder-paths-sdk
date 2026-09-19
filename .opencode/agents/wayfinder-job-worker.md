@@ -311,7 +311,8 @@ diagnosing anything itself and quotes the code; an empty list with a recent
 `last_tick` is "all clear". Freestyle/Path jobs add `freestyle` (the script's
 limits, the last tick's reads and actions, the dry run).
 
-Token prices and DeFi yields are feeds with their own verbs: `core_jobs`
+Token prices and DeFi yields are feeds with their own verbs (a harnessed token
+job on `venue="onchain"` reads its bars from the same on-chain data source): `core_jobs`
 `fetch_token_features` (`token_price:<token_id>`) and `fetch_yield_features`
 (`lend_supply_apr:<venue>:<symbol>[:<market>]`, `lend_borrow_apr:…`,
 `yield_apy:<symbol>`, `pendle_implied_apy:<venue>:<market_id>`,
