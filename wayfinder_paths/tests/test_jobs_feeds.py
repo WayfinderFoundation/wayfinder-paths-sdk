@@ -104,9 +104,7 @@ def test_fetch_token_features_writes_rows_declares_a_pinned_feed_and_restamps(
     store, job_id = _make_job(tmp_path)
     root = store.job_dir(job_id)
     before = compute_workspace_revision(root)
-    client = FakeTokenClient(
-        _hourly_candles(80, now_ms=int(time.time() * 1000)), page_size=50
-    )
+    client = FakeTokenClient(_hourly_candles(80, now_ms=int(time.time() * 1000)))
     # the <chain>_<address> id resolves locally: no resolver network call
     result = feeds.fetch_token_features(
         job_id, token_ids=[WETH_BASE], interval="1h", store=store, client=client

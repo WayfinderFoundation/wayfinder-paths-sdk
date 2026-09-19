@@ -16,9 +16,9 @@ verbs, ctx.defi_yield, the dry-run marks):
     pendle_implied_apy:<venue>:<market_id>
     boros_fixed_rate:<venue>:<market_id>
 
-Token candles are labelled by the venue at the candle OPEN (checked live:
-the newest row is the in-progress period), so rows are relabelled to the
-candle close and the in-progress candle is dropped — the same convention
+Token candles are labelled by the source at the candle OPEN, so rows are
+relabelled to the candle close and the in-progress candle is dropped — the
+same convention
 as the bars. Yield snapshots keep their observation time.
 """
 
@@ -36,14 +36,17 @@ import pandas as pd
 from wayfinder_paths.core.clients.delta_lab_types import DeltaLabAPIError
 from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
-from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.jobs.execution.ccxt_feed import BAR_CLOSE_LABEL
 from wayfinder_paths.jobs.execution.features import FEED_KINDS
 from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
+from wayfinder_paths.jobs.execution.token_bars import (
+    fetch_token_bar_window,
+)
+from wayfinder_paths.jobs.execution.token_bars import (
+    resolve_token_feed as resolve_token_feed,  # re-exported for jobs.feeds
+)
 from wayfinder_paths.quant.pattern_match_context import INTERVAL_MS, SUPPORTED_INTERVALS
 
-# ~1000 candles a page; twenty pages is a 120-day 1h dataset with room to spare.
-TOKEN_MAX_PAGES = 20
 # The yield service keeps about seven months of hourly history.
 YIELD_RETENTION_DAYS = 211
 YIELD_CADENCE = "1h"
@@ -127,19 +130,6 @@ def token_feed_interval(bar_interval: Any) -> str:
 # ---- resolution (pins the source ids once) -----------------------------------
 
 
-async def resolve_token_feed(
-    feed: Mapping[str, Any], *, resolver: type[TokenResolver] = TokenResolver
-) -> dict[str, Any]:
-    """Pin chain_id and address for a token id; a no-op when already pinned."""
-    resolved = dict(feed)
-    if resolved.get("chain_id") and resolved.get("address"):
-        return resolved
-    chain_id, address = await resolver.resolve_token(str(resolved["token_id"]))
-    resolved["chain_id"] = int(chain_id)
-    resolved["address"] = str(address)
-    return resolved
-
-
 async def resolve_yield_feed(
     feed: Mapping[str, Any], *, client: Any = DELTA_LAB_CLIENT
 ) -> dict[str, Any]:
@@ -218,65 +208,6 @@ async def _asset_id(client: Any, symbol: str) -> int:
 # ---- token prices ------------------------------------------------------------
 
 
-def _parse_candles(rows: Sequence[Mapping[str, Any]]) -> list[tuple[int, float]]:
-    by_open: dict[int, float] = {}
-    for row in rows:
-        try:
-            opened = int(row["t"])
-            close = float(row["c"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if not math.isfinite(close) or close <= 0:
-            continue
-        by_open[opened] = close
-    return sorted(by_open.items())
-
-
-async def _page_token_candles(
-    client: Any,
-    feed: Mapping[str, Any],
-    interval: str,
-    *,
-    start_ms: int,
-    now_ms: int,
-) -> tuple[list[tuple[int, float]], int]:
-    """Backward paging from now to start_ms: the venue answers ~1000 candles
-    before a cursor in SECONDS while rows carry OPEN times in ms. Some pools
-    reject a bounded first page despite having recent history, so the first
-    empty page is retried unbounded once."""
-    before: int | None = now_ms // 1000 + INTERVAL_MS[interval] // 1000
-    oldest: int | None = None
-    by_open: dict[int, float] = {}
-    requests = 0
-    limit = TOKEN_MAX_PAGES
-    while requests < limit:
-        page = _parse_candles(
-            await client.get_candles(
-                str(feed["address"]),
-                interval,
-                chain_id=int(feed["chain_id"]),
-                before_timestamp=before,
-            )
-        )
-        requests += 1
-        if not page and requests == 1 and before is not None:
-            before = None
-            limit += 1
-            continue
-        if not page:
-            break
-        page_oldest = page[0][0]
-        if oldest is not None and page_oldest >= oldest:
-            break
-        for opened, close in page:
-            by_open[opened] = close
-        oldest = page_oldest
-        if page_oldest <= start_ms:
-            break
-        before = page_oldest // 1000 - 1
-    return sorted(by_open.items()), requests
-
-
 async def fetch_token_price_rows(
     feeds: Sequence[Mapping[str, Any]],
     *,
@@ -286,39 +217,44 @@ async def fetch_token_price_rows(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """USD close per candle for each resolved token feed (chain_id, address,
     interval pinned), labelled at the candle close, in-progress candle
-    dropped. `since` narrows an incremental refresh; `days` bounds a backfill."""
+    dropped. `since` narrows an incremental refresh; `days` bounds a backfill.
+    History is read by window from the on-chain data source's store."""
     now_ms = int(time.time() * 1000)
     rows: list[dict[str, Any]] = []
     per_series: dict[str, int] = {}
-    pages: dict[str, int] = {}
+    requests: dict[str, int] = {}
     errors: dict[str, str] = {}
     cadence: dict[str, str] = {}
     for feed in feeds:
         name = feed_feature_name(feed)
         try:
             interval = str(feed["interval"])
-            step_ms = INTERVAL_MS[interval]
             start_ms = (
                 int(since.timestamp() * 1000)
                 if since is not None
                 else now_ms - int(float(days) * 86_400_000)
             )
-            candles, requests = await _page_token_candles(
-                client, feed, interval, start_ms=start_ms, now_ms=now_ms
+            window = await fetch_token_bar_window(
+                str(feed["token_id"]),
+                interval,
+                start_ms=start_ms - INTERVAL_MS[interval],
+                end_ms=now_ms,
+                client=client,
+                chain_id=int(feed["chain_id"]),
+                address=str(feed["address"]),
             )
-            pages[name] = requests
+            requests[name] = window.requests
             count = 0
-            for opened, close in candles:
-                close_ms = opened + step_ms
-                if close_ms > now_ms or close_ms < start_ms:
+            for bar in window.bars:
+                if bar.close_ms < start_ms:
                     continue
                 rows.append(
                     {
                         "timestamp": pd.Timestamp(
-                            close_ms, unit="ms", tz="UTC"
+                            bar.close_ms, unit="ms", tz="UTC"
                         ).isoformat(),
                         "name": name,
-                        "value": close,
+                        "value": bar.close,
                         "symbol": None,
                     }
                 )
@@ -332,7 +268,7 @@ async def fetch_token_price_rows(
         "feature_kind": "token_price",
         "days": float(days),
         "per_series": per_series,
-        "pages": pages,
+        "requests": requests,
         "errors": errors,
         "cadence": cadence,
         "label_convention": BAR_CLOSE_LABEL,

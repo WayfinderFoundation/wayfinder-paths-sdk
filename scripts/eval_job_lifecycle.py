@@ -1576,26 +1576,40 @@ DEFI_YIELD_MARKS = {"hyperliquid:BTC": 60_000, f"yield:{YIELD_FEED_NAME}": 0.08}
 
 
 class _FakeCandles:
-    """Two days of hourly candles the way the venue serves them: open times
-    in ms, string prices, newest page first, cursor in seconds."""
+    """Hourly candles the way the on-chain data source's store serves them:
+    a window on candle OPEN in ms, rows oldest first, string prices, and the
+    open of the earliest candle it holds (a token that launched `days` ago)."""
 
-    async def get_candles(self, coin, interval, *, chain_id, before_timestamp=None):
+    def __init__(self, days: int = 2, *, base_price: float = 2400.0) -> None:
+        self.days = days
+        self.base_price = base_price
+        self.calls: list[tuple[int, int]] = []
+
+    def rows(self) -> list[dict[str, Any]]:
         now_ms = int(time.time() * 1000)
         this_open = now_ms - (now_ms % 3_600_000)
-        rows = [
+        count = self.days * 24
+        return [
             {
-                "t": this_open - 3_600_000 * (48 - index),
-                "o": str(2400 + index),
-                "h": str(2410 + index),
-                "l": str(2390 + index),
-                "c": str(2405.5 + index),
+                "t": this_open - 3_600_000 * (count - index),
+                "o": str(self.base_price + index),
+                "h": str(self.base_price + 10 + index),
+                "l": str(self.base_price - 10 + index),
+                "c": str(self.base_price + 5.5 + index),
                 "v": "1",
             }
-            for index in range(49)
+            for index in range(count + 1)
         ]
-        if before_timestamp is not None:
-            rows = [row for row in rows if row["t"] // 1000 <= before_timestamp]
-        return rows[-1000:]
+
+    async def get_candles_window(self, coin, interval, *, chain_id, start_ms, end_ms):
+        self.calls.append((start_ms, end_ms))
+        rows = self.rows()
+        return {
+            "rows": [row for row in rows if start_ms <= int(row["t"]) < end_ms],
+            "chain_id": chain_id,
+            "address": coin,
+            "history_start_ms": int(rows[0]["t"]),
+        }
 
 
 def _paused_starter(workspace: Path, job_id: str) -> None:

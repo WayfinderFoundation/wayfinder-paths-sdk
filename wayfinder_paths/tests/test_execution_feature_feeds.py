@@ -18,28 +18,26 @@ HOUR_MS = 3_600_000
 
 
 class FakeTokenClient:
-    """Serves hourly candles newest-page-first the way the venue does: rows
-    carry OPEN times in ms and string prices, the cursor is in seconds."""
+    """Answers candle windows the way the store does: rows oldest first with
+    OPEN times in ms and string prices, opens in `[start_ms, end_ms)`."""
 
-    def __init__(
-        self, candles: list[dict[str, Any]], *, page_size: int = 10, quirk: bool = False
-    ):
+    def __init__(self, candles: list[dict[str, Any]], *, history_start: bool = True):
         self.candles = sorted(candles, key=lambda row: int(row["t"]))
-        self.page_size = page_size
-        self.quirk = quirk
-        self.calls: list[int | None] = []
+        self.history_start = history_start
+        self.calls: list[tuple[int, int]] = []
 
-    async def get_candles(self, coin, interval, *, chain_id, before_timestamp=None):
-        self.calls.append(before_timestamp)
+    async def get_candles_window(self, coin, interval, *, chain_id, start_ms, end_ms):
+        self.calls.append((start_ms, end_ms))
         assert coin.startswith("0x") and chain_id == 8453 and interval == "1h"
-        if self.quirk and len(self.calls) == 1 and before_timestamp is not None:
-            return []
-        rows = [
-            row
-            for row in self.candles
-            if before_timestamp is None or int(row["t"]) // 1000 <= before_timestamp
-        ]
-        return rows[-self.page_size :]
+        rows = [row for row in self.candles if start_ms <= int(row["t"]) < end_ms]
+        return {
+            "rows": rows,
+            "chain_id": chain_id,
+            "address": coin,
+            "history_start_ms": int(self.candles[0]["t"])
+            if self.history_start
+            else None,
+        }
 
 
 def _hourly_candles(count: int, *, now_ms: int) -> list[dict[str, Any]]:
@@ -100,16 +98,17 @@ def test_token_feed_interval_coarsens_to_the_supported_set() -> None:
         ff.token_feed_interval("soon")
 
 
-def test_token_rows_are_close_labelled_floats_paged_backward() -> None:
+def test_token_rows_are_close_labelled_floats_from_one_window() -> None:
     now_ms = int(time.time() * 1000)
-    client = FakeTokenClient(_hourly_candles(30, now_ms=now_ms), page_size=10)
+    client = FakeTokenClient(_hourly_candles(30, now_ms=now_ms))
     rows, meta = asyncio.run(
         ff.fetch_token_price_rows([_token_feed()], days=1.0, client=client)
     )
     name = "token_price:ethereum-base"
-    # a day of hourly candles minus the in-progress hour; older pages stop at start
+    # a day of hourly candles minus the in-progress hour
     assert meta["per_series"][name] == 24 and meta["errors"] == {}
     assert meta["cadence"][name] == "1h" and meta["label_convention"]
+    assert meta["requests"][name] == 1
     stamps = [pd.Timestamp(row["timestamp"]) for row in rows]
     assert stamps == sorted(stamps)
     newest_open = client.candles[-1]["t"]
@@ -120,25 +119,13 @@ def test_token_rows_are_close_labelled_floats_paged_backward() -> None:
         isinstance(row["value"], float) and row["symbol"] is None for row in rows
     )
     assert rows[-1]["value"] == 100.5 + 28
-    assert (
-        len(client.calls) >= 3 and client.calls[1] == client.calls[1] // 1
-    )  # cursor is seconds
-    assert client.calls[1] < client.calls[0]
-
-
-def test_token_first_page_quirk_retries_unbounded_once() -> None:
-    now_ms = int(time.time() * 1000)
-    client = FakeTokenClient(_hourly_candles(5, now_ms=now_ms), quirk=True)
-    rows, meta = asyncio.run(
-        ff.fetch_token_price_rows([_token_feed()], days=1.0, client=client)
-    )
-    assert client.calls[0] is not None and client.calls[1] is None
-    assert meta["per_series"]["token_price:ethereum-base"] == 4 and rows
+    (window,) = client.calls
+    assert window == (now_ms - 86_400_000 - HOUR_MS, now_ms)
 
 
 def test_token_since_narrows_an_incremental_fetch() -> None:
     now_ms = int(time.time() * 1000)
-    client = FakeTokenClient(_hourly_candles(30, now_ms=now_ms), page_size=10)
+    client = FakeTokenClient(_hourly_candles(30, now_ms=now_ms))
     since = pd.Timestamp(now_ms, unit="ms", tz="UTC") - pd.Timedelta(hours=3)
     rows, _ = asyncio.run(
         ff.fetch_token_price_rows(
@@ -148,7 +135,7 @@ def test_token_since_narrows_an_incremental_fetch() -> None:
     assert 2 <= len(rows) <= 3 and all(
         pd.Timestamp(r["timestamp"]) >= since for r in rows
     )
-    assert len(client.calls) == 1
+    assert client.calls == [(int(since.timestamp() * 1000) - HOUR_MS, now_ms)]
 
 
 def test_token_errors_are_isolated_per_series() -> None:
