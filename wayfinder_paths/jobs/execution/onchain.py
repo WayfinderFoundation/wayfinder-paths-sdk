@@ -441,7 +441,7 @@ class OnchainVenueAdapter:
                 quote_token=params.get("quote_token"),
             )
         else:
-            self.broker = _paper_broker(ONCHAIN_CAPABILITIES, params)
+            self.broker = _paper_broker(ONCHAIN_CAPABILITIES, params, venue="onchain")
 
 
 def _token_resolution(spec: Any) -> dict[str, Any]:

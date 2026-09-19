@@ -135,7 +135,8 @@ def test_warmup_rebasing_counts_only_test_window_pnl(tmp_path: Path) -> None:
         _script(tmp_path),
         PreparedExecutionDataset.from_rows(bars),
         _spec(),
-        {"direction": ["long"]},
+        # the declared venue's default fee would otherwise shave the move
+        {"direction": ["long"], "fee_bps": [0.0]},
         folds=1,
         test_bars=50,
         anchored=True,

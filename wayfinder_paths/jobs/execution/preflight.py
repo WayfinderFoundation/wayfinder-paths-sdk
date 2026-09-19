@@ -31,6 +31,7 @@ from wayfinder_paths.jobs.execution.primitives import (
 from wayfinder_paths.jobs.execution.purity import PurityViolation
 from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
 from wayfinder_paths.jobs.execution.venues import (
+    VENUE_CAPABILITIES,
     MarketEvent,
     VenueCapabilities,
     VenueState,
@@ -287,9 +288,10 @@ class ReplayBroker:
         reject_fills: bool = False,
         ambiguous_fill_at: int | None = None,
         venue_positions: dict[str, PositionRecord] | None = None,
+        capabilities: VenueCapabilities | None = None,
     ) -> None:
-        self.capabilities = PREFLIGHT_CAPS
-        self._paper = PaperBroker(capabilities=PREFLIGHT_CAPS)
+        self.capabilities = capabilities or PREFLIGHT_CAPS
+        self._paper = PaperBroker(capabilities=self.capabilities)
         self.reject_fills = reject_fills
         self.ambiguous_fill_at = ambiguous_fill_at
         self.venue_positions = venue_positions
@@ -339,11 +341,21 @@ class ReplayBroker:
 
 class ReplayAdapter:
     name = "replay"
-    capabilities = PREFLIGHT_CAPS
 
     def __init__(self, feed: ReplayFeed, broker: ReplayBroker) -> None:
         self.feed = feed
         self.broker = broker
+        self.capabilities = broker.capabilities
+
+
+def preflight_capabilities(spec: ExecutionSpec) -> VenueCapabilities:
+    """The first declared venue's registered contract, so preflight scenarios
+    reject what live rejects; the permissive default for undeclared venues."""
+    for venue in spec.venues:
+        capabilities = VENUE_CAPABILITIES.get(str(venue))
+        if capabilities is not None:
+            return capabilities
+    return PREFLIGHT_CAPS
 
 
 def run_preflight(
@@ -426,6 +438,9 @@ async def _run_scenarios(
 ) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     job = WayfinderJob.from_dict(job_data)
+    caps = preflight_capabilities(
+        ExecutionSpec.from_dict(job_data.get("execution_spec") or {})
+    )
     entrypoint = store.resolve_script_entrypoint(
         job.id, job_data, candidate_dir=candidate_dir
     )
@@ -483,7 +498,7 @@ async def _run_scenarios(
     results = await drive(
         sandbox,
         feed=ReplayFeed(bars),
-        broker=ReplayBroker(),
+        broker=ReplayBroker(capabilities=caps),
         ticks=tick_count,
     )
     completed = all(result.get("ok") for result in results)
@@ -524,7 +539,7 @@ async def _run_scenarios(
 
     # --- stale feed: no opens against dead data ---------------------------
     sandbox = sandbox_dir("stale")
-    broker = ReplayBroker()
+    broker = ReplayBroker(capabilities=caps)
     stale_results = await drive(
         sandbox,
         feed=ReplayFeed(bars, stale_after=0),
@@ -548,7 +563,7 @@ async def _run_scenarios(
     rejected_results = await drive(
         sandbox,
         feed=ReplayFeed(bars),
-        broker=ReplayBroker(reject_fills=True),
+        broker=ReplayBroker(reject_fills=True, capabilities=caps),
         ticks=tick_count,
     )
     final_positions = rejected_results[-1].get("positions") if rejected_results else {}
@@ -565,7 +580,7 @@ async def _run_scenarios(
     ambiguous_results = await drive(
         sandbox,
         feed=ReplayFeed(bars),
-        broker=ReplayBroker(ambiguous_fill_at=1),
+        broker=ReplayBroker(ambiguous_fill_at=1, capabilities=caps),
         ticks=tick_count,
     )
     ambiguous_ok = True
@@ -586,7 +601,7 @@ async def _run_scenarios(
 
     # --- restart mid-position: adopt venue state, don't duplicate ---------
     sandbox = sandbox_dir("restart")
-    seed_broker = ReplayBroker()
+    seed_broker = ReplayBroker(capabilities=caps)
     seed_results = await drive(
         sandbox,
         feed=ReplayFeed(bars),
@@ -606,7 +621,7 @@ async def _run_scenarios(
         for symbol, record in held.items()
     }
     (sandbox / "state" / "engine_state.json").unlink(missing_ok=True)
-    restart_broker = ReplayBroker(venue_positions=venue_positions)
+    restart_broker = ReplayBroker(venue_positions=venue_positions, capabilities=caps)
     restart_results = await drive(
         sandbox,
         mode="live",
@@ -628,7 +643,7 @@ async def _run_scenarios(
 
     # --- duplicate tick idempotency ----------------------------------------
     sandbox = sandbox_dir("duplicate")
-    dup_broker = ReplayBroker()
+    dup_broker = ReplayBroker(capabilities=caps)
     dup_results = await drive(
         sandbox,
         feed=ReplayFeed(bars),

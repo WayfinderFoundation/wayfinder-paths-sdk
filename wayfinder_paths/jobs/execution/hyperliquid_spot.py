@@ -215,7 +215,9 @@ class HyperliquidSpotAdapter:
                 else 7.0,
             )
         else:
-            self.broker = _paper_broker(HYPERLIQUID_SPOT_CAPABILITIES, params)
+            self.broker = _paper_broker(
+                HYPERLIQUID_SPOT_CAPABILITIES, params, venue="hyperliquid_spot"
+            )
 
 
 def build_hyperliquid_spot_adapter(

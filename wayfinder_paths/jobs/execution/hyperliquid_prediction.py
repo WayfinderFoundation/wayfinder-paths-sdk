@@ -357,7 +357,11 @@ class HyperliquidPredictionAdapter:
                 slippage=float(params.get("live_slippage") or 0.02),
             )
         else:
-            self.broker = _paper_broker(HYPERLIQUID_PREDICTION_CAPABILITIES, params)
+            self.broker = _paper_broker(
+                HYPERLIQUID_PREDICTION_CAPABILITIES,
+                params,
+                venue="hyperliquid_prediction",
+            )
 
 
 def build_hyperliquid_prediction_adapter(

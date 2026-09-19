@@ -28,6 +28,8 @@ from wayfinder_paths.jobs.execution.primitives import (
 )
 from wayfinder_paths.jobs.execution.token_bars import is_token_symbol
 from wayfinder_paths.jobs.execution.venues import (
+    DEFAULT_MAKER_FEE_BPS,
+    DEFAULT_TAKER_FEE_BPS,
     FundingSnapshot,
     MarketEvent,
     NativeProtectionResult,
@@ -572,7 +574,9 @@ class HyperliquidPerpAdapter:
                 ),
             )
         else:
-            self.broker = _paper_broker(HYPERLIQUID_CAPABILITIES, params)
+            self.broker = _paper_broker(
+                HYPERLIQUID_CAPABILITIES, params, venue="hyperliquid"
+            )
 
 
 def build_hyperliquid_adapter(
@@ -840,13 +844,22 @@ async def _cancel_hyperliquid_resting_order(
 
 
 def _paper_broker(
-    capabilities: VenueCapabilities, params: dict[str, Any]
+    capabilities: VenueCapabilities, params: dict[str, Any], *, venue: str = ""
 ) -> PaperBroker:
+    """Paper fills priced like the backtest: an explicit fee wins, else the
+    venue's registered default, so paper never trades a venue for free."""
+    raw_fee = params.get("fee_bps")
     raw_maker_fee = params.get("maker_fee_bps")
     return PaperBroker(
         capabilities=capabilities,
-        fee_bps=float(params.get("fee_bps") or 0.0),
-        maker_fee_bps=1.5 if raw_maker_fee is None else float(raw_maker_fee),
+        fee_bps=DEFAULT_TAKER_FEE_BPS.get(venue, 0.0)
+        if raw_fee is None
+        else float(raw_fee),
+        maker_fee_bps=(
+            DEFAULT_MAKER_FEE_BPS.get(venue, 1.5)
+            if raw_maker_fee is None
+            else float(raw_maker_fee)
+        ),
         slippage_bps=float(params.get("slippage_bps") or 0.0),
     )
 

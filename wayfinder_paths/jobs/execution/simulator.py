@@ -51,6 +51,9 @@ from wayfinder_paths.jobs.execution.primitives import (
 )
 from wayfinder_paths.jobs.execution.validation import validate_execution_trace
 from wayfinder_paths.jobs.execution.venues import (
+    DEFAULT_MAKER_FEE_BPS,
+    DEFAULT_TAKER_FEE_BPS,
+    VENUE_CAPABILITIES,
     MarketEvent,
     VenueCapabilities,
     VenueState,
@@ -161,7 +164,12 @@ class BacktestBroker:
         maker_fee_bps: float = 0.0,
         slippage_bps: float = 0.0,
         stop_market_slippage_bps: float = 0.0,
+        capabilities: VenueCapabilities | None = None,
     ) -> None:
+        # The class attribute stays the permissive perp default (paper reads
+        # it); a venue-bound broker carries that venue's real contract.
+        if capabilities is not None:
+            self.capabilities = capabilities
         self.fee_bps = fee_bps
         self.maker_fee_bps = maker_fee_bps
         self.slippage_bps = slippage_bps
@@ -273,9 +281,11 @@ class BacktestBroker:
 # strategy — and disproportionately the small-edge Hyperliquid scalpers whose
 # per-trade edge is smaller than real fees. Hyperliquid base taker is 4.5 bps
 # (HIP-3 / builder-deployed markets can be higher, so this is a floor).
-# Strategies override with params["fee_bps"] (e.g. 0.0 for a maker-only book).
-_DEFAULT_TAKER_FEE_BPS: dict[str, float] = {"hyperliquid": 4.5, "hl": 4.5}
-_DEFAULT_MAKER_FEE_BPS: dict[str, float] = {"hyperliquid": 1.5, "hl": 1.5}
+# Strategies override with params["fee_bps"] (e.g. 0.0 for a maker-only book);
+# the per-venue defaults live with the venue registry so paper and preflight
+# price a venue exactly like the backtest does.
+_DEFAULT_TAKER_FEE_BPS = DEFAULT_TAKER_FEE_BPS
+_DEFAULT_MAKER_FEE_BPS = DEFAULT_MAKER_FEE_BPS
 
 
 def _strategy_venue(strategy: Any) -> str:
@@ -287,26 +297,64 @@ def _strategy_venue(strategy: Any) -> str:
     return ""
 
 
-def _resolve_fee_bps(params_data: Mapping[str, Any], strategy: Any = None) -> float:
+def _fee_venue(
+    params_data: Mapping[str, Any], strategy: Any = None, venue: str | None = None
+) -> str:
+    return (
+        str(venue or params_data.get("venue") or _strategy_venue(strategy) or "")
+        .strip()
+        .lower()
+    )
+
+
+def _resolve_fee_bps(
+    params_data: Mapping[str, Any], strategy: Any = None, venue: str | None = None
+) -> float:
     explicit = params_data.get("fee_bps")
     if explicit is not None:
         return float(explicit)
-    venue = (
-        str(params_data.get("venue") or _strategy_venue(strategy) or "").strip().lower()
-    )
-    return _DEFAULT_TAKER_FEE_BPS.get(venue, 0.0)
+    return _DEFAULT_TAKER_FEE_BPS.get(_fee_venue(params_data, strategy, venue), 0.0)
 
 
 def _resolve_maker_fee_bps(
-    params_data: Mapping[str, Any], strategy: Any = None
+    params_data: Mapping[str, Any], strategy: Any = None, venue: str | None = None
 ) -> float:
     explicit = params_data.get("maker_fee_bps")
     if explicit is not None:
         return float(explicit)
-    venue = (
-        str(params_data.get("venue") or _strategy_venue(strategy) or "").strip().lower()
-    )
-    return _DEFAULT_MAKER_FEE_BPS.get(venue, 0.0)
+    return _DEFAULT_MAKER_FEE_BPS.get(_fee_venue(params_data, strategy, venue), 0.0)
+
+
+def _backtest_brokers(
+    spec: ExecutionSpec, params_data: Mapping[str, Any], strategy: Any
+) -> dict[str, BacktestBroker]:
+    """One broker per declared venue, carrying that venue's registered
+    contract and default costs, so a backtest rejects what paper and live
+    reject and never trades a venue for free. `"*"` answers intents that
+    name no declared venue and is the first venue's broker."""
+    slippage_bps = float(params_data.get("slippage_bps") or 0.0)
+    stop_slippage_bps = float(params_data.get("stop_market_slippage_bps") or 0.0)
+    brokers: dict[str, BacktestBroker] = {}
+    for venue in spec.venues:
+        brokers[str(venue)] = BacktestBroker(
+            fee_bps=_resolve_fee_bps(params_data, strategy, venue=str(venue)),
+            maker_fee_bps=_resolve_maker_fee_bps(
+                params_data, strategy, venue=str(venue)
+            ),
+            slippage_bps=slippage_bps,
+            stop_market_slippage_bps=stop_slippage_bps,
+            capabilities=VENUE_CAPABILITIES.get(str(venue)),
+        )
+    if brokers:
+        brokers["*"] = next(iter(brokers.values()))
+    else:
+        brokers["*"] = BacktestBroker(
+            fee_bps=_resolve_fee_bps(params_data, strategy),
+            maker_fee_bps=_resolve_maker_fee_bps(params_data, strategy),
+            slippage_bps=slippage_bps,
+            stop_market_slippage_bps=stop_slippage_bps,
+        )
+    return brokers
 
 
 def _percentile(values: list[float], pct: float) -> float:
@@ -424,14 +472,7 @@ def simulate_execution(
         dict(dataset.metadata),
         list(dataset.market_events),
     )
-    broker = BacktestBroker(
-        fee_bps=_resolve_fee_bps(params_data, strategy),
-        maker_fee_bps=_resolve_maker_fee_bps(params_data, strategy),
-        slippage_bps=float(params_data.get("slippage_bps") or 0.0),
-        stop_market_slippage_bps=float(
-            params_data.get("stop_market_slippage_bps") or 0.0
-        ),
-    )
+    brokers = _backtest_brokers(spec, params_data, strategy)
     state = EngineState()
     trace = ExecutionTrace(execution_spec=spec.to_dict())
     trades: list[dict[str, Any]] = []
@@ -500,7 +541,7 @@ def simulate_execution(
             tick = await run_tick(
                 strategy,
                 view=window.slice_view(dataset.bars, index),
-                brokers={"*": broker},
+                brokers=brokers,
                 state=state,
                 spec=spec,
                 params=params_data,
