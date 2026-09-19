@@ -2,8 +2,9 @@
 
 Symbols are Hyperliquid spot pairs (``HYPE/USDC``, ``PURR/USDC``), the same
 names the Hyperliquid tools use. A buy opens a long-only inventory position
-priced in USDC, a sell closes it; no shorts, no leverage, no brackets. Paper
-fills go through the shared paper broker at the pair's mid; live fills go
+priced in USDC, a sell closes it; no shorts, no leverage, no brackets. Bars
+are the pair's completed candles (the venue's candle coin is `@<index>`, or
+`PURR/USDC` for index 0). Paper fills go through the shared paper broker; live fills go
 through the same market-order tool the perp venue uses, on the job wallet,
 so a spot leg and a perp leg can share one account (delta-neutral books).
 """
@@ -14,9 +15,17 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
+
 from wayfinder_paths.jobs.execution.hyperliquid import (
+    SafeHyperliquidMarketClient,
+    _lookback_hours,
     _paper_broker,
     _submit_market_order,
+    hyperliquid_candles_to_completed_view,
+)
+from wayfinder_paths.jobs.execution.hyperliquid_prediction import (
+    DirectHyperliquidCandleClient,
 )
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
@@ -50,12 +59,69 @@ def is_spot_pair(symbol: str) -> bool:
     return "/" in str(symbol)
 
 
-class HyperliquidSpotFeed:
-    """Mid price per spot pair from the venue's mid-price table, one completed
-    bar per read (the tick only needs the latest close)."""
+class DirectHyperliquidSpotIndex:
+    """Spot pair name → universe index from HL's public spotMeta, fetched once
+    per process. Index 0 is `PURR/USDC`; every other pair's candle coin is
+    `@<index>`."""
 
-    def __init__(self, mids: Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str = "https://api.hyperliquid.xyz/info",
+        timeout: float = 15.0,
+    ) -> None:
+        self.base_url = base_url
+        self.timeout = timeout
+        self._index: dict[str, int] | None = None
+
+    async def index_for(self, pair: str) -> int | None:
+        if self._index is None:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(self.base_url, json={"type": "spotMeta"})
+                response.raise_for_status()
+            meta = response.json() or {}
+            tokens = {
+                int(token["index"]): str(token["name"])
+                for token in meta.get("tokens") or []
+                if token.get("index") is not None and token.get("name")
+            }
+            index: dict[str, int] = {}
+            for entry in meta.get("universe") or []:
+                pair_tokens = entry.get("tokens") or []
+                if len(pair_tokens) < 2 or entry.get("index") is None:
+                    continue
+                base = tokens.get(int(pair_tokens[0]))
+                quote = tokens.get(int(pair_tokens[1]))
+                if base and quote:
+                    index[f"{base}/{quote}"] = int(entry["index"])
+            self._index = index
+        return self._index.get(str(pair))
+
+
+def spot_candle_coin(index: int) -> str:
+    return "PURR/USDC" if int(index) == 0 else f"@{int(index)}"
+
+
+class HyperliquidSpotFeed:
+    """Completed candles per spot pair. A pair resolves to its candle coin
+    (`PURR/USDC` for index 0, `@<index>` otherwise); the gateway candle
+    client answers first, HL's public candleSnapshot on failure or empty,
+    and the mid-price table stands in for a pair with no candles yet, as one
+    flat bar. Symbols that are not pairs belong to another venue's feed."""
+
+    def __init__(
+        self,
+        mids: Any | None = None,
+        *,
+        client: Any | None = None,
+        fallback: Any | None = None,
+        spot_index: Any | None = None,
+    ) -> None:
         self._mids = mids
+        self._safe = SafeHyperliquidMarketClient(client)
+        self._fallback = fallback or DirectHyperliquidCandleClient()
+        self._spot_index = spot_index or DirectHyperliquidSpotIndex()
+        self._coins: dict[str, str | None] = {}
 
     async def _mid_prices(self, symbols: Sequence[str]) -> Mapping[str, Any]:
         if self._mids is not None:
@@ -67,6 +133,37 @@ class HyperliquidSpotFeed:
         result = (outcome or {}).get("result") or {}
         return result.get("prices") or {}
 
+    async def _candle_coin(self, pair: str) -> str | None:
+        if pair not in self._coins:
+            try:
+                index = await self._spot_index.index_for(pair)
+            except Exception:  # noqa: BLE001 — an unreachable index falls back to mids
+                index = None
+            self._coins[pair] = spot_candle_coin(index) if index is not None else None
+        return self._coins[pair]
+
+    async def _bars_for(
+        self, pair: str, interval: str, lookback_hours: int
+    ) -> list[dict[str, Any]]:
+        coin = await self._candle_coin(pair)
+        if coin is None:
+            return []
+        rows: list[dict[str, Any]] = []
+        try:
+            view = await self._safe.get_completed_bars(
+                coin, interval, lookback_hours=lookback_hours
+            )
+            rows = view.to_rows()
+        except Exception:  # noqa: BLE001 — the direct snapshot is the fallback
+            rows = []
+        if not rows:
+            raw = await self._fallback.get_candles(
+                coin, interval=interval, lookback_hours=lookback_hours
+            )
+            rows = hyperliquid_candles_to_completed_view(coin, raw).to_rows()
+        # candles come back under the coin; the book knows the pair
+        return [{**row, "symbol": pair} for row in rows]
+
     async def get_completed_bars(
         self,
         symbols: Sequence[str],
@@ -75,25 +172,39 @@ class HyperliquidSpotFeed:
         lookback_bars: int,
         as_of: datetime | None = None,
     ) -> CompletedBarsView:
-        stamp = (as_of or datetime.now(UTC)).isoformat()
-        prices = await self._mid_prices(symbols)
+        lookback_hours = _lookback_hours(lookback_bars, interval)
         rows: list[Mapping[str, Any]] = []
+        without_candles: list[str] = []
         for symbol in symbols:
-            mid = prices.get(symbol)
-            if mid is None:
+            if not is_spot_pair(symbol):
                 continue
-            value = float(mid)
-            rows.append(
-                {
-                    "timestamp": stamp,
-                    "symbol": symbol,
-                    "open": value,
-                    "high": value,
-                    "low": value,
-                    "close": value,
-                }
-            )
-        return CompletedBarsView.from_rows(rows)
+            bars = await self._bars_for(str(symbol), interval, lookback_hours)
+            if bars:
+                rows.extend(bars)
+            else:
+                without_candles.append(str(symbol))
+        if without_candles:
+            stamp = (as_of or datetime.now(UTC)).isoformat()
+            prices = await self._mid_prices(without_candles)
+            for symbol in without_candles:
+                mid = prices.get(symbol)
+                if mid is None:
+                    continue
+                value = float(mid)
+                rows.append(
+                    {
+                        "timestamp": stamp,
+                        "symbol": symbol,
+                        "open": value,
+                        "high": value,
+                        "low": value,
+                        "close": value,
+                    }
+                )
+        merged = CompletedBarsView.from_rows(rows)
+        if as_of is not None:
+            merged = merged.through(as_of)
+        return merged
 
     async def get_events(
         self, symbols: Sequence[str], *, since: datetime | None = None

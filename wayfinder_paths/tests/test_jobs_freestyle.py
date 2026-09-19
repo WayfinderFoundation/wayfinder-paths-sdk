@@ -1221,9 +1221,104 @@ def test_hyperliquid_spot_live_broker_submits_a_spot_market_order(monkeypatch) -
     async def mids(symbols):
         return {"HYPE/USDC": 21.5}
 
+    class _NoIndex:
+        async def index_for(self, pair):
+            return None  # a pair the spot universe does not list falls back to mids
+
     view = asyncio.run(
-        HyperliquidSpotFeed(mids=mids).get_completed_bars(
+        HyperliquidSpotFeed(mids=mids, spot_index=_NoIndex()).get_completed_bars(
             ["HYPE/USDC"], "5m", lookback_bars=2
         )
     )
     assert view.latest("HYPE/USDC")["close"] == pytest.approx(21.5)
+
+
+SMA_TOKEN_SCRIPT = """
+from wayfinder_paths.jobs.freestyle import FreestyleSpec
+
+SPEC = FreestyleSpec(venues=("onchain",), max_notional_per_tick=250, max_loss_usd=50)
+TOKEN = "ethereum-base"
+
+
+def tick(ctx):
+    bars = ctx.bars("onchain", TOKEN, n=20, interval="1h")
+    sma = sum(bar["close"] for bar in bars) / len(bars)
+    price = ctx.quote("onchain", TOKEN)
+    if price > sma * 1.01 and TOKEN not in ctx.positions:
+        ctx.act({"venue": "onchain", "kind": "buy", "symbol": TOKEN, "notional": 200})
+    elif price < sma * 0.99 and TOKEN in ctx.positions:
+        ctx.act({"venue": "onchain", "kind": "sell", "symbol": TOKEN, "reason": "below sma"})
+    ctx.log(f"sma={sma:.2f} bars={len(bars)}")
+"""
+
+
+def test_stub_gateway_bars_are_flat_at_the_mark_one_interval_apart() -> None:
+    import pandas as pd
+
+    from wayfinder_paths.jobs.freestyle import runtime as rt
+
+    gateway = rt.StubVenueGateway(marks={"hyperliquid:BTC": 50_000.0})
+    rows = gateway.bars("hyperliquid", "BTC", "1h", 5)
+    assert len(rows) == 5
+    assert all(row["close"] == pytest.approx(50_000.0) for row in rows)
+    stamps = [pd.Timestamp(row["timestamp"]) for row in rows]
+    assert stamps == sorted(stamps)
+    assert (stamps[1] - stamps[0]) == pd.Timedelta(hours=1)
+    assert set(rows[0]) == {"timestamp", "open", "high", "low", "close", "volume"}
+
+
+def test_venue_gateway_bars_reads_a_window_from_the_feed(monkeypatch) -> None:
+    from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
+    from wayfinder_paths.jobs.freestyle import runtime as rt
+
+    seen: list[tuple[list[str], str, int]] = []
+    rows = [
+        {
+            "timestamp": f"2026-01-01T0{index}:00:00Z",
+            "symbol": "ethereum-base",
+            "open": 1.0 + index,
+            "high": 2.0 + index,
+            "low": 0.5 + index,
+            "close": 1.5 + index,
+            "volume": 10.0,
+        }
+        for index in range(3)
+    ]
+
+    class _Feed:
+        async def get_completed_bars(
+            self, symbols, interval, *, lookback_bars, as_of=None
+        ):
+            seen.append((list(symbols), interval, lookback_bars))
+            return CompletedBarsView.from_rows(rows)
+
+    class _Adapter:
+        feed = _Feed()
+
+    monkeypatch.setattr(rt, "build_adapter", lambda venue, **kwargs: _Adapter())
+    gateway = rt.VenueGateway(mode="paper", params={}, quote_interval="5m")
+    bars = gateway.bars("onchain", "ethereum-base", "1h", 3)
+    assert seen == [(["ethereum-base"], "1h", 3)]
+    assert [bar["close"] for bar in bars] == [1.5, 2.5, 3.5]
+    assert (
+        bars[0]["timestamp"].startswith("2026-01-01T00:00:00")
+        and bars[0]["volume"] == 10.0
+    )
+    with pytest.raises(LookupError, match="no bars"):
+        gateway.bars("onchain", "missing-base", "1h", 3)
+
+
+def test_dry_run_bars_feed_a_moving_average_script(tmp_path: Path) -> None:
+    store, job = _job(
+        tmp_path,
+        SMA_TOKEN_SCRIPT,
+        freestyle={"validation_marks": {"onchain:ethereum-base": 2000.0}},
+    )
+    report = validate_freestyle_job(job.id, store=store)
+    assert report["status"] == "passed", [
+        c for c in report["checks"] if not c["passed"]
+    ]
+    dry = report["freestyle"]["dry_run"]
+    assert dry["bars"] == {"onchain:ethereum-base@1h": 20}
+    assert "onchain" in dry["venues_used"]
+    assert any("sma=" in line for line in dry["logs"])
