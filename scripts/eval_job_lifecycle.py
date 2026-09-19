@@ -2827,7 +2827,12 @@ def _ny_sweep_day(day: datetime) -> list[dict[str, Any]]:
 
 
 def _write_input_bars(
-    root: Path, rows: list[dict[str, Any]], *, days: int, interval: str
+    root: Path,
+    rows: list[dict[str, Any]],
+    *,
+    days: int,
+    interval: str,
+    metadata_extra: dict[str, Any] | None = None,
 ) -> None:
     path = root / "results" / "backtest" / "input_bars.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2838,6 +2843,7 @@ def _write_input_bars(
                     "days": days,
                     "interval": interval,
                     "source": "eval fixture",
+                    **(metadata_extra or {}),
                 },
                 "bars": rows,
             }
@@ -2856,9 +2862,15 @@ def _create_harnessed_job(
     symbols: list[str],
     interval: str,
     lookback_bars: int,
+    venue: str = "hyperliquid",
+    token_resolution: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     from wayfinder_paths.jobs.compiler import JobCompiler
     from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
+    from wayfinder_paths.jobs.execution.spec_defaults import (
+        harnessed_execution_params,
+        harnessed_execution_spec,
+    )
     from wayfinder_paths.jobs.launch import hold_job
     from wayfinder_paths.jobs.models import WayfinderJob
 
@@ -2872,38 +2884,12 @@ def _create_harnessed_job(
         agent_mode="intervene",
         execution_contract="jobs_v1",
     )
-    job.execution_spec = {
-        "market_kind": "perp",
-        "view_type": "completed_bars",
-        "bar_model": "completed_only",
-        "fill_model": "next_bar_open",
-        "ohlc_rules": {
-            "use_high_low_for_stops": True,
-            "allow_close_only_entries": False,
-            "same_bar_fill": False,
-            "same_bar_policy": "conservative",
-        },
-        "data_contract": {
-            "candles_source": "sdk_only",
-            "no_external_ccxt": True,
-            "rate_limit_safe": True,
-            "bar_interval": interval,
-            "symbols": list(symbols),
-            "max_bar_age_intervals": 2,
-            "stale_policy": "skip",
-        },
-        "validation": {"mode": "strict", "require_scenarios": False},
-        "venues": ["hyperliquid"],
-    }
-    job.execution_params = {
-        "symbols": list(symbols),
-        "venue": "hyperliquid",
-        "initial_capital": 10_000.0,
-        "fee_bps": 4.5,
-        "slippage_bps": 3.5,
-        "min_trade_notional": 25.0,
-        "lookback_bars": lookback_bars,
-    }
+    job.execution_spec = harnessed_execution_spec(
+        symbols, interval, venue=venue, token_resolution=token_resolution
+    )
+    job.execution_params = harnessed_execution_params(
+        symbols, venue=venue, lookback_bars=lookback_bars
+    )
     store.create_job(job)
     script = store.job_dir(job_id) / "workspace" / "src" / "strategy.py"
     script.parent.mkdir(parents=True, exist_ok=True)
@@ -3410,6 +3396,185 @@ def _refusal_validator(
     return validate
 
 
+ETH_ROBINHOOD_BREAKOUT_SCRIPT = '''
+from __future__ import annotations
+
+from typing import Any
+
+import pandas as pd
+
+
+class EthBreakout:
+    """Spot ETH on Robinhood chain: buy a close above the prior 20-bar high,
+    sell a close below the prior 10-bar low, one position at a time."""
+
+    default_params: dict[str, Any] = {
+        "symbol": "ethereum-robinhood",
+        "venue": "onchain",
+        "entry_lookback": 20,
+        "exit_lookback": 10,
+        "notional_usd": 200.0,
+    }
+
+    def __init__(self, params: dict[str, Any] | None = None) -> None:
+        self.params = {**self.default_params, **(params or {})}
+        self.warmup_bars = int(self.params["entry_lookback"]) + 1
+
+    def precompute(self, frames: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+        return {}
+
+    def decide(self, ctx) -> list[dict[str, Any]]:
+        p = self.params
+        symbol = p["symbol"]
+        frame = ctx.view.symbol_frame(symbol)
+        entry_n, exit_n = int(p["entry_lookback"]), int(p["exit_lookback"])
+        if len(frame) < entry_n + 1:
+            return []
+        close = float(frame["close"].iloc[-1])
+        held = ctx.ledger.positions.get(symbol)
+        if held is None:
+            prior_high = float(frame["high"].iloc[-entry_n - 1 : -1].max())
+            if close > prior_high:
+                return [
+                    {
+                        "action": "OPEN",
+                        "venue": p["venue"],
+                        "symbol": symbol,
+                        "side": "buy",
+                        "notional": float(p["notional_usd"]),
+                        "metadata": {"entry_reason": "close above prior 20-bar high"},
+                    }
+                ]
+            return []
+        prior_low = float(frame["low"].iloc[-exit_n - 1 : -1].min())
+        if close < prior_low:
+            return [
+                {
+                    "action": "CLOSE",
+                    "venue": p["venue"],
+                    "symbol": symbol,
+                    "side": "sell",
+                    "size": float(held.size),
+                    "reduce_only": True,
+                    "metadata": {"exit_reason": "close below prior 10-bar low"},
+                }
+            ]
+        return []
+
+
+def build_strategy(params: dict[str, Any] | None = None) -> EthBreakout:
+    return EthBreakout(params)
+'''
+
+ETH_ROBINHOOD = "ethereum-robinhood"
+ROBINHOOD_CHAIN_ID = 4663
+
+
+def expected_eth_robinhood_breakout(workspace: Path) -> None:
+    """A token launched 100 days ago: the on-chain data source reports its
+    floor, the dataset carries it, and the backtest runs on real-shaped bars."""
+    from wayfinder_paths.core.constants.contracts import ZERO_ADDRESS
+    from wayfinder_paths.jobs.execution.job import backtest_execution_job
+    from wayfinder_paths.jobs.readout import build_readout
+
+    store = _store(workspace)
+    job_id = "eval-eth-robinhood-breakout"
+    with Sandbox():
+        _create_harnessed_job(
+            store,
+            job_id,
+            name="ETH on Robinhood chain: 20-bar breakout",
+            goal=(
+                "Buy ETH on Robinhood chain when the 1h close breaks above the prior "
+                "20-bar high, sell when it closes below the prior 10-bar low, 200 USD "
+                "a trade, spot through the swap router, no leverage."
+            ),
+            script_source=ETH_ROBINHOOD_BREAKOUT_SCRIPT,
+            symbols=[ETH_ROBINHOOD],
+            interval="1h",
+            lookback_bars=60,
+            venue="onchain",
+            token_resolution={
+                ETH_ROBINHOOD: {"chain_id": ROBINHOOD_CHAIN_ID, "address": ZERO_ADDRESS}
+            },
+        )
+        now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+        token_age_days, requested_days = 100, 120
+        first = now - timedelta(days=token_age_days)
+        rows = _random_walk_bars(
+            ETH_ROBINHOOD,
+            start=first,
+            count=token_age_days * 24,
+            minutes=60,
+            price=2400.0,
+            seed=5,
+            vol=0.006,
+        )
+        _write_input_bars(
+            store.job_dir(job_id),
+            rows,
+            days=requested_days,
+            interval="1h",
+            metadata_extra={
+                "source": "live_fetch",
+                "label_convention": "close_time",
+                "venues": ["onchain"],
+                "symbols": [ETH_ROBINHOOD],
+                "requested_start": (now - timedelta(days=requested_days)).isoformat(),
+                "earliest_available": {ETH_ROBINHOOD: str(rows[0]["timestamp"])},
+                "days_received": float(token_age_days),
+            },
+        )
+        backtest_execution_job(job_id, store=store)
+        build_readout(job_id, store=store)
+
+
+def validate_eth_robinhood_breakout(workspace: Path) -> dict[str, Any]:
+    """A token rule the owner wants backtested is a harnessed spot job on the
+    onchain venue, on real bars from the on-chain data source, with the
+    evidence gate satisfied by the token's own history."""
+    from wayfinder_paths.jobs.execution.validation import _evidence_window_check
+
+    data, root, source, checks = _harnessed_init_checks(
+        workspace, "eval-eth-robinhood-breakout", symbol=ETH_ROBINHOOD
+    )
+    spec = data.get("execution_spec") or {}
+    params = data.get("execution_params") or {}
+    bars = _read(root / "results" / "backtest" / "input_bars.json")
+    rows = bars.get("bars") if isinstance(bars, dict) else bars
+    metadata = (bars.get("metadata") or {}) if isinstance(bars, dict) else {}
+    evidence = _evidence_window_check(root)
+    lowered = source.lower()
+    checks += [
+        _check(
+            "venue_onchain",
+            spec.get("venues") == ["onchain"] and params.get("venue") == "onchain",
+        ),
+        _check("market_kind_spot", spec.get("market_kind") == "spot"),
+        _check("no_leverage", "leverage" not in params),
+        _check("no_freestyle_tick", "def tick(ctx" not in source),
+        _check(
+            "no_perp_routing",
+            'venue="hyperliquid"' not in source
+            and "venue': 'hyperliquid'" not in source,
+        ),
+        _check("breakout_in_strategy", "high" in lowered and "low" in lowered),
+        _check(
+            "dataset_is_real_history",
+            isinstance(rows, list)
+            and len(rows) >= 500
+            and "onchain" in (metadata.get("venues") or []),
+            rows=len(rows) if isinstance(rows, list) else 0,
+        ),
+        _check(
+            "evidence_window_ok",
+            bool(evidence) and bool(evidence[0].get("passed")),
+            tier=(evidence[0].get("tier") if evidence else None),
+        ),
+    ]
+    return _report(checks)
+
+
 INIT_CASES: list[LifecycleCase] = [
     LifecycleCase(
         id="init_btc_ny_open_sweep_fvg",
@@ -3723,6 +3888,24 @@ INIT_CASES: list[LifecycleCase] = [
         expected=expected_rsi_v1_backtest,
         validate=validate_rsi_v1_backtest,
         notes="perps · type selection: harnessed with a backtest, not a freestyle script",
+    ),
+    LifecycleCase(
+        id="init_eth_robinhood_breakout_onchain",
+        stage="initialization",
+        timeout_seconds=2400,
+        job_id="eval-eth-robinhood-breakout",
+        prompt=(
+            "Buy ETH on Robinhood chain when the 1-hour close breaks above the prior 20-bar high and sell it "
+            "when the close drops below the prior 10-bar low, 200 dollars a trade, spot through the swap "
+            "router, no leverage. I want to see how it would have done: create `eval-eth-robinhood-breakout`, "
+            "pull 120 days of bars, backtest it and read me the honest readout; stop before launching."
+        ),
+        expected=expected_eth_robinhood_breakout,
+        validate=validate_eth_robinhood_breakout,
+        notes=(
+            "spot tokens · type selection: harnessed spot job on the onchain venue (token id "
+            "ethereum-robinhood, bars from the on-chain data source), not a freestyle script and not a perp"
+        ),
     ),
 ]
 
