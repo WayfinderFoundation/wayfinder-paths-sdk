@@ -88,6 +88,14 @@ def _run_op(op: str, kwargs: dict[str, Any]) -> Any:
         from wayfinder_paths.jobs.execution.preflight import fetch_funding_features
 
         return fetch_funding_features(kwargs.pop("job_id"), **kwargs)
+    if op == "fetch_token_features":
+        from wayfinder_paths.jobs.feeds import fetch_token_features
+
+        return fetch_token_features(kwargs.pop("job_id"), **kwargs)
+    if op == "fetch_yield_features":
+        from wayfinder_paths.jobs.feeds import fetch_yield_features
+
+        return fetch_yield_features(kwargs.pop("job_id"), **kwargs)
     if op == "pair_check":
         from wayfinder_paths.jobs.research import pair_check_job
 

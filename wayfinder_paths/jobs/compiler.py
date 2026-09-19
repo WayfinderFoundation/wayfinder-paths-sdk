@@ -167,7 +167,38 @@ class JobCompiler:
                     "execution_contract='jobs_v1' — the legacy runpy wrapper only "
                     "works for a real standalone script."
                 )
-            if job.execution_contract == "jobs_v1":
+            if job.execution_contract in {"freestyle_v1", "path_v1"}:
+                # The freestyle runtime (or the path runner) owns the tick:
+                # halt, risk, identity and telemetry live there, the author's
+                # module only exposes tick(ctx) or a path component.
+                runner = (
+                    "from wayfinder_paths.jobs.freestyle.runtime import run_freestyle_tick as run_tick"
+                    if job.execution_contract == "freestyle_v1"
+                    else "from wayfinder_paths.jobs.paths_runtime import run_path_tick as run_tick"
+                )
+                script_wrapper.write_text(
+                    dedent(
+                        f"""
+                        from __future__ import annotations
+
+                        import sys
+                        from pathlib import Path
+
+                        {runner}
+
+                        JOB_DIR = Path({str(root)!r})
+
+                        if __name__ == "__main__":
+                            sys.path.insert(0, str(JOB_DIR / "workspace"))
+                            payload = run_tick(JOB_DIR)
+                            if payload.get("ok"):
+                                raise SystemExit(0)
+                            raise SystemExit(2 if payload.get("refused") else 1)
+                        """
+                    ).lstrip(),
+                    encoding="utf-8",
+                )
+            elif job.execution_contract == "jobs_v1":
                 # SDK-owned tick driver: the strategy module only exposes
                 # decide()/build_strategy(); the driver does data fetch,
                 # reconcile, order routing, and telemetry.
@@ -249,6 +280,10 @@ class JobCompiler:
             # only jobs_v1 script ticks are eligible.
             "WAYFINDER_JOB_EXECUTION_CONTRACT": str(job.execution_contract or "legacy"),
         }
+        if str((job.source or {}).get("kind")) == "path":
+            env["WAYFINDER_PATH_PARAMS"] = json.dumps(
+                dict(job.source.get("params") or {})
+            )
         spec_path = root / "execution_spec.json"
         if job.execution_spec:
             self.store.write_json(job.id, "execution_spec.json", job.execution_spec)

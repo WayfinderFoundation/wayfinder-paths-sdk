@@ -80,6 +80,8 @@ For every iteration:
   `rules/robustness-and-gates.md`
 - Candidate proposals, agent modes, and post-apply monitoring:
   `rules/deploy-and-agent-loop.md`
+- Exogenous feeds — token prices, DeFi yields, funding, hand-published rows,
+  their cadence, smoothing and refresh: `rules/feature-feeds.md`
 - Actual live activation, funding, halt, or withdrawal:
   `rules/going-live.md`
 

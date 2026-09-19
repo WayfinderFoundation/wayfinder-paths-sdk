@@ -236,7 +236,11 @@ def _burst_postpone_tier(job: Mapping[str, Any]) -> tuple[str, float | None]:
         if job_dir and _evolution_campaign_active(job_dir):
             return "agent-evolution-exempt", None
         return "agent", _burst_short_postpone_s()
-    if env.get("WAYFINDER_JOB_EXECUTION_CONTRACT") == "jobs_v1":
+    if env.get("WAYFINDER_JOB_EXECUTION_CONTRACT") in (
+        "jobs_v1",
+        "freestyle_v1",
+        "path_v1",
+    ):
         mode = str(env.get("WAYFINDER_JOB_MODE") or "").strip().lower()
         if mode == "live":
             return "live-exempt", None

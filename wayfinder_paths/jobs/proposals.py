@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -60,7 +61,7 @@ from wayfinder_paths.jobs.maintenance import (
     maintenance_change_surface_reasons,
     prove_behavior_equivalence,
 )
-from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.models import LIFECYCLE_CONTRACTS, utc_now_iso
 from wayfinder_paths.jobs.robustness import (
     latest_robustness_summary,
     required_robustness_acknowledgements,
@@ -68,6 +69,7 @@ from wayfinder_paths.jobs.robustness import (
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import sync_all_jobs
 from wayfinder_paths.jobs.validation import (
+    REQUIRED_INTENT_FIELDS,
     candidate_dataset_fingerprint,
     validation_failure_text,
     validation_summary,
@@ -158,7 +160,7 @@ def paper_auto_apply_blockers(
 
     blockers: list[str] = []
     job = store.load(job_id)
-    if job.execution_contract != "jobs_v1":
+    if job.execution_contract not in LIFECYCLE_CONTRACTS:
         blockers.append("legacy execution contract")
     if str(job.script_loop.mode or "paper") != "paper":
         blockers.append("script mode is not paper")
@@ -362,6 +364,24 @@ def _auto_apply_proposal(
     return {"proposal_id": proposal_id, "auto_applied": True, "undo": undo}
 
 
+def render_intent_memo(summary: str, intent_contract: Mapping[str, Any]) -> str:
+    """The rationale a reviewer reads when the agent filed no memo: the
+    summary and the seven intent-contract fields as markdown sections, so a
+    proposal never reaches the owner as a bare one-liner."""
+    lines = [f"## {summary.strip()}" if summary.strip() else "## Proposed change", ""]
+    for field in REQUIRED_INTENT_FIELDS:
+        value = intent_contract.get(field)
+        if value in (None, "", [], {}):
+            continue
+        lines.append(f"### {field.replace('_', ' ').capitalize()}")
+        if isinstance(value, (list, tuple)):
+            lines.extend(f"- {item}" for item in value)
+        else:
+            lines.append(str(value))
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def propose_change(
     store: JobStore,
     job_id: str,
@@ -494,7 +514,8 @@ def propose_change(
         ),
         **revision_stamp(root),
         "changed_files": changed_files,
-        "change_summary": memo or summary,
+        "change_summary": memo or render_intent_memo(summary, intent_contract),
+        "rationale_source": "memo" if memo else "intent_contract",
         "application": {"status": "not_requested", **candidate_descriptor},
         "robustness_warnings_acknowledged": sorted(
             set(robustness_warnings_acknowledged or [])

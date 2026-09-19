@@ -32,7 +32,7 @@ from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
 from wayfinder_paths.jobs.indicators import panel_breadth
-from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.models import NO_BACKTEST_CONTRACTS, utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
 CORR_BARS = 12
@@ -434,8 +434,10 @@ def refresh_derived_features_if_stale(
     max_age_seconds: int = REFRESH_MAX_AGE_S,
     derive: Callable[..., dict[str, Any]] | None = None,
     refresh_dataset: bool = True,
+    feeds: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Keep research-side derived features live from the wake path.
+    """Keep research-side derived features and declared feeds live from
+    the wake path.
 
     The derive op alone rots: a one-time backfill leaves btc_trend/cross
     columns silently frozen (they merge cleanly into scans with stale
@@ -449,6 +451,15 @@ def refresh_derived_features_if_stale(
     `data_feed_degraded` event (owner-visible via the decision log) carrying
     the structured cause; recovery journals `data_feed_recovered` once."""
     store = store or JobStore()
+    contract = str(store.load(job_id).execution_contract or "legacy")
+    if contract in NO_BACKTEST_CONTRACTS:
+        # Freestyle/Path jobs have no dataset or research features to
+        # refresh; on the dev box every wake journaled a failed refresh and
+        # then a "data feed degraded" alarm for a feed that does not exist.
+        return {
+            "refreshed": False,
+            "reason": f"not applicable: {contract} jobs have no dataset to refresh",
+        }
     stamp = store.read_json(job_id, REFRESH_STAMP_PATH) or {}
     refreshed_at = str(stamp.get("refreshed_at") or "")
     if refreshed_at:
@@ -475,10 +486,22 @@ def refresh_derived_features_if_stale(
             dataset_note = f"dataset refresh failed: {str(exc)[:120]}"
 
     run = derive or derive_features_job
+    refresh_feeds = feeds or _refresh_declared_feeds
+    errors: list[str] = []
+    result: dict[str, Any] = {}
+    feeds_result: dict[str, Any] = {}
     try:
         result = run(job_id, sets=_REFRESH_SETS, store=store)
     except Exception as exc:  # noqa: BLE001 — wake must not die on research prep
-        error = str(exc)[:300]
+        errors.append(str(exc)[:300])
+    try:
+        # Declared token/yield feeds advance on the same stamp so a strategy
+        # conditioned on them never quietly runs on last week's rates.
+        feeds_result = refresh_feeds(job_id, store=store)
+    except Exception as exc:  # noqa: BLE001 — same contract as the derive step
+        errors.append(f"feeds: {str(exc)[:280]}")
+    if errors:
+        error = " | ".join(errors)[:600]
         store.append_journal(
             job_id,
             {"type": "derived_features_refresh_failed", "error": error},
@@ -497,9 +520,15 @@ def refresh_derived_features_if_stale(
                 },
             )
         store.write_json(job_id, REFRESH_STAMP_PATH, stamp)
-        return {"refreshed": False, "reason": f"failed: {exc}"}
+        return {"refreshed": False, "reason": f"failed: {error}"}
 
-    newest_feature = str(result.get("newest_feature_ts") or "")
+    newest_feature = max(
+        str(result.get("newest_feature_ts") or ""),
+        str(feeds_result.get("newest_feature_ts") or ""),
+    )
+    rows_appended = int(result.get("rows_appended") or 0) + int(
+        feeds_result.get("rows_appended") or 0
+    )
     feature_age: float | None = None
     if newest_feature:
         try:
@@ -558,12 +587,16 @@ def refresh_derived_features_if_stale(
     stamp.update(
         {
             "refreshed_at": str(dt.datetime.now(dt.UTC)),
-            "rows_appended": result.get("rows_appended"),
+            "rows_appended": rows_appended,
             "newest_feature_ts": newest_feature,
             "sets": result.get("sets"),
             "consecutive_failures": 0,
         }
     )
+    feed_count = int(feeds_result.get("feeds") or 0)
+    if feed_count:
+        stamp["feeds"] = feed_count
+        stamp["revised_rows"] = int(feeds_result.get("revised_rows") or 0)
     if dataset_note:
         stamp["dataset_note"] = dataset_note
     else:
@@ -571,6 +604,21 @@ def refresh_derived_features_if_stale(
     store.write_json(job_id, REFRESH_STAMP_PATH, stamp)
     return {
         "refreshed": True,
-        "rows_appended": result.get("rows_appended"),
+        "rows_appended": rows_appended,
+        **(
+            {
+                "feeds": feed_count,
+                "revised_rows": int(feeds_result.get("revised_rows") or 0),
+            }
+            if feed_count
+            else {}
+        ),
         **({"dataset": dataset_note} if dataset_note else {}),
     }
+
+
+def _refresh_declared_feeds(job_id: str, *, store: JobStore) -> dict[str, Any]:
+    # Lazy: jobs.feeds imports this module for the append cap.
+    from wayfinder_paths.jobs.feeds import refresh_declared_feeds
+
+    return refresh_declared_feeds(job_id, store=store)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
@@ -9,7 +10,7 @@ from typing import Any
 import pandas as pd
 
 from wayfinder_paths.jobs.execution.primitives import ExecutionContext
-from wayfinder_paths.jobs.indicators import atr, trailing_return
+from wayfinder_paths.jobs.indicators import atr, bounded_span, trailing_return
 
 # These brackets are catastrophe exits; each strategy's normal exit or rebalance
 # remains responsible for routine risk. The bands below passed full-period and
@@ -140,10 +141,14 @@ def add_stop_atr(
     *,
     period: int,
 ) -> dict[str, pd.DataFrame]:
-    """Add the shared starter ATR column without replacing other features."""
+    """Add the shared starter ATR column without replacing other features.
+
+    Bounded to ``bounded_span(period)`` bars so every starter's declared
+    warmup can be exact; include that span in the strategy's warmup.
+    """
     for symbol, frame in frames.items():
         features = derived.setdefault(symbol, pd.DataFrame(index=frame.index))
-        features["starter_stop_atr"] = atr(frame, period)
+        features["starter_stop_atr"] = atr(frame, period, window=bounded_span(period))
     return derived
 
 
@@ -187,13 +192,31 @@ def stop_brackets(
 
 
 def ranked_weights(
-    scores: Mapping[str, float], *, weight_per_leg: float
+    scores: Mapping[str, float], *, weight_per_leg: float, legs: int | None = None
 ) -> dict[str, float]:
-    """Long the upper half and short the lower half, deterministically."""
+    """Long the leaders and short the laggards, deterministically.
+
+    ``legs=None`` preserves the original half-long/half-short behavior.  A
+    smaller explicit count leaves the middle ranks flat, which lets broader
+    universes express only their strongest cross-sectional signals.
+    """
     ranked = sorted(scores, key=lambda symbol: (scores[symbol], symbol))
-    midpoint = len(ranked) // 2
-    weights = dict.fromkeys(ranked[:midpoint], -weight_per_leg)
-    weights.update(dict.fromkeys(ranked[midpoint:], weight_per_leg))
+    if legs is None:
+        midpoint = len(ranked) // 2
+        weights = dict.fromkeys(ranked[:midpoint], -weight_per_leg)
+        weights.update(dict.fromkeys(ranked[midpoint:], weight_per_leg))
+        return weights
+    if isinstance(legs, bool):
+        raise ValueError("ranked leg count must be a whole number")
+    candidate = float(legs)
+    if not math.isfinite(candidate) or not candidate.is_integer():
+        raise ValueError("ranked leg count must be a whole number")
+    leg_count = int(candidate)
+    if leg_count <= 0 or leg_count * 2 > len(ranked):
+        raise ValueError("ranked leg count must cover at most half the universe")
+    weights = dict.fromkeys(ranked, 0.0)
+    weights.update(dict.fromkeys(ranked[:leg_count], -weight_per_leg))
+    weights.update(dict.fromkeys(ranked[-leg_count:], weight_per_leg))
     return weights
 
 

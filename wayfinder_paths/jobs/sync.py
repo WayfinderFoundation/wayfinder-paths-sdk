@@ -20,7 +20,7 @@ from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.forward import load_forward_snapshot
 from wayfinder_paths.jobs.gating import evaluate_live_gate
 from wayfinder_paths.jobs.halt import read_halt
-from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.models import LIFECYCLE_CONTRACTS, utc_now_iso
 from wayfinder_paths.jobs.probation import probation_sync_payload
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
@@ -131,7 +131,13 @@ def _dataset_fetch_state(store: JobStore, job_id: str) -> dict[str, Any] | None:
     return None
 
 
-def _runtime_reconciliation(job: Any, store: JobStore) -> dict[str, Any]:
+def _runner_states(store: JobStore) -> dict[str, Any]:
+    return RunnerBridge(repo_root=store.repo_root).job_states()
+
+
+def _runtime_reconciliation(
+    job: Any, store: JobStore, *, states: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Overlay the live runner/engine truth onto the scorecard so the UI shows
     what's ACTUALLY running, not the declared job.yaml. The driver executes the
     mode baked into the runner env (WAYFINDER_JOB_MODE), which an agent can flip
@@ -148,7 +154,8 @@ def _runtime_reconciliation(job: Any, store: JobStore) -> dict[str, Any]:
     ]
     if not loop_names:
         return {}
-    states = RunnerBridge(repo_root=store.repo_root).job_states()
+    if states is None:
+        states = _runner_states(store)
     if not states:
         return {}
     out: dict[str, Any] = {
@@ -209,7 +216,14 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
     # metrics all come from the runner where it is the source of truth. See
     # _runtime_reconciliation. Degrades to the declared scorecard on a down
     # runner, so a sync never breaks.
-    runtime = _runtime_reconciliation(job, store)
+    # One runner round-trip per snapshot: the reconciliation overlay and the
+    # heartbeat read the same states.
+    runner_states = (
+        _runner_states(store)
+        if (job.script_loop.enabled or job.agent_loop.enabled)
+        else {}
+    )
+    runtime = _runtime_reconciliation(job, store, states=runner_states)
     if runtime:
         scorecard = {**scorecard, **runtime}
     # The box's authoritative agent mode, shipped unconditionally: job.yaml's
@@ -259,13 +273,24 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
         )
     except Exception:
         features = None
+    reports = {
+        "monitor": latest_monitor,
+        "intervene": latest_intervene,
+        "auto": latest_auto,
+        "apply": latest_apply,
+        "reconcile": store.read_json(
+            job_id, "reports/reconcile/latest.json", default=None
+        ),
+    }
+    proposals = store.proposals(job_id)
+    halt = read_halt(store.job_dir(job_id))
     return {
         "job": job.to_dict(),
         "scorecard": scorecard,
         "backtest": summarize_backtest_artifacts(job_id, store=store),
         "forward": load_forward_snapshot(job_id, store=store, limit=25),
         "runner_links": runner_links,
-        "proposals": store.proposals(job_id),
+        "proposals": proposals,
         # probation.json enriched with each trial's paired equity curve —
         # curve points live in per-trial sidecars, never in probation.json.
         "probation": probation_sync_payload(store, job_id),
@@ -274,15 +299,7 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
         "regime_health": regime_health,
         "decision_log": _decision_log(store, job_id),
         "proposal_queue": store.proposal_queue(job_id),
-        "reports": {
-            "monitor": latest_monitor,
-            "intervene": latest_intervene,
-            "auto": latest_auto,
-            "apply": latest_apply,
-            "reconcile": store.read_json(
-                job_id, "reports/reconcile/latest.json", default=None
-            ),
-        },
+        "reports": reports,
         "execution_contract": job.execution_contract,
         "validation": (
             {
@@ -300,14 +317,136 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
         "gate": _gate_with_restamp(job_id, store),
         # Manual kill-switch detail (contract C4): scorecard already reports
         # live_execution_status="halted" while set; this carries reason/ts.
-        "halt": read_halt(store.job_dir(job_id)),
+        "halt": halt,
         "features": features,
         # Two-zone attention split (owner doctrine): needs_you = owner-blocking
         # live-capital/governance items; decided_autonomously = the last 7d of
         # mechanical decisions with evidence + bounded undo. Top-level (like
         # scorecard) so backend/FE consume it without SDK round-trips.
         "owner_attention": _owner_attention(store, job_id, job),
+        # The launch flow: the pinned launch, named risk gaps and the paper
+        # checklist, so the UI reads identity and blockers without an SDK
+        # round-trip. Raise-free: a feed failure must never break a sync.
+        **_launch_payload(
+            store,
+            job_id,
+            job,
+            runner_states=runner_states,
+            reports=reports,
+            scorecard=scorecard,
+            features=features,
+            halt=halt,
+            proposals=proposals,
+        ),
     }
+
+
+def _launch_payload(
+    store: JobStore,
+    job_id: str,
+    job: Any,
+    *,
+    runner_states: dict[str, Any] | None = None,
+    reports: dict[str, Any] | None = None,
+    scorecard: dict[str, Any] | None = None,
+    features: list[dict[str, Any]] | None = None,
+    halt: dict[str, Any] | None = None,
+    proposals: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    from wayfinder_paths.jobs.health import health_payload
+    from wayfinder_paths.jobs.launch import LAUNCH_STATE_PATH, evaluate_launch_checklist
+    from wayfinder_paths.jobs.paths_runtime import UPGRADE_STATE_PATH
+    from wayfinder_paths.jobs.readout import READOUT_PATH
+    from wayfinder_paths.jobs.risk_flags import acknowledged_flags, risk_flags
+
+    payload: dict[str, Any] = {
+        "launch": store.read_json(job_id, LAUNCH_STATE_PATH, default=None),
+        "readout": store.read_json(job_id, READOUT_PATH, default=None),
+        "path_upgrade": store.read_json(job_id, UPGRADE_STATE_PATH, default=None),
+        "watchdog": None,
+        "evolution": None,
+        "probation_summary": [],
+        "research": {
+            "ideation": store.read_json(
+                job_id, "research/ideation/latest.json", default=None
+            ),
+        },
+        "risk_flags": None,
+        "launch_checklist": None,
+        "heartbeat": None,
+        "issues": [],
+        "freestyle": None,
+        "path": None,
+    }
+    try:
+        from wayfinder_paths.jobs.freestyle.telemetry import (
+            freestyle_snapshot,
+            path_snapshot,
+        )
+
+        payload["freestyle"] = freestyle_snapshot(store, job_id, job)
+        payload["path"] = path_snapshot(store, job_id, job)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        acknowledged = acknowledged_flags(store, job_id)
+        payload["risk_flags"] = [
+            {
+                **flag,
+                "acknowledged": flag.get("severity") == "warn"
+                and flag.get("code") in acknowledged,
+            }
+            for flag in risk_flags(job, store.job_dir(job_id))
+        ]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from wayfinder_paths.jobs.launch import watchdog_view
+
+        payload["watchdog"] = watchdog_view(job, store.job_dir(job_id))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from wayfinder_paths.jobs.evolution_view import (
+            evolution_snapshot,
+            probation_summary,
+        )
+
+        payload["evolution"] = evolution_snapshot(store, job_id, job)
+        payload["probation_summary"] = probation_summary(store, job_id)
+    except Exception:  # noqa: BLE001
+        pass
+    if str(job.execution_contract or "legacy") in LIFECYCLE_CONTRACTS:
+        try:
+            payload["launch_checklist"] = evaluate_launch_checklist(
+                job_id, store=store, target="paper"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    checklist = payload["launch_checklist"]
+    workspace_revision = (
+        str(checklist.get("revision") or "") or None
+        if isinstance(checklist, dict)
+        else None
+    )
+    payload.update(
+        health_payload(
+            store,
+            job_id,
+            job,
+            runner_states=runner_states or {},
+            reports=reports or {},
+            scorecard=scorecard,
+            features=features,
+            risk_flags=payload["risk_flags"],
+            launch=payload["launch"],
+            launch_checklist=checklist,
+            halt=halt,
+            proposals=proposals,
+            workspace_revision=workspace_revision,
+        )
+    )
+    return payload
 
 
 def _owner_attention(store: JobStore, job_id: str, job: Any) -> dict[str, Any]:
@@ -370,7 +509,14 @@ def apply_script_mode(
                 "live job needs a funded wallet to trade from (set it via the "
                 "job's execution params, then retry)"
             )
-        gate = evaluate_live_gate(job_id, store=store)
+        if str(job.execution_contract) in {"freestyle_v1", "path_v1"}:
+            # Non-harnessed kinds answer through the launch checklist;
+            # jobs_v1 keeps the live gate call byte-identical.
+            from wayfinder_paths.jobs.contracts import evaluate_live_readiness
+
+            gate = evaluate_live_readiness(job_id, store=store)
+        else:
+            gate = evaluate_live_gate(job_id, store=store)
         if not gate["live_ready"]:
             reasons = "; ".join(gate["reasons"]) or "live gate not ready"
             raise ValueError(f"cannot go live: {reasons}")
@@ -425,7 +571,11 @@ def _gate_with_restamp(job_id: str, store: JobStore) -> dict[str, Any]:
     running the gate is transiently red by construction — surface that so
     UIs and wake agents render 'refreshing' instead of alarming. The
     authoritative live_ready stays strict."""
-    gate = evaluate_live_gate(job_id, store=store)
+    from wayfinder_paths.jobs.contracts import evaluate_live_readiness
+
+    # Freestyle and path jobs answer through the launch checklist; jobs_v1
+    # keeps evaluate_live_gate. The backend reads this as job.live_gate.
+    gate = evaluate_live_readiness(job_id, store=store)
     try:
         import json as _json
         import os
@@ -560,9 +710,7 @@ def _funded_wallet_label(job) -> str:
     return label
 
 
-def _shift_equity_recon_baseline(
-    store: JobStore, job_id: str, delta: float
-) -> None:
+def _shift_equity_recon_baseline(store: JobStore, job_id: str, delta: float) -> None:
     """Fold an operator deposit/withdrawal into the drift baseline. The
     equity reconciler treats venue-vs-expected drift as its signal; without
     this, every funding action reads as permanent drift the agent has to

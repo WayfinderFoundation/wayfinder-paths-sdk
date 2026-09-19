@@ -42,7 +42,9 @@ PEAKED = [10.0 + i for i in range(11)] + [20.0 - i for i in range(1, 10)]
 
 INT_SPACE = {
     "hold": {"type": "int", "low": 4, "high": 14},
-    "initial_capital": 1000.0,  # constant passthrough
+    "initial_capital": 1000.0,
+    # the planted peak is a price move; the venue default fee would shave it
+    "fee_bps": 0.0,  # constant passthrough
 }
 
 

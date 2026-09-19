@@ -123,3 +123,32 @@ def test_hyperliquid_venue_applies_a_default_fee():
 def test_explicit_zero_fee_overrides_venue_default():
     s = _run({"fee_bps": 0.0})
     assert s["total_fees"] == pytest.approx(0.0)
+
+
+def _run_on(venue, extra):
+    # The backtest prices intents by the venue the spec declares, so an
+    # unpriced spot book pays that venue's default taker fee, never 0 bps.
+    ds = PreparedExecutionDataset.from_rows(_flat_bars())
+    spec = _spec()
+    spec.venues = [venue]
+    params = {
+        "symbol": SYMBOL,
+        "initial_capital": INITIAL,
+        "slippage_bps": 0.0,
+        "venue": venue,
+    }
+    params.update(extra)
+    return simulate_execution(_build, ds, spec, params).stats
+
+
+def test_spot_venues_carry_their_registered_default_costs():
+    # two fills at 1000 notional each
+    assert _run_on("onchain", {})["total_fees"] == pytest.approx(
+        2 * NOTIONAL * 30.0 / 10_000
+    )
+    assert _run_on("hyperliquid_spot", {})["total_fees"] == pytest.approx(
+        2 * NOTIONAL * 7.0 / 10_000
+    )
+    assert _run_on("onchain", {"fee_bps": 5.0})["total_fees"] == pytest.approx(
+        2 * NOTIONAL * 5.0 / 10_000
+    )

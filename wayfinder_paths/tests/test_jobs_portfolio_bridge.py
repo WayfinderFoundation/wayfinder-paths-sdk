@@ -227,7 +227,8 @@ def test_end_to_end_rebalancing_through_simulator() -> None:
         ),
         PreparedExecutionDataset.from_rows(bars),
         spec,
-        {"initial_capital": CAPITAL},
+        # sizes are read off equity; the declared venue's default fee would move them
+        {"initial_capital": CAPITAL, "fee_bps": 0.0},
     )
 
     assert result.validation["execution_valid"] is True

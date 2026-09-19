@@ -26,7 +26,11 @@ from wayfinder_paths.jobs.execution.primitives import (
     _float_or_none,
     bar_interval_seconds,
 )
+from wayfinder_paths.jobs.execution.token_bars import is_token_symbol
 from wayfinder_paths.jobs.execution.venues import (
+    DEFAULT_MAKER_FEE_BPS,
+    DEFAULT_TAKER_FEE_BPS,
+    FundingSnapshot,
     MarketEvent,
     NativeProtectionResult,
     VenueCapabilities,
@@ -238,6 +242,10 @@ class HyperliquidMarketFeed:
         lookback_hours = _lookback_hours(lookback_bars, interval)
         rows: list[dict[str, Any]] = []
         for symbol in symbols:
+            # A mixed book asks every feed for every symbol; token ids and
+            # spot pairs are another venue's to answer.
+            if is_token_symbol(symbol) or "/" in str(symbol):
+                continue
             view = await self._safe.get_completed_bars(
                 symbol, interval, lookback_hours=lookback_hours
             )
@@ -251,6 +259,29 @@ class HyperliquidMarketFeed:
         self, symbols: Sequence[str], *, since: datetime | None = None
     ) -> list[MarketEvent]:
         return []
+
+    async def get_funding(
+        self, symbol: str, *, lookback_hours: int = 24
+    ) -> FundingSnapshot:
+        """The settled hourly funding rates for a perp over the lookback, from
+        the same data service the candles come from; the latest row is the
+        rate a script reads through ctx.funding."""
+        end_ms = int(time.time() * 1000)
+        start_ms = end_ms - max(1, int(lookback_hours)) * 3_600_000
+        rows = await self._safe.client.get_funding_history(symbol, start_ms, end_ms)
+        history = tuple(
+            sorted(
+                (int(row["time"]), float(row["fundingRate"]))
+                for row in rows
+                if row.get("time") is not None and row.get("fundingRate") is not None
+            )
+        )
+        if not history:
+            raise LookupError(f"hyperliquid returned no funding rows for {symbol}")
+        time_ms, rate = history[-1]
+        return FundingSnapshot(
+            symbol=symbol, rate=rate, time_ms=time_ms, history=history
+        )
 
 
 class HyperliquidPerpBroker:
@@ -543,7 +574,9 @@ class HyperliquidPerpAdapter:
                 ),
             )
         else:
-            self.broker = _paper_broker(HYPERLIQUID_CAPABILITIES, params)
+            self.broker = _paper_broker(
+                HYPERLIQUID_CAPABILITIES, params, venue="hyperliquid"
+            )
 
 
 def build_hyperliquid_adapter(
@@ -552,7 +585,9 @@ def build_hyperliquid_adapter(
     return HyperliquidPerpAdapter(mode=mode, params=params)
 
 
-register_venue("hyperliquid", build_hyperliquid_adapter)
+register_venue(
+    "hyperliquid", build_hyperliquid_adapter, capabilities=HYPERLIQUID_CAPABILITIES
+)
 
 
 def _mcp_error(outcome: Any) -> Any:
@@ -809,13 +844,22 @@ async def _cancel_hyperliquid_resting_order(
 
 
 def _paper_broker(
-    capabilities: VenueCapabilities, params: dict[str, Any]
+    capabilities: VenueCapabilities, params: dict[str, Any], *, venue: str = ""
 ) -> PaperBroker:
+    """Paper fills priced like the backtest: an explicit fee wins, else the
+    venue's registered default, so paper never trades a venue for free."""
+    raw_fee = params.get("fee_bps")
     raw_maker_fee = params.get("maker_fee_bps")
     return PaperBroker(
         capabilities=capabilities,
-        fee_bps=float(params.get("fee_bps") or 0.0),
-        maker_fee_bps=1.5 if raw_maker_fee is None else float(raw_maker_fee),
+        fee_bps=DEFAULT_TAKER_FEE_BPS.get(venue, 0.0)
+        if raw_fee is None
+        else float(raw_fee),
+        maker_fee_bps=(
+            DEFAULT_MAKER_FEE_BPS.get(venue, 1.5)
+            if raw_maker_fee is None
+            else float(raw_maker_fee)
+        ),
         slippage_bps=float(params.get("slippage_bps") or 0.0),
     )
 

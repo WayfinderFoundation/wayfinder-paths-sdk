@@ -15,6 +15,7 @@ from wayfinder_paths.jobs.indicators import (
 from wayfinder_paths.jobs.strategies._starter_utils import (
     RANKING_STOP_DEFAULTS,
     add_stop_atr,
+    bounded_span,
     current_rows,
     merge_params,
     ranked_weights,
@@ -49,6 +50,7 @@ class CryptoMomentumPersistenceStrategy:
                 int(self.params["fast_momentum_bars"]),
                 int(self.params["slow_momentum_bars"]),
                 int(self.params["score_volatility_bars"]),
+                bounded_span(int(self.params["stop_atr_period"])),
             )
             + 4
         )

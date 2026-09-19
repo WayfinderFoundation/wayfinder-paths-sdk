@@ -4,7 +4,7 @@ import asyncio
 import json
 import math
 import shutil
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +31,8 @@ from wayfinder_paths.jobs.execution.primitives import (
 from wayfinder_paths.jobs.execution.purity import PurityViolation
 from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
 from wayfinder_paths.jobs.execution.venues import (
+    VENUE_CAPABILITIES,
+    HistoryProvenanceFeed,
     MarketEvent,
     VenueCapabilities,
     VenueState,
@@ -171,14 +173,36 @@ def build_live_dataset(
             "days": days,
             "fetched_at": utc_now_iso(),
         }
+        # A feed that knows where its source's history starts says so per
+        # symbol; the evidence gate reads it as proof that a short window is
+        # the token's age, not a capped fetch.
+        provenance: dict[str, dict[str, Any]] = {}
+        for adapter in adapters.values():
+            if isinstance(adapter.feed, HistoryProvenanceFeed):
+                provenance.update(adapter.feed.history_provenance())
+        if provenance:
+            metadata["earliest_available"] = {
+                symbol: (provenance.get(symbol) or {}).get("earliest_available")
+                for symbol in symbols
+            }
+            metadata["requested_start"] = next(
+                (
+                    entry["requested_start"]
+                    for entry in provenance.values()
+                    if entry.get("requested_start")
+                ),
+                None,
+            )
         # Probe the long-history source's market list so the evidence gate
         # can distinguish "venue-capped but ccxt has years" (must refetch
         # via ccxt) from "these symbols do not exist on ccxt at all" (HIP-3
         # equity perps like xyz:MU) — the latter is legitimate proof of
         # unavailability that a raising ccxt fetch can never leave behind.
-        missing = _ccxt_missing_markets(symbols, exchange=exchange, quote=quote)
-        if missing is not None:
-            metadata["ccxt_missing_markets"] = missing
+        # Token ids and spot pairs have no exchange market to probe.
+        if "hyperliquid" in adapters:
+            missing = _ccxt_missing_markets(symbols, exchange=exchange, quote=quote)
+            if missing is not None:
+                metadata["ccxt_missing_markets"] = missing
     if not rows and not previous_rows:
         raise RuntimeError("no bars returned while building live dataset")
     if previous_rows:
@@ -219,11 +243,7 @@ def build_live_dataset(
         result["days_requested"] = days
         result["days_received"] = days_received
         if days_received < 0.9 * float(days):
-            result["warning"] = (
-                f"received {days_received} days of {days} requested — the "
-                "venue caps history. For longer windows use "
-                "dataset_source='ccxt' (exchange='binance')."
-            )
+            result["warning"] = _shortfall_warning(days_received, days, metadata)
     # Derived research columns follow the dataset unconditionally — a fresh
     # dataset with frozen btc_trend/cross columns is the silent-staleness bug
     # (stale values merge cleanly into every scan frame, no error anywhere).
@@ -287,9 +307,10 @@ class ReplayBroker:
         reject_fills: bool = False,
         ambiguous_fill_at: int | None = None,
         venue_positions: dict[str, PositionRecord] | None = None,
+        capabilities: VenueCapabilities | None = None,
     ) -> None:
-        self.capabilities = PREFLIGHT_CAPS
-        self._paper = PaperBroker(capabilities=PREFLIGHT_CAPS)
+        self.capabilities = capabilities or PREFLIGHT_CAPS
+        self._paper = PaperBroker(capabilities=self.capabilities)
         self.reject_fills = reject_fills
         self.ambiguous_fill_at = ambiguous_fill_at
         self.venue_positions = venue_positions
@@ -339,11 +360,21 @@ class ReplayBroker:
 
 class ReplayAdapter:
     name = "replay"
-    capabilities = PREFLIGHT_CAPS
 
     def __init__(self, feed: ReplayFeed, broker: ReplayBroker) -> None:
         self.feed = feed
         self.broker = broker
+        self.capabilities = broker.capabilities
+
+
+def preflight_capabilities(spec: ExecutionSpec) -> VenueCapabilities:
+    """The first declared venue's registered contract, so preflight scenarios
+    reject what live rejects; the permissive default for undeclared venues."""
+    for venue in spec.venues:
+        capabilities = VENUE_CAPABILITIES.get(str(venue))
+        if capabilities is not None:
+            return capabilities
+    return PREFLIGHT_CAPS
 
 
 def run_preflight(
@@ -426,6 +457,9 @@ async def _run_scenarios(
 ) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     job = WayfinderJob.from_dict(job_data)
+    caps = preflight_capabilities(
+        ExecutionSpec.from_dict(job_data.get("execution_spec") or {})
+    )
     entrypoint = store.resolve_script_entrypoint(
         job.id, job_data, candidate_dir=candidate_dir
     )
@@ -483,7 +517,7 @@ async def _run_scenarios(
     results = await drive(
         sandbox,
         feed=ReplayFeed(bars),
-        broker=ReplayBroker(),
+        broker=ReplayBroker(capabilities=caps),
         ticks=tick_count,
     )
     completed = all(result.get("ok") for result in results)
@@ -524,7 +558,7 @@ async def _run_scenarios(
 
     # --- stale feed: no opens against dead data ---------------------------
     sandbox = sandbox_dir("stale")
-    broker = ReplayBroker()
+    broker = ReplayBroker(capabilities=caps)
     stale_results = await drive(
         sandbox,
         feed=ReplayFeed(bars, stale_after=0),
@@ -548,7 +582,7 @@ async def _run_scenarios(
     rejected_results = await drive(
         sandbox,
         feed=ReplayFeed(bars),
-        broker=ReplayBroker(reject_fills=True),
+        broker=ReplayBroker(reject_fills=True, capabilities=caps),
         ticks=tick_count,
     )
     final_positions = rejected_results[-1].get("positions") if rejected_results else {}
@@ -565,7 +599,7 @@ async def _run_scenarios(
     ambiguous_results = await drive(
         sandbox,
         feed=ReplayFeed(bars),
-        broker=ReplayBroker(ambiguous_fill_at=1),
+        broker=ReplayBroker(ambiguous_fill_at=1, capabilities=caps),
         ticks=tick_count,
     )
     ambiguous_ok = True
@@ -586,7 +620,7 @@ async def _run_scenarios(
 
     # --- restart mid-position: adopt venue state, don't duplicate ---------
     sandbox = sandbox_dir("restart")
-    seed_broker = ReplayBroker()
+    seed_broker = ReplayBroker(capabilities=caps)
     seed_results = await drive(
         sandbox,
         feed=ReplayFeed(bars),
@@ -606,7 +640,7 @@ async def _run_scenarios(
         for symbol, record in held.items()
     }
     (sandbox / "state" / "engine_state.json").unlink(missing_ok=True)
-    restart_broker = ReplayBroker(venue_positions=venue_positions)
+    restart_broker = ReplayBroker(venue_positions=venue_positions, capabilities=caps)
     restart_results = await drive(
         sandbox,
         mode="live",
@@ -628,7 +662,7 @@ async def _run_scenarios(
 
     # --- duplicate tick idempotency ----------------------------------------
     sandbox = sandbox_dir("duplicate")
-    dup_broker = ReplayBroker()
+    dup_broker = ReplayBroker(capabilities=caps)
     dup_results = await drive(
         sandbox,
         feed=ReplayFeed(bars),
@@ -671,6 +705,29 @@ def _write_report(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, default=str) + "\n", encoding="utf-8")
     return report
+
+
+def _shortfall_warning(
+    days_received: float, days: int, metadata: Mapping[str, Any]
+) -> str:
+    """Why a fetch came up short, and what (if anything) gets more: an
+    exchange has years for perp coins; a token has only its own age."""
+    earliest = metadata.get("earliest_available")
+    if isinstance(earliest, dict) and earliest:
+        floors = ", ".join(
+            f"{symbol} from {str(stamp)[:10]}" if stamp else f"{symbol}: unknown"
+            for symbol, stamp in earliest.items()
+        )
+        return (
+            f"received {days_received} days of {days} requested — the on-chain "
+            f"data source holds no earlier bars ({floors}); the evidence gate "
+            "accepts a floor the source reports."
+        )
+    return (
+        f"received {days_received} days of {days} requested — the venue caps "
+        "history. For longer windows use dataset_source='ccxt' "
+        "(exchange='binance')."
+    )
 
 
 def _ccxt_missing_markets(
@@ -838,19 +895,13 @@ def fetch_funding_features(
             handle.write(json.dumps({**row, "written_at": written_at}) + "\n")
             appended += 1
 
-    declared = False
-    target = spec_path if spec_path is not None else root / "execution_spec.json"
-    if rows and target.exists():
-        spec_doc = json.loads(target.read_text(encoding="utf-8"))
-        contract = spec_doc.setdefault("data_contract", {})
-        features = contract.setdefault("features", [])
-        if not any(
-            isinstance(item, dict) and item.get("name") == "funding"
-            for item in features
-        ):
-            features.append({"name": "funding"})
-            target.write_text(json.dumps(spec_doc, indent=2) + "\n", encoding="utf-8")
-            declared = True
+    # Declared through the job model: an embedded spec is what the compiler
+    # rewrites execution_spec.json from, so a file-only edit would be lost.
+    from wayfinder_paths.jobs.feeds import declare_features
+
+    declared = bool(rows) and bool(
+        declare_features(store, job_id, [{"name": "funding"}])
+    )
 
     result: dict[str, Any] = {
         "rows_fetched": len(rows),

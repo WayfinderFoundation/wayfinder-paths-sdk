@@ -16,14 +16,27 @@ from wayfinder_paths.jobs.application import (
 from wayfinder_paths.jobs.apply_launcher import launch_application
 from wayfinder_paths.jobs.backtest_artifacts import diagnose_backtest
 from wayfinder_paths.jobs.compiler import JobCompiler
+from wayfinder_paths.jobs.contracts import validate_job_for_kind
 from wayfinder_paths.jobs.execution.experiments import list_experiments
 from wayfinder_paths.jobs.execution.op_process import (
     op_runner_command,
     process_identity_fields,
     recorded_process_alive,
 )
-from wayfinder_paths.jobs.execution.validation import validate_execution_job
+from wayfinder_paths.jobs.execution.spec_defaults import (
+    harnessed_execution_params,
+    harnessed_execution_spec,
+    interval_label,
+)
+from wayfinder_paths.jobs.execution.token_bars import resolve_token_symbols
+from wayfinder_paths.jobs.freestyle.create import create_freestyle_job
 from wayfinder_paths.jobs.halt import clear_halt, request_halt
+from wayfinder_paths.jobs.launch import (
+    evaluate_launch_checklist,
+    hold_job,
+    launch_job,
+    set_watchdog,
+)
 from wayfinder_paths.jobs.models import (
     WayfinderJob,
     default_wake_seconds,
@@ -31,8 +44,14 @@ from wayfinder_paths.jobs.models import (
     normalize_agent_mode,
     utc_now_iso,
 )
+from wayfinder_paths.jobs.paths_runtime import create_from_path
 from wayfinder_paths.jobs.proposals import propose_change
+from wayfinder_paths.jobs.readout import (
+    build_readout,
+    feasible_holdout,
+)
 from wayfinder_paths.jobs.regime_health import regime_health_job
+from wayfinder_paths.jobs.risk_flags import acknowledge_risk_flags
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.starters import create_starter_job, starter_catalog
 from wayfinder_paths.jobs.store import JobStore
@@ -44,6 +63,7 @@ from wayfinder_paths.jobs.sync import (
     venue_deposit,
     venue_withdraw,
 )
+from wayfinder_paths.jobs.validation import REQUIRED_INTENT_FIELDS
 from wayfinder_paths.jobs.worker import run_job_worker
 from wayfinder_paths.mcp.utils import catch_errors, err, ok
 from wayfinder_paths.runner.monitor_state import atomic_write_json
@@ -63,8 +83,17 @@ JobAction = Literal[
     "venue_withdraw",
     "review_now",
     "validate_job",
+    "create_freestyle",
+    "launch_checklist",
+    "acknowledge_risk_flags",
+    "launch",
+    "readout",
+    "create_from_path",
+    "set_watchdog",
     "fetch_dataset",
     "fetch_funding",
+    "fetch_token_features",
+    "fetch_yield_features",
     "pair_check",
     "signal_check",
     "signal_scan",
@@ -343,7 +372,9 @@ async def core_jobs(
     destination: str | None = None,
     agent_wake_seconds: int | None = None,
     auto_limits: dict[str, Any] | None = None,
-    execution_contract: Literal["jobs_v1", "legacy"] = "jobs_v1",
+    execution_contract: Literal[
+        "jobs_v1", "legacy", "freestyle_v1", "path_v1"
+    ] = "jobs_v1",
     proposal_id: str | None = None,
     application_status: Literal["applied", "failed"] | None = None,
     changed_files: list[str] | None = None,
@@ -370,6 +401,23 @@ async def core_jobs(
     scenario_plan: dict[str, Any] | None = None,
     improver: dict[str, Any] | None = None,
     memo: str | None = None,
+    start: bool = True,
+    target: Literal["paper", "live"] = "paper",
+    confirm_live: bool = False,
+    risk_flag_codes: list[str] | None = None,
+    script_source: str | None = None,
+    refresh: bool = False,
+    path_slug: str | None = None,
+    path_version: str | None = None,
+    path_component: str | None = None,
+    path_params: dict[str, Any] | None = None,
+    install_dir: str | None = None,
+    watch_level: Literal["off", "monitor", "intervene", "auto"] | None = None,
+    triggers: list[str] | None = None,
+    trigger_debounce_seconds: int | None = None,
+    notifications: dict[str, Any] | None = None,
+    kill_switches: dict[str, Any] | None = None,
+    watchdog: dict[str, Any] | None = None,
     strict: bool = False,
     grid_path: str | None = None,
     grid: dict[str, Any] | list[dict[str, Any]] | None = None,
@@ -387,6 +435,9 @@ async def core_jobs(
     background: bool | None = None,
     op: str | None = None,
     days: int = 14,
+    token_ids: list[str] | None = None,
+    feeds: list[str] | None = None,
+    smoothing: str | None = None,
     include_funding: bool = False,
     dataset_source: Literal["venues", "ccxt"] = "venues",
     exchange: str = "binance",
@@ -400,6 +451,7 @@ async def core_jobs(
     run_id: str | None = None,
     via_proposal: bool = False,
     symbols: list[str] | None = None,
+    venue: Literal["hyperliquid", "onchain", "hyperliquid_spot"] | None = None,
     column: str | None = None,
     horizons: list[int] | None = None,
     bar_interval: str | None = None,
@@ -427,8 +479,24 @@ async def core_jobs(
     user-facing control layer; recurring execution is still delegated to
     `core_runner`.
 
+    The launch flow (every kind of job; load the `launching-wayfinder-jobs` skill):
+      `create_starter` / `create_freestyle` / `create_from_path` (jobs start paused)
+      -> `validate_job` (the ladder for the kind, with a sandboxed dry run for
+      scripts and Paths) -> `readout` (honest evidence; `refresh=True` runs the
+      backtest, walk-forward holdout and robustness in the background on a
+      harnessed job) -> `launch_checklist` (validated revision == deployed
+      revision, mechanical dry run, named risk flags) -> `launch` (paper; pins
+      the revision, compiles, resumes the loops; `watchdog={...}` rides along)
+      -> `set_watchdog` (watch level, cadence, triggers, notifications, kill
+      switches) -> `acknowledge_risk_flags` + `launch(script_mode="live",
+      confirm_live=True)` for live. Freestyle scripts (`create_freestyle` with
+      `script_source`, a `tick(ctx)` module trading only through `ctx.act`) and
+      installed Paths (`create_from_path` with `path_slug`) never evolve.
+
     Typical flow:
       - `create` with `script` + `interval_seconds` for script-only jobs.
+      - `create` with `symbols` + `bar_interval` (jobs_v1) seeds the harnessed data contract; `venue` picks `hyperliquid` perps (default), `onchain` for token ids (`ethereum-robinhood`) or `hyperliquid_spot` for pairs (`HYPE/USDC`)
+        and paper execution params so `fetch_dataset` and `backtest_job` run without editing job.yaml.
         Jobs default to `execution_contract="jobs_v1"` (decide()/build_strategy
         driven by the SDK tick driver); pass `execution_contract="legacy"` only
         for a real standalone script that runs top-to-bottom.
@@ -488,7 +556,22 @@ async def core_jobs(
         use `include_funding=True` for same-window perp carry),
         `fetch_funding` (historical funding rates into the job's feature
         store — first-class carry data, as-of merged onto the bars as a
-        `funding` column), `backtest_job` (runs DETACHED by
+        `funding` column), `fetch_token_features` (an on-chain token's USD
+        price history into the feature store as `token_price:<token_id>`,
+        `token_ids=["ethereum-base", "polygon_0x…"]`, coarsened to the bar
+        interval, pinned to chain and address; `days` defaults to the
+        dataset's span), `fetch_yield_features` (DeFi yield history by feed
+        name, `feeds=["lend_supply_apr:<venue>:<symbol>[:<market>]",
+        "lend_borrow_apr:…", "yield_apy:<symbol>",
+        "pendle_implied_apy:<venue>:<market_id>",
+        "boros_fixed_rate:<venue>:<market_id>"]`, decimals per year, about
+        seven months of hourly history, declared with its cadence and a
+        trailing-day mean by default — `smoothing="none"|"mean:24h"|"ewm:12h"`;
+        discover venues and markets with `research_search_lending`,
+        `research_search_delta_lab_markets`, `research_search_delta_lab_instruments`;
+        `status` lists what a job declares under `features`; both feeds
+        refresh hourly from the wake and as-of merge into backtest and live
+        alike), `backtest_job` (runs DETACHED by
         default — it returns immediately; poll `op_status` until done, or
         pass `background=False` only for quick_bars-sized runs),
         `backtest_diagnose` (ranked next steps), `experiments` (param grid via
@@ -517,16 +600,42 @@ async def core_jobs(
     if action == "create_starter":
         if not starter_id:
             return err("invalid_request", "create_starter requires starter_id")
+        created = create_starter_job(
+            starter_id,
+            job_id=job_id,
+            store=store,
+            compile_job=compile,
+            initializer_session_id=initializer_session_id
+            or _infer_initializer_session(),
+            leverage=leverage,
+            agent_mode=agent_mode,
+        )
+        if compile and not start:
+            created_id = created.get("job_id") or (created.get("job") or {}).get("id")
+            if created_id:
+                created["hold"] = hold_job(str(created_id), store=store)
+        return ok(created)
+
+    if action == "create_from_path":
+        if not path_slug:
+            return err("invalid_request", "create_from_path requires path_slug")
         return ok(
-            create_starter_job(
-                starter_id,
+            create_from_path(
+                path_slug,
                 job_id=job_id,
+                version=path_version,
+                component=path_component,
+                params=path_params,
+                interval_seconds=interval_seconds,
+                cron_expr=cron_expr,
+                timezone=timezone or "UTC",
+                timeout_seconds=timeout_seconds,
+                install_dir=install_dir,
+                agent_mode=agent_mode or "monitor",
                 store=store,
                 compile_job=compile,
                 initializer_session_id=initializer_session_id
                 or _infer_initializer_session(),
-                leverage=leverage,
-                agent_mode=agent_mode,
             )
         )
 
@@ -581,6 +690,38 @@ async def core_jobs(
             initializer_session_id=initializer_session_id
             or _infer_initializer_session(),
         )
+        if job.execution_contract == "jobs_v1":
+            # A custom harnessed build gets the same data contract a catalog
+            # starter does, from the symbols and bar interval it names — no
+            # job.yaml surgery before fetch_dataset/backtest_job can run.
+            declared = [
+                str(x)
+                for x in (symbols or (execution_params or {}).get("symbols") or [])
+            ]
+            if declared:
+                harnessed_venue = venue or "hyperliquid"
+                try:
+                    token_resolution = (
+                        await resolve_token_symbols(declared)
+                        if harnessed_venue == "onchain"
+                        else None
+                    )
+                    job.execution_spec = harnessed_execution_spec(
+                        declared,
+                        bar_interval or interval_label(int(interval_seconds or 3600)),
+                        venue=harnessed_venue,
+                        token_resolution=token_resolution,
+                    )
+                    job.execution_params = {
+                        **harnessed_execution_params(declared, venue=harnessed_venue),
+                        **dict(execution_params or {}),
+                    }
+                except (ValueError, LookupError) as exc:
+                    return err("invalid_request", str(exc))
+            elif execution_params:
+                job.execution_params = dict(execution_params)
+        elif execution_params:
+            job.execution_params = dict(execution_params)
         job_path = store.create_job(job)
         result: dict[str, Any] = {"job": job.to_dict(), "job_yaml": str(job_path)}
         entrypoint = store.resolve_script_entrypoint(job.id, job.to_dict())
@@ -595,7 +736,160 @@ async def core_jobs(
             )
         if compile:
             result["compile"] = JobCompiler(store=store).compile(job)
+            if not start:
+                result["hold"] = hold_job(job.id, store=store)
             sync_all_jobs(store=store)
+        return ok(result)
+
+    if action == "create_freestyle":
+        if not script_source and not script:
+            return err(
+                "invalid_request",
+                "create_freestyle needs script_source (the tick(ctx) module text) or script (a path to it)",
+            )
+        if not interval_seconds and not cron_expr:
+            return err(
+                "invalid_request", "freestyle jobs need interval_seconds or cron_expr"
+            )
+        return ok(
+            create_freestyle_job(
+                job_id,
+                name=name,
+                goal=goal or "",
+                script_source=script_source,
+                script_path=script,
+                interval_seconds=interval_seconds,
+                cron_expr=cron_expr,
+                timezone=timezone or "UTC",
+                timeout_seconds=timeout_seconds or 300,
+                agent_mode=agent_mode or "monitor",
+                store=store,
+                compile_job=compile,
+                initializer_session_id=initializer_session_id
+                or _infer_initializer_session(),
+                execution_params=execution_params,
+            )
+        )
+
+    if action == "launch_checklist":
+        return ok(evaluate_launch_checklist(job_id, store=store, target=target))
+
+    if action == "acknowledge_risk_flags":
+        if not risk_flag_codes:
+            return err(
+                "invalid_request", "acknowledge_risk_flags requires risk_flag_codes"
+            )
+        return ok(
+            acknowledge_risk_flags(
+                store, job_id, list(risk_flag_codes), by="owner", memo=memo
+            )
+        )
+
+    if action == "set_watchdog":
+        return ok(
+            set_watchdog(
+                job_id,
+                store=store,
+                watch_level=watch_level,
+                wake_interval_seconds=agent_wake_seconds,
+                cron_expr=cron_expr,
+                timezone=timezone,
+                triggers=triggers,
+                trigger_debounce_seconds=trigger_debounce_seconds,
+                notifications=notifications,
+                kill_switches=kill_switches,
+            )
+        )
+
+    if action == "launch":
+        if watchdog:
+            # The watchdog settings ride the same compile the launch bakes;
+            # the cadence may be spelled the way set_watchdog's own action
+            # spells it.
+            settings = dict(watchdog)
+            if "agent_wake_seconds" in settings:
+                settings["wake_interval_seconds"] = settings.pop("agent_wake_seconds")
+            set_watchdog(job_id, store=store, **settings)
+        return ok(
+            launch_job(
+                job_id,
+                store=store,
+                script_mode=script_mode or "paper",
+                confirm_live=confirm_live,
+                acknowledge=list(risk_flag_codes or []),
+            )
+        )
+
+    if action == "readout":
+        started: dict[str, Any] = {}
+        if refresh:
+            if store.load(job_id).execution_contract == "jobs_v1":
+                started["backtest_job"] = await _start_background_op(
+                    store,
+                    job_id,
+                    "backtest_job",
+                    {
+                        "job_id": job_id,
+                        "grid_path": None,
+                        "workers": workers,
+                        "parallel": parallel,
+                        "quick_bars": None,
+                        "full": False,
+                    },
+                )
+                holdout = feasible_holdout(
+                    store,
+                    job_id,
+                    test_bars=wf_test_bars,
+                    folds=wf_folds,
+                    train_bars=wf_train_bars,
+                )
+                if holdout:
+                    started["experiments"] = await _start_background_op(
+                        store,
+                        job_id,
+                        "experiments",
+                        {
+                            "job_id": job_id,
+                            "grid": {},
+                            "rank_by": rank_by,
+                            "workers": workers,
+                            "parallel": parallel,
+                            "walk_forward": holdout,
+                            "quick_bars": None,
+                            "full": False,
+                        },
+                    )
+                else:
+                    started["experiments"] = {
+                        "skipped": "no dataset large enough for a holdout yet: run "
+                        "fetch_dataset first, then refresh again"
+                    }
+                declared_plan = (
+                    (store.load(job_id).execution_spec or {}).get("validation") or {}
+                ).get("robustness_plan")
+                if declared_plan:
+                    started["robustness_check"] = await _start_background_op(
+                        store,
+                        job_id,
+                        "robustness_check",
+                        {
+                            "job_id": job_id,
+                            "candidate_dir": None,
+                            "robustness_plan": None,
+                        },
+                    )
+                else:
+                    started["robustness_check"] = {
+                        "skipped": "no robustness plan declared for this job; run "
+                        'robustness_check with robustness_plan (e.g. {"leverage": [1, 2, 3]}) '
+                        "to add that evidence"
+                    }
+            else:
+                started["validate"] = validate_job_for_kind(job_id, store=store)
+        result = build_readout(job_id, store=store)
+        if started:
+            result["refresh"] = started
         return ok(result)
 
     if action in {"status", "report"}:
@@ -712,7 +1006,7 @@ async def core_jobs(
         return ok(run_job_worker(job_id, mode=mode, apply_proposal_id=proposal_id))
 
     if action == "validate_job":
-        return ok(validate_execution_job(job_id, strict=strict, store=store))
+        return ok(validate_job_for_kind(job_id, strict=strict, store=store))
 
     if action == "fetch_dataset":
         return await _run_job_op(
@@ -732,6 +1026,38 @@ async def core_jobs(
         return await _run_job_op(
             "fetch_funding",
             {"job_id": job_id, "days": days, "exchange": exchange, "quote": quote},
+        )
+
+    if action == "fetch_token_features":
+        if not token_ids:
+            return err(
+                "invalid_request",
+                "fetch_token_features needs token_ids (e.g. ['ethereum-base'])",
+            )
+        return await _run_job_op(
+            "fetch_token_features",
+            {
+                "job_id": job_id,
+                "token_ids": list(token_ids),
+                "interval": bar_interval,
+                "days": days if days != 14 else None,
+            },
+        )
+
+    if action == "fetch_yield_features":
+        if not feeds:
+            return err(
+                "invalid_request",
+                "fetch_yield_features needs feeds (e.g. ['lend_supply_apr:aave-base:USDC'])",
+            )
+        return await _run_job_op(
+            "fetch_yield_features",
+            {
+                "job_id": job_id,
+                "feeds": list(feeds),
+                "days": days if days != 14 else None,
+                "smoothing": smoothing,
+            },
         )
 
     if action == "pair_check":
@@ -1052,7 +1378,27 @@ async def core_jobs(
         if not kind or not summary or not intent_contract:
             return err(
                 "invalid_request",
-                "propose requires kind, summary, and intent_contract",
+                "propose requires kind, summary, and intent_contract with the fields "
+                + ", ".join(REQUIRED_INTENT_FIELDS),
+            )
+        missing_fields = [f for f in REQUIRED_INTENT_FIELDS if f not in intent_contract]
+        if missing_fields:
+            return err(
+                "invalid_request",
+                "intent_contract is missing "
+                + ", ".join(missing_fields)
+                + " (required: "
+                + ", ".join(REQUIRED_INTENT_FIELDS)
+                + ")",
+            )
+        if not memo and str(store.load(job_id).execution_contract or "legacy") in {
+            "freestyle_v1",
+            "path_v1",
+        }:
+            return err(
+                "invalid_request",
+                "propose on a freestyle or Path job requires memo: the owner reads "
+                "it as the rationale when approving from the proposal list",
             )
         return ok(
             propose_change(

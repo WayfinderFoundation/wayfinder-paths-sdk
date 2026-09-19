@@ -121,6 +121,40 @@ class CanonicalAssetsResponse(TypedDict):
     settlement_assets: Required[list[CanonicalAsset]]
 
 
+def _candle_params(
+    coin: str,
+    interval: str,
+    *,
+    chain_id: int,
+    before_timestamp: int | None = None,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+) -> dict[str, str | int]:
+    params: dict[str, str | int] = {
+        "coin": coin,
+        "interval": interval,
+        "chain_id": chain_id,
+    }
+    if before_timestamp is not None:
+        params["before_timestamp"] = before_timestamp
+    if start_ms is not None:
+        params["start_ms"] = start_ms
+    if end_ms is not None:
+        params["end_ms"] = end_ms
+    return params
+
+
+class CandleWindow(TypedDict):
+    """One answered window of candles: rows oldest first (`t` open ms, `T`
+    close ms, o/h/l/c/v as strings), the resolved identity, and the open of
+    the earliest candle the source holds when it has hit that floor."""
+
+    rows: Required[list[dict[str, Any]]]
+    chain_id: NotRequired[int | None]
+    address: NotRequired[str | None]
+    history_start_ms: NotRequired[int | None]
+
+
 class TokenClient(WayfinderClient):
     async def get_candles(
         self,
@@ -129,18 +163,48 @@ class TokenClient(WayfinderClient):
         *,
         chain_id: int,
         before_timestamp: int | None = None,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
     ) -> list[dict[str, Any]]:
-        url = f"{get_api_base_url()}/blockchain/tokens/candles/"
-        params: dict[str, str | int] = {
-            "coin": coin,
-            "interval": interval,
-            "chain_id": chain_id,
-        }
-        if before_timestamp is not None:
-            params["before_timestamp"] = before_timestamp
-        response = await self._authed_request("GET", url, params=params)
+        params = _candle_params(
+            coin,
+            interval,
+            chain_id=chain_id,
+            before_timestamp=before_timestamp,
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+        response = await self._authed_request(
+            "GET", f"{get_api_base_url()}/blockchain/tokens/candles/", params=params
+        )
         response.raise_for_status()
         return response.json().get("rows", [])
+
+    async def get_candles_window(
+        self,
+        coin: str,
+        interval: str,
+        *,
+        chain_id: int,
+        start_ms: int,
+        end_ms: int,
+    ) -> CandleWindow:
+        """Every candle with an open in `[start_ms, end_ms)` from the persisted
+        on-chain bar store, plus its identity and history floor."""
+        params = _candle_params(
+            coin, interval, chain_id=chain_id, start_ms=start_ms, end_ms=end_ms
+        )
+        response = await self._authed_request(
+            "GET", f"{get_api_base_url()}/blockchain/tokens/candles/", params=params
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return {
+            "rows": list(payload.get("rows") or []),
+            "chain_id": payload.get("chain_id"),
+            "address": payload.get("address"),
+            "history_start_ms": payload.get("history_start_ms"),
+        }
 
     async def get_token_details(
         self, query: str, market_data: bool = False, chain_id: int | None = None
