@@ -119,8 +119,11 @@ def test_token_rows_are_close_labelled_floats_from_one_window() -> None:
         isinstance(row["value"], float) and row["symbol"] is None for row in rows
     )
     assert rows[-1]["value"] == 100.5 + 28
-    (window,) = client.calls
-    assert window == (now_ms - 86_400_000 - HOUR_MS, now_ms)
+    ((start, end),) = client.calls
+    assert (
+        abs(start - (now_ms - 86_400_000 - HOUR_MS)) < 1_000
+    )  # the feed reads its own clock
+    assert abs(end - now_ms) < 1_000
 
 
 def test_token_since_narrows_an_incremental_fetch() -> None:
@@ -135,7 +138,9 @@ def test_token_since_narrows_an_incremental_fetch() -> None:
     assert 2 <= len(rows) <= 3 and all(
         pd.Timestamp(r["timestamp"]) >= since for r in rows
     )
-    assert client.calls == [(int(since.timestamp() * 1000) - HOUR_MS, now_ms)]
+    ((start, end),) = client.calls
+    assert start == int(since.timestamp() * 1000) - HOUR_MS
+    assert abs(end - now_ms) < 1_000
 
 
 def test_token_errors_are_isolated_per_series() -> None:

@@ -26,6 +26,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     _float_or_none,
     bar_interval_seconds,
 )
+from wayfinder_paths.jobs.execution.token_bars import is_token_symbol
 from wayfinder_paths.jobs.execution.venues import (
     FundingSnapshot,
     MarketEvent,
@@ -239,6 +240,10 @@ class HyperliquidMarketFeed:
         lookback_hours = _lookback_hours(lookback_bars, interval)
         rows: list[dict[str, Any]] = []
         for symbol in symbols:
+            # A mixed book asks every feed for every symbol; token ids and
+            # spot pairs are another venue's to answer.
+            if is_token_symbol(symbol) or "/" in str(symbol):
+                continue
             view = await self._safe.get_completed_bars(
                 symbol, interval, lookback_hours=lookback_hours
             )
@@ -576,7 +581,9 @@ def build_hyperliquid_adapter(
     return HyperliquidPerpAdapter(mode=mode, params=params)
 
 
-register_venue("hyperliquid", build_hyperliquid_adapter)
+register_venue(
+    "hyperliquid", build_hyperliquid_adapter, capabilities=HYPERLIQUID_CAPABILITIES
+)
 
 
 def _mcp_error(outcome: Any) -> Any:

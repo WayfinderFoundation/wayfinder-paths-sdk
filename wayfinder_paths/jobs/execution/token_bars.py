@@ -67,10 +67,13 @@ def is_token_symbol(symbol: Any) -> bool:
 
 
 def bar_window(interval: str, *, lookback_bars: int, end_ms: int) -> tuple[int, int]:
-    """The `[start, end)` window on candle opens that yields `lookback_bars`
-    completed bars ending at `end_ms`."""
+    """The `[start, end)` window on candle opens holding exactly
+    `lookback_bars` completed bars as of `end_ms`: the last open is the
+    grid-aligned bar that has already closed, so a mid-bar `as_of` never
+    counts the forming bar and never comes up one short."""
     step = _step_ms(interval)
-    return end_ms - max(1, int(lookback_bars)) * step, end_ms
+    last_open = ((end_ms - step) // step) * step
+    return last_open - (max(1, int(lookback_bars)) - 1) * step, last_open + step
 
 
 def candle_coin(token_id: str, address: str) -> str:

@@ -518,4 +518,6 @@ def build_polymarket_adapter(
     return PolymarketVenueAdapter(mode=mode, params=params)
 
 
-register_venue("polymarket", build_polymarket_adapter)
+register_venue(
+    "polymarket", build_polymarket_adapter, capabilities=POLYMARKET_CAPABILITIES
+)

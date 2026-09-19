@@ -366,4 +366,8 @@ def build_hyperliquid_prediction_adapter(
     return HyperliquidPredictionAdapter(mode=mode, params=params)
 
 
-register_venue("hyperliquid_prediction", build_hyperliquid_prediction_adapter)
+register_venue(
+    "hyperliquid_prediction",
+    build_hyperliquid_prediction_adapter,
+    capabilities=HYPERLIQUID_PREDICTION_CAPABILITIES,
+)

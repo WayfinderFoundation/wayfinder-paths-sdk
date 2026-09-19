@@ -184,11 +184,49 @@ class VenueAdapter(Protocol):
     broker: Broker
 
 
+@runtime_checkable
+class HistoryProvenanceFeed(Protocol):
+    """A feed that can say how far back its source's history goes, per symbol
+    (`earliest_available`, `requested_start` as ISO stamps or None). The
+    dataset fetch records it so the evidence gate can tell a young token
+    from a short fetch."""
+
+    def history_provenance(self) -> dict[str, dict[str, Any]]: ...
+
+
 VENUE_REGISTRY: dict[str, Callable[..., VenueAdapter]] = {}
+VENUE_CAPABILITIES: dict[str, VenueCapabilities] = {}
+# Costs a venue charges when a job pins none. Backtest, paper and preflight
+# all read these, so an unpriced venue never trades for free anywhere.
+DEFAULT_TAKER_FEE_BPS: dict[str, float] = {
+    "hyperliquid": 4.5,
+    "hl": 4.5,
+    "onchain": 30.0,
+    "hyperliquid_spot": 7.0,
+}
+DEFAULT_MAKER_FEE_BPS: dict[str, float] = {"hyperliquid": 1.5, "hl": 1.5}
 
 
-def register_venue(name: str, factory: Callable[..., VenueAdapter]) -> None:
+def register_venue(
+    name: str,
+    factory: Callable[..., VenueAdapter],
+    *,
+    capabilities: VenueCapabilities | None = None,
+) -> None:
     VENUE_REGISTRY[name] = factory
+    if capabilities is not None:
+        VENUE_CAPABILITIES[name] = capabilities
+
+
+def venue_capabilities(name: str) -> VenueCapabilities:
+    """The registered venue's contract, for engines that must reject what it
+    cannot honor without building an adapter."""
+    capabilities = VENUE_CAPABILITIES.get(name)
+    if capabilities is None:
+        raise ValueError(
+            f"unknown venue {name!r}; registered: {sorted(VENUE_CAPABILITIES)}"
+        )
+    return capabilities
 
 
 def build_adapter(

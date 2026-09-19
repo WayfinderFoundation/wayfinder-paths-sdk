@@ -224,4 +224,8 @@ def build_hyperliquid_spot_adapter(
     return HyperliquidSpotAdapter(mode=mode, params=params)
 
 
-register_venue("hyperliquid_spot", build_hyperliquid_spot_adapter)
+register_venue(
+    "hyperliquid_spot",
+    build_hyperliquid_spot_adapter,
+    capabilities=HYPERLIQUID_SPOT_CAPABILITIES,
+)

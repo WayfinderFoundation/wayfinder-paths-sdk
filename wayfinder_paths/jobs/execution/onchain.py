@@ -18,12 +18,19 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
+from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.jobs.execution.hyperliquid import _paper_broker
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
     FillEvent,
     OrderIntent,
     TradeCapacity,
+)
+from wayfinder_paths.jobs.execution.token_bars import (
+    TokenBarReader,
+    bar_window,
+    close_labelled_rows,
+    is_token_symbol,
 )
 from wayfinder_paths.jobs.execution.venues import (
     Broker,
@@ -97,12 +104,25 @@ def human_amount(value: Any, decimals: int) -> float | None:
 
 
 class OnchainMarketFeed:
-    """USD price per token id. One completed bar per read: the tick only
-    needs the latest close, and the forward chart keeps the history from the
-    marks the ticks record."""
+    """Completed OHLCV bars per token id at the job's interval, read by window
+    from the on-chain data source's store. Symbols that are not token ids (a
+    perp coin, a spot pair) belong to another venue's feed and are skipped,
+    so a mixed book never sees a symbol twice."""
 
-    def __init__(self, client: Any | None = None) -> None:
+    def __init__(
+        self,
+        client: Any | None = None,
+        *,
+        resolver: type[TokenResolver] = TokenResolver,
+        token_resolution: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> None:
         self.client = client or TOKEN_CLIENT
+        self.reader = TokenBarReader(client=self.client, resolver=resolver)
+        self.token_resolution = {
+            str(symbol): dict(pinned)
+            for symbol, pinned in (token_resolution or {}).items()
+        }
+        self._provenance: dict[str, dict[str, Any]] = {}
 
     async def get_completed_bars(
         self,
@@ -112,30 +132,47 @@ class OnchainMarketFeed:
         lookback_bars: int,
         as_of: datetime | None = None,
     ) -> CompletedBarsView:
-        stamp = (as_of or datetime.now(UTC)).isoformat()
+        end = as_of or datetime.now(UTC)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=UTC)
+        start_ms, end_ms = bar_window(
+            interval, lookback_bars=lookback_bars, end_ms=int(end.timestamp() * 1000)
+        )
         rows: list[Mapping[str, Any]] = []
         for symbol in symbols:
-            details = await self.client.get_token_details(symbol, market_data=True)
-            price = (details or {}).get("current_price")
-            if price is None:
+            if not is_token_symbol(symbol):
                 continue
-            value = float(price)
-            rows.append(
-                {
-                    "timestamp": stamp,
-                    "symbol": symbol,
-                    "open": value,
-                    "high": value,
-                    "low": value,
-                    "close": value,
-                }
+            pinned = self.token_resolution.get(str(symbol)) or {}
+            window = await self.reader.window(
+                str(symbol),
+                interval,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                chain_id=pinned.get("chain_id"),
+                address=pinned.get("address"),
             )
+            rows.extend(close_labelled_rows(str(symbol), window.bars))
+            self._provenance[str(symbol)] = {
+                "earliest_available": _iso_ms(window.history_start_ms),
+                "requested_start": _iso_ms(start_ms),
+                "chain_id": window.chain_id,
+                "address": window.address,
+            }
         return CompletedBarsView.from_rows(rows)
+
+    def history_provenance(self) -> dict[str, dict[str, Any]]:
+        return {symbol: dict(entry) for symbol, entry in self._provenance.items()}
 
     async def get_events(
         self, symbols: Sequence[str], *, since: datetime | None = None
     ) -> list[MarketEvent]:
         return []
+
+
+def _iso_ms(value: int | None) -> str | None:
+    if value is None:
+        return None
+    return datetime.fromtimestamp(int(value) / 1000, tz=UTC).isoformat()
 
 
 class OnchainSwapBroker:
@@ -392,9 +429,11 @@ class OnchainVenueAdapter:
     feed: MarketDataFeed
     broker: Broker
 
-    def __init__(self, *, mode: str, params: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self, *, mode: str, params: dict[str, Any] | None = None, spec: Any = None
+    ) -> None:
         params = params or {}
-        self.feed = OnchainMarketFeed()
+        self.feed = OnchainMarketFeed(token_resolution=_token_resolution(spec))
         if mode == "live":
             self.broker = OnchainSwapBroker(
                 wallet_label=str(params.get("wallet_label") or ""),
@@ -405,10 +444,21 @@ class OnchainVenueAdapter:
             self.broker = _paper_broker(ONCHAIN_CAPABILITIES, params)
 
 
+def _token_resolution(spec: Any) -> dict[str, Any]:
+    """`data_contract.token_resolution` pins chain and address per symbol at
+    create time; a spec without it (or no spec) resolves on first read."""
+    contract = (
+        getattr(spec, "data_contract", None)
+        if spec is not None and not isinstance(spec, Mapping)
+        else (spec or {}).get("data_contract")
+    )
+    return dict((contract or {}).get("token_resolution") or {})
+
+
 def build_onchain_adapter(
     *, mode: str, spec: Any = None, params: dict[str, Any] | None = None
 ) -> VenueAdapter:
-    return OnchainVenueAdapter(mode=mode, params=params)
+    return OnchainVenueAdapter(mode=mode, params=params, spec=spec)
 
 
-register_venue("onchain", build_onchain_adapter)
+register_venue("onchain", build_onchain_adapter, capabilities=ONCHAIN_CAPABILITIES)

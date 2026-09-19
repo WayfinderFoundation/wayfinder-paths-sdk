@@ -200,8 +200,16 @@ def test_refusals_name_the_fix() -> None:
 
 
 def test_bar_window_and_close_labelled_rows() -> None:
-    start_ms, end_ms = tb.bar_window("5m", lookback_bars=4, end_ms=1_000_000)
-    assert (start_ms, end_ms) == (1_000_000 - 4 * 300_000, 1_000_000)
+    # as of 2,000,000 ms the last closed 5m bar opened at 1,500,000
+    assert tb.bar_window("5m", lookback_bars=4, end_ms=2_000_000) == (
+        600_000,
+        1_800_000,
+    )
+    # exactly on the grid, the bar closing now counts
+    assert tb.bar_window("5m", lookback_bars=1, end_ms=1_800_000) == (
+        1_500_000,
+        1_800_000,
+    )
     bar = tb.Bar(HOUR_MS, 2 * HOUR_MS, 1.0, 2.0, 0.5, 1.5, None)
     (row,) = tb.close_labelled_rows("ethereum-base", [bar])
     assert row["timestamp"] == pd.Timestamp(2 * HOUR_MS, unit="ms", tz="UTC")

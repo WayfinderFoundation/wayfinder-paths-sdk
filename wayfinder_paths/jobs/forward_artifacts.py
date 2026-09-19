@@ -622,23 +622,39 @@ def _freestyle_price_series(
     job: Any, ticks: list[dict[str, Any]], *, store: JobStore
 ) -> list[dict[str, Any]]:
     series = _mark_series(ticks)
-    hl_symbols = [
-        str(entry["symbol"]) for entry in series if entry.get("venue") == "hyperliquid"
-    ]
-    if hl_symbols:
+    for venue in _HISTORY_VENUES:
+        symbols = [
+            str(entry["symbol"]) for entry in series if entry.get("venue") == venue
+        ]
+        if not symbols:
+            continue
         try:
-            bars = _fetch_hyperliquid_bars(job, hl_symbols, ticks, store=store)
+            bars = _fetch_hyperliquid_bars(
+                job, symbols, ticks, store=store, venue=venue
+            )
         except Exception:  # noqa: BLE001 — marks are the fallback chart
             bars = {}
         for entry in series:
+            if entry.get("venue") != venue:
+                continue
             points = bars.get(str(entry["symbol"]))
             if points:
                 entry["points"] = points
     return series
 
 
+# Venues whose feeds serve completed candles, so a freestyle mark series can
+# be upgraded to real OHLC bars.
+_HISTORY_VENUES = ("hyperliquid", "onchain", "hyperliquid_spot")
+
+
 def _fetch_hyperliquid_bars(
-    job: Any, symbols: list[str], ticks: list[dict[str, Any]], *, store: JobStore
+    job: Any,
+    symbols: list[str],
+    ticks: list[dict[str, Any]],
+    *,
+    store: JobStore,
+    venue: str = "hyperliquid",
 ) -> dict[str, list[dict[str, Any]]]:
     import pandas as pd
 
@@ -670,7 +686,7 @@ def _fetch_hyperliquid_bars(
 
     async def _fetch() -> CompletedBarsView:
         adapter = build_adapter(
-            "hyperliquid", mode="paper", params=dict(job.execution_params or {})
+            venue, mode="paper", params=dict(job.execution_params or {})
         )
         return await adapter.feed.get_completed_bars(
             symbols, interval, lookback_bars=lookback_bars, as_of=now
