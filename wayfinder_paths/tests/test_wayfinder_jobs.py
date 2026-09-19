@@ -1723,3 +1723,60 @@ def test_ideation_bookkeeping_journals_artifacts_and_overdue(tmp_path: Path) -> 
     _write_ideation_artifact(store, job.id, age_hours=0)
     _ideation_bookkeeping(store, job.id)
     assert journal_types().count("ideation_artifact") == 2
+
+
+def test_mcp_create_with_the_onchain_venue_pins_tokens_and_spot_costs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """create(venue="onchain") gives a token strategy a spot contract: token
+    ids pinned to chain and address, spot costs, no leverage; a perp coin
+    named as a token is refused with the id grammar."""
+    import asyncio
+
+    from wayfinder_paths.mcp.tools import jobs as jobs_tools
+
+    monkeypatch.setattr("wayfinder_paths.jobs.compiler.RunnerBridge", _FakeBridge)
+    monkeypatch.setattr(jobs_tools, "JobStore", lambda: JobStore(repo_root=tmp_path))
+    monkeypatch.setattr(jobs_tools, "sync_all_jobs", lambda store=None: None)
+    zero = "0x" + "0" * 40
+
+    async def pinned(symbols, *, resolver=None):
+        return {symbol: {"chain_id": 4663, "address": zero} for symbol in symbols}
+
+    monkeypatch.setattr(jobs_tools, "resolve_token_symbols", pinned)
+
+    result = asyncio.run(
+        jobs_tools.core_jobs(
+            action="create",
+            job_id="eth-rh",
+            script="strategy.py",
+            interval_seconds=3600,
+            symbols=["ethereum-robinhood"],
+            venue="onchain",
+        )
+    )
+    assert result["ok"], result
+    job = JobStore(repo_root=tmp_path).load("eth-rh")
+    assert job.execution_spec["market_kind"] == "spot"
+    assert job.execution_spec["venues"] == ["onchain"]
+    assert job.execution_spec["data_contract"]["token_resolution"] == {
+        "ethereum-robinhood": {"chain_id": 4663, "address": zero}
+    }
+    assert job.execution_params["venue"] == "onchain"
+    assert (job.execution_params["fee_bps"], job.execution_params["slippage_bps"]) == (
+        30.0,
+        50.0,
+    )
+    assert "leverage" not in job.execution_params
+
+    refused = asyncio.run(
+        jobs_tools.core_jobs(
+            action="create",
+            job_id="perp-as-token",
+            script="strategy.py",
+            interval_seconds=3600,
+            symbols=["BTC"],
+            venue="onchain",
+        )
+    )
+    assert not refused["ok"] and "not a token id" in json.dumps(refused)

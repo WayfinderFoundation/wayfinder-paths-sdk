@@ -28,6 +28,7 @@ from wayfinder_paths.jobs.execution.spec_defaults import (
     harnessed_execution_spec,
     interval_label,
 )
+from wayfinder_paths.jobs.execution.token_bars import resolve_token_symbols
 from wayfinder_paths.jobs.freestyle.create import create_freestyle_job
 from wayfinder_paths.jobs.halt import clear_halt, request_halt
 from wayfinder_paths.jobs.launch import (
@@ -450,6 +451,7 @@ async def core_jobs(
     run_id: str | None = None,
     via_proposal: bool = False,
     symbols: list[str] | None = None,
+    venue: Literal["hyperliquid", "onchain", "hyperliquid_spot"] | None = None,
     column: str | None = None,
     horizons: list[int] | None = None,
     bar_interval: str | None = None,
@@ -493,7 +495,7 @@ async def core_jobs(
 
     Typical flow:
       - `create` with `script` + `interval_seconds` for script-only jobs.
-      - `create` with `symbols` + `bar_interval` (jobs_v1) seeds the harnessed data contract
+      - `create` with `symbols` + `bar_interval` (jobs_v1) seeds the harnessed data contract; `venue` picks `hyperliquid` perps (default), `onchain` for token ids (`ethereum-robinhood`) or `hyperliquid_spot` for pairs (`HYPE/USDC`)
         and paper execution params so `fetch_dataset` and `backtest_job` run without editing job.yaml.
         Jobs default to `execution_contract="jobs_v1"` (decide()/build_strategy
         driven by the SDK tick driver); pass `execution_contract="legacy"` only
@@ -697,14 +699,25 @@ async def core_jobs(
                 for x in (symbols or (execution_params or {}).get("symbols") or [])
             ]
             if declared:
-                job.execution_spec = harnessed_execution_spec(
-                    declared,
-                    bar_interval or interval_label(int(interval_seconds or 3600)),
-                )
-                job.execution_params = {
-                    **harnessed_execution_params(declared),
-                    **dict(execution_params or {}),
-                }
+                harnessed_venue = venue or "hyperliquid"
+                try:
+                    token_resolution = (
+                        await resolve_token_symbols(declared)
+                        if harnessed_venue == "onchain"
+                        else None
+                    )
+                    job.execution_spec = harnessed_execution_spec(
+                        declared,
+                        bar_interval or interval_label(int(interval_seconds or 3600)),
+                        venue=harnessed_venue,
+                        token_resolution=token_resolution,
+                    )
+                    job.execution_params = {
+                        **harnessed_execution_params(declared, venue=harnessed_venue),
+                        **dict(execution_params or {}),
+                    }
+                except (ValueError, LookupError) as exc:
+                    return err("invalid_request", str(exc))
             elif execution_params:
                 job.execution_params = dict(execution_params)
         elif execution_params:
