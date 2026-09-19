@@ -90,6 +90,18 @@ class TickTimeout(RuntimeError):
     pass
 
 
+def _bar_dict(row: Mapping[str, Any]) -> dict[str, Any]:
+    volume = row.get("volume")
+    return {
+        "timestamp": pd.Timestamp(row["timestamp"]).isoformat(),
+        "open": float(row["open"]),
+        "high": float(row["high"]),
+        "low": float(row["low"]),
+        "close": float(row["close"]),
+        "volume": None if volume is None or pd.isna(volume) else float(volume),
+    }
+
+
 class VenueGateway:
     """Quotes, fills and market events per venue through the execution
     registry: the venue's paper broker in paper mode, its real broker live."""
@@ -129,6 +141,19 @@ class VenueGateway:
         if symbol not in view.symbols:
             raise LookupError(f"{venue} returned no bars for {symbol}")
         return float(view.latest(symbol)["close"])
+
+    def bars(
+        self, venue: str, symbol: str, interval: str, n: int
+    ) -> list[dict[str, Any]]:
+        view = _run(
+            self.adapter(venue).feed.get_completed_bars(
+                [symbol], interval, lookback_bars=max(1, int(n))
+            )
+        )
+        rows = [row for row in view.to_rows() if str(row.get("symbol")) == symbol]
+        if not rows:
+            raise LookupError(f"{venue} returned no bars for {symbol}")
+        return [_bar_dict(row) for row in rows[-max(1, int(n)) :]]
 
     def funding(self, venue: str, symbol: str) -> float:
         get_funding = getattr(self.adapter(venue).feed, "get_funding", None)
@@ -216,6 +241,29 @@ class StubVenueGateway:
         # A gentle drift so a multi-tick dry run exercises mark-to-market.
         return base * (1.0 + 0.001 * self.tick_index)
 
+    def bars(
+        self, venue: str, symbol: str, interval: str, n: int
+    ) -> list[dict[str, Any]]:
+        # A dry run has no history: n flat bars at the mark, one interval apart,
+        # so a moving average or a breakout rule runs without a network.
+        close = self.quote(venue, symbol)
+        step = bar_interval_seconds(interval) or 300
+        count = max(1, int(n))
+        last = int(time.time()) // step * step
+        return [
+            {
+                "timestamp": datetime.fromtimestamp(
+                    last - (count - 1 - index) * step, tz=UTC
+                ).isoformat(),
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": None,
+            }
+            for index in range(count)
+        ]
+
     def funding(self, venue: str, symbol: str) -> float:
         if venue not in FUNDING_VENUES:
             raise LookupError(
@@ -290,6 +338,7 @@ class FreestyleContext:
         self.funding_reads: dict[str, float] = {}
         self.token_reads: dict[str, float] = {}
         self.yield_reads: dict[str, float] = {}
+        self.bar_reads: dict[str, int] = {}
         self.actions: list[dict[str, Any]] = []
         self.fills: list[dict[str, Any]] = []
         self.logs: list[str] = []
@@ -317,6 +366,21 @@ class FreestyleContext:
         self.marks[f"{venue}:{symbol}"] = price
         self.venues_used.add(venue)
         return price
+
+    def bars(
+        self, venue: str, symbol: str, *, n: int = 50, interval: str | None = None
+    ) -> list[dict[str, Any]]:
+        """The last `n` completed bars of a symbol on a venue, oldest first,
+        as dicts with `timestamp` (ISO), `open`, `high`, `low`, `close` and
+        `volume`; `interval` defaults to the script's quote interval. A read
+        only. The dry run answers it with `n` flat bars at the
+        `<venue>:<symbol>` mark."""
+        venue = str(venue).lower()
+        interval = str(interval or self.spec.quote_interval)
+        rows = self._gateway.bars(venue, str(symbol), interval, int(n))
+        self.bar_reads[f"{venue}:{symbol}@{interval}"] = len(rows)
+        self.venues_used.add(venue)
+        return rows
 
     def funding(self, venue: str, symbol: str) -> float:
         """The venue's latest settled hourly funding rate for a perp, as a
@@ -833,6 +897,7 @@ def _one_tick(
             "funding": dict(ctx.funding_reads),
             "token_values": dict(ctx.token_reads),
             "yields": dict(ctx.yield_reads),
+            "bars": dict(ctx.bar_reads),
             "equity": equity,
             "unrealized_pnl": unrealized,
             "actions": list(ctx.actions),
@@ -878,6 +943,7 @@ def _one_tick(
         "funding": dict(ctx.funding_reads),
         "token_values": dict(ctx.token_reads),
         "yields": dict(ctx.yield_reads),
+        "bars": dict(ctx.bar_reads),
         "equity": equity,
         "unrealized_pnl": unrealized,
         "realized_pnl": float(ledger.realized_pnl),
