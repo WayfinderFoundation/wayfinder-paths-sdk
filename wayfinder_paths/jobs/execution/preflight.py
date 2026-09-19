@@ -4,7 +4,7 @@ import asyncio
 import json
 import math
 import shutil
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +32,7 @@ from wayfinder_paths.jobs.execution.purity import PurityViolation
 from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
 from wayfinder_paths.jobs.execution.venues import (
     VENUE_CAPABILITIES,
+    HistoryProvenanceFeed,
     MarketEvent,
     VenueCapabilities,
     VenueState,
@@ -172,14 +173,36 @@ def build_live_dataset(
             "days": days,
             "fetched_at": utc_now_iso(),
         }
+        # A feed that knows where its source's history starts says so per
+        # symbol; the evidence gate reads it as proof that a short window is
+        # the token's age, not a capped fetch.
+        provenance: dict[str, dict[str, Any]] = {}
+        for adapter in adapters.values():
+            if isinstance(adapter.feed, HistoryProvenanceFeed):
+                provenance.update(adapter.feed.history_provenance())
+        if provenance:
+            metadata["earliest_available"] = {
+                symbol: (provenance.get(symbol) or {}).get("earliest_available")
+                for symbol in symbols
+            }
+            metadata["requested_start"] = next(
+                (
+                    entry["requested_start"]
+                    for entry in provenance.values()
+                    if entry.get("requested_start")
+                ),
+                None,
+            )
         # Probe the long-history source's market list so the evidence gate
         # can distinguish "venue-capped but ccxt has years" (must refetch
         # via ccxt) from "these symbols do not exist on ccxt at all" (HIP-3
         # equity perps like xyz:MU) — the latter is legitimate proof of
         # unavailability that a raising ccxt fetch can never leave behind.
-        missing = _ccxt_missing_markets(symbols, exchange=exchange, quote=quote)
-        if missing is not None:
-            metadata["ccxt_missing_markets"] = missing
+        # Token ids and spot pairs have no exchange market to probe.
+        if "hyperliquid" in adapters:
+            missing = _ccxt_missing_markets(symbols, exchange=exchange, quote=quote)
+            if missing is not None:
+                metadata["ccxt_missing_markets"] = missing
     if not rows and not previous_rows:
         raise RuntimeError("no bars returned while building live dataset")
     if previous_rows:
@@ -220,11 +243,7 @@ def build_live_dataset(
         result["days_requested"] = days
         result["days_received"] = days_received
         if days_received < 0.9 * float(days):
-            result["warning"] = (
-                f"received {days_received} days of {days} requested — the "
-                "venue caps history. For longer windows use "
-                "dataset_source='ccxt' (exchange='binance')."
-            )
+            result["warning"] = _shortfall_warning(days_received, days, metadata)
     # Derived research columns follow the dataset unconditionally — a fresh
     # dataset with frozen btc_trend/cross columns is the silent-staleness bug
     # (stale values merge cleanly into every scan frame, no error anywhere).
@@ -686,6 +705,29 @@ def _write_report(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, default=str) + "\n", encoding="utf-8")
     return report
+
+
+def _shortfall_warning(
+    days_received: float, days: int, metadata: Mapping[str, Any]
+) -> str:
+    """Why a fetch came up short, and what (if anything) gets more: an
+    exchange has years for perp coins; a token has only its own age."""
+    earliest = metadata.get("earliest_available")
+    if isinstance(earliest, dict) and earliest:
+        floors = ", ".join(
+            f"{symbol} from {str(stamp)[:10]}" if stamp else f"{symbol}: unknown"
+            for symbol, stamp in earliest.items()
+        )
+        return (
+            f"received {days_received} days of {days} requested — the on-chain "
+            f"data source holds no earlier bars ({floors}); the evidence gate "
+            "accepts a floor the source reports."
+        )
+    return (
+        f"received {days_received} days of {days} requested — the venue caps "
+        "history. For longer windows use dataset_source='ccxt' "
+        "(exchange='binance')."
+    )
 
 
 def _ccxt_missing_markets(

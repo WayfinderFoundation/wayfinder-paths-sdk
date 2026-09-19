@@ -8,7 +8,7 @@ import py_compile
 import re
 import tokenize
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -340,6 +340,45 @@ EVIDENCE_TARGET_DAYS = 120.0
 EVIDENCE_FLOOR_DAYS = 30.0
 
 
+def _long_history_hint(metadata: Mapping[str, Any]) -> str:
+    """The refetch that can supply the full target: an exchange for perp
+    coins; for token ids and spot pairs only the venue itself."""
+    venues = [str(venue) for venue in (metadata.get("venues") or [])]
+    if venues and "hyperliquid" not in venues:
+        return f"fetch-dataset --days {EVIDENCE_TARGET_DAYS:g}"
+    return f"fetch-dataset --days {EVIDENCE_TARGET_DAYS:g} --source ccxt"
+
+
+def _parse_stamp(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _source_proves_unavailability(metadata: Mapping[str, Any]) -> tuple[bool, str]:
+    """A feed that reports where its history starts proves a short window
+    when every declared symbol's earliest bar lies inside the window that
+    was requested (past a two-bar tolerance): the token is younger than the
+    request, so no source can supply more."""
+    earliest = metadata.get("earliest_available")
+    symbols = [str(symbol) for symbol in (metadata.get("symbols") or [])]
+    start = _parse_stamp(metadata.get("requested_start"))
+    if not isinstance(earliest, dict) or start is None or not symbols:
+        return False, ""
+    tolerance = timedelta(
+        seconds=2 * (bar_interval_seconds(metadata.get("interval")) or 0)
+    )
+    floors: list[str] = []
+    for symbol in symbols:
+        when = _parse_stamp(earliest.get(symbol))
+        if when is None or when <= start + tolerance:
+            return False, ""
+        floors.append(f"{symbol} from {when.date().isoformat()}")
+    return True, ", ".join(floors)
+
+
 def _evidence_window_check(root: Path) -> list[dict[str, Any]]:
     bars_path = root / "results" / "backtest" / "input_bars.json"
     if not bars_path.exists():
@@ -384,8 +423,8 @@ def _evidence_window_check(root: Path) -> list[dict[str, Any]]:
                 "days_received": received,
                 "error": (
                     f"dataset spans {received:g}d but only {requested:g}d was "
-                    f"requested — request the full target first: fetch-dataset "
-                    f"--days {EVIDENCE_TARGET_DAYS:g} --source ccxt. The "
+                    f"requested — request the full target first: "
+                    f"{_long_history_hint(metadata)}. The "
                     f"{EVIDENCE_FLOOR_DAYS:g}d floor applies only when the "
                     "full target was requested and the source could not "
                     "supply it (new listing)."
@@ -425,6 +464,36 @@ def _evidence_window_check(root: Path) -> list[dict[str, Any]]:
                 ),
             }
         ]
+    proven, floors = _source_proves_unavailability(metadata)
+    if source != "ccxt" and proven:
+        # The source itself reported where each symbol's history starts,
+        # inside the requested window: the token is younger than the request.
+        if received >= EVIDENCE_FLOOR_DAYS:
+            return [
+                {
+                    "name": "evidence_window",
+                    "passed": True,
+                    "tier": "short_history_proven",
+                    "days_received": received,
+                    "note": (
+                        f"{received:g}d from the venue; the on-chain data source "
+                        f"holds no earlier bars ({floors}) — the token's age is "
+                        "the whole history. 30d floor applies; short-history "
+                        "caveats stand."
+                    ),
+                }
+            ]
+        return [
+            {
+                "name": "evidence_window",
+                "passed": False,
+                "days_received": received,
+                "error": (
+                    f"only {received:g}d of history exists ({floors}) — below "
+                    f"the {EVIDENCE_FLOOR_DAYS:g}d floor; too new to validate."
+                ),
+            }
+        ]
     if source != "ccxt":
         # A VENUE shortfall proves nothing — venue feeds cap at days of
         # history while the ccxt path has years. This exact hole let an
@@ -438,9 +507,9 @@ def _evidence_window_check(root: Path) -> list[dict[str, Any]]:
                 "error": (
                     f"dataset spans {received:g}d from source {source!r} — a "
                     "venue-capped shortfall is NOT proof of unavailability. "
-                    f"Refetch via the long-history path: fetch-dataset --days "
-                    f"{EVIDENCE_TARGET_DAYS:g} --source ccxt. Only a ccxt "
-                    "shortfall counts as proven (new listing)."
+                    f"Refetch via the long-history path: {_long_history_hint(metadata)}. "
+                    "Only a shortfall the source itself reports (a ccxt "
+                    "listing date, or a token's history floor) counts as proven."
                 ),
             }
         ]
