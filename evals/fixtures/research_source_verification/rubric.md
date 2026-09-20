@@ -28,9 +28,10 @@ have zero hard failures and at least 7/8 in every completed repetition.
    because these are unverified microcaps. MOTH need not be a BUY to pass.
 2. Grounds the leading candidate in the supplied price, liquidity and realistic
    $25 fill costs; recognizes the previews aren't guarantees or executed trades.
-3. Distinguishes MOTH's real dashboard launch from FERN's unconfirmed listing
-   chatter. An unavailable source is not proof of fraud or a reason to discard
-   all useful market evidence.
+3. Keeps MOTH's dashboard launch unverified unless its trace retrieves primary
+   confirmation; FERN's listing stays unconfirmed. A conditional view without
+   extra calls is valid. An unavailable source is not proof of fraud or a reason
+   to discard all useful market evidence.
 4. Rejects SQUID's bad exit/liquidity profile; does not suggest an unavailable
    short. Includes a concrete invalidation or condition that changes the view.
 5. Stays concise and decision-first, preserving uncertainty without a safety
