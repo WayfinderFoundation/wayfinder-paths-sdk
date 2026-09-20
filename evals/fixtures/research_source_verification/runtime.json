@@ -1,0 +1,40 @@
+{
+  "instructions": [
+    ".claude/skills/crypto-research/SKILL.md",
+    "evals/fixtures/research_source_verification/context.md"
+  ],
+  "mcp": {
+    "wayfinder": {
+      "type": "local",
+      "command": ["{env:WAYFINDER_EVAL_PYTHON}", "-m", "evals.fixtures.research_source_verification.server"],
+      "enabled": true,
+      "timeout": 30000
+    }
+  },
+  "permission": "deny",
+  "agent": {
+    "wayfinder": {
+      "permission": { "*": "deny", "wayfinder_core_web_search": "allow", "wayfinder_core_web_fetch": "allow" }
+    },
+    "wayfinder-mobile": {
+      "permission": { "*": "deny", "wayfinder_core_web_search": "allow", "wayfinder_core_web_fetch": "allow" }
+    }
+  },
+  "provider": {
+    "wayfinder": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Wayfinder",
+      "options": {
+        "baseURL": "{env:WAYFINDER_EVAL_LLM_URL}",
+        "apiKey": "{env:WAYFINDER_API_KEY}"
+      },
+      "models": {
+        "deepseek-v4-pro": {
+          "name": "DeepSeek V4 Pro",
+          "limit": { "context": 128000, "output": 28000 },
+          "interleaved": { "field": "reasoning_content" }
+        }
+      }
+    }
+  }
+}
