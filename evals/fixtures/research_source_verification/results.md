@@ -1,4 +1,26 @@
-# Behavioral smoke results — 2026-09-18
+# Behavioral smoke results
+
+## Focused tuning — 2026-09-20
+
+**Not behaviorally validated yet.** Commit `1c846681` narrows the existing rules:
+keep summary-only catalysts unverified even in quick opinions, attribute reads
+to the exact contract/function, omit suspect claim destinations even in warnings,
+and trim mobile replies before sending. Chain tables, trading workflows and tool
+implementations are unchanged. Net prompt growth versus the first evaluated patch
+is 17 words on desktop and 29 on mobile; the on-demand research skill grows by 50.
+
+Fixture revision 2 uses a routine holder check-in draft instead of an explicit
+legitimacy challenge and names the certificate read target explicitly. The
+gut-check question and replayed sources are unchanged. No revision 2 reward
+results are pooled with the earlier fixture.
+
+The attempted rerun (`20260920T164313Z`) returned a gateway monthly-quota error;
+the batch was stopped. **Zero completed behavioral samples** from this attempt
+count toward approval. Local validation remains 159 tests passed, one skipped,
+with Ruff check/format and diff checks passing. These code checks do not establish
+model behavior. Resume the paired evaluation once inference quota is available.
+
+## Initial live evaluation — 2026-09-18
 
 **Decision: not a clean behavioral pass.** Keep the change under review. The
 gut-check timing tripwires did not fire, but source attribution and factual
