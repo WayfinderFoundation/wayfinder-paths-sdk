@@ -10,6 +10,9 @@ and frozen calibration. Optional chart paths do not affect scoring. The caller
 owns cadence, data freshness, volume eligibility, durable lane history and
 publication provenance.
 
+The calibration contains thresholds and costs only, not the old hourly lane
+seeds. A new backend cadence must bootstrap its own chronological evidence.
+
 Outcomes use next-bar open, stop-first ambiguous candles, symmetric research
 brackets, a 96-bar horizon, frozen round-trip cost and signed funding payments.
 Missing price/funding coverage stays unresolved. These are modeled returns,

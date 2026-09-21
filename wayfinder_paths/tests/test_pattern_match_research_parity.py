@@ -71,6 +71,7 @@ def test_raw_ohlc_and_funding_reproduce_research_forecasts():
 
 def test_calibration_metadata_records_actual_training_overlap():
     bundle = load_calibration_bundle()
+    assert "lane_seeds" not in bundle  # The backend must bootstrap its own cadence.
     assert bundle["calibration_window"]["folds"] == [1, 2, 3]
     assert bundle["calibration_window"]["end"] == "2026-05-02T08:45:00+00:00"
     assert (
