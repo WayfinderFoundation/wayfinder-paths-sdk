@@ -2,7 +2,7 @@
 
 `core_jobs(action="readout", job_id=…)` writes `reports/readout/latest.json` and returns it. Read it back to the user in this shape, in this order:
 
-1. **Money first, in plain words.** For a harnessed job: net return after costs on the backtest window, the chronologically last walk-forward fold (the small holdout) on its own, how many out-of-sample folds were positive, how much of the in-sample return survived (`decay_ratio`), whether replication on the refreshed dataset still holds, and how much of gross profit fees take. Quote the numbers from `evidence`; do not round them into adjectives.
+1. **Money first, in plain words.** For a harnessed job: net return after costs on the backtest window, the chronologically last walk-forward fold (the small holdout) on its own, how many out-of-sample folds were positive, how much of the in-sample return survived (`decay_ratio`), whether replication on the refreshed dataset still holds, and how much of gross profit fees take. Quote the numbers from `evidence`; do not round them into adjectives. `evidence.benchmark` carries buy-and-hold over the same window (and the holdout fold) beside the strategy's return with the difference — read it out as a datapoint ("holding made +5.0%, the strategy +1.2%"), never as a rule: a carry asset or a trending major can make a rotation look fine against zero while it trails holding.
 2. **One verdict sentence.** `verdict` is one of `supported`, `weak`, `not_supported_by_backtest`, `no_backtest`, `pending`, and `reasons` names the rule that fired. Say the rule, not a feeling: "weak: only 1 of 3 out-of-sample folds is positive".
 3. **Then the launch sentence, verbatim in spirit:** "You can still launch this in paper; the watchdog will report what it actually does."
 

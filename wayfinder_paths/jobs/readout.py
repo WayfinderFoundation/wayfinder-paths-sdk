@@ -123,6 +123,7 @@ def _jobs_v1_readout(
         (job.execution_params or {}).get("initial_capital") or DEFAULT_INITIAL_CAPITAL
     )
     evidence["cost_coverage"] = _cost_coverage(stats, capital)
+    evidence["benchmark"] = _benchmark(stats, walk_forward)
     starter_evidence = store.read_json(
         job_id, "results/backtest/starter_evidence.json", default=None
     )
@@ -260,6 +261,47 @@ def _latest_walk_forward(store: JobStore, job_id: str) -> dict[str, Any] | None:
             "fold_count": len(folds),
         }
     return None
+
+
+def _benchmark(
+    stats: dict[str, Any], walk_forward: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Buy-and-hold over the same windows, as a datapoint beside the strategy's
+    return — never a rule. A carry asset (a yield token, a trending major)
+    can make a rotation look fine against zero while it trails holding."""
+    net = _float(stats.get("net_return"))
+    hold = _float(stats.get("buy_hold_return"))
+    fold_stats = dict(
+        ((walk_forward or {}).get("last_fold") or {}).get("test_stats") or {}
+    )
+    fold_net = _float(fold_stats.get("net_return"))
+    fold_hold = _float(fold_stats.get("buy_hold_return"))
+    out: dict[str, Any] = {
+        "buy_hold_return": hold,
+        "net_return": net,
+        "excess_return": (net - hold) if net is not None and hold is not None else None,
+        "holdout_buy_hold_return": fold_hold,
+        "holdout_net_return": fold_net,
+        "holdout_excess_return": (
+            (fold_net - fold_hold)
+            if fold_net is not None and fold_hold is not None
+            else None
+        ),
+        "sentence": None,
+    }
+    if out["excess_return"] is not None:
+        edge = out["excess_return"]
+        parts = [
+            f"buy-and-hold over the same window made {hold:+.2%}; the strategy made "
+            f"{net:+.2%} ({edge:+.2%} against holding)"
+        ]
+        if out["holdout_excess_return"] is not None:
+            parts.append(
+                f"on the holdout fold {fold_net:+.2%} against {fold_hold:+.2%} held "
+                f"({out['holdout_excess_return']:+.2%})"
+            )
+        out["sentence"] = "; ".join(parts) + ". A datapoint, not a rule."
+    return out
 
 
 def _cost_coverage(stats: dict[str, Any], capital: float) -> dict[str, Any]:
