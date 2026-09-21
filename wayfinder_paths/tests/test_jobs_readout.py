@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from wayfinder_paths.jobs.execution.job import backtest_execution_job
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.execution.validation import validate_execution_job
@@ -205,3 +207,42 @@ def test_feasible_holdout_fits_the_dataset(tmp_path) -> None:
     assert holdout is not None and holdout["test_bars"] < 100 and holdout["folds"] == 1
     store.write_json(job.id, "results/backtest/input_bars.json", _bars_doc(70))
     assert feasible_holdout(store, job.id, test_bars=50) is None
+
+
+def test_readout_carries_buy_and_hold_as_a_datapoint_not_a_rule(tmp_path: Path) -> None:
+    """Buy-and-hold over the backtest window (and the holdout fold when it
+    carries one) sits beside the strategy's return in evidence.benchmark;
+    removing it changes nothing about the verdict."""
+    store, job = _jobs_v1(tmp_path)
+    backtest_execution_job(job.id, store=store)
+    validate_execution_job(job.id, store=store)
+    root = store.job_dir(job.id)
+    latest = root / "results" / "backtest" / "latest.json"
+    payload = json.loads(latest.read_text(encoding="utf-8"))
+    payload["stats"]["net_return"] = 0.012
+    payload["stats"]["buy_hold_return"] = 0.05
+    latest.write_text(json.dumps(payload), encoding="utf-8")
+    row = _experiment_row("g1", oos_positive=3, folds=3, oos_mean=0.03, decay=0.9)
+    row["walk_forward"]["folds"][-1]["test_stats"]["buy_hold_return"] = 0.04
+    (root / "results" / "backtest" / "experiments.jsonl").write_text(
+        json.dumps(row) + "\n", encoding="utf-8"
+    )
+
+    readout = build_readout(job.id, store=store)
+
+    benchmark = readout["evidence"]["benchmark"]
+    assert benchmark["buy_hold_return"] == 0.05 and benchmark["net_return"] == 0.012
+    assert benchmark["excess_return"] == pytest.approx(-0.038)
+    assert benchmark["holdout_buy_hold_return"] == 0.04
+    assert benchmark["holdout_excess_return"] == pytest.approx(0.02 - 0.04)
+    assert "buy-and-hold over the same window made +5.00%" in benchmark["sentence"]
+    assert "A datapoint, not a rule." in benchmark["sentence"]
+    # "holdout" and "replication holds" are verdict vocabulary; the benchmark is not
+    assert not any("buy-and-hold" in reason for reason in readout["reasons"])
+
+    payload["stats"].pop("buy_hold_return")
+    latest.write_text(json.dumps(payload), encoding="utf-8")
+    without = build_readout(job.id, store=store)
+    assert without["verdict"] == readout["verdict"]
+    assert without["evidence"]["benchmark"]["buy_hold_return"] is None
+    assert without["evidence"]["benchmark"]["sentence"] is None
