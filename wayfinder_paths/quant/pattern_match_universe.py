@@ -35,6 +35,7 @@ INTERVAL = pd.Timedelta(minutes=15)
 MAX_FUNDING_AGE = pd.Timedelta(minutes=65)
 FUNDING_SCALE = 0.00005
 PREMIUM_SCALE = 0.0005
+MACRO_LOOKBACK_BARS = 96
 
 
 @lru_cache(maxsize=1)
@@ -124,6 +125,61 @@ class LaneGate:
     resolved_count: int
     recent_count: int
     recent_mean_bps: float | None
+
+
+@dataclass(frozen=True)
+class MacroGate:
+    allowed: bool
+    reason: str
+    normalized_move: float | None = None
+    log_return: float | None = None
+    realized_volatility: float | None = None
+
+
+def evaluate_macro_regime(
+    benchmark: pd.DataFrame,
+    *,
+    direction: int,
+    as_of: str | pd.Timestamp,
+) -> MacroGate:
+    """Veto fading a benchmark move larger than its trailing daily volatility.
+
+    Uses 97 consecutive completed 15-minute closes (96 log returns). The
+    caller chooses the benchmark and eligible market universe; this is a
+    symmetric risk guard, not a direction reversal or a fitted return model.
+    Missing/stale data must not silently disable the guard.
+    """
+    if direction not in (-1, 1):
+        raise ValueError("direction must be -1 or 1")
+    cutoff = _utc_timestamp(as_of)
+    if not {"timestamp", "close"}.issubset(benchmark.columns):
+        return MacroGate(False, "missing_macro_data")
+    timestamps = pd.to_datetime(benchmark.timestamp, utc=True)
+    completed = benchmark.loc[timestamps + INTERVAL <= cutoff].tail(
+        MACRO_LOOKBACK_BARS + 1
+    )
+    times = pd.to_datetime(completed.timestamp, utc=True)
+    if (
+        len(completed) != MACRO_LOOKBACK_BARS + 1
+        or times.iloc[-1] + INTERVAL != cutoff
+        or not times.diff().iloc[1:].eq(INTERVAL).all()
+    ):
+        return MacroGate(False, "incomplete_macro_data")
+    closes = pd.to_numeric(completed.close, errors="coerce").to_numpy(dtype=float)
+    if not np.isfinite(closes).all() or (closes <= 0).any():
+        return MacroGate(False, "invalid_macro_prices")
+    _, volatility = _path_features(closes)
+    log_return = float(np.log(closes[-1]) - np.log(closes[0]))
+    normalized = log_return / volatility if volatility > 0 else 0.0
+    # Preserve the inclusive boundary despite round-off in root-sum-squares.
+    allowed = direction * normalized >= -1.0 - 1e-12
+    return MacroGate(
+        allowed,
+        "macro_regime_passed" if allowed else "macro_countertrend_move",
+        normalized,
+        log_return,
+        volatility,
+    )
 
 
 def score_latest_pattern(
@@ -594,11 +650,14 @@ def _utc_timestamp(value: Any) -> pd.Timestamp:
 __all__ = [
     "INTERVAL",
     "LaneGate",
+    "MACRO_LOOKBACK_BARS",
+    "MacroGate",
     "MAX_FUNDING_AGE",
     "MarketCalibration",
     "PatternDecision",
     "PatternMatcherConfig",
     "WindowForecast",
     "evaluate_lane_feedback",
+    "evaluate_macro_regime",
     "score_latest_pattern",
 ]
