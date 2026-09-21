@@ -205,3 +205,23 @@ def test_experiment_kill_switch_forces_run(
     assert len(calls) == 2, "kill-switch must force the run"
     assert "reused" not in repeated["experiment"]
     assert len(list_experiments(job_id, store=store)) == 2
+
+
+def test_grid_cells_ride_on_the_job_execution_params(tmp_path: Path) -> None:
+    """The readout's holdout and every grid evaluate the strategy the job
+    pinned: lookback, capital and knobs from execution_params ride under each
+    cell, the cell's own coordinates win, and an empty grid is one base cell."""
+    store, job_id, _root = _make_job(tmp_path)
+    job = store.load(job_id)
+    job.execution_params = {"symbols": ["SNX"], "lookback_bars": 7, "threshold": 10.0}
+    store.save(job)
+
+    outcome = run_experiment(job_id, {"threshold": [100.0]}, store=store)
+
+    (cell,) = [row["params"] for row in outcome["backtest"]["result"]["runs"]]
+    assert cell == {"symbols": ["SNX"], "lookback_bars": 7, "threshold": 100.0}
+
+    bare = run_experiment(job_id, {}, store=store)
+
+    (base_cell,) = [row["params"] for row in bare["backtest"]["result"]["runs"]]
+    assert base_cell == {"symbols": ["SNX"], "lookback_bars": 7, "threshold": 10.0}

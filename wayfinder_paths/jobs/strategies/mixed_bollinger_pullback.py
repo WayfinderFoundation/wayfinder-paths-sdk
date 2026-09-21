@@ -11,6 +11,7 @@ from wayfinder_paths.jobs.execution.primitives import ExecutionContext
 from wayfinder_paths.jobs.strategies._starter_utils import (
     MEAN_REVERSION_STOP_DEFAULTS,
     add_stop_atr,
+    bounded_span,
     current_rows,
     merge_params,
     stop_brackets,
@@ -39,6 +40,7 @@ class MixedBollingerPullbackStrategy:
             max(
                 int(self.params["zscore_bars"]),
                 int(self.params["trend_sma_period"]),
+                bounded_span(int(self.params["stop_atr_period"])),
             )
             + 4
         )

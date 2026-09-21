@@ -119,6 +119,9 @@ def compute_workspace_revision(
                 if not retain_operator_dials:
                     data.pop("agent_loop", None)
                     data.pop("job_kind", None)
+                    # Alerts (channels, quiet hours) are an operator dial
+                    # too: changing who is told never changes what trades.
+                    data.pop("reporting", None)
                 match data.get("execution_params"):
                     case dict() as execution_params:
                         execution_params.pop("wallet_label", None)

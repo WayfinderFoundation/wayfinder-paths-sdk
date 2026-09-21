@@ -702,6 +702,7 @@ def stage_evolution_probation(
                 "started_at": current.isoformat() if status == "burn_in" else None,
                 "duration_hours": float(policy.get("burn_in_hours") or 24),
                 "bar_interval_seconds": _probation_bar_interval_seconds(store, job_id),
+                "capital": _probation_capital(store, job_id),
                 "expires_at": (
                     current
                     + timedelta(hours=float(policy.get("burn_in_hours") or 24) + 12)
@@ -1080,7 +1081,9 @@ def _paired_forward_metrics(
         for day in set(candidate) & set(reference)
         if day < current.date().isoformat()
     )
-    capital = 10_000.0
+    capital = float(
+        (trial.get("burn_in") or {}).get("capital") or _probation_capital(store, job_id)
+    )
     deltas = [
         math.log1p(candidate[day] / capital) - math.log1p(reference[day] / capital)
         for day in complete_days
@@ -1286,7 +1289,7 @@ def _hard_constraint_metrics(
     from wayfinder_paths.jobs.constitution import load_constitution
     from wayfinder_paths.jobs.paper_experiment import _max_drawdown
 
-    drawdown = _max_drawdown(daily, 10_000.0)
+    drawdown = _max_drawdown(daily, _probation_capital(store, job_id))
     max_drawdown = float(
         load_constitution(store.job_dir(job_id))["hard_constraints"]["max_drawdown_pct"]
     )
@@ -1529,6 +1532,13 @@ def _safe_component(value: str, label: str) -> str:
     if not raw or Path(raw).name != raw or raw in {".", ".."}:
         raise ValueError(f"invalid {label}")
     return raw
+
+
+def _probation_capital(store: JobStore, job_id: str) -> float:
+    """The book the paired utility is measured against. Hard-coding 10,000
+    understated every effect on a 100-dollar paper book a hundredfold."""
+    job = store.load(job_id)
+    return float((job.execution_params or {}).get("initial_capital") or 10_000.0)
 
 
 def _probation_bar_interval_seconds(store: JobStore, job_id: str) -> int:

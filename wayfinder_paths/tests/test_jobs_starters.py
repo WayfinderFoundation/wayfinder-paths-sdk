@@ -63,6 +63,7 @@ from wayfinder_paths.jobs.strategies.mixed_volume_capitulation import (
 from wayfinder_paths.jobs.strategies.pair_relative_strength import (
     PairRelativeStrengthStrategy,
 )
+from wayfinder_paths.jobs.strategies.regime_rotation import RegimeRotationStrategy
 from wayfinder_paths.jobs.sync import snapshot_job
 
 
@@ -73,6 +74,20 @@ def _context(
     interval: str,
     volumes: dict[str, list[float]] | None = None,
 ) -> ExecutionContext:
+    # Bounded RSI/ATR spans put every starter's warmup past these hand-built
+    # patterns; a flat prefix clears the gate without changing the pattern.
+    warmup = int(getattr(strategy, "warmup_bars", 0) or 0)
+    pad = max(0, warmup + 1 - len(next(iter(closes.values()))))
+    if pad:
+        closes = {
+            symbol: [values[0]] * pad + list(values)
+            for symbol, values in closes.items()
+        }
+        if volumes:
+            volumes = {
+                symbol: [values[0]] * pad + list(values)
+                for symbol, values in volumes.items()
+            }
     timestamps = pd.date_range(
         "2026-01-01T00:00:00Z",
         periods=len(next(iter(closes.values()))),
@@ -177,6 +192,21 @@ def test_hype_passive_rsi_supports_full_and_staged_maker_exits() -> None:
     assert [intent["limit_price"] for intent in staged_exits] == [76.0, 76.5]
     assert staged_exits[0]["metadata"]["move_stop_to_break_even"] is True
     assert staged_exits[1]["metadata"]["move_stop_to_break_even"] is False
+    # Every reduce-only intent the starters emit says why it exits.
+    reasons = [intent["metadata"]["exit_reason"] for intent in staged_exits]
+    assert all(reason.startswith("take_profit_") for reason in reasons)
+    assert len(set(reasons)) == 2
+    assert full_exits[0]["metadata"]["exit_reason"].startswith("take_profit_")
+
+
+def test_portfolio_rebalance_close_labels_its_exit() -> None:
+    from types import SimpleNamespace
+
+    from wayfinder_paths.jobs.strategies.portfolio import _close
+
+    intent = _close("IMX", SimpleNamespace(side="long"), "hyperliquid", size=1.0)
+    assert intent["reduce_only"] is True
+    assert intent["metadata"]["exit_reason"] == "target_weight"
 
 
 def _journal_events(store: JobStore, job_id: str) -> list[dict[str, Any]]:
@@ -212,7 +242,7 @@ def dataset_fetch_spawns(monkeypatch) -> list[dict[str, Any]]:
 
 def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
     catalog = starter_catalog()
-    assert len(catalog) == 12
+    assert len(catalog) == 16
     assert {item["timeframe"] for item in catalog} == {
         "5m",
         "15m",
@@ -220,8 +250,8 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
         "4h",
         "1d",
     }
-    assert [item["timeframe"] for item in catalog].count("5m") == 2
-    assert [item["timeframe"] for item in catalog].count("15m") == 2
+    assert [item["timeframe"] for item in catalog].count("5m") == 3
+    assert [item["timeframe"] for item in catalog].count("15m") == 5
     assert [item["timeframe"] for item in catalog].count("1h") == 5
     assert [item["timeframe"] for item in catalog].count("4h") == 1
     assert [item["timeframe"] for item in catalog].count("1d") == 2
@@ -237,6 +267,7 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
             "maker_mean_reversion",
             "mean_reversion",
             "low_volatility_ranking",
+            "regime_rotation",
             "relative_value_pair",
         }
         assert isinstance(item["cautions"], list)
@@ -277,11 +308,45 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
         assert sweep["account_halt_simulated"] is False
         assert [row["leverage"] for row in sweep["results"]] == [1, 2, 3, 4, 5]
         assert all(row["liquidation_count"] == 0 for row in sweep["results"])
+        assert all(
+            row["within_account_halt_threshold"]
+            == (row["max_drawdown"] >= row["account_halt_threshold"])
+            for row in sweep["results"]
+        )
         assert sweep["results"][0]["return_after_fees_and_slippage"] == pytest.approx(
             engine["return_after_fees_and_slippage"], abs=0.0001
         )
 
     by_id = {item["id"]: item for item in catalog}
+    new_intraday_ids = {
+        "bullish-regime-rotation-5m",
+        "diversified-trend-sleeves-15m",
+        "diversified-momentum-taker-15m",
+        "crypto-gold-regime-relay-15m",
+    }
+    for starter_id in new_intraday_ids:
+        engine = by_id[starter_id]["research_evidence"]["jobs_v1_engine"]
+        assert by_id[starter_id]["strategy_inception_at"] == (
+            "2026-09-04T00:00:00+00:00"
+        )
+        assert by_id[starter_id]["research_evidence"]["strategy_revision"] == "2.0.0"
+        assert engine["return_after_fees_and_slippage"] > 0.15
+        assert engine["sharpe"] > 1.4
+        assert (
+            engine["max_drawdown"] >= by_id[starter_id]["risk_limits"]["max_drawdown"]
+        )
+    bull_regimes = by_id["bullish-regime-rotation-5m"]["research_evidence"][
+        "hyperliquid_mechanism_check"
+    ]
+    assert bull_regimes["btc_bull_regime_return"] > 0
+    assert bull_regimes["btc_bear_regime_return"] >= 0
+    assert by_id["mixed-rsi-snapback-1h"]["strategy_inception_at"] == (
+        "2026-08-24T00:00:00+00:00"
+    )
+    assert (
+        by_id["mixed-rsi-snapback-1h"]["research_evidence"]["strategy_revision"]
+        == "1.8.0"
+    )
     crypto_momentum = by_id["crypto-momentum-persistence-4h"]
     assert crypto_momentum["params"]["score_volatility_bars"] == 168
     assert crypto_momentum["params"]["broad_bull_momentum_threshold"] == 0.10
@@ -308,6 +373,10 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
         "hype-passive-rsi-full-5m": (3.0, 0.001, 0.20),
         "hype-passive-rsi-staged-5m": (3.0, 0.001, 0.20),
         "btc-eth-relative-strength-1d": (15.0, 0.40, 0.60),
+        "bullish-regime-rotation-5m": (12.0, 0.25, 0.50),
+        "diversified-trend-sleeves-15m": (20.0, 0.60, 0.80),
+        "diversified-momentum-taker-15m": (20.0, 0.60, 0.80),
+        "crypto-gold-regime-relay-15m": (12.0, 0.25, 0.50),
     }
     for starter_id, expected in expected_stops.items():
         params = by_id[starter_id]["params"]
@@ -362,6 +431,8 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
 # any starter whose warmup gate exceeds the window silently never trades —
 # 7 of 12 entries did exactly that under the old 200-bar driver default.
 # A new/edited starter MUST update this table consciously.
+# Warmups now cover the bounded RSI/ATR spans (8x period), so the declared
+# window is exact rather than a long-history approximation.
 EXPECTED_STARTER_LOOKBACK_BARS = {
     "mixed-rsi-snapback-1h": 224,
     "mixed-bollinger-pullback-1h": 224,
@@ -370,12 +441,124 @@ EXPECTED_STARTER_LOOKBACK_BARS = {
     "mixed-momentum-rank-1h": 360,
     "crypto-momentum-persistence-4h": 192,
     "mixed-sleeve-momentum-15m": 2904,
-    "mixed-low-vol-rank-15m": 504,
-    "hype-passive-rsi-full-5m": 38,
-    "hype-passive-rsi-staged-5m": 38,
-    "btc-eth-relative-strength-1d": 114,
-    "bch-ltc-relative-strength-1d": 114,
+    "mixed-low-vol-rank-15m": 792,
+    "hype-passive-rsi-full-5m": 136,
+    "hype-passive-rsi-staged-5m": 136,
+    "btc-eth-relative-strength-1d": 184,
+    "bch-ltc-relative-strength-1d": 184,
+    "bullish-regime-rotation-5m": 1464,
+    "diversified-trend-sleeves-15m": 792,
+    "diversified-momentum-taker-15m": 792,
+    "crypto-gold-regime-relay-15m": 984,
 }
+
+
+_TIMEFRAME_MINUTES = {"5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1_440}
+
+
+def _synthetic_rows(symbols: tuple[str, ...], count: int, *, minutes: int, seed: int):
+    import random
+    from datetime import UTC, datetime, timedelta
+
+    rng = random.Random(seed)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    rows = []
+    for offset, symbol in enumerate(symbols):
+        close = 100.0 + 10.0 * offset
+        for index in range(count):
+            close *= 1 + rng.gauss(0.0, 0.004)
+            high = close * (1 + abs(rng.gauss(0.0, 0.002)))
+            low = close * (1 - abs(rng.gauss(0.0, 0.002)))
+            rows.append(
+                {
+                    "timestamp": (
+                        start + timedelta(minutes=minutes * index)
+                    ).isoformat(),
+                    "symbol": symbol,
+                    "open": (high + low) / 2,
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                    "volume": 1_000.0 + rng.random() * 500.0,
+                }
+            )
+    return rows
+
+
+def test_bounded_wilder_indicators_are_exact_inside_their_span() -> None:
+    import random
+
+    from wayfinder_paths.jobs.indicators import atr, bounded_span, wilder_rsi
+
+    rng = random.Random(11)
+    closes = [100.0]
+    for _ in range(1_199):
+        closes.append(closes[-1] * (1 + rng.gauss(0.0, 0.01)))
+    close = pd.Series(closes)
+    span = bounded_span(14)
+    full = wilder_rsi(close, 14, window=span)
+    # One extra close feeds the oldest diff, so declared windows exceed the span.
+    tail = wilder_rsi(close.iloc[-(span + 1) :].reset_index(drop=True), 14, window=span)
+    assert full.iloc[-1] == pytest.approx(tail.iloc[-1], abs=1e-9)
+    assert full.iloc[: span - 1].isna().all()
+    assert full.iloc[span:].notna().all()
+    assert abs(full.iloc[-1] - wilder_rsi(close, 14).iloc[-1]) < 0.05
+    frame = pd.DataFrame({"close": close, "high": close * 1.002, "low": close * 0.998})
+    bounded = atr(frame, 14, window=span)
+    tail_atr = atr(frame.iloc[-(span + 1) :].reset_index(drop=True), 14, window=span)
+    assert bounded.iloc[-1] == pytest.approx(tail_atr.iloc[-1], rel=1e-9)
+    assert bounded.iloc[-1] == pytest.approx(atr(frame, 14).iloc[-1], rel=2e-3)
+
+
+def test_every_starter_is_exact_inside_its_declared_window() -> None:
+    from wayfinder_paths.jobs.execution.validation import window_invariance_probe
+
+    base_columns = {"timestamp", "symbol", "open", "high", "low", "close", "volume"}
+    for definition in STARTER_DEFINITIONS:
+        module = importlib.import_module(definition.module)
+        params = {**definition.configured_params(), "symbols": list(definition.symbols)}
+        strategy = module.build_strategy(params)
+        warmup = int(strategy.warmup_bars)
+        rows = _synthetic_rows(
+            definition.symbols,
+            warmup + 200,
+            minutes=_TIMEFRAME_MINUTES[definition.timeframe],
+            seed=len(definition.id),
+        )
+        view = CompletedBarsView.from_rows(rows)
+        full = apply_precompute(strategy, view).to_frame()
+        narrow = apply_precompute(
+            strategy, view.window(len(view.timestamps) - 1, warmup)
+        ).to_frame()
+        for symbol in definition.symbols:
+            wide_row = full[full["symbol"] == symbol].iloc[-1]
+            narrow_row = narrow[narrow["symbol"] == symbol].iloc[-1]
+            for column in full.columns:
+                if column in base_columns:
+                    continue
+                wide, tight = wide_row[column], narrow_row[column]
+                if pd.isna(wide) and pd.isna(tight):
+                    continue
+                assert float(wide) == pytest.approx(
+                    float(tight), rel=1e-9, abs=1e-12
+                ), (
+                    definition.id,
+                    symbol,
+                    column,
+                )
+        probe = window_invariance_probe(
+            module.build_strategy,
+            view,
+            {
+                "market_kind": "perp",
+                "data_contract": {
+                    "bar_interval": definition.timeframe,
+                    "symbols": list(definition.symbols),
+                },
+            },
+            {**params, "warmup_bars": warmup},
+        )
+        assert probe["status"] == "passed", (definition.id, probe)
 
 
 def test_every_starter_lookback_clears_its_warmup_gate() -> None:
@@ -441,6 +624,122 @@ def test_momentum_rank_longs_leaders_and_shorts_laggards() -> None:
         "C": "sell",
         "D": "sell",
     }
+
+
+def test_momentum_rank_can_leave_middle_assets_flat() -> None:
+    symbols = list("ABCDEFGHIJ")
+    strategy = MixedMomentumRankStrategy(
+        {
+            "symbols": symbols,
+            "momentum_bars": 2,
+            "rank_legs": 3,
+            "rebalance_bars": 1,
+            "stop_atr_period": 1,
+            "min_trade_notional": 0.0,
+        }
+    )
+    ctx = _context(
+        strategy,
+        {
+            symbol: [100.0, 100.0, 90.0 + 3.0 * index]
+            for index, symbol in enumerate(symbols)
+        },
+        interval="15min",
+    )
+
+    assert _sides(strategy.decide(ctx)) == {
+        "A": "sell",
+        "B": "sell",
+        "C": "sell",
+        "H": "buy",
+        "I": "buy",
+        "J": "buy",
+    }
+
+
+def test_momentum_rank_preserves_odd_universe_default_and_validates_rank_legs() -> None:
+    from wayfinder_paths.jobs.strategies._starter_utils import ranked_weights
+
+    assert ranked_weights({"A": 1.0, "B": 2.0, "C": 3.0}, weight_per_leg=0.25) == {
+        "A": -0.25,
+        "B": 0.25,
+        "C": 0.25,
+    }
+    with pytest.raises(ValueError, match="whole number"):
+        MixedMomentumRankStrategy({"symbols": list("ABCD"), "rank_legs": 1.5})
+    with pytest.raises(ValueError, match="at most half"):
+        MixedMomentumRankStrategy({"symbols": list("ABCD"), "rank_legs": 3})
+
+
+def test_bullish_regime_rotation_owns_leader_or_cash() -> None:
+    symbols = list("ABCDE")
+    params = {
+        "symbols": symbols,
+        "risk_symbols": symbols,
+        "momentum_bars": 2,
+        "fast_sma_bars": 2,
+        "slow_sma_bars": 3,
+        "minimum_breadth": 0.5,
+        "rebalance_bars": 1,
+        "stop_atr_period": 1,
+        "min_trade_notional": 0.0,
+    }
+    strategy = RegimeRotationStrategy(params)
+    bull = _context(
+        strategy,
+        {
+            "A": [100.0, 105.0, 120.0],
+            "B": [100.0, 104.0, 112.0],
+            "C": [100.0, 103.0, 108.0],
+            "D": [100.0, 98.0, 96.0],
+            "E": [100.0, 97.0, 94.0],
+        },
+        interval="5min",
+    )
+    bull_intents = strategy.decide(bull)
+    assert _sides(bull_intents) == {"A": "buy"}
+    assert bull_intents[0]["notional"] == 4_000.0
+
+    bear = _context(
+        strategy,
+        {
+            symbol: [100.0, 95.0 - index, 90.0 - index]
+            for index, symbol in enumerate(symbols)
+        },
+        interval="5min",
+    )
+    assert strategy.decide(bear) == []
+
+
+def test_regime_rotation_relays_to_positive_defensive_asset() -> None:
+    strategy = RegimeRotationStrategy(
+        {
+            "symbols": ["A", "B", "C", "D", "PAXG"],
+            "risk_symbols": ["A", "B", "C", "D"],
+            "defensive_symbol": "PAXG",
+            "momentum_bars": 2,
+            "require_trend_alignment": False,
+            "minimum_breadth": 0.5,
+            "rebalance_bars": 1,
+            "stop_atr_period": 1,
+            "min_trade_notional": 0.0,
+        }
+    )
+    ctx = _context(
+        strategy,
+        {
+            "A": [100.0, 95.0, 90.0],
+            "B": [100.0, 96.0, 91.0],
+            "C": [100.0, 97.0, 92.0],
+            "D": [100.0, 98.0, 93.0],
+            "PAXG": [100.0, 103.0, 108.0],
+        },
+        interval="15min",
+    )
+
+    intents = strategy.decide(ctx)
+    assert _sides(intents) == {"PAXG": "buy"}
+    assert intents[0]["notional"] == 4_000.0
 
 
 def test_crypto_momentum_concentrates_in_risk_adjusted_extremes() -> None:

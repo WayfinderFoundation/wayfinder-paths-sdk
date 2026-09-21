@@ -33,7 +33,7 @@ from wayfinder_paths.jobs.gating import (
     compute_workspace_revision,
     dataset_content_fingerprint,
 )
-from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.models import LIFECYCLE_CONTRACTS, utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
 REQUIRED_INTENT_FIELDS = (
@@ -117,8 +117,10 @@ def validate_candidate_application(
     checks.append(
         {
             "name": "execution_contract_jobs_v1",
-            "passed": contract == "jobs_v1" or allow_legacy,
-            "legacy_allowed": allow_legacy if contract != "jobs_v1" else None,
+            "passed": contract in LIFECYCLE_CONTRACTS or allow_legacy,
+            "legacy_allowed": (
+                allow_legacy if contract not in LIFECYCLE_CONTRACTS else None
+            ),
             "hint": (
                 "the versioned-change flow requires the jobs_v1 driver "
                 "contract; run `wayfinder job migrate-contract` first"
@@ -145,6 +147,10 @@ def validate_candidate_application(
     if script_required:
         checks.append(entrypoint_inside_workspace_check(candidate_dir, script_path))
     if script_path and script_path.exists():
+        if contract == "freestyle_v1":
+            from wayfinder_paths.jobs.freestyle.validate import static_checks
+
+            checks.extend(static_checks(script_path))
         if contract == "jobs_v1":
             checks.extend(_jobs_v1_script_checks(script_path))
             checks.extend(
@@ -162,7 +168,10 @@ def validate_candidate_application(
                         script_path=script_path,
                     )
                 )
-        else:
+        elif contract == "legacy":
+            # Only legacy script jobs carry their own recorder and scenario
+            # plan; a freestyle candidate already had its static checks above
+            # and a Path candidate has no script of its own.
             checks.extend(_script_static_checks(script_path))
             checks.extend(_scenario_checks(script_path, proposal))
 

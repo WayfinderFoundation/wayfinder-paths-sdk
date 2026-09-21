@@ -480,3 +480,76 @@ def test_build_live_dataset_chains_derived_features(
     # force-bypass of the hourly stamp gate: the dataset just changed.
     assert calls == [(job.id, 0)]
     assert result["derived_features"] == {"refreshed": True, "rows_appended": 3}
+
+
+def test_build_live_dataset_records_history_provenance_from_the_feed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A feed that knows where its source's history starts lands that in the
+    dataset metadata, and token jobs never probe an exchange market list."""
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "token-demo",
+        script=".wayfinder/jobs/token-demo/workspace/src/strategy.py",
+        interval_seconds=3600,
+        execution_contract="jobs_v1",
+    )
+    spec = ExecutionSpec()
+    spec.venues = ["onchain"]
+    spec.data_contract["bar_interval"] = "1h"
+    job.execution_spec = spec.to_dict()
+    job.execution_params = {"symbols": ["ethereum-robinhood"]}
+    store.save(job)
+    rows = [
+        {
+            "timestamp": "2026-01-01T01:00:00Z",
+            "symbol": "ethereum-robinhood",
+            "open": 10,
+            "high": 11,
+            "low": 9,
+            "close": 10.5,
+            "volume": 100,
+        }
+    ]
+
+    class TokenFeed:
+        async def get_completed_bars(self, symbols, interval, *, lookback_bars):
+            return CompletedBarsView.from_rows(rows)
+
+        def history_provenance(self):
+            return {
+                "ethereum-robinhood": {
+                    "earliest_available": "2025-12-31T00:00:00+00:00",
+                    "requested_start": "2025-12-25T00:00:00+00:00",
+                    "chain_id": 4663,
+                    "address": "0x" + "0" * 40,
+                }
+            }
+
+    def no_probe(*args, **kwargs):
+        raise AssertionError("token jobs must not probe exchange markets")
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.execution.preflight._ccxt_missing_markets", no_probe
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.derived_features.refresh_derived_features_if_stale",
+        lambda *args, **kwargs: {"refreshed": False},
+    )
+
+    result = build_live_dataset(
+        job.id,
+        days=7,
+        store=store,
+        adapters={"onchain": SimpleNamespace(feed=TokenFeed())},
+        incremental=False,
+    )
+
+    metadata = result["metadata"]
+    assert metadata["venues"] == ["onchain"]
+    assert metadata["earliest_available"] == {
+        "ethereum-robinhood": "2025-12-31T00:00:00+00:00"
+    }
+    assert metadata["requested_start"] == "2025-12-25T00:00:00+00:00"
+    assert "ccxt_missing_markets" not in metadata
+    assert "no earlier bars" in result["warning"] and "ccxt" not in result["warning"]

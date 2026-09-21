@@ -392,3 +392,68 @@ def test_replication_window_change_repins_not_decays(tmp_path, monkeypatch) -> N
     second = replication_job(job.id, store=store, force=True)
     assert second["decayed"] is False  # window change, not edge decay
     assert second["baseline"]["dataset_days"] == 40.0  # re-pinned
+
+
+def test_evidence_window_accepts_the_sources_history_floor(tmp_path) -> None:
+    """A venue feed that reports where its history starts proves a short
+    window: the token is younger than the request."""
+    provenance = {
+        "venues": ["onchain"],
+        "symbols": ["ethereum-robinhood"],
+        "interval": "1h",
+        "requested_start": "2026-05-01T00:00:00+00:00",
+        "earliest_available": {"ethereum-robinhood": "2026-07-15T00:00:00+00:00"},
+    }
+    check = _evidence_window_check(
+        _root_with_dataset(
+            tmp_path / "proven",
+            days=120,
+            days_received=45.0,
+            source="live_fetch",
+            extra=provenance,
+        )
+    )[0]
+    assert check["passed"] and check["tier"] == "short_history_proven"
+    assert "ethereum-robinhood from 2026-07-15" in check["note"]
+
+    check = _evidence_window_check(
+        _root_with_dataset(
+            tmp_path / "young",
+            days=120,
+            days_received=12.0,
+            source="live_fetch",
+            extra=provenance,
+        )
+    )[0]
+    assert not check["passed"] and "too new" in check["error"]
+
+    # The source has bars from before the request: a short fetch, not a young token.
+    older = {
+        **provenance,
+        "earliest_available": {"ethereum-robinhood": "2025-01-01T00:00:00+00:00"},
+    }
+    check = _evidence_window_check(
+        _root_with_dataset(
+            tmp_path / "capped",
+            days=120,
+            days_received=45.0,
+            source="live_fetch",
+            extra=older,
+        )
+    )[0]
+    assert not check["passed"]
+    assert "--source ccxt" not in check["error"]
+    assert "fetch-dataset --days 120" in check["error"]
+
+    # A symbol without a reported floor is not proven.
+    partial = {**provenance, "symbols": ["ethereum-robinhood", "usd-coin-base"]}
+    check = _evidence_window_check(
+        _root_with_dataset(
+            tmp_path / "partial",
+            days=120,
+            days_received=45.0,
+            source="live_fetch",
+            extra=partial,
+        )
+    )[0]
+    assert not check["passed"]

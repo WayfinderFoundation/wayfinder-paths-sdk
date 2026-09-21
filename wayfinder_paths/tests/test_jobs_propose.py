@@ -351,10 +351,27 @@ def test_propose_memo_writes_file_and_rides_change_summary(tmp_path: Path) -> No
     assert proposal["change_summary"] == memo
     assert proposal["proposed_change"]["summary"] != memo  # one-liner intact
 
-    # No memo -> behavior identical to before (change_summary == summary).
+    assert proposal["rationale_source"] == "memo"
+
+    # No memo -> the intent contract renders as the rationale, so the owner
+    # never reviews a bare one-liner.
     plain = _propose_params(store, job_id, params={"threshold": 11.1})
-    assert plain["change_summary"] == plain["proposed_change"]["summary"]
+    assert plain["change_summary"].startswith(
+        f"## {plain['proposed_change']['summary']}"
+    )
+    assert "### Intent" in plain["change_summary"]
+    assert plain["rationale_source"] == "intent_contract"
     assert not (root / "proposals" / f"{plain['proposal_id']}.md").exists()
+
+
+def test_render_intent_memo_lists_the_contract_fields() -> None:
+    from wayfinder_paths.jobs.proposals import render_intent_memo
+
+    memo = render_intent_memo("loosen threshold", _intent_contract())
+    assert memo.startswith("## loosen threshold\n")
+    assert "### Intent" in memo and "### Rules changed" in memo
+    assert "### Known non goals" in memo
+    assert render_intent_memo("", {}).startswith("## Proposed change")
 
 
 def test_propose_fails_named_check_when_entrypoint_outside_workspace(

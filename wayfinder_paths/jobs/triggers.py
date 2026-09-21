@@ -62,6 +62,11 @@ def fire_triggers(
 
     Returns the wake payload when fired, None when suppressed/no-op.
     """
+    # The owner's notification policy sees every event first, whatever the
+    # agent loop does with it; it is raise-free on its own.
+    from wayfinder_paths.jobs.notify_policy import notify_events
+
+    notify_events(store, job, list(event_types), source=source)
     try:
         return _fire_triggers(store, job, event_types, source=source)
     except Exception as exc:

@@ -432,3 +432,226 @@ def test_forward_view_includes_events(tmp_path: Path) -> None:
     result = load_forward_view("carry", store=store, include_prices=False)
     events = result["visualization"]["events"]
     assert [(e["kind"], e["mode"]) for e in events] == [("mode_flip", "live")]
+
+
+def _seed_freestyle_job(tmp_path: Path) -> JobStore:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "hormuz",
+        script="workspace/src/hormuz.py",
+        interval_seconds=300,
+        execution_contract="freestyle_v1",
+        source={"kind": "freestyle", "origin": "inline"},
+    )
+    job.execution_params["initial_capital"] = 1000.0
+    store.create_job(job)
+    forward = store.job_dir("hormuz") / "results" / "forward"
+    forward.mkdir(parents=True, exist_ok=True)
+    stamps = [
+        "2026-09-15T10:00:00+00:00",
+        "2026-09-15T10:05:00+00:00",
+        "2026-09-15T10:10:00+00:00",
+    ]
+    odds = [0.62, 0.7, 0.2]
+    btc = [40_000.0, 40_100.0, 39_900.0]
+    equity = [1000.0, 1005.0, 1010.0]
+    realized = [0.0, 0.0, 10.0]
+    ticks = [
+        {
+            "kind": "tick",
+            "ts": ts,
+            "bar_ts": ts,
+            "mode": "paper",
+            "revision": "abc",
+            "marks": {
+                "polymarket:polymarket:hormuz-closure-2026:YES": odd,
+                "hyperliquid:BTC": price,
+            },
+            "funding": {"hyperliquid:BTC": 0.0001},
+            "token_values": {"ethereum-base": 2500.0},
+            "yields": {"lend_supply_apr:aave-v3-base:USDC": 0.05},
+            "equity": eq,
+            "unrealized_pnl": eq - 1000.0 - rp,
+            "ledger": {"realized_pnl": rp, "positions": {}},
+            "guard_events": [],
+        }
+        for ts, odd, price, eq, rp in zip(
+            stamps, odds, btc, equity, realized, strict=True
+        )
+    ]
+    fills = [
+        {
+            "status": "filled",
+            "venue": "hyperliquid",
+            "symbol": "BTC",
+            "side": "buy",
+            "filled_size": 0.005,
+            "avg_price": 40_000.0,
+            "reduce_only": False,
+            "timestamp": stamps[0],
+            "ts": stamps[0],
+            "mode": "paper",
+            "raw": {},
+            "intent_action": "OPEN",
+            "intent_metadata": {"entry_reason": "odds above 0.6"},
+        },
+        {
+            "status": "filled",
+            "venue": "hyperliquid",
+            "symbol": "BTC",
+            "side": "sell",
+            "filled_size": 0.005,
+            "avg_price": 39_900.0,
+            "reduce_only": True,
+            "timestamp": stamps[2],
+            "ts": stamps[2],
+            "mode": "paper",
+            "raw": {},
+            "intent_action": "CLOSE",
+            "intent_metadata": {"exit_reason": "odds below 0.4"},
+        },
+    ]
+    trades = [
+        {
+            "ts": stamps[2],
+            "symbol": "BTC",
+            "venue": "hyperliquid",
+            "side": "sell",
+            "size": 0.005,
+            "avg_price": 39_900.0,
+            "fee": 0.1,
+            "net_pnl": 10.0,
+            "pnl": 10.0,
+            "exit_reason": "odds below 0.4",
+            "mode": "paper",
+        }
+    ]
+    for name, rows in (
+        ("ticks.jsonl", ticks),
+        ("fills.jsonl", fills),
+        ("trades.jsonl", trades),
+    ):
+        (forward / name).write_text(
+            "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+        )
+    return store
+
+
+def test_freestyle_marks_and_reads_become_series_without_a_spec(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs import forward_artifacts
+    from wayfinder_paths.jobs.execution import validation as validation_mod
+
+    store = _seed_freestyle_job(tmp_path)
+
+    def _no_spec(*args, **kwargs):
+        raise AssertionError("a freestyle view must not resolve an execution spec")
+
+    monkeypatch.setattr(validation_mod, "resolve_execution_spec", _no_spec)
+    monkeypatch.setattr(
+        forward_artifacts,
+        "_fetch_hyperliquid_bars",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("feed down")),
+    )
+    view = load_forward_view("hormuz", store=store)
+    assert view["available"] and "price_note" not in view["summary"]
+    by_name = {s["name"]: s for s in view["visualization"]["series"]}
+    btc = by_name["BTC_price"]
+    assert btc["kind"] == "market_price" and btc["venue"] == "hyperliquid"
+    assert [p["value"] for p in btc["points"]] == [40_000.0, 40_100.0, 39_900.0]
+    odds = by_name["polymarket:hormuz-closure-2026:YES_price"]
+    assert odds["venue"] == "polymarket" and odds["points"][-1]["value"] == 0.2
+    assert by_name["BTC_funding"]["kind"] == "funding_rate"
+    assert by_name["BTC_funding"]["venue"] == "hyperliquid"
+    assert by_name["token:ethereum-base"]["kind"] == "token_value"
+    assert by_name["yield:lend_supply_apr:aave-v3-base:USDC"]["kind"] == "yield_rate"
+    equity = by_name["forward_equity"]
+    assert [p["value"] for p in equity["points"]] == [1000.0, 1005.0, 1010.0]
+    assert equity["points"][1]["unrealized_pnl"] == 5.0
+
+
+def test_freestyle_hyperliquid_bars_override_marks_and_views_filter(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs import forward_artifacts
+
+    store = _seed_freestyle_job(tmp_path)
+    bars = {
+        "BTC": [
+            {
+                "timestamp": "2026-09-15T10:05:00+00:00",
+                "value": 40_050.0,
+                "open": 40_000.0,
+                "high": 40_100.0,
+                "low": 39_950.0,
+                "close": 40_050.0,
+                "volume": None,
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        forward_artifacts, "_fetch_hyperliquid_bars", lambda *a, **k: bars
+    )
+    legs = load_forward_view("hormuz", store=store, view="legs")
+    kinds = {s["kind"] for s in legs["visualization"]["series"]}
+    assert kinds == {"market_price"}
+    btc = next(s for s in legs["visualization"]["series"] if s["name"] == "BTC_price")
+    assert btc["points"] == bars["BTC"]
+    reads = load_forward_view("hormuz", store=store, view="reads")
+    kinds = {s["kind"] for s in reads["visualization"]["series"]}
+    assert kinds == {"funding_rate", "token_value", "yield_rate"}
+
+
+def test_freestyle_markers_and_trades_carry_reasons_and_venue(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs import forward_artifacts
+
+    store = _seed_freestyle_job(tmp_path)
+    monkeypatch.setattr(
+        forward_artifacts, "_fetch_hyperliquid_bars", lambda *a, **k: {}
+    )
+    view = load_forward_view("hormuz", store=store)
+    markers = view["visualization"]["markers"]
+    assert markers[0]["kind"] == "entry" and "odds above 0.6" in markers[0]["label"]
+    assert markers[0]["venue"] == "hyperliquid"
+    assert markers[1]["kind"] == "exit" and "odds below 0.4" in markers[1]["label"]
+    trade = view["trades"][0]
+    assert trade["entry_reason"] == "odds above 0.6"
+    assert trade["exit_reason"] == "odds below 0.4"
+    assert trade["venue"] == "hyperliquid" and trade["entry_price"] == 40_000.0
+    assert trade["duration_minutes"] == 10 and trade["net_pnl"] == 10.0
+
+
+def test_declared_feature_feeds_chart_as_feature_series(tmp_path: Path) -> None:
+    from wayfinder_paths.tests.test_jobs_features import _feature_job
+
+    store, job, root = _feature_job(tmp_path)
+    forward = root / "results" / "forward"
+    forward.mkdir(parents=True, exist_ok=True)
+    (forward / "ticks.jsonl").write_text(
+        "".join(
+            json.dumps(
+                {
+                    "kind": "tick",
+                    "bar_ts": f"2026-01-01T00:{minute:02d}:00+00:00",
+                    "mode": "paper",
+                    "ledger": {"realized_pnl": 0.0, "positions": {}},
+                }
+            )
+            + "\n"
+            for minute in (0, 5, 10, 15)
+        ),
+        encoding="utf-8",
+    )
+    view = load_forward_view(job.id, store=store, view="reads", include_prices=False)
+    series = view["visualization"]["series"]
+    assert [s["kind"] for s in series] == ["feature"]
+    assert series[0]["name"] == "feature:sentiment" and series[0]["key"] == "sentiment"
+    assert [p["value"] for p in series[0]["points"]] == [0.9, -0.9]
+    everything = load_forward_view(job.id, store=store, include_prices=False)
+    assert {s["kind"] for s in everything["visualization"]["series"]} == {
+        "equity_curve",
+        "feature",
+    }

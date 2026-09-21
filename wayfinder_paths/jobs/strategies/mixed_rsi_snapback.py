@@ -7,7 +7,7 @@ from typing import Any
 import pandas as pd
 
 from wayfinder_paths.jobs.execution.primitives import ExecutionContext
-from wayfinder_paths.jobs.indicators import wilder_rsi
+from wayfinder_paths.jobs.indicators import bounded_span, wilder_rsi
 from wayfinder_paths.jobs.strategies._starter_utils import (
     MEAN_REVERSION_STOP_DEFAULTS,
     add_stop_atr,
@@ -35,7 +35,14 @@ class MixedRsiSnapbackStrategy:
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         self.params = merge_params(self.default_params, params)
-        self.warmup_bars = int(self.params["trend_sma_period"]) + 4
+        self.warmup_bars = (
+            max(
+                int(self.params["trend_sma_period"]),
+                bounded_span(int(self.params["rsi_period"])),
+                bounded_span(int(self.params["stop_atr_period"])),
+            )
+            + 4
+        )
 
     def precompute(self, frames: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
         period = int(self.params["rsi_period"])
@@ -45,7 +52,9 @@ class MixedRsiSnapbackStrategy:
             close = pd.to_numeric(frame["close"], errors="coerce")
             derived[symbol] = pd.DataFrame(
                 {
-                    "starter_rsi": wilder_rsi(close, period),
+                    "starter_rsi": wilder_rsi(
+                        close, period, window=bounded_span(period)
+                    ),
                     "starter_trend_sma": close.rolling(
                         sma_period, min_periods=sma_period
                     ).mean(),

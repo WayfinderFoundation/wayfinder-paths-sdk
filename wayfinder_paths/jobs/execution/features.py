@@ -37,9 +37,23 @@ import pandas as pd
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
     ExecutionSpec,
+    bar_interval_seconds,
 )
 
 DEFAULT_FEATURES_PATH = "state/features.jsonl"
+# Feeds the fetch verbs know how to pull and refresh; the `feed` mapping on a
+# declared feature pins the resolved source ids so nothing re-searches.
+FEED_KINDS: tuple[str, ...] = (
+    "token_price",
+    "lend_supply_apr",
+    "lend_borrow_apr",
+    "yield_apy",
+    "pendle_implied_apy",
+    "boros_fixed_rate",
+)
+SMOOTHING_METHODS: tuple[str, ...] = ("none", "mean", "ewm")
+# A gap wider than this many cadence periods is reported, never silently held.
+GAP_PERIODS = 2
 
 
 @dataclass(frozen=True)
@@ -50,10 +64,35 @@ class FeatureSpec:
     max_age_seconds: int | None = None
     stale_policy: str = "decide_anyway"  # "skip" | "decide_anyway"
     column: str | None = None
+    # Pinned source ids written by the fetch verbs (see FEED_KINDS).
+    feed: Mapping[str, Any] | None = None
+    # The feed's native period ("5m", "1h", "1d"): rows are snapped to this
+    # grid before the as-of merge, and gaps are measured against it.
+    cadence: str | None = None
+    # {"method": "none" | "mean" | "ewm", "window": "<interval>"} in feed time,
+    # applied identically by the backtest loader and the live driver.
+    smoothing: Mapping[str, Any] | None = None
 
     @property
     def column_name(self) -> str:
         return self.column or self.name
+
+    @property
+    def raw_column_name(self) -> str:
+        return f"{self.column_name}__raw"
+
+    @property
+    def cadence_seconds(self) -> int | None:
+        return bar_interval_seconds(self.cadence) if self.cadence else None
+
+    @property
+    def smoothing_method(self) -> str:
+        return str((self.smoothing or {}).get("method") or "none")
+
+    @property
+    def smoothing_seconds(self) -> int | None:
+        window = (self.smoothing or {}).get("window")
+        return bar_interval_seconds(window) if window else None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> FeatureSpec:
@@ -66,6 +105,36 @@ class FeatureSpec:
             raise ValueError(
                 f"feature {name!r}: stale_policy must be skip or decide_anyway"
             )
+        feed = data.get("feed")
+        feed_map = dict(feed) if isinstance(feed, Mapping) and feed else None
+        if feed_map is not None and feed_map.get("kind") not in FEED_KINDS:
+            raise ValueError(f"feature {name!r}: feed.kind must be one of {FEED_KINDS}")
+        cadence = str(data["cadence"]) if data.get("cadence") else None
+        cadence_seconds = bar_interval_seconds(cadence) if cadence else None
+        if cadence is not None and cadence_seconds is None:
+            raise ValueError(
+                f"feature {name!r}: cadence {cadence!r} is not an interval like 1h or 1d"
+            )
+        smoothing = data.get("smoothing")
+        smoothing_map: dict[str, Any] | None = None
+        if isinstance(smoothing, Mapping) and smoothing:
+            method = str(smoothing.get("method") or "none")
+            if method not in SMOOTHING_METHODS:
+                raise ValueError(
+                    f"feature {name!r}: smoothing.method must be one of {SMOOTHING_METHODS}"
+                )
+            smoothing_map = {"method": method}
+            if method != "none":
+                if cadence_seconds is None:
+                    raise ValueError(f"feature {name!r}: smoothing needs a cadence")
+                window = smoothing.get("window")
+                window_seconds = bar_interval_seconds(window) if window else None
+                if window_seconds is None or window_seconds < cadence_seconds:
+                    raise ValueError(
+                        f"feature {name!r}: smoothing.window must be an interval of "
+                        "at least the cadence"
+                    )
+                smoothing_map["window"] = str(window)
         return cls(
             name=name,
             source=str(data.get("source") or "file"),
@@ -73,6 +142,9 @@ class FeatureSpec:
             max_age_seconds=int(raw_age) if raw_age is not None else None,
             stale_policy=policy,
             column=str(data["column"]) if data.get("column") else None,
+            feed=feed_map,
+            cadence=cadence,
+            smoothing=smoothing_map,
         )
 
 
@@ -201,7 +273,12 @@ def load_feature_rows(
                 "symbol": columns["symbol"],
             }
         )
-        frame = frame.dropna(subset=["timestamp"]).sort_values("timestamp")
+        # Stable sort keeps file (append) order for equal stamps, so a row a
+        # refresh re-appended with a revised value wins over the original.
+        frame = frame.dropna(subset=["timestamp"]).sort_values(
+            "timestamp", kind="stable"
+        )
+        frame = frame.drop_duplicates(subset=["timestamp", "symbol"], keep="last")
         if window is not None:
             frame = _trim_to_window(frame, window[0], window[1])
         frames[spec.name] = frame.reset_index(drop=True)
@@ -220,37 +297,144 @@ def merge_features(
     if not specs:
         return view
     bars = view.to_frame().sort_values(["timestamp", "symbol"]).reset_index(drop=True)
+    columns: list[str] = []
     for spec in specs:
         feature = frames.get(spec.name)
-        column = spec.column_name
         if feature is None or feature.empty:
-            bars[column] = None
+            for column in _spec_columns(spec):
+                bars[column] = None
+                columns.append(column)
             continue
-        per_symbol = feature["symbol"].notna().any()
-        if per_symbol:
-            sub = feature.dropna(subset=["symbol"]).rename(columns={"value": column})
-            sub["symbol"] = sub["symbol"].astype(str)
-            merged = pd.merge_asof(
-                bars.sort_values("timestamp"),
-                sub[["timestamp", "symbol", column]].sort_values("timestamp"),
-                on="timestamp",
-                by="symbol",
-                direction="backward",
-            )
-        else:
-            sub = feature.rename(columns={"value": column})
-            merged = pd.merge_asof(
-                bars.sort_values("timestamp"),
-                sub[["timestamp", column]].sort_values("timestamp"),
-                on="timestamp",
-                direction="backward",
-            )
-        bars = merged
-    for spec in specs:
-        column = spec.column_name
+        for column, sub_frame in _feature_columns(spec, feature):
+            columns.append(column)
+            per_symbol = sub_frame["symbol"].notna().any()
+            if per_symbol:
+                sub = sub_frame.dropna(subset=["symbol"]).rename(
+                    columns={"value": column}
+                )
+                sub["symbol"] = sub["symbol"].astype(str)
+                merged = pd.merge_asof(
+                    bars.sort_values("timestamp"),
+                    sub[["timestamp", "symbol", column]].sort_values("timestamp"),
+                    on="timestamp",
+                    by="symbol",
+                    direction="backward",
+                )
+            else:
+                sub = sub_frame.rename(columns={"value": column})
+                merged = pd.merge_asof(
+                    bars.sort_values("timestamp"),
+                    sub[["timestamp", column]].sort_values("timestamp"),
+                    on="timestamp",
+                    direction="backward",
+                )
+            bars = merged
+    for column in columns:
         if column in bars.columns:
             bars[column] = bars[column].astype(object).where(bars[column].notna(), None)
     return CompletedBarsView(bars)
+
+
+def _spec_columns(spec: FeatureSpec) -> list[str]:
+    if spec.cadence_seconds is not None and spec.smoothing_method != "none":
+        return [spec.column_name, spec.raw_column_name]
+    return [spec.column_name]
+
+
+def _feature_columns(
+    spec: FeatureSpec, feature: pd.DataFrame
+) -> list[tuple[str, pd.DataFrame]]:
+    """The (column, rows) pairs a spec contributes to the bars: the raw rows
+    for a feature without a cadence; the gridded rows for one with a cadence;
+    the smoothed series plus a `<column>__raw` sibling when smoothing is on.
+    Everything here is computed from feed rows alone, never from bars, so the
+    backtest loader and the live driver produce identical columns."""
+    cadence = spec.cadence_seconds
+    if cadence is None:
+        return [(spec.column_name, feature)]
+    gridded = grid_feature_rows(feature, cadence)
+    if spec.smoothing_method == "none":
+        return [(spec.column_name, gridded)]
+    return [
+        (spec.column_name, smooth_feature_rows(gridded, spec)),
+        (spec.raw_column_name, gridded),
+    ]
+
+
+def grid_feature_rows(feature: pd.DataFrame, cadence_seconds: int) -> pd.DataFrame:
+    """One row per cadence period and symbol — the last observation in the
+    period wins — with its real observation time kept, so a jittered
+    12:00:07 snapshot still becomes visible only to bars at or after it (no
+    lookahead) while duplicates inside a period collapse and two feeds of
+    different cadence line up on the bars through the same as-of merge."""
+    frame = feature.copy()
+    bucket = frame["timestamp"].dt.floor(f"{int(cadence_seconds)}s")
+    frame = (
+        frame.assign(_bucket=bucket)
+        .sort_values("timestamp", kind="stable")
+        .drop_duplicates(subset=["_bucket", "symbol"], keep="last")
+        .drop(columns="_bucket")
+    )
+    return frame.reset_index(drop=True)
+
+
+def smooth_feature_rows(gridded: pd.DataFrame, spec: FeatureSpec) -> pd.DataFrame:
+    """Trailing smoothing in feed time over the declared window: `mean` is a
+    rolling mean over the window, `ewm` an exponential mean with the window as
+    half-life. Both see only rows at or before each point."""
+    window = pd.Timedelta(seconds=int(spec.smoothing_seconds or 0))
+    frame = gridded.copy()
+    frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
+    parts: list[pd.DataFrame] = []
+    for _symbol, group in frame.groupby(
+        frame["symbol"].astype(object), dropna=False, sort=False
+    ):
+        ordered = group.sort_values("timestamp", kind="stable")
+        series = ordered.set_index("timestamp")["value"]
+        if spec.smoothing_method == "mean":
+            smoothed = series.rolling(window, min_periods=1).mean()
+        else:
+            smoothed = series.ewm(halflife=window, times=series.index).mean()
+        parts.append(ordered.assign(value=smoothed.to_numpy()))
+    if not parts:
+        return frame
+    return (
+        pd.concat(parts).sort_values("timestamp", kind="stable").reset_index(drop=True)
+    )
+
+
+def feature_gaps(
+    frame: pd.DataFrame, cadence_seconds: int | None
+) -> dict[str, Any] | None:
+    """Gaps wider than GAP_PERIODS cadence periods within a feature's rows,
+    per symbol series: count, the largest, and when the first one opened."""
+    if cadence_seconds is None or frame is None or len(frame) < 2:
+        return None
+    threshold = GAP_PERIODS * int(cadence_seconds)
+    count = 0
+    largest = 0.0
+    first_at: pd.Timestamp | None = None
+    for _symbol, group in frame.groupby(
+        frame["symbol"].astype(object), dropna=False, sort=False
+    ):
+        stamps = group["timestamp"].sort_values(kind="stable").reset_index(drop=True)
+        deltas = stamps.diff().dt.total_seconds()
+        for position in deltas[deltas > threshold].index:
+            count += 1
+            gap = float(deltas.iloc[position])
+            largest = max(largest, gap)
+            opened = stamps.iloc[position - 1] + pd.Timedelta(
+                seconds=int(cadence_seconds)
+            )
+            if first_at is None or opened < first_at:
+                first_at = opened
+    if count == 0:
+        return {"count": 0, "largest_seconds": 0.0, "first_at": None}
+    return {
+        "count": count,
+        "largest_seconds": largest,
+        "first_at": first_at.isoformat() if first_at is not None else None,
+    }
 
 
 # Bar-contract columns a strategy may never overwrite from precompute().
@@ -316,9 +500,28 @@ def feature_staleness(
     guard_events: list[dict[str, Any]] = []
     skip = False
     for spec in specs:
+        frame = frames.get(spec.name)
+        cadence = spec.cadence_seconds
+        if cadence is not None and frame is not None and len(frame) >= 2:
+            # A hole in a cadenced feed is telemetry, not a halt: the tick
+            # still decides under its stale policy, and the hole is visible.
+            gap = float(
+                (
+                    frame["timestamp"].iloc[-1] - frame["timestamp"].iloc[-2]
+                ).total_seconds()
+            )
+            if gap > GAP_PERIODS * cadence:
+                guard_events.append(
+                    {
+                        "kind": "feed_gap",
+                        "feature": spec.name,
+                        "gap_seconds": gap,
+                        "cadence_seconds": cadence,
+                        "timestamp": now.isoformat(),
+                    }
+                )
         if spec.max_age_seconds is None:
             continue
-        frame = frames.get(spec.name)
         if frame is None or frame.empty:
             age = None
         else:
@@ -358,14 +561,30 @@ def summarize_features(
             summary.append({"name": item.name, "available": False})
             continue
         latest = frame.iloc[-1]
-        summary.append(
-            {
-                "name": item.name,
-                "available": True,
-                "latest_value": latest["value"],
-                "latest_timestamp": latest["timestamp"].isoformat(),
-                "age_seconds": float((now - latest["timestamp"]).total_seconds()),
-                "row_count": int(len(frame)),
-            }
-        )
+        entry: dict[str, Any] = {
+            "name": item.name,
+            "available": True,
+            "latest_value": latest["value"],
+            "latest_timestamp": latest["timestamp"].isoformat(),
+            "age_seconds": float((now - latest["timestamp"]).total_seconds()),
+            "row_count": int(len(frame)),
+        }
+        if item.cadence is not None:
+            entry["cadence"] = item.cadence
+            entry["smoothing"] = dict(item.smoothing) if item.smoothing else None
+            entry["gaps"] = feature_gaps(frame, item.cadence_seconds)
+            entry["revised_rows"] = revised_row_count(Path(root) / item.path, item.name)
+        summary.append(entry)
     return summary
+
+
+def revised_row_count(path: Path, name: str) -> int:
+    """Rows a refresh re-appended with a revised value: the store's raw
+    (timestamp, symbol) pairs for the feature beyond the unique ones."""
+    if not path.exists():
+        return 0
+    columns = _parse_feature_file(path, {name}).get(name)
+    if not columns:
+        return 0
+    pairs = list(zip(columns["timestamp"], columns["symbol"], strict=True))
+    return len(pairs) - len(set(pairs))

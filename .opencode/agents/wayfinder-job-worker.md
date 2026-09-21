@@ -20,13 +20,15 @@ permission:
 
   write: allow
   edit:
-    # The governance plane (owner targets, hard constraints, audit policy)
-    # is capability-protected: outside the job tree AND explicitly denied.
+    # ORDER IS LOAD-BEARING (last-match-wins, see external_directory below):
+    # the catch-all deny comes FIRST so the job-tree allow overrides it; the
+    # governance plane (owner targets, hard constraints, audit policy) stays
+    # LAST so it wins over any overlapping allow ever added above.
+    "*": deny
+    ".wayfinder_runs/**": ask
+    ".wayfinder/jobs/**": allow
     "governance/**": deny
     "audit/**": deny
-    ".wayfinder/jobs/**": allow
-    ".wayfinder_runs/**": ask
-    "*": deny
 
   # opencode 1.18+ resolves symlinks and classifies vault writes
   # (.wayfinder -> /wf/user_vault/wayfinder, .wayfinder_runs ->
@@ -79,11 +81,14 @@ permission:
     "python -m py_compile .wayfinder/jobs/**": allow
     "python3 -m py_compile .wayfinder/jobs/**": allow
 
+  # ORDER IS LOAD-BEARING: the broad MCP deny must precede the narrow allows
+  # (last-match-wins); with the deny last, core_jobs resolved to deny and the
+  # worker had no MCP tool at all.
+  wayfinder_*: deny
   wayfinder_core_jobs: allow
   wayfinder_core_run_script: ask
   wayfinder_core_runner: ask
   wayfinder_research_*: allow
-  wayfinder_*: deny
 
   wayfinder_onchain_swap: deny
   wayfinder_onchain_send: deny
@@ -299,6 +304,25 @@ and is revision-bound — schema changes must ride a proposal. Model artifacts
 belong in `workspace/models/` (see `wayfinder_paths.jobs.strategies.models`)
 and also ship via proposals.
 
+`core_jobs(action="status")` carries `heartbeat` (runner loops, last tick, last
+wake, launch identity, halt) and `issues` (a sorted list of what is wrong, each
+with a code, severity and message): a wake report reads `issues` before
+diagnosing anything itself and quotes the code; an empty list with a recent
+`last_tick` is "all clear". Freestyle/Path jobs add `freestyle` (the script's
+limits, the last tick's reads and actions, the dry run).
+
+Token prices and DeFi yields are feeds with their own verbs (a harnessed token
+job on `venue="onchain"` reads its bars from the same on-chain data source): `core_jobs`
+`fetch_token_features` (`token_price:<token_id>`) and `fetch_yield_features`
+(`lend_supply_apr:<venue>:<symbol>[:<market>]`, `lend_borrow_apr:…`,
+`yield_apy:<symbol>`, `pendle_implied_apy:<venue>:<market_id>`,
+`boros_fixed_rate:<venue>:<market_id>`). They declare the feature pinned to
+its source ids with a cadence and a smoothing (yields: a trailing-day mean
+by default), refresh on the hourly wake stamp with revisions reconciled, and
+the substrate block's `declared_feeds` shows their freshness — never hand-
+write their rows or edit the pin. Skill: `developing-jobs-v1-strategies`
+`rules/feature-feeds.md`.
+
 Feature columns flow into RESEARCH too: `signal-scan` merges declared
 features onto the bars at every scanned timeframe, so workspace signals can
 condition on them (`funding < 0`, session windows, cross-symbol context).
@@ -453,3 +477,16 @@ Always write structured outputs:
 
 Keep routine healthy checks quiet. Escalate only meaningful health changes, drift warnings,
 script failures, stuck states, or created proposals.
+
+## Freestyle and Path jobs
+
+Some jobs are not harnessed strategies. A **freestyle job** (`execution_contract: freestyle_v1`)
+is an author-written `tick(ctx)` module that trades only through `ctx.act`; a **path job**
+(`path_v1`) runs an installed Path component pinned by version and bundle hash. Neither has a
+backtest, a walk-forward, a preflight or an evolution campaign, and the wake prompt says so.
+For them: read the forward ledger (`results/forward`) and external context. A recommended
+change is a proposal with a memo — `code_change` carrying the candidate script (freestyle),
+`params_update` for `ctx.params` or `workspace/config/params.json`, a version move by memo
+(path). A halt or pause is recommended with the ledger's numbers and left to the owner; a short
+forward record supports "pause and rework" at most. Never edit an installed Path in place, and
+never state a performance number that no artifact carries.

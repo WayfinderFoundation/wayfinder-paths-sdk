@@ -509,7 +509,9 @@ class PolymarketVenueAdapter:
                 slippage_pct=float(params.get("slippage_pct") or 2.0),
             )
         else:
-            self.broker = _paper_broker(POLYMARKET_CAPABILITIES, params)
+            self.broker = _paper_broker(
+                POLYMARKET_CAPABILITIES, params, venue="polymarket"
+            )
 
 
 def build_polymarket_adapter(
@@ -518,4 +520,6 @@ def build_polymarket_adapter(
     return PolymarketVenueAdapter(mode=mode, params=params)
 
 
-register_venue("polymarket", build_polymarket_adapter)
+register_venue(
+    "polymarket", build_polymarket_adapter, capabilities=POLYMARKET_CAPABILITIES
+)
