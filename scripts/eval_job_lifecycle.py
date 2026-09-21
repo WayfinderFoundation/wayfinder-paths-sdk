@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import os
 import re
 import shutil
@@ -2864,6 +2865,7 @@ def _create_harnessed_job(
     lookback_bars: int,
     venue: str = "hyperliquid",
     token_resolution: dict[str, dict[str, Any]] | None = None,
+    execution_params: dict[str, Any] | None = None,
 ) -> None:
     from wayfinder_paths.jobs.compiler import JobCompiler
     from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
@@ -2887,9 +2889,10 @@ def _create_harnessed_job(
     job.execution_spec = harnessed_execution_spec(
         symbols, interval, venue=venue, token_resolution=token_resolution
     )
-    job.execution_params = harnessed_execution_params(
-        symbols, venue=venue, lookback_bars=lookback_bars
-    )
+    job.execution_params = {
+        **harnessed_execution_params(symbols, venue=venue, lookback_bars=lookback_bars),
+        **dict(execution_params or {}),
+    }
     store.create_job(job)
     script = store.job_dir(job_id) / "workspace" / "src" / "strategy.py"
     script.parent.mkdir(parents=True, exist_ok=True)
@@ -3575,6 +3578,206 @@ def validate_eth_robinhood_breakout(workspace: Path) -> dict[str, Any]:
     return _report(checks)
 
 
+SUSDE_YIELD_HOLD_SCRIPT = '''
+from __future__ import annotations
+
+from typing import Any
+
+import pandas as pd
+
+
+class YieldHold:
+    """Hold sUSDe on Ethereum while its yield beats the bar, otherwise sit
+    in dollars. The token accrues: its price carries the yield, so holding
+    it is the return; the yield feed is the signal."""
+
+    default_params: dict[str, Any] = {
+        "symbol": "ethena-staked-usde-ethereum",
+        "venue": "onchain",
+        "yield_feature": "yield_apy:sUSDe",
+        "enter_apy": 0.08,
+        "exit_apy": 0.06,
+        "notional_usd": 1000.0,
+    }
+
+    def __init__(self, params: dict[str, Any] | None = None) -> None:
+        self.params = {**self.default_params, **(params or {})}
+        self.warmup_bars = 2
+
+    def precompute(self, frames: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+        return {}
+
+    def decide(self, ctx) -> list[dict[str, Any]]:
+        p = self.params
+        symbol = p["symbol"]
+        try:
+            apy = float(ctx.view.feature(p["yield_feature"]))
+        except ValueError:
+            return []  # no yield observation yet: nothing to decide on
+        held = ctx.ledger.positions.get(symbol)
+        if held is None and apy >= float(p["enter_apy"]):
+            return [
+                {
+                    "action": "OPEN",
+                    "venue": p["venue"],
+                    "symbol": symbol,
+                    "side": "buy",
+                    "notional": float(p["notional_usd"]),
+                    "metadata": {"entry_reason": f"yield {apy:.2%} above bar"},
+                }
+            ]
+        if held is not None and apy <= float(p["exit_apy"]):
+            return [
+                {
+                    "action": "CLOSE",
+                    "venue": p["venue"],
+                    "symbol": symbol,
+                    "side": "sell",
+                    "size": float(held.size),
+                    "reduce_only": True,
+                    "metadata": {"exit_reason": f"yield {apy:.2%} below bar"},
+                }
+            ]
+        return []
+
+
+def build_strategy(params: dict[str, Any] | None = None) -> YieldHold:
+    return YieldHold(params)
+'''
+
+SUSDE_ETHEREUM = "ethena-staked-usde-ethereum"
+SUSDE_ADDRESS = "0x9d39a5de30e57443bff2a8307a4256c8797a3497"
+SUSDE_YIELD_FEED = "yield_apy:sUSDe"
+
+
+def expected_susde_yield_hold(workspace: Path) -> None:
+    """A yield-bearing token as the position: harnessed onchain job on the
+    accruing token's own bars, its yield declared as a feature the strategy
+    gates on, costs pinned for a deep stable pool."""
+    from wayfinder_paths.jobs.execution.job import backtest_execution_job
+    from wayfinder_paths.jobs.feeds import (
+        append_feature_rows,
+        contract_entry,
+        declare_features,
+    )
+    from wayfinder_paths.jobs.readout import build_readout
+
+    store = _store(workspace)
+    job_id = "eval-susde-yield-hold"
+    with Sandbox():
+        _create_harnessed_job(
+            store,
+            job_id,
+            name="sUSDe while the yield beats 8%",
+            goal=(
+                "Hold sUSDe on Ethereum while its yield is above 8% a year, sell back to "
+                "dollars when it drops under 6%; the token accrues so holding it is the "
+                "return, the yield feed is the signal."
+            ),
+            script_source=SUSDE_YIELD_HOLD_SCRIPT,
+            symbols=[SUSDE_ETHEREUM],
+            interval="1h",
+            lookback_bars=48,
+            venue="onchain",
+            token_resolution={
+                SUSDE_ETHEREUM: {"chain_id": 1, "address": SUSDE_ADDRESS}
+            },
+            execution_params={"fee_bps": 5.0, "slippage_bps": 5.0},
+        )
+        root = store.job_dir(job_id)
+        days = 120
+        start = datetime.now(UTC).replace(
+            minute=0, second=0, microsecond=0
+        ) - timedelta(days=days)
+        # an accruing token: ~10%/yr drift plus a little noise
+        rows = _random_walk_bars(
+            SUSDE_ETHEREUM,
+            start=start,
+            count=days * 24,
+            minutes=60,
+            price=1.15,
+            seed=21,
+            drift=0.10 / (365 * 24),
+            vol=0.0005,
+        )
+        _write_input_bars(root, rows, days=days, interval="1h")
+        declare_features(
+            store,
+            job_id,
+            [
+                contract_entry(
+                    {"kind": "yield_apy", "symbol": "sUSDe", "asset_id": 4242},
+                    cadence="1h",
+                    smoothing={"method": "mean", "window": "24h"},
+                )
+            ],
+        )
+        # the yield swings between ~5% and ~12% on a weekly cycle so the rule trades
+        yield_rows = [
+            {
+                "timestamp": (start + timedelta(hours=index)).isoformat(),
+                "name": SUSDE_YIELD_FEED,
+                "value": round(
+                    0.085 + 0.035 * math.sin(index / (24 * 7) * 2 * math.pi), 5
+                ),
+                "symbol": None,
+            }
+            for index in range(days * 24)
+        ]
+        append_feature_rows(root, yield_rows)
+        backtest_execution_job(job_id, store=store)
+        build_readout(job_id, store=store)
+
+
+def validate_susde_yield_hold(workspace: Path) -> dict[str, Any]:
+    """The token is the position and the yield is the signal: a harnessed
+    spot job on the accruing token's bars, the yield feed declared and read
+    by the strategy, costs pinned below the memecoin defaults."""
+    data, root, source, checks = _harnessed_init_checks(
+        workspace, "eval-susde-yield-hold", symbol=SUSDE_ETHEREUM
+    )
+    spec = data.get("execution_spec") or {}
+    params = data.get("execution_params") or {}
+    features = ((spec.get("data_contract") or {}).get("features")) or []
+    yield_feeds = [
+        f
+        for f in features
+        if isinstance(f, dict) and str((f.get("feed") or {}).get("kind")) == "yield_apy"
+    ]
+    feature_rows = root / "state" / "features.jsonl"
+    rows = (
+        feature_rows.read_text(encoding="utf-8").splitlines()
+        if feature_rows.exists()
+        else []
+    )
+    fee = float(params.get("fee_bps") or 0.0)
+    slippage = float(params.get("slippage_bps") or 0.0)
+    lowered = source.lower()
+    checks += [
+        _check(
+            "venue_onchain",
+            spec.get("venues") == ["onchain"] and params.get("venue") == "onchain",
+        ),
+        _check("market_kind_spot", spec.get("market_kind") == "spot"),
+        _check("no_leverage", "leverage" not in params),
+        _check("no_freestyle_tick", "def tick(ctx" not in source),
+        _check(
+            "yield_feature_declared",
+            bool(yield_feeds),
+            declared=[f.get("name") for f in yield_feeds],
+        ),
+        _check("yield_history_present", len(rows) >= 100, rows=len(rows)),
+        _check("strategy_reads_the_yield", "feature(" in source and "yield" in lowered),
+        _check(
+            "costs_pinned_for_a_deep_pool",
+            0.0 < fee <= 15.0 and 0.0 < slippage <= 15.0,
+            fee_bps=fee,
+            slippage_bps=slippage,
+        ),
+    ]
+    return _report(checks)
+
+
 INIT_CASES: list[LifecycleCase] = [
     LifecycleCase(
         id="init_btc_ny_open_sweep_fvg",
@@ -3905,6 +4108,26 @@ INIT_CASES: list[LifecycleCase] = [
         notes=(
             "spot tokens · type selection: harnessed spot job on the onchain venue (token id "
             "ethereum-robinhood, bars from the on-chain data source), not a freestyle script and not a perp"
+        ),
+    ),
+    LifecycleCase(
+        id="init_susde_yield_hold_onchain",
+        stage="initialization",
+        timeout_seconds=2400,
+        job_id="eval-susde-yield-hold",
+        prompt=(
+            "I want to hold sUSDe on Ethereum whenever its yield is above 8% a year and sit in dollars when it "
+            "drops under 6%, about 1000 dollars. sUSDe accrues, so holding it is the return; the yield is the "
+            "signal. Show me how that would have done: create `eval-susde-yield-hold`, get the bars and the "
+            "yield history, backtest it with costs that make sense for a deep stable pool, read me the honest "
+            "readout and stop before launching."
+        ),
+        expected=expected_susde_yield_hold,
+        validate=validate_susde_yield_hold,
+        notes=(
+            "defi · yield-bearing token as the position: harnessed onchain job on the accruing token's bars "
+            "with its yield declared as a feature (two declarations: the token id and the yield feed), costs "
+            "pinned for a deep pool rather than the 30/50 bps memecoin defaults"
         ),
     ),
 ]
