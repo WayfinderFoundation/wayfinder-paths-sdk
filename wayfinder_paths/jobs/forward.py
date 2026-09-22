@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import deque
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -550,16 +551,14 @@ def load_forward_snapshot(
         # System-owned forward-performance line (from live transactions) that the
         # worker cites verbatim instead of authoring its own numbers.
         "recap": render_forward_recap(summary),
-        "recent_runs": _tail_jsonl(
-            forward_dir / Path(DEFAULT_FORWARD_RUNS).name, limit
-        ),
-        "recent_trades": _tail_jsonl(
+        "recent_runs": tail_jsonl(forward_dir / Path(DEFAULT_FORWARD_RUNS).name, limit),
+        "recent_trades": tail_jsonl(
             forward_dir / Path(DEFAULT_FORWARD_TRADES).name, limit
         ),
-        "recent_orders": _tail_jsonl(
+        "recent_orders": tail_jsonl(
             forward_dir / Path(DEFAULT_FORWARD_ORDERS).name, limit
         ),
-        "recent_fills": _tail_jsonl(
+        "recent_fills": tail_jsonl(
             forward_dir / Path(DEFAULT_FORWARD_FILLS).name, limit
         ),
     }
@@ -592,9 +591,25 @@ def _write_json(path: Path, data: Any) -> None:
     atomic_write_json(path, data, default=str)
 
 
-def _tail_jsonl(path: Path, limit: int) -> list[dict[str, Any]]:
+def tail_jsonl(path: Path, limit: int) -> list[dict[str, Any]]:
+    """The last `limit` object rows of an append-only JSONL ledger, read as a
+    stream: a bounded consumer (forward snapshot, decision log, JobStore)
+    must never materialize a multi-MB history to take a 25-line tail."""
     if not path.exists() or limit <= 0:
         return []
-    # _append_jsonl is the only writer: one JSON object per line, always.
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    return [json.loads(line) for line in lines[-limit:] if line.strip()]
+    # _append_jsonl is the only writer, so at most one line is ever torn (an
+    # interrupted append). Over-read by one so a torn or blank line never
+    # shortens the tail below `limit`.
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        lines = deque(handle, maxlen=int(limit) + 1)
+    rows: list[dict[str, Any]] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows[-int(limit) :]
