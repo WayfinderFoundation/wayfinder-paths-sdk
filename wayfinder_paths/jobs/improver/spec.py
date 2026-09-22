@@ -185,7 +185,9 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "signal_scan_min_events": 30,
         "policy_scan_enabled": True,
         "policy_scan_limit": 6,
-        "redesign_checkpoint": True,
+        # One redesign pass after the screens; off on the product branch until
+        # the bench A/B measures its prepare-time cost against the extra slots.
+        "redesign_checkpoint": False,
         "redesign_slots": 3,
         "wildcard_slots": 2,
         "elite_min_validation_trades": 8,
