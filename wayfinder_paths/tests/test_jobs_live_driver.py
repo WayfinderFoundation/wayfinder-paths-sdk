@@ -1086,3 +1086,76 @@ async def test_risk_halt_downgrade_preserves_snapshot_data(tmp_path: Path) -> No
     )
     # Whatever the halt outcome, the venue equity must not be dropped.
     assert result["snapshot"]["data"]["account_value"] == 42.0
+
+
+async def test_live_tick_recovers_silent_bracket_under_the_default(
+    tmp_path: Path,
+) -> None:
+    store, job, root = _make_job(tmp_path, mode="live")
+    position = PositionRecord(
+        symbol="SNX",
+        side="long",
+        size=2.0,
+        avg_price=9.5,
+        opened_at="2026-01-01T00:00:00+00:00",
+    )
+    state = EngineState(mode="live")
+    state.ledger.positions["SNX"] = position
+    state.save(root / "state" / "engine_state.json")
+
+    forward = root / "results" / "forward"
+    (forward / "fills.jsonl").write_text(
+        json.dumps(
+            {
+                "mode": "live",
+                "status": "filled",
+                "symbol": "SNX",
+                "timestamp": position.opened_at,
+                "filled_size": 2.0,
+                "reduce_only": False,
+                "client_order_id": "entry-snx",
+            }
+        )
+        + "\n"
+    )
+    (forward / "ticks.jsonl").write_text(
+        json.dumps(
+            {
+                "mode": "live",
+                "intents": [
+                    {
+                        "action": "OPEN",
+                        "venue": "hyperliquid",
+                        "symbol": "SNX",
+                        "client_order_id": "entry-snx",
+                        "bracket": {"stop_loss_pct": 0.05},
+                    }
+                ],
+            }
+        )
+        + "\n"
+    )
+    broker = FakeNativeLiveBroker(
+        venue_positions={"SNX": position}, account_value=100.0
+    )
+    view = _view(2)
+
+    result = await tick_job(
+        job,
+        root,
+        "live",
+        store=store,
+        adapters={"hyperliquid": FakeAdapter(view, broker)},
+        now=_now(view),
+    )
+
+    recovered = next(
+        event
+        for event in result["guard_events"]
+        if event.get("kind") == "native_protection_contract_recovered"
+    )
+    assert recovered["installed"] is True
+    assert broker.stops[0]["trigger_price"] == pytest.approx(9.025)
+    restored = EngineState.load(root / "state" / "engine_state.json")
+    assert restored.brackets["SNX"]["native_required"] is True
+    assert "SNX" in restored.native_protections

@@ -20,6 +20,7 @@ from wayfinder_paths.jobs.execution.engine import (
     EngineState,
     TickResult,
     flatten_positions,
+    native_protection_skip_reason,
     resolve_fill_bracket,
     run_tick,
     sync_native_protection,
@@ -403,7 +404,9 @@ async def tick_job(
 
     protection_recovery_notes: list[dict[str, Any]] = []
     if mode == "live" and snapshot.status == "valid":
-        for recovery in _recover_missing_native_brackets(root, state):
+        for recovery in _recover_missing_native_brackets(
+            root, state, params=params, brokers=brokers
+        ):
             sync_result = TickResult()
             installed = await sync_native_protection(
                 brokers=brokers,
@@ -642,6 +645,7 @@ async def tick_job(
             brokers=brokers,
             state=state,
             view=view,
+            params=params,
             timestamp=tick.bar_timestamp or now.isoformat(),
             trace=ExecutionTrace(execution_spec=spec.to_dict()),
             result=tick,
@@ -872,9 +876,17 @@ _EQUITY_RECON_PATH = "state/equity_recon.json"
 
 
 def _recover_missing_native_brackets(
-    root: Path, state: EngineState
+    root: Path,
+    state: EngineState,
+    *,
+    params: Mapping[str, Any],
+    brokers: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
-    """Rebuild a lost bracket only from a matching, successfully filled intent."""
+    """Rebuild a lost bracket only from a matching, successfully filled intent.
+
+    The recorded intent is resolved exactly like a fresh fill: a bracket that
+    was silent on `native_required` still recovers when the live default
+    would have protected it."""
     missing = {
         symbol: position
         for symbol, position in state.ledger.positions.items()
@@ -931,18 +943,25 @@ def _recover_missing_native_brackets(
         intent = intents_by_cloid.get(cloid) or {}
         policy = intent.get("bracket") or {}
         position = missing[symbol]
-        if intent.get("action") != "OPEN" or not policy.get("native_required"):
+        if intent.get("action") != "OPEN":
             continue
         venue = str(intent.get("venue") or "")
         if not venue:
             continue
-        state.brackets[symbol] = resolve_fill_bracket(
+        bracket = resolve_fill_bracket(
             policy,
             position.side,
             position.avg_price,
             venue,
             cloid,
         )
+        skip_reason = native_protection_skip_reason(
+            bracket, params, brokers.get(venue) or brokers.get("*")
+        )
+        if skip_reason is not None:
+            continue
+        bracket["native_required"] = True
+        state.brackets[symbol] = bracket
         recovered.append(
             {
                 "kind": "native_protection_contract_recovered",
