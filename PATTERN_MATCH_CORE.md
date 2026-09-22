@@ -43,3 +43,18 @@ an order coordinator: they neither submit orders nor run while a browser is
 closed. The backend must own authorization, durable orders/fills, retries and
 the exit worker. The original positioning research remains a fixed 24-hour
 markout; adding protective exits does not inherit its reported performance.
+
+`pattern_match_positioning_venue` provides the hosted execution reads: live
+two-leg capacity, bounded prices and inventory attribution from confirmed fills.
+It requires the account and builder approval to be set up already; it never
+changes account mode, leverage or signing policy. Manual reductions consume
+tracked inventory; a later manual addition does not recreate it. Missing funding
+disables return-based triggers without preventing position/time-based cleanup.
+
+The Hyperliquid adapter's `prepared_orders` signs and sends one persisted IOC
+batch, with a signed expiry, fixed builder attribution and no hidden retries.
+An unknown response stays unresolved until order status and complete fill
+history agree. This is not an atomic two-leg order. The host must persist IDs
+before sending, unwind incomplete entries, enforce authorization on each sign,
+and monitor the basket independently of the browser. These primitives do not
+enable a deployed trade endpoint or schedule by themselves.
