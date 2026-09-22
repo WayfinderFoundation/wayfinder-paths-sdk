@@ -440,6 +440,12 @@ reduce-only from the next tick (never gated — it is the safety action);
 explicit user requests; `core_jobs(action="resume_from_halt", job_id=...)`
 clears it (a live job must re-pass the live gate to resume).
 
+Probation verbs: `probation_stage` puts a validated variant on paper probation
+beside the incumbent, `probation_cancel` closes a trial, and
+`probation_promote_early` graduates an active forward trial ahead of its day-7
+checkpoint — a promotion is still a `prop-probation-<trial>` proposal the owner
+approves, never an apply.
+
 ```text
 core_jobs(action="create", job_id="basis-update", name="Basis Update", script="basis_update.py", interval_seconds=600, agent_mode="off")
 # create returns script_entrypoint (.wayfinder/jobs/<id>/workspace/src/<file>.py) — write the strategy module THERE
@@ -451,6 +457,9 @@ core_jobs(action="propose", job_id="<job_id>", kind="params_update", summary="..
 core_jobs(action="approve_proposal", job_id="<job_id>", proposal_id="<proposal_id>")
 core_jobs(action="apply_proposal", job_id="<job_id>", proposal_id="<proposal_id>")
 core_jobs(action="validate_application", job_id="<job_id>", proposal_id="<proposal_id>")
+core_jobs(action="probation_stage", job_id="<job_id>", candidate_dir=".wayfinder/jobs/<job_id>/research/candidates/<name>", revision="<compute_workspace_revision>", family="<strategy family>", summary="<one line>")
+core_jobs(action="probation_cancel", job_id="<job_id>", trial_id="<trial_id>", reason="<why>")
+core_jobs(action="probation_promote_early", job_id="<job_id>", trial_id="<trial_id>", reason="<why>")  # lands as a proposal the owner approves
 core_jobs(action="halt", job_id="<job_id>", reason="<why>")
 core_jobs(action="resume_from_halt", job_id="<job_id>")
 core_jobs(action="remove", job_id="<job_id>")  # deletes the loops, archives the job to .wayfinder/jobs_archived/; refused while live or funded (go paper + withdraw first); undo: CLI `wayfinder job restore <job_id>`

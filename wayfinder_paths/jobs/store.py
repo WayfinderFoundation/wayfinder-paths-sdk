@@ -669,7 +669,12 @@ class JobStore:
             )
 
     def approve_proposal(
-        self, job_id: str, proposal_id: str, *, allow_ungated: bool = False
+        self,
+        job_id: str,
+        proposal_id: str,
+        *,
+        allow_ungated: bool = False,
+        by: str = "owner",
     ) -> dict[str, Any]:
         proposal = self.load_proposal(job_id, proposal_id)
         _validate_applicable_proposal(
@@ -688,6 +693,7 @@ class JobStore:
             return proposal
         proposal["status"] = "approved"
         proposal["approval"]["status"] = "approved"
+        proposal["approval"]["by"] = by
         self._set_application_status(proposal, "queued")
         application.setdefault("requested_at", utc_now_iso())
         proposal["updated_at"] = utc_now_iso()
@@ -698,6 +704,7 @@ class JobStore:
                 "type": "proposal_apply_queued",
                 "proposal_id": proposal_id,
                 "application_status": "queued",
+                "by": by,
             },
         )
         self.refresh_scorecard(job_id)

@@ -354,3 +354,114 @@ def test_promote_early_graduates_into_owner_approved_proposal(
         promote_probation_trial_early(
             store, job_id, trial["trial_id"], by="owner", reason="again"
         )
+
+
+def test_approve_proposal_records_who_approved(tmp_path: Path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "approval-demo",
+        script=".wayfinder_runs/demo.py",
+        interval_seconds=60,
+        agent_mode="intervene",
+    )
+    store.save(job)
+    proposals = store.job_dir(job.id) / "proposals"
+    proposals.mkdir(parents=True, exist_ok=True)
+    for pid in ("prop-agent", "prop-owner"):
+        (proposals / f"{pid}.json").write_text(
+            json.dumps(
+                {
+                    "proposal_id": pid,
+                    "job_id": job.id,
+                    "status": "pending",
+                    "proposed_change": {"summary": "Tighten the entry guard."},
+                    "intent_contract": {
+                        "goal": "tighten",
+                        "invariants": [],
+                        "non_goals": [],
+                        "risks": [],
+                        "validation": [],
+                    },
+                    "scenario_plan": {"scenarios": [{"name": "baseline"}]},
+                    "approval": {"required": True, "status": "pending"},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    agent = store.approve_proposal(job.id, "prop-agent", by="agent")
+    owner = store.approve_proposal(job.id, "prop-owner")
+
+    assert agent["approval"]["by"] == "agent"
+    assert owner["approval"]["by"] == "owner"
+    assert store.load_proposal(job.id, "prop-agent")["approval"]["by"] == "agent"
+    rows = [r for r in _journal(store, job.id) if r["type"] == "proposal_apply_queued"]
+    assert {r["proposal_id"]: r["by"] for r in rows} == {
+        "prop-agent": "agent",
+        "prop-owner": "owner",
+    }
+
+
+def test_cli_probation_group_stages_cancels_and_refuses(
+    tmp_path: Path, green_validation: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from click.testing import CliRunner
+
+    from wayfinder_paths.jobs import cli as cli_module
+
+    store, job_id = _job(tmp_path)
+    candidate, revision = _candidate(store, job_id, "cli")
+    monkeypatch.setattr(cli_module, "JobStore", lambda: store)
+    monkeypatch.setattr(cli_module, "sync_all_jobs", lambda **kwargs: None)
+    runner = CliRunner()
+
+    staged = runner.invoke(
+        cli_module.job_cli,
+        [
+            "probation",
+            "stage",
+            job_id,
+            "--candidate-dir",
+            str(candidate),
+            "--revision",
+            revision,
+            "--family",
+            "cli-family",
+            "--summary",
+            "staged from the CLI",
+        ],
+    )
+    assert staged.exit_code == 0, staged.output
+    trial = json.loads(staged.output)["result"]
+    assert trial["status"] == "burn_in"
+    assert trial["source"] == "cli"
+    assert trial["evidence"] == {"source": "cli", "by": "owner"}
+
+    refused = runner.invoke(
+        cli_module.job_cli,
+        ["probation", "promote-early", job_id, trial["trial_id"], "--reason", "now"],
+    )
+    assert refused.exit_code != 0
+    assert "only an active forward trial" in refused.output
+
+    cancelled = runner.invoke(
+        cli_module.job_cli,
+        [
+            "probation",
+            "cancel",
+            job_id,
+            trial["trial_id"],
+            "--reason",
+            "not needed",
+            "--by",
+            "adrian",
+        ],
+    )
+    assert cancelled.exit_code == 0, cancelled.output
+    payload = json.loads(cancelled.output)["result"]
+    assert payload["trial"]["status"] == "cancelled"
+    assert payload["trial"]["cancelled_by"] == "adrian"
+    row = next(
+        r for r in _journal(store, job_id) if r["type"] == "probation_trial_cancelled"
+    )
+    assert row["source"] == "cli"

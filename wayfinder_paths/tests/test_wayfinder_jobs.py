@@ -2038,3 +2038,160 @@ def test_invalid_ideation_artifact_stays_due_and_is_quoted_back(tmp_path: Path) 
     )["dynamic_context"]
     assert "IDEATION SESSION — this wake is a research EXPEDITION" in prompt
     assert "REJECTED mechanically: sources_consulted has 1 complete entries" in prompt
+
+
+def _probation_job(tmp_path: Path) -> tuple[JobStore, str, Path, str]:
+    from wayfinder_paths.jobs.gating import compute_workspace_revision
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "majors-5m-lab",
+        script="workspace/src/strategy.py",
+        agent_mode="intervene",
+        execution_contract="jobs_v1",
+    )
+    job.execution_params = {"symbols": ["BTC", "HYPE"], "venue": "hyperliquid"}
+    store.save(job)
+    root = store.job_dir(job.id)
+    script = root / "workspace/src/strategy.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("def decide(ctx):\n    return []\n", encoding="utf-8")
+    candidate = root / "research/candidates/mcp"
+    (candidate / "workspace/src").mkdir(parents=True)
+    (candidate / "workspace/src/strategy.py").write_text(
+        "# mcp\ndef decide(ctx):\n    return []\n", encoding="utf-8"
+    )
+    (candidate / "job.yaml").write_bytes((root / "job.yaml").read_bytes())
+    return store, job.id, candidate, compute_workspace_revision(candidate)
+
+
+def test_mcp_probation_verbs_dispatch_as_the_agent(tmp_path: Path, monkeypatch) -> None:
+    """probation_stage/cancel/promote_early ride core_jobs with by="agent";
+    a refused verb surfaces as probation_blocked, never an exception."""
+    import asyncio
+
+    from wayfinder_paths.mcp.tools import jobs as jobs_tools
+
+    store, job_id, candidate, revision = _probation_job(tmp_path)
+    monkeypatch.setattr(jobs_tools, "JobStore", lambda: store)
+    synced: list[bool] = []
+    monkeypatch.setattr(
+        jobs_tools, "sync_all_jobs", lambda store=None: synced.append(True)
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.probation.validate_execution_job",
+        lambda *args, **kwargs: {"status": "passed", "checks": []},
+    )
+
+    missing = asyncio.run(jobs_tools.core_jobs(action="probation_stage", job_id=job_id))
+    assert missing["ok"] is False
+    assert missing["error"]["code"] == "invalid_request"
+
+    staged = asyncio.run(
+        jobs_tools.core_jobs(
+            action="probation_stage",
+            job_id=job_id,
+            candidate_dir=str(candidate),
+            revision=revision,
+            family="breakout",
+            summary="agent-staged variant",
+        )
+    )
+    assert staged["ok"], staged
+    trial = staged["result"]
+    assert trial["status"] == "burn_in"
+    assert trial["source"] == "chat"
+    assert trial["evidence"] == {"source": "chat", "by": "agent"}
+    assert synced == [True]
+
+    duplicate = asyncio.run(
+        jobs_tools.core_jobs(
+            action="probation_stage",
+            job_id=job_id,
+            candidate_dir=str(candidate),
+            revision=revision,
+            family="breakout",
+        )
+    )
+    assert duplicate["ok"] is False
+    assert duplicate["error"]["code"] == "probation_blocked"
+    assert trial["trial_id"] in duplicate["error"]["message"]
+
+    refused = asyncio.run(
+        jobs_tools.core_jobs(
+            action="probation_promote_early",
+            job_id=job_id,
+            trial_id=trial["trial_id"],
+            reason="ship it",
+        )
+    )
+    assert refused["ok"] is False
+    assert refused["error"]["code"] == "probation_blocked"
+    assert "only an active forward trial" in refused["error"]["message"]
+
+    cancelled = asyncio.run(
+        jobs_tools.core_jobs(
+            action="probation_cancel",
+            job_id=job_id,
+            trial_id=trial["trial_id"],
+            reason="owner asked in chat",
+        )
+    )
+    assert cancelled["ok"], cancelled
+    assert cancelled["result"]["trial"]["status"] == "cancelled"
+    assert cancelled["result"]["trial"]["cancelled_by"] == "agent"
+    assert synced == [True, True]
+    journal = (store.job_dir(job_id) / "journal.jsonl").read_text(encoding="utf-8")
+    assert '"type": "probation_trial_cancelled"' in journal
+    assert '"by": "agent"' in journal
+
+
+def test_mcp_approve_proposal_records_agent_as_approver(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import asyncio
+
+    from wayfinder_paths.mcp.tools import jobs as jobs_tools
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "proposal-by-agent",
+        script=".wayfinder_runs/demo.py",
+        interval_seconds=60,
+        agent_mode="intervene",
+        execution_contract="jobs_v1",
+    )
+    store.save(job)
+    proposal_path = store.job_dir(job.id) / "proposals" / "prop_001.json"
+    proposal_path.parent.mkdir(parents=True, exist_ok=True)
+    proposal_path.write_text(
+        json.dumps(
+            {
+                "proposal_id": "prop_001",
+                "job_id": job.id,
+                "status": "pending",
+                "proposed_change": {"summary": "Tighten the entry guard."},
+                "intent_contract": _intent_contract(),
+                "scenario_plan": _scenario_plan(),
+                "approval": {"required": True, "status": "pending"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(jobs_tools, "JobStore", lambda: store)
+    monkeypatch.setattr(jobs_tools, "sync_all_jobs", lambda store=None: None)
+    monkeypatch.setattr(jobs_tools, "ensure_jobs_v1_contract", lambda *a, **k: None)
+    monkeypatch.setattr(
+        jobs_tools, "launch_application", lambda *a, **k: {"wakeup": None}
+    )
+    monkeypatch.setattr(JobStore, "_ensure_candidate_report_gate", lambda *a, **k: None)
+
+    result = asyncio.run(
+        jobs_tools.core_jobs(
+            action="approve_proposal", job_id=job.id, proposal_id="prop_001"
+        )
+    )
+
+    assert result["ok"], result
+    assert result["result"]["proposal"]["approval"]["by"] == "agent"
+    assert store.load_proposal(job.id, "prop_001")["approval"]["by"] == "agent"

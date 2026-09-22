@@ -45,6 +45,11 @@ from wayfinder_paths.jobs.models import (
     utc_now_iso,
 )
 from wayfinder_paths.jobs.paths_runtime import create_from_path
+from wayfinder_paths.jobs.probation import (
+    cancel_probation_trial,
+    promote_probation_trial_early,
+    stage_probation_trial,
+)
 from wayfinder_paths.jobs.proposals import propose_change
 from wayfinder_paths.jobs.readout import (
     build_readout,
@@ -120,6 +125,9 @@ JobAction = Literal[
     "evolution_submit_seed",
     "evolution_evaluate",
     "evolution_finalize",
+    "probation_stage",
+    "probation_cancel",
+    "probation_promote_early",
     "risk_block_symbol",
     "forward_experience",
     "promote_params",
@@ -396,6 +404,8 @@ async def core_jobs(
     execution_params: dict[str, Any] | None = None,
     candidate_dir: str | None = None,
     candidate_id: str | None = None,
+    trial_id: str | None = None,
+    revision: str | None = None,
     family: str | None = None,
     hypothesis: str | None = None,
     campaign_design: dict[str, Any] | None = None,
@@ -536,6 +546,13 @@ async def core_jobs(
         open regime-health case; it never closes the case or changes trading.
       - `review_now` to queue an immediate worker wakeup.
       - `approve_proposal` / `reject_proposal` after the worker creates proposals.
+      - `probation_stage` (`candidate_dir` + `revision` + `family`, optional
+        `summary`) puts a validated variant on paper probation beside the
+        incumbent; `probation_cancel` (`trial_id` + `reason`) closes a trial
+        and lets a queued one take its slot; `probation_promote_early`
+        (`trial_id` + `reason`) graduates an active forward trial ahead of its
+        day-7 checkpoint — it still lands as a `prop-probation-<trial>`
+        proposal the owner approves, never an apply.
       - `claim_application` / `validate_application` / `complete_application`
         from an apply worker.
       - Strategy-development loop for execution-spec jobs: `signal_scan`
@@ -1483,7 +1500,7 @@ async def core_jobs(
             except ValueError as exc:
                 return err("legacy_contract", str(exc))
             proposal = (
-                store.approve_proposal(job_id, proposal_id)
+                store.approve_proposal(job_id, proposal_id, by="agent")
                 if action == "approve_proposal"
                 else store.queue_proposal_application(job_id, proposal_id)
             )
@@ -1538,6 +1555,42 @@ async def core_jobs(
                     error=error,
                 )
             )
+
+    if action == "probation_stage":
+        if not candidate_dir or not revision or not family:
+            return err(
+                "invalid_request",
+                "probation_stage requires candidate_dir, revision and family",
+            )
+        try:
+            trial = stage_probation_trial(
+                store,
+                job_id,
+                candidate_dir=Path(candidate_dir),
+                revision=revision,
+                family=family,
+                summary=summary,
+                by="agent",
+            )
+        except ValueError as exc:
+            return err("probation_blocked", str(exc))
+        sync_all_jobs(store=store)
+        return ok(trial)
+
+    if action in {"probation_cancel", "probation_promote_early"}:
+        if not trial_id or not reason:
+            return err("invalid_request", f"{action} requires trial_id and reason")
+        verb = (
+            cancel_probation_trial
+            if action == "probation_cancel"
+            else promote_probation_trial_early
+        )
+        try:
+            payload = verb(store, job_id, trial_id, by="agent", reason=reason)
+        except ValueError as exc:
+            return err("probation_blocked", str(exc))
+        sync_all_jobs(store=store)
+        return ok(payload)
 
     if action == "remove":
         if not job_id:
