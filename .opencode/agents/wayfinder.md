@@ -453,6 +453,7 @@ core_jobs(action="apply_proposal", job_id="<job_id>", proposal_id="<proposal_id>
 core_jobs(action="validate_application", job_id="<job_id>", proposal_id="<proposal_id>")
 core_jobs(action="halt", job_id="<job_id>", reason="<why>")
 core_jobs(action="resume_from_halt", job_id="<job_id>")
+core_jobs(action="remove", job_id="<job_id>")  # deletes the loops, archives the job to .wayfinder/jobs_archived/; refused while live or funded (go paper + withdraw first); undo: CLI `wayfinder job restore <job_id>`
 ```
 
 Use `core_runner` as the lower-level/backward-compatible daemon interface for existing

@@ -4,6 +4,7 @@ stake, and put it all back on restore."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -344,6 +345,39 @@ def test_cli_remove_refuses_then_forces(tmp_path: Path, monkeypatch) -> None:
     assert payload["ok"] is True
     assert payload["result"]["forced"] is True
     assert not store.job_yaml_path(job.id).exists()
+
+
+def test_mcp_remove_is_blocked_or_archives_as_agent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from wayfinder_paths.mcp.tools import jobs as jobs_tools
+
+    store, job = _job(tmp_path)
+    job.script_loop.mode = "live"
+    store.save(job)
+    monkeypatch.setattr(jobs_tools, "JobStore", lambda: store)
+    _fake_bridge(monkeypatch)
+    _patch_sync(monkeypatch)
+
+    missing = asyncio.run(jobs_tools.core_jobs(action="remove"))
+    assert missing["ok"] is False
+    assert missing["error"]["code"] == "invalid_request"
+
+    blocked = asyncio.run(jobs_tools.core_jobs(action="remove", job_id=job.id))
+    assert blocked["ok"] is False
+    assert blocked["error"]["code"] == "remove_blocked"
+    assert blocked["error"]["message"].startswith("cannot remove:")
+    assert store.job_yaml_path(job.id).exists()
+
+    job.script_loop.mode = "paper"
+    store.save(job)
+    removed = asyncio.run(jobs_tools.core_jobs(action="remove", job_id=job.id))
+    assert removed["ok"] is True, removed
+    assert removed["result"]["removed"] is True
+    archive = _archives(tmp_path)[0]
+    manifest = json.loads((archive / ARCHIVE_MANIFEST).read_text(encoding="utf-8"))
+    assert manifest["by"] == "agent"
+    assert manifest["forced"] is False
 
 
 def test_restore_round_trip(tmp_path: Path, monkeypatch) -> None:

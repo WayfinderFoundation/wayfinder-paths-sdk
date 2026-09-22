@@ -372,7 +372,10 @@ If you find clear, active danger (runaway losses, corrupted state, a venue
 misbehaving), you may halt the job immediately: `core_jobs(action="halt",
 job_id=..., reason="...")` — this forces reduce-only from the next tick and is
 reversible with `resume_from_halt`. NEVER pass `flatten` — market-closing
-positions is a user decision. Report the halt and why.
+positions is a user decision. Report the halt and why. NEVER call
+`core_jobs(action="remove", ...)` on your own: retiring a job (loops deleted,
+directory archived) is the owner's decision — recommend it with the ledger's
+numbers and leave it to them.
 Pending proposals can remain pending indefinitely and must not pause or change
 the job. User approval queues application intent only; it does not mean the
 change is already applied. When the prompt names an `apply_proposal_id`, inspect
