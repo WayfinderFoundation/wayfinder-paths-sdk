@@ -8,6 +8,8 @@ this exists to fix).
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -343,6 +345,129 @@ def test_price_fetch_failure_degrades_with_note(tmp_path: Path) -> None:
     kinds = {s["kind"] for s in result["visualization"]["series"]}
     assert kinds == {"equity_curve"}
     assert len(result["visualization"]["markers"]) == 4
+
+
+class _RecordingFeed:
+    """A venue feed serving hourly bars whose values are a function of the bar
+    open, so any two fetches agree on overlapping bars; records every call."""
+
+    step_ms = 3_600_000
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def get_completed_bars(
+        self, symbols: list[str], interval: str, *, lookback_bars: int, as_of: Any
+    ) -> Any:
+        from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
+
+        self.calls.append({"lookback_bars": lookback_bars, "as_of": as_of})
+        step = self.step_ms
+        last_open = ((int(as_of.timestamp() * 1000) - step) // step) * step
+        rows: list[Mapping[str, Any]] = []
+        for symbol in symbols:
+            for index in range(lookback_bars):
+                open_ms = last_open - (lookback_bars - 1 - index) * step
+                level = float((open_ms // step) % 1000)
+                rows.append(
+                    {
+                        "timestamp": datetime.fromtimestamp(
+                            (open_ms + step) / 1000, tz=UTC
+                        ).isoformat(),
+                        "symbol": symbol,
+                        "open": level,
+                        "high": level + 1.0,
+                        "low": level - 1.0,
+                        "close": level + 0.5,
+                        "volume": level * 10.0,
+                    }
+                )
+        return CompletedBarsView.from_rows(rows)
+
+
+def test_price_bars_cached_on_disk_with_delta_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The venue is asked once per closed bar, not once per poll: a build
+    inside the bar the cache ends on fetches nothing, the next bar fetches
+    only the delta plus warmup, and a corrupt cache costs one full refetch.
+    The emitted series is the one the uncached frame path produced."""
+    import asyncio
+    from types import SimpleNamespace
+
+    import wayfinder_paths.jobs.execution.venues as venues_module
+    from wayfinder_paths.jobs import forward_artifacts
+
+    store = _seed_job(tmp_path)
+    (store.job_dir("carry") / "execution_spec.json").write_text(
+        json.dumps({"data_contract": {"bar_interval": "1h", "symbols": ["IMX"]}}),
+        encoding="utf-8",
+    )
+    feed = _RecordingFeed()
+    monkeypatch.setattr(
+        venues_module, "build_adapter", lambda *a, **k: SimpleNamespace(feed=feed)
+    )
+    clock = datetime(2026, 7, 20, 12, 34, 56, tzinfo=UTC)
+    monkeypatch.setattr(forward_artifacts, "_utc_now", lambda: clock)
+    cache_path = store.job_dir("carry") / "results" / "forward" / "price_cache.json"
+
+    def _price_series() -> dict[str, Any]:
+        result = load_forward_view("carry", store=store, include_prices=True)
+        assert "price_note" not in result["summary"]
+        return next(
+            s for s in result["visualization"]["series"] if s["kind"] == "market_price"
+        )
+
+    # First tick 2026-07-14T00:00 -> 157 bars of window + 24 warmup.
+    first = _price_series()
+    assert [call["lookback_bars"] for call in feed.calls] == [181]
+    assert first["venue"] == "hyperliquid"
+    assert len(first["points"]) == 181
+    assert first["points"][-1]["timestamp"] == "2026-07-20T12:00:00+00:00"
+    frame = asyncio.run(
+        _RecordingFeed().get_completed_bars(
+            ["IMX"], "1h", lookback_bars=181, as_of=clock
+        )
+    ).to_frame()
+    assert first["points"] == [
+        {
+            "timestamp": row.timestamp.isoformat(),
+            "value": float(row.close),
+            "open": float(row.open),
+            "high": float(row.high),
+            "low": float(row.low),
+            "close": float(row.close),
+            "volume": float(row.volume),
+        }
+        for row in frame.itertuples()
+    ]
+    cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert (
+        cache["interval"] == "1h" and cache["symbols"]["IMX"]["venue"] == "hyperliquid"
+    )
+    assert len(cache["symbols"]["IMX"]["bars"]) == 181
+    assert cache["symbols"]["IMX"]["bars"][-1][0] == int(
+        datetime(2026, 7, 20, 11, tzinfo=UTC).timestamp() * 1000
+    )
+
+    # Same bar: served from disk, no venue call, identical payload.
+    assert _price_series() == first
+    assert len(feed.calls) == 1
+
+    # One bar later: only the missing bar plus warmup, merged in once.
+    monkeypatch.setattr(
+        forward_artifacts, "_utc_now", lambda: clock + timedelta(hours=1)
+    )
+    third = _price_series()
+    assert [call["lookback_bars"] for call in feed.calls] == [181, 25]
+    assert len(third["points"]) == 182
+    assert third["points"][:-1] == first["points"]
+    assert third["points"][-1]["timestamp"] == "2026-07-20T13:00:00+00:00"
+
+    # Corrupt cache: treated as absent, full window refetched, same payload.
+    cache_path.write_text("{not json", encoding="utf-8")
+    assert _price_series() == third
+    assert [call["lookback_bars"] for call in feed.calls] == [181, 25, 182]
 
 
 def test_view_filter_selects_kinds(tmp_path: Path) -> None:

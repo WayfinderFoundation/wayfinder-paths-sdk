@@ -5,9 +5,11 @@ import json
 import math
 import os
 from collections.abc import Callable, Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from loguru import logger
 
 from wayfinder_paths.jobs.backtest_artifacts import (
     VIEW_KINDS,
@@ -28,11 +30,20 @@ from wayfinder_paths.jobs.models import (
     DEFAULT_FORWARD_TRADES,
 )
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.runner.monitor_state import atomic_write_text
 
 # Chart context beyond the first forward tick, and a hard fetch cap — the
 # forward window grows unboundedly, the chart payload must not.
 _WARMUP_BARS = 24
 _MAX_PRICE_BARS = 2000
+# Price bars persisted between builds, {open_ms: [open, high, low, close,
+# volume]} per symbol; the chart is polled far more often than a bar closes.
+_PRICE_CACHE_NAME = "price_cache.json"
+_Bars = dict[int, list[float | None]]
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 def forward_pnl_breakdown(forward_dir: Path) -> dict[str, Any]:
@@ -771,11 +782,15 @@ def _fetch_spec_price_series(
 ) -> list[dict[str, Any]]:
     """OHLC market_price series covering the forward window, fetched through
     the same venue feed the live driver uses (imported lazily — the execution
-    stack pulls pandas et al., which a markers-only caller never needs)."""
+    stack pulls pandas et al., which a markers-only caller never needs).
+
+    Bars persist in price_cache.json between builds: a build inside the bar
+    the cache already ends on makes no venue call, a later one fetches only
+    the missing bars plus the warmup, and the cache is replaced wholesale
+    when it is unreadable or its interval or symbol set no longer match."""
     import pandas as pd
 
     from wayfinder_paths.jobs.execution.primitives import (
-        CompletedBarsView,
         ExecutionSpec,
         bar_interval_seconds,
     )
@@ -800,7 +815,7 @@ def _fetch_spec_price_series(
     if not symbols:
         raise RuntimeError("no symbols configured")
 
-    now = pd.Timestamp.now(tz="UTC")
+    now = pd.Timestamp(_utc_now())
     first_ts = _parse_ts(
         str(ticks[0].get("bar_ts") or ticks[0].get("ts")) if ticks else None
     )
@@ -812,41 +827,84 @@ def _fetch_spec_price_series(
         window_bars = _MAX_PRICE_BARS
     lookback_bars = min(max(window_bars + _WARMUP_BARS, _WARMUP_BARS), _MAX_PRICE_BARS)
 
-    venue_by_symbol: dict[str, str] = {}
+    interval_ms = interval_seconds * 1000
+    # Open of the latest bar that has already closed: the last bar any feed
+    # can serve right now, so a cache ending there is complete.
+    latest_open_ms = (
+        (now.value // 1_000_000 - interval_ms) // interval_ms
+    ) * interval_ms
+    cache_path = root / "results" / "forward" / _PRICE_CACHE_NAME
+    bars_by_symbol, venue_by_symbol = _read_price_cache(
+        cache_path, interval=str(bar_interval), symbols=symbols
+    )
+    cached_open_ms = min(
+        (max(bars) for bars in bars_by_symbol.values() if bars), default=None
+    )
+    if cached_open_ms != latest_open_ms:
+        if cached_open_ms is None:
+            fetch_bars = lookback_bars
+        else:
+            missing_bars = max(0, (latest_open_ms - cached_open_ms) // interval_ms)
+            fetch_bars = min(missing_bars + _WARMUP_BARS, _MAX_PRICE_BARS)
 
-    async def _fetch() -> CompletedBarsView:
-        rows: list[Mapping[str, Any]] = []
-        # mode="paper" builds the read-only market-data side; no signing/keys.
-        for venue in spec.venues or ["hyperliquid"]:
-            adapter = build_adapter(venue, mode="paper", spec=spec, params=params)
-            view = await adapter.feed.get_completed_bars(
-                symbols, str(bar_interval), lookback_bars=lookback_bars, as_of=now
-            )
-            venue_rows = view.to_rows()
-            for row in venue_rows:
-                venue_by_symbol.setdefault(str(row["symbol"]), str(venue))
-            rows.extend(venue_rows)
-        if not rows:
-            raise RuntimeError("no completed bars returned by any venue feed")
-        return CompletedBarsView.from_rows(rows)
+        async def _fetch() -> list[Mapping[str, Any]]:
+            rows: list[Mapping[str, Any]] = []
+            # mode="paper" builds the read-only market-data side; no signing/keys.
+            for venue in spec.venues or ["hyperliquid"]:
+                adapter = build_adapter(venue, mode="paper", spec=spec, params=params)
+                view = await adapter.feed.get_completed_bars(
+                    symbols, str(bar_interval), lookback_bars=fetch_bars, as_of=now
+                )
+                venue_rows = view.to_rows()
+                for row in venue_rows:
+                    venue_by_symbol.setdefault(str(row["symbol"]), str(venue))
+                rows.extend(venue_rows)
+            return rows
 
-    frame = asyncio.run(_fetch()).to_frame()
+        # Feed rows are close-labelled; the cache keys on the bar open. A
+        # freshly fetched bar replaces the cached one at the same open.
+        for row in asyncio.run(_fetch()):
+            bars = bars_by_symbol.get(str(row["symbol"]))
+            if bars is None:
+                continue
+            close_ms = int(pd.Timestamp(row["timestamp"]).value // 1_000_000)
+            volume = row.get("volume")
+            bars[close_ms - interval_ms] = [
+                float(row["open"]),
+                float(row["high"]),
+                float(row["low"]),
+                float(row["close"]),
+                None if volume is None or pd.isna(volume) else float(volume),
+            ]
+        for bars in bars_by_symbol.values():
+            for stale_open_ms in sorted(bars)[:-_MAX_PRICE_BARS]:
+                del bars[stale_open_ms]
+        _write_price_cache(
+            cache_path,
+            interval=str(bar_interval),
+            bars_by_symbol=bars_by_symbol,
+            venue_by_symbol=venue_by_symbol,
+        )
+    if not any(bars_by_symbol.values()):
+        raise RuntimeError("no completed bars returned by any venue feed")
+
     series = []
     for symbol in symbols:
-        symbol_frame = frame[frame["symbol"] == symbol]
         points = [
             {
-                "timestamp": row.timestamp.isoformat(),
-                "value": float(row.close),
-                "open": float(row.open),
-                "high": float(row.high),
-                "low": float(row.low),
-                "close": float(row.close),
-                "volume": float(row.volume)
-                if "volume" in symbol_frame.columns and pd.notna(row.volume)
-                else None,
+                "timestamp": pd.Timestamp(
+                    open_ms + interval_ms, unit="ms", tz="UTC"
+                ).isoformat(),
+                "value": close,
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
             }
-            for row in symbol_frame.itertuples()
+            for open_ms, (open_, high, low, close, volume) in sorted(
+                bars_by_symbol[symbol].items()
+            )
         ]
         series.append(
             {
@@ -860,6 +918,61 @@ def _fetch_spec_price_series(
             }
         )
     return series
+
+
+def _read_price_cache(
+    path: Path, *, interval: str, symbols: list[str]
+) -> tuple[dict[str, _Bars], dict[str, str]]:
+    """Cached bars per symbol and the venue that produced them, when the file
+    matches this interval and symbol set. Anything unreadable or mismatched
+    is a miss — one full refetch, never a failed chart."""
+    empty: tuple[dict[str, _Bars], dict[str, str]] = (
+        {symbol: {} for symbol in symbols},
+        {},
+    )
+    if not path.exists():
+        return empty
+    try:
+        cache = json.loads(path.read_text(encoding="utf-8"))
+        if cache["interval"] != interval or set(cache["symbols"]) != set(symbols):
+            return empty
+        bars_by_symbol = {
+            str(symbol): {
+                int(open_ms): [open_, high, low, close, volume]
+                for open_ms, open_, high, low, close, volume in entry["bars"]
+            }
+            for symbol, entry in cache["symbols"].items()
+        }
+        venue_by_symbol = {
+            str(symbol): str(entry["venue"])
+            for symbol, entry in cache["symbols"].items()
+            if entry["venue"]
+        }
+    except Exception as exc:  # noqa: BLE001 — a corrupt cache costs one refetch
+        logger.debug("forward price cache unreadable, refetching: {} ({})", path, exc)
+        return empty
+    return bars_by_symbol, venue_by_symbol
+
+
+def _write_price_cache(
+    path: Path,
+    *,
+    interval: str,
+    bars_by_symbol: dict[str, _Bars],
+    venue_by_symbol: dict[str, str],
+) -> None:
+    payload = {
+        "interval": interval,
+        "symbols": {
+            symbol: {
+                "venue": venue_by_symbol.get(symbol),
+                "bars": [[open_ms, *bars[open_ms]] for open_ms in sorted(bars)],
+            }
+            for symbol, bars in bars_by_symbol.items()
+        },
+    }
+    # Compact on purpose: an indented dump of 2000 bars x 4 symbols is 60k lines.
+    atomic_write_text(path, json.dumps(payload, separators=(",", ":")))
 
 
 def _read_json(path: Path) -> Any:
