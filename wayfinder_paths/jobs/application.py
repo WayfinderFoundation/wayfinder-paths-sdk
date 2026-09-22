@@ -894,6 +894,7 @@ def _promote_candidate(store: JobStore, job_id: str, candidate_dir: Path) -> Non
     for relative in (
         Path("results") / "backtest" / "latest.json",
         Path("results") / "backtest" / "visualization.json",
+        Path("results") / "backtest" / "latest.meta.json",
         Path("results") / "backtest" / "trade_forensics.json",
         Path("reports") / "preflight" / "latest.json",
         Path("reports") / "validation" / "latest.json",

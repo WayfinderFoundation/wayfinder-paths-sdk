@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import math
-from collections import Counter
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
+from wayfinder_paths.jobs.execution.simulator import backtest_meta
 from wayfinder_paths.jobs.store import JobStore
 
 DERIVED_SERIES_KINDS = {
@@ -37,6 +39,24 @@ VIEW_KINDS = {
 }
 
 
+def _fresh_backtest_meta(backtest_dir: Path) -> dict[str, Any] | None:
+    """The `latest.meta.json` sidecar when it is at least as new as the
+    latest.json it describes (the writer emits it last; an interrupted write
+    or a hand-copied latest.json leaves it stale, and stale means re-derive
+    from the graphs)."""
+    meta_path = backtest_dir / "latest.meta.json"
+    latest_path = backtest_dir / "latest.json"
+    if not meta_path.exists() or not latest_path.exists():
+        return None
+    if meta_path.stat().st_mtime_ns < latest_path.stat().st_mtime_ns:
+        return None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
 def summarize_backtest_artifacts(
     job_id: str, *, store: JobStore | None = None, proposal_id: str | None = None
 ) -> dict[str, Any]:
@@ -46,36 +66,34 @@ def summarize_backtest_artifacts(
         if proposal_id
         else "results/backtest"
     )
-    visualization = store.read_json(job_id, f"{prefix}/visualization.json")
-    latest = store.read_json(job_id, f"{prefix}/latest.json", default={}) or {}
-    if not visualization:
-        return {"available": False}
+    meta = _fresh_backtest_meta(store.job_dir(job_id) / prefix)
+    if meta is None:
+        visualization = store.read_json(job_id, f"{prefix}/visualization.json")
+        latest = store.read_json(job_id, f"{prefix}/latest.json", default={}) or {}
+        if not visualization:
+            return {"available": False}
+        meta = backtest_meta(
+            run_id=latest["run_id"] if latest else None,
+            stats=latest["stats"] if latest else {},
+            validation=latest["validation"] if latest else {},
+            visualization=visualization,
+        )
 
     viz_path = store.job_dir(job_id) / "results" / "backtest" / "visualization.json"
-    marker_counts = Counter(marker["kind"] for marker in visualization["markers"])
     return {
         "available": True,
-        "run_id": latest["run_id"] if latest else None,
+        "run_id": meta["run_id"],
         "updated_at": (
             datetime.fromtimestamp(viz_path.stat().st_mtime).astimezone().isoformat()
             if viz_path.exists()
             else None
         ),
-        "stats": latest["stats"] if latest else {},
-        "symbols": visualization["symbols"],
-        "series": [
-            {
-                "name": series["name"],
-                "kind": series["kind"],
-                "symbol": series.get("symbol"),
-                "point_count": len(series["points"]),
-            }
-            for series in visualization["series"]
-        ],
-        "marker_counts": dict(marker_counts),
-        "marker_count": sum(marker_counts.values()),
-        "validation": visualization["validation"]
-        or (latest["validation"] if latest else {}),
+        "stats": meta["stats"],
+        "symbols": meta["symbols"],
+        "series": meta["series"],
+        "marker_counts": meta["marker_counts"],
+        "marker_count": sum(meta["marker_counts"].values()),
+        "validation": meta["validation"],
     }
 
 
