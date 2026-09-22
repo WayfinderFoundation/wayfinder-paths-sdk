@@ -169,10 +169,14 @@ def parse_feature_specs(spec: ExecutionSpec) -> list[FeatureSpec]:
     return specs
 
 
-# Single-entry parse cache keyed on (path, mtime_ns, size, names). The live
-# driver calls load_feature_rows every tick; without this each 5-minute tick
-# re-parsed the full store (95MB / 600k+ lines observed live) once per
-# declared feature. Any append invalidates via mtime/size.
+# Single-entry parse cache keyed on file identity (path, mtime_ns, size) plus
+# the names it was parsed for. The live driver calls load_feature_rows every
+# tick; without this each 5-minute tick re-parsed the full store (95MB /
+# 600k+ lines observed live) once per declared feature. Any append
+# invalidates via mtime/size. A request for a SUBSET of the cached names is a
+# hit: callers index `columns[name]`, so the superset dict is transparent —
+# the sync snapshot's per-feature revised_row_count calls reuse the one parse
+# summarize_features already paid for instead of re-reading the store K times.
 _FEATURE_FILE_CACHE: dict[str, Any] = {}
 
 
@@ -180,8 +184,11 @@ def _parse_feature_file(path: Path, names: set[str]) -> dict[str, dict[str, list
     """ONE streaming pass over the jsonl store collecting column lists for
     every requested name — the store is parsed once, not once per spec."""
     stat = path.stat()
-    key = (str(path), stat.st_mtime_ns, stat.st_size, tuple(sorted(names)))
-    if _FEATURE_FILE_CACHE.get("key") == key:
+    identity = (str(path), stat.st_mtime_ns, stat.st_size)
+    if (
+        _FEATURE_FILE_CACHE.get("identity") == identity
+        and names <= _FEATURE_FILE_CACHE["names"]
+    ):
         return _FEATURE_FILE_CACHE["columns"]
     columns: dict[str, dict[str, list]] = {
         name: {"timestamp": [], "value": [], "symbol": []} for name in names
@@ -203,7 +210,8 @@ def _parse_feature_file(path: Path, names: set[str]) -> dict[str, dict[str, list
             bucket["timestamp"].append(row.get("timestamp"))
             bucket["value"].append(row.get("value"))
             bucket["symbol"].append(row.get("symbol"))
-    _FEATURE_FILE_CACHE["key"] = key
+    _FEATURE_FILE_CACHE["identity"] = identity
+    _FEATURE_FILE_CACHE["names"] = set(names)
     _FEATURE_FILE_CACHE["columns"] = columns
     return columns
 
@@ -542,6 +550,14 @@ def feature_staleness(
     return guard_events, skip
 
 
+# The sync snapshot only needs the latest value per feature plus recent
+# cadence gaps; without a window a multi-month store (77MB observed live)
+# became per-feature DataFrames on every sync. _trim_to_window keeps the
+# as-of anchor row per series, so latest_value/latest_timestamp/age_seconds/
+# available are unchanged; gaps and row_count describe the trailing window.
+FEATURE_SUMMARY_LOOKBACK = pd.Timedelta(days=30)
+
+
 def summarize_features(
     root: Path, spec: ExecutionSpec, *, now: pd.Timestamp | None = None
 ) -> list[dict[str, Any]] | None:
@@ -553,7 +569,9 @@ def summarize_features(
     if not specs:
         return None
     now = now if now is not None else pd.Timestamp.now(tz="UTC")
-    frames = load_feature_rows([Path(root)], specs)
+    frames = load_feature_rows(
+        [Path(root)], specs, window=(now - FEATURE_SUMMARY_LOOKBACK, now)
+    )
     summary: list[dict[str, Any]] = []
     for item in specs:
         frame = frames.get(item.name)
