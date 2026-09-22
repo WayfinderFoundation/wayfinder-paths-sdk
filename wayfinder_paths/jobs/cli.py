@@ -90,6 +90,7 @@ from wayfinder_paths.jobs.proposals import (
 )
 from wayfinder_paths.jobs.readout import build_readout
 from wayfinder_paths.jobs.regime_health import regime_health_job
+from wayfinder_paths.jobs.remove import remove_job, restore_job
 from wayfinder_paths.jobs.replication import replication_job
 from wayfinder_paths.jobs.research import (
     holdout_check_job,
@@ -2869,7 +2870,53 @@ def resume_from_halt_cmd(job_id: str, cleared_by: str) -> None:
     _echo_json({"ok": True, "result": payload})
 
 
-@job_cli.command(name="delete", help="Delete runner links for a high-level job.")
+@job_cli.command(
+    name="remove",
+    help="Remove a job: delete its runner loops and move its directory (plus "
+    "runner logs, monitor state, wrappers, governance) to "
+    ".wayfinder/jobs_archived/<id>.<UTC stamp>/. Refuses while live, "
+    "venue-funded, holding positions or running a background op; --force "
+    "overrides the capital checks only. Undo: wayfinder job restore <id>.",
+)
+@click.argument("job_id")
+@click.option("--force", is_flag=True, default=False)
+def remove_cmd(job_id: str, force: bool) -> None:
+    store = JobStore()
+    try:
+        result = remove_job(store, job_id, force=force)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="restore",
+    help="Undo `wayfinder job remove`: move the archived job and its sidecars "
+    "back and re-register its runner loops paused.",
+)
+@click.argument("job_id")
+@click.option(
+    "--from",
+    "archive_dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Archive directory to restore from (default: the latest for this id).",
+)
+def restore_cmd(job_id: str, archive_dir: Path | None) -> None:
+    store = JobStore()
+    try:
+        result = restore_job(store, job_id, archive_dir=archive_dir)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="delete",
+    help="Delete runner links for a high-level job (the job directory stays). "
+    "To retire a job — loops plus directory, undoable — use `wayfinder job "
+    "remove`.",
+)
 @click.argument("job_id")
 def delete_cmd(job_id: str) -> None:
     store = JobStore()
