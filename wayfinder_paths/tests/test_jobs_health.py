@@ -176,6 +176,47 @@ def test_build_issues_flags_missing_and_stale_features(tmp_path: Path) -> None:
     assert "prop-1" in stalled["message"] and stalled["severity"] == "warn"
 
 
+def test_reverted_apply_is_a_warn_issue_for_a_week(tmp_path: Path) -> None:
+    store, job = _job(tmp_path)
+    fresh = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    stale = (datetime.now(UTC) - timedelta(days=8)).isoformat()
+    issues = health.build_issues(
+        store,
+        job.id,
+        job,
+        heartbeat=None,
+        scorecard=None,
+        features=None,
+        risk_flags=None,
+        launch_checklist=None,
+        proposals=[
+            {
+                "proposal_id": "prop-fresh",
+                "application": {
+                    "status": "failed",
+                    "reverted": {"ts": fresh, "reason": "backtest OOM blocked it"},
+                },
+            },
+            {
+                "proposal_id": "prop-stale",
+                "application": {
+                    "status": "canceled",
+                    "reverted": {"ts": stale, "reason": "old news"},
+                },
+            },
+            {"proposal_id": "prop-clean", "application": {"status": "applied"}},
+        ],
+    )
+    reverted = [i for i in issues if i["code"] == "apply_reverted"]
+    assert len(reverted) == 1
+    assert "prop-fresh" in reverted[0]["message"]
+    assert "OOM" in reverted[0]["message"]
+    assert reverted[0]["severity"] == "warn"
+    assert reverted[0]["ref"] == "owner_attention:apply_reverted"
+    assert reverted[0]["since"] == fresh
+    assert "apply_reverted" in health.ISSUE_CODES
+
+
 def test_snapshot_survives_a_broken_detector(tmp_path: Path, monkeypatch) -> None:
     store, job = _job(tmp_path)
     monkeypatch.setattr(sync_mod, "RunnerBridge", _FakeBridge({}))

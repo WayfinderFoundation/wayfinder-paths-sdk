@@ -263,6 +263,24 @@ def _journal_entries(
                         proposal_id=pid,
                     )
                 )
+        elif kind == "proposal_apply_reverted":
+            entries.append(
+                _entry(
+                    ts,
+                    "proposal",
+                    (
+                        f"Applied change reverted: {title}"
+                        if title
+                        else "Applied change reverted"
+                    ),
+                    f"{event.get('reason') or 'no reason recorded'} (was revision "
+                    f"{str(event.get('prior_applied_revision') or '')[:12]}); the "
+                    "job runs without this change",
+                    "info",
+                    actor="system",
+                    proposal_id=pid,
+                )
+            )
         elif kind == "owner_workspace_repair":
             entries.append(
                 _entry(

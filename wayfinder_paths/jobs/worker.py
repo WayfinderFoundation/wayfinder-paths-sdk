@@ -21,6 +21,7 @@ from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
 from wayfinder_paths.jobs.failures import disk_used_pct
 from wayfinder_paths.jobs.forward import is_forward_empty
+from wayfinder_paths.jobs.health import APPLY_REVERT_WINDOW_SECONDS
 from wayfinder_paths.jobs.ledger import tail_ledger
 from wayfinder_paths.jobs.lifecycle import bootstrap_directive
 from wayfinder_paths.jobs.memory_hygiene import sanitize_job_memory
@@ -699,6 +700,40 @@ def _restage_block(root: Path) -> list[dict[str, Any]]:
     return tasks
 
 
+def _apply_reverted_block(root: Path) -> list[dict[str, Any]]:
+    """Approved changes that had been applied and were then reverted by the
+    pipeline (rollback after promotion, or a re-stage that rejected) within
+    the owner-attention window. Rendered as prompt text so the agent tells
+    the owner — the job is running without a change the owner approved."""
+    items: list[dict[str, Any]] = []
+    proposals_dir = root / "proposals"
+    if not proposals_dir.exists():
+        return items
+    now = dt.datetime.now(dt.UTC)
+    for path in sorted(proposals_dir.glob("*.json")):
+        try:
+            proposal = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        reverted = (proposal.get("application") or {}).get("reverted") or {}
+        try:
+            at = dt.datetime.fromisoformat(str(reverted.get("ts")))
+        except ValueError:
+            continue
+        if (now - at).total_seconds() > APPLY_REVERT_WINDOW_SECONDS:
+            continue
+        items.append(
+            {
+                "proposal_id": str(proposal.get("proposal_id") or path.stem),
+                "status": proposal.get("status"),
+                "summary": (proposal.get("proposed_change") or {}).get("summary"),
+                "reason": reverted.get("reason"),
+                "reverted_at": reverted.get("ts"),
+            }
+        )
+    return items
+
+
 def _archive_block(store: JobStore, job_id: str) -> dict[str, Any]:
     """Frontier + refuted branches: exploration cites archive state, not
     memory. Never raises."""
@@ -1136,6 +1171,7 @@ def _build_worker_prompt_sections(
         )
 
     restage_tasks = _restage_block(root)
+    reverted_applies = _apply_reverted_block(root)
     # Island rotation: routine research wakes get a deterministic search
     # assignment; apply/restage wakes and trigger wakes (bypass inside)
     # handle their event instead. Never blocks the wake.
@@ -1828,6 +1864,25 @@ def _build_worker_prompt_sections(
             "the new base, reject it (agent housekeeping) and only then "
             "propose fresh.\n\n"
         )
+    # Prompt text, not payload-only (same lesson as re-stage tasks): the
+    # owner must hear that an approved, applied change is gone.
+    reverted_alert = ""
+    if reverted_applies:
+        items = "".join(
+            f"  - {item['proposal_id']} ({item['summary'] or 'no summary'}; now "
+            f"{item['status']}): {item['reason']}\n"
+            for item in reverted_applies
+        )
+        reverted_alert = (
+            "OWNER ATTENTION — an approved change that had been APPLIED was "
+            "reverted by the pipeline, not by the owner:\n"
+            f"{items}"
+            "The job is running WITHOUT that change. State this plainly in "
+            "your report, naming the proposal and the reason. If the change "
+            "is still warranted: re-stage it when it is still approved, "
+            "otherwise propose it fresh against the current workspace so the "
+            "owner can review it again.\n\n"
+        )
     report_outcome_directive = ""
     if apply_proposal_id is None:
         report_outcome_directive = (
@@ -1907,6 +1962,7 @@ def _build_worker_prompt_sections(
         f"{DYNAMIC_CONTEXT_MARKER}\n"
         f"{_render_work_order(work_order)}\n\n"
         f"{gate_alert}"
+        f"{reverted_alert}"
         f"{bootstrap_alert}"
         f"{remediation_directive}"
         f"{restage_priority}"

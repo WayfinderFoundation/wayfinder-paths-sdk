@@ -229,6 +229,68 @@ def test_agent_cannot_bury_approved_work_on_gate_escalate(tmp_path: Path) -> Non
     assert rejected["status"] == "rejected"
 
 
+def test_rejecting_a_previously_promoted_proposal_journals_the_revert(
+    tmp_path: Path,
+) -> None:
+    """Records written before the revert marker existed (the production
+    proposals): the promotion ledger still says the change had been applied,
+    so an agent rejection on re-stage is journaled as the revert it is. A
+    proposal that was never promoted gets no marker."""
+    store, job_id = _make_store(tmp_path)
+    red_gate = "candidate gate is not live-ready: backtest regressed"
+    store.write_proposal(job_id, _approved_proposal(red_gate))
+    ledger = store.job_dir(job_id) / "versions" / "revisions.jsonl"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(
+        json.dumps(
+            {
+                "ts": "2026-08-11T16:19:00+00:00",
+                "revision": "rev-applied-1",
+                "proposal_id": "prop-heal",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    rejected = store.reject_proposal(
+        job_id,
+        "prop-heal",
+        reason=f"re-stage gate failed on current base abc123: {red_gate}",
+        rejected_by="agent",
+    )
+
+    assert rejected["status"] == "rejected"
+    assert rejected["application"]["reverted"]["prior_applied_revision"] == (
+        "rev-applied-1"
+    )
+    events = _journal_events(store, job_id, "proposal_apply_reverted")
+    assert len(events) == 1
+    assert events[0]["via"] == "rejected" and events[0]["by"] == "agent"
+    assert "backtest regressed" in events[0]["reason"]
+
+    never_promoted = {**_approved_proposal(red_gate), "proposal_id": "prop-fresh"}
+    store.write_proposal(job_id, never_promoted)
+    rejected = store.reject_proposal(
+        job_id, "prop-fresh", reason=red_gate, rejected_by="agent"
+    )
+    assert "reverted" not in rejected["application"]
+    assert len(_journal_events(store, job_id, "proposal_apply_reverted")) == 1
+
+    # The owner abandoning a change they had applied is their decision, not a
+    # machinery revert.
+    owner_closed = {**_approved_proposal(red_gate), "proposal_id": "prop-owner"}
+    store.write_proposal(job_id, owner_closed)
+    ledger.open("a", encoding="utf-8").write(
+        json.dumps({"revision": "rev-applied-2", "proposal_id": "prop-owner"}) + "\n"
+    )
+    rejected = store.reject_proposal(
+        job_id, "prop-owner", reason="no longer wanted", rejected_by="owner"
+    )
+    assert "reverted" not in rejected["application"]
+    assert len(_journal_events(store, job_id, "proposal_apply_reverted")) == 1
+
+
 def test_agent_reject_of_pending_evidence_red_gate_still_passes(
     tmp_path: Path,
 ) -> None:

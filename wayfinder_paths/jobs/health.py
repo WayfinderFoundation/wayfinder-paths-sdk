@@ -27,6 +27,10 @@ FREESTYLE_LAST_TICK_PATH = "state/freestyle_last_tick.json"
 FORWARD_SUMMARY_PATH = "results/forward/summary.json"
 JOURNAL_TAIL_ROWS = 400
 APPLY_STALL_SECONDS = 15 * 60
+# A reverted apply stays an owner-facing issue for a week (the window the
+# decided_autonomously feed also uses); a later successful apply of the same
+# proposal clears the marker earlier.
+APPLY_REVERT_WINDOW_SECONDS = 7 * 24 * 3600
 FEED_STALE_MULTIPLIER = 2
 SCRIPT_ERROR_FAILURES = 3
 READ_FAILURE_MARKERS = ("mark failed for", "quote failed", "read failed")
@@ -49,6 +53,7 @@ ISSUE_CODES: tuple[str, ...] = (
     "launch_checklist_failing",
     "unpapered_actions",
     "apply_stalled",
+    "apply_reverted",
     "not_launched",
 )
 SEVERITY_RANK = {"block": 0, "warn": 1, "info": 2}
@@ -568,6 +573,23 @@ def build_issues(
                     fix="the application watchdog retries; if it stays stuck, recover-stalled-applications",
                 )
 
+    def apply_reverted() -> None:
+        for proposal in proposals or []:
+            reverted = (proposal.get("application") or {}).get("reverted") or {}
+            at = _parse_iso(reverted.get("ts"))
+            if not at or (now - at).total_seconds() > APPLY_REVERT_WINDOW_SECONDS:
+                continue
+            add(
+                "apply_reverted",
+                "warn",
+                f"approved proposal {proposal.get('proposal_id')} had been "
+                f"applied and was reverted by the pipeline: {reverted.get('reason')}",
+                since=reverted.get("ts"),
+                scope="proposal",
+                fix="the job runs without that change; re-stage it if still approved, otherwise propose it fresh for review",
+                ref="owner_attention:apply_reverted",
+            )
+
     def not_launched() -> None:
         if contract in LIFECYCLE_CONTRACTS and not launch.get("launched"):
             add(
@@ -593,6 +615,7 @@ def build_issues(
         risk,
         checklist,
         apply_stalled,
+        apply_reverted,
         not_launched,
     )
     for detector in detectors:
