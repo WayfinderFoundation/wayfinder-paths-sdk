@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections import deque
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -10,7 +9,7 @@ from typing import Any
 import yaml
 
 from wayfinder_paths.jobs.failures import classify_failure
-from wayfinder_paths.jobs.forward import default_forward_summary
+from wayfinder_paths.jobs.forward import default_forward_summary, tail_jsonl
 from wayfinder_paths.jobs.models import (
     NO_BACKTEST_CONTRACTS,
     ApplicationStatus,
@@ -279,20 +278,12 @@ class JobStore:
         """Read a job-owned JSONL artifact without letting one bad row hide
         the rest of an append-only ledger."""
         path = self.job_dir(job_id) / relative
+        if limit is not None:
+            return tail_jsonl(path, int(limit))
         if not path.exists():
             return []
-        if limit is None:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        else:
-            bounded = max(int(limit), 0)
-            if bounded == 0:
-                return []
-            # Stream append-only ledgers so a bounded consumer does not first
-            # materialize the entire (potentially multi-MB) file in memory.
-            with path.open(encoding="utf-8", errors="replace") as handle:
-                lines = list(deque(handle, maxlen=bounded))
         rows: list[dict[str, Any]] = []
-        for line in lines:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             if not line.strip():
                 continue
             try:

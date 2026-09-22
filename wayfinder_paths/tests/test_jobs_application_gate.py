@@ -104,6 +104,7 @@ def test_apply_keeps_live_gate_green(
     assert validation["status"] == "passed", validation["checks"]
     # Candidate validation persisted revision-stamped artifacts in the bundle.
     assert (candidate_dir / "results" / "backtest" / "latest.json").exists()
+    assert (candidate_dir / "results" / "backtest" / "latest.meta.json").exists()
     assert (candidate_dir / "reports" / "preflight" / "latest.json").exists()
     assert (candidate_dir / "reports" / "validation" / "latest.json").exists()
 
@@ -121,6 +122,12 @@ def test_apply_keeps_live_gate_green(
         (root / "results" / "backtest" / "latest.json").read_text(encoding="utf-8")
     )
     assert backtest["revision"] == promoted
+    # The sidecar travels with the graphs so the post-apply sync keeps the
+    # bounded read path.
+    meta = json.loads(
+        (root / "results" / "backtest" / "latest.meta.json").read_text(encoding="utf-8")
+    )
+    assert meta["run_id"] == backtest["run_id"]
     apply_report = store.read_json(job_id, "reports/apply/latest.json", default={})
     assert apply_report["live_gate"]["live_ready"] is True
 

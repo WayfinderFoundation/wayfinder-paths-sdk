@@ -8,10 +8,12 @@ import sys
 import tempfile
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
+from wayfinder_paths.core.clients.ScheduledJobsClient import SCHEDULED_JOBS_CLIENT
 from wayfinder_paths.runner.client import RunnerControlClient
 from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JobStatus, RunStatus
 from wayfinder_paths.runner.daemon import RunnerDaemon
@@ -174,6 +176,123 @@ def test_runner_daemon_run_once_executes_job_when_not_due(tmp_path: Path) -> Non
         except Exception:  # noqa: BLE001
             daemon.stop()
         t.join(timeout=5)
+        assert not t.is_alive()
+        shutil.rmtree(runner_dir, ignore_errors=True)
+
+
+def _start_fake_backend() -> tuple[ThreadingHTTPServer, list[tuple[str, str]]]:
+    """Loopback backend recording every POST as (path, body)."""
+    posts: list[tuple[str, str]] = []
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length).decode("utf-8", errors="replace")
+            posts.append((self.path, body))
+            payload = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args: object) -> None:
+            return None
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(
+        target=server.serve_forever, name="fake-backend", daemon=True
+    ).start()
+    return server, posts
+
+
+def test_runner_daemon_syncs_backend_out_of_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The wayfinder-jobs backend sync runs in a forkserver child: the fake
+    backend receives the snapshot POST (naming the seeded job) from that
+    child, while the in-process sync_all_jobs is never called."""
+    import json
+    from multiprocessing import forkserver
+
+    from wayfinder_paths.jobs.models import WayfinderJob
+    from wayfinder_paths.jobs.store import JobStore
+
+    server, posts = _start_fake_backend()
+    port = server.server_address[1]
+    config = tmp_path / "config.json"
+    config.write_text(
+        json.dumps({"system": {"api_base_url": f"http://127.0.0.1:{port}/api/v1"}}),
+        encoding="utf-8",
+    )
+    # Both must be in the environment BEFORE the daemon starts: the forkserver
+    # inherits its environment (and the config loaded from it) from whoever
+    # starts it, and it is process-global — so stop one an earlier test left
+    # running, or the sync child would carry that test's environment.
+    monkeypatch.setenv("WAYFINDER_CONFIG_PATH", str(config))
+    monkeypatch.setenv("OPENCODE_INSTANCE_ID", "inst-e2e")
+    # macOS: urllib's SystemConfiguration proxy lookup (_scproxy) is not
+    # fork-safe and segfaults in the forked child when httpx builds its
+    # client; any *_proxy variable makes getproxies() answer from the
+    # environment instead (and a loopback backend needs no proxy anyway).
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    forkserver._forkserver._stop()
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "sync-e2e", script="workspace/src/strategy.py", interval_seconds=3600
+    )
+    store.create_job(job)
+
+    monkeypatch.setattr(SCHEDULED_JOBS_CLIENT, "bulk_sync", lambda jobs: None)
+    in_process: list[dict] = []
+
+    def _never_in_process(**kwargs: object) -> None:
+        in_process.append(dict(kwargs))
+        raise AssertionError("sync_all_jobs ran inside runnerd")
+
+    monkeypatch.setattr("wayfinder_paths.jobs.sync.sync_all_jobs", _never_in_process)
+
+    runner_dir = _short_runner_dir("wayfinder-runner-sync")
+    if runner_dir.exists():
+        shutil.rmtree(runner_dir, ignore_errors=True)
+    runner_dir.mkdir(parents=True, exist_ok=True)
+    paths = RunnerPaths(
+        repo_root=tmp_path,
+        runner_dir=runner_dir,
+        db_path=runner_dir / "state.db",
+        logs_dir=runner_dir / "logs",
+        sock_path=runner_dir / "runner.sock",
+    )
+    daemon = RunnerDaemon(
+        paths=paths, tick_seconds=0.05, max_workers=2, burst_admission=False
+    )
+    t = threading.Thread(target=daemon.start, name="runner-e2e-daemon-sync")
+    t.start()
+
+    client = RunnerControlClient(sock_path=paths.sock_path)
+    try:
+        _wait_for_status(client, timeout_s=10.0)
+        # Generous: the first fork starts the forkserver and pays the preload.
+        deadline = time.time() + 120.0
+        while time.time() < deadline and not any(
+            "/wayfinder-jobs/sync/" in path for path, _ in posts
+        ):
+            time.sleep(0.1)
+        sync_posts = [(p, b) for p, b in posts if "/wayfinder-jobs/sync/" in p]
+        assert sync_posts, posts
+        path, body = sync_posts[0]
+        assert path == "/api/v1/opencode/instances/inst-e2e/wayfinder-jobs/sync/"
+        assert "sync-e2e" in body
+        assert in_process == []
+    finally:
+        try:
+            client.call("shutdown")
+        except Exception:  # noqa: BLE001
+            daemon.stop()
+        t.join(timeout=10)
+        server.shutdown()
+        server.server_close()
         assert not t.is_alive()
         shutil.rmtree(runner_dir, ignore_errors=True)
 

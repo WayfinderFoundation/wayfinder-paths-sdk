@@ -58,10 +58,8 @@ class WayfinderJobsClient:
                 headers=self._headers(),
             )
             resp.raise_for_status()
-        except Exception:
-            logger.opt(exception=True).warning(
-                "Failed to sync Wayfinder jobs to backend"
-            )
+        except Exception as exc:
+            logger.warning(f"Failed to sync Wayfinder jobs to backend: {exc!r}")
 
 
 WAYFINDER_JOBS_CLIENT = WayfinderJobsClient()

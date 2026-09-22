@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -293,7 +294,9 @@ def test_job_backtest_and_validate_write_artifacts(tmp_path: Path) -> None:
     assert forensics["aggregate"]["trades"] == len(forensics["trades"])
 
 
-def test_backtest_artifact_summary_and_view_are_bounded(tmp_path: Path) -> None:
+def test_backtest_artifact_summary_and_view_are_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     store = JobStore(repo_root=tmp_path)
     job = WayfinderJob.new(
         "exec-view-demo",
@@ -336,11 +339,50 @@ def test_backtest_artifact_summary_and_view_are_bounded(tmp_path: Path) -> None:
 
     backtest_execution_job(job.id, store=store)
 
+    backtest_dir = root / "results" / "backtest"
+    meta_path = backtest_dir / "latest.meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert set(meta) == {
+        "run_id",
+        "stats",
+        "validation",
+        "symbols",
+        "series",
+        "marker_counts",
+    }
+
+    reads: list[str] = []
+    original_read_json = store.read_json
+
+    def recording_read_json(job_id: str, relative: str, default=None):
+        reads.append(relative)
+        return original_read_json(job_id, relative, default)
+
+    monkeypatch.setattr(store, "read_json", recording_read_json)
+
+    # A fresh sidecar answers the summary alone: neither graph is parsed.
     summary = summarize_backtest_artifacts(job.id, store=store)
+    assert reads == []
     assert summary["available"] is True
+    assert summary["run_id"] == meta["run_id"]
     assert "SNX" in summary["symbols"]
     assert any(item["kind"] == "equity_curve" for item in summary["series"])
     assert any(item["kind"] == "drawdown_curve" for item in summary["series"])
+
+    # Parity: without the sidecar the graphs yield the identical summary.
+    meta_text = meta_path.read_text(encoding="utf-8")
+    meta_path.unlink()
+    assert summarize_backtest_artifacts(job.id, store=store) == summary
+    assert "results/backtest/visualization.json" in reads
+    assert "results/backtest/latest.json" in reads
+
+    # A sidecar older than latest.json is stale: fall back to the graphs.
+    meta_path.write_text(meta_text, encoding="utf-8")
+    newer = meta_path.stat().st_mtime_ns + 1_000_000_000
+    os.utime(backtest_dir / "latest.json", ns=(newer, newer))
+    reads.clear()
+    assert summarize_backtest_artifacts(job.id, store=store) == summary
+    assert "results/backtest/visualization.json" in reads
 
     view = load_backtest_view(job.id, store=store, view="legs", max_points=100)
     series = view["visualization"]["series"]

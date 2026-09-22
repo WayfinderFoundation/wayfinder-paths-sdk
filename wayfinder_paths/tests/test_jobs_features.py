@@ -19,6 +19,7 @@ from wayfinder_paths.jobs.execution.features import (
     load_feature_rows,
     merge_features,
     parse_feature_specs,
+    revised_row_count,
     summarize_features,
 )
 from wayfinder_paths.jobs.execution.job import _load_dataset, _resolve_dataset
@@ -606,3 +607,123 @@ def test_backtest_and_driver_agree_with_smoothing_on(tmp_path: Path) -> None:
     assert _fill_key(driver_fills) == _fill_key(backtest.trace["fills"])
     report = reconcile_job(job.id, store=store)
     assert report["intent_match_rate"] == 1.0 and report["data_drift_ticks"] == 0
+
+
+# ---- sync snapshot summary: one store parse, trailing window ---------------
+
+
+def _write_feature_rows(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+
+def _count_store_opens(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    opened: list[str] = []
+    original_open = Path.open
+
+    def counting_open(self, *args, **kwargs):
+        if self.name == "features.jsonl":
+            opened.append(str(self))
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", counting_open)
+    return opened
+
+
+def test_summary_parses_the_store_once_for_every_feature(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = pd.Timestamp("2026-06-01T00:00:00Z")
+    rows = []
+    for hours_ago in range(48, 0, -1):
+        stamp = (now - pd.Timedelta(hours=hours_ago)).isoformat()
+        rows.append({"timestamp": stamp, "name": "rate", "value": 0.05})
+        rows.append({"timestamp": stamp, "name": "funding", "value": 0.01})
+    path = tmp_path / "state" / "features.jsonl"
+    _write_feature_rows(path, rows)
+    spec = ExecutionSpec.from_dict(
+        {
+            "data_contract": {
+                "features": [
+                    {"name": "rate", "cadence": "1h"},
+                    {"name": "funding", "cadence": "1h"},
+                ]
+            }
+        }
+    )
+    opened = _count_store_opens(monkeypatch)
+
+    summary = summarize_features(tmp_path, spec, now=now)
+
+    assert summary is not None
+    assert [entry["name"] for entry in summary] == ["rate", "funding"]
+    assert all(entry["revised_rows"] == 0 for entry in summary)
+    # One pass serves both features AND both revised_row_count calls.
+    assert len(opened) == 1
+
+    # Subset requests against the unchanged store hit the cache: no reopen.
+    assert revised_row_count(path, "rate") == 0
+    funding = load_feature_rows([tmp_path], [FeatureSpec(name="funding")])["funding"]
+    assert len(funding) == 48
+    assert len(opened) == 1
+
+
+def test_summary_windows_gaps_to_thirty_days_but_keeps_stale_feeds_available(
+    tmp_path: Path,
+) -> None:
+    now = pd.Timestamp("2026-06-01T00:00:00Z")
+    fresh = []
+    for hours_ago in range(35 * 24, 0, -1):
+        if 33 * 24 + 3 <= hours_ago < 33 * 24 + 9:  # hole before the window
+            continue
+        if 10 * 24 + 3 <= hours_ago < 10 * 24 + 9:  # hole inside the window
+            continue
+        fresh.append(
+            {
+                "timestamp": (now - pd.Timedelta(hours=hours_ago)).isoformat(),
+                "name": "fresh",
+                "value": 1.0,
+            }
+        )
+    old = [
+        {
+            "timestamp": (now - pd.Timedelta(days=100)).isoformat(),
+            "name": "old",
+            "value": 1.0,
+        },
+        {
+            "timestamp": (now - pd.Timedelta(days=90)).isoformat(),
+            "name": "old",
+            "value": 2.0,
+        },
+    ]
+    _write_feature_rows(tmp_path / "state" / "features.jsonl", fresh + old)
+    spec = ExecutionSpec.from_dict(
+        {
+            "data_contract": {
+                "features": [
+                    {"name": "fresh", "cadence": "1h"},
+                    {"name": "old", "cadence": "1h"},
+                ]
+            }
+        }
+    )
+
+    summary = summarize_features(tmp_path, spec, now=now)
+
+    assert summary is not None
+    by_name = {entry["name"]: entry for entry in summary}
+    # Only the in-window hole counts; the whole store carries both.
+    assert by_name["fresh"]["gaps"]["count"] == 1
+    assert by_name["fresh"]["row_count"] == 30 * 24 - 6 + 1  # + the anchor row
+    whole = load_feature_rows([tmp_path], [FeatureSpec(name="fresh", cadence="1h")])
+    assert feature_gaps(whole["fresh"], 3600)["count"] == 2
+    # A feed silent for the whole window keeps its as-of anchor: still
+    # available, latest value and age intact.
+    stale = by_name["old"]
+    assert stale["available"] is True
+    assert stale["latest_value"] == 2.0
+    assert stale["latest_timestamp"] == (now - pd.Timedelta(days=90)).isoformat()
+    assert stale["age_seconds"] == 90 * 86400.0
+    assert stale["row_count"] == 1
+    assert stale["gaps"] is None

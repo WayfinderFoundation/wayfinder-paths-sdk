@@ -7,7 +7,7 @@ import os
 import sys
 import time
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -58,6 +58,7 @@ from wayfinder_paths.jobs.execution.venues import (
     VenueCapabilities,
     VenueState,
 )
+from wayfinder_paths.runner.monitor_state import atomic_write_json
 
 
 @dataclass
@@ -972,6 +973,36 @@ def run_execution_grid(
     )
 
 
+def backtest_meta(
+    *,
+    run_id: str | None,
+    stats: dict[str, Any],
+    validation: dict[str, Any],
+    visualization: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Content of the `latest.meta.json` sidecar: everything the backend
+    sync's backtest summary needs, without the per-bar graphs. The reader
+    (`summarize_backtest_artifacts`) derives this same shape from the graphs
+    when the sidecar is missing or stale."""
+    marker_counts = Counter(marker["kind"] for marker in visualization["markers"])
+    return {
+        "run_id": run_id,
+        "stats": stats,
+        "validation": visualization["validation"] or validation,
+        "symbols": visualization["symbols"],
+        "series": [
+            {
+                "name": series["name"],
+                "kind": series["kind"],
+                "symbol": series.get("symbol"),
+                "point_count": len(series["points"]),
+            }
+            for series in visualization["series"]
+        ],
+        "marker_counts": dict(marker_counts),
+    }
+
+
 def write_backtest_artifacts(
     result: ExecutionBacktestResult | ExecutionGridResult,
     output_dir: str | Path,
@@ -1012,6 +1043,19 @@ def write_backtest_artifacts(
                 json.dumps(result.visualization, separators=(",", ":"), default=str)
                 + "\n",
                 encoding="utf-8",
+            )
+            # Written LAST so its mtime vouches for the graphs beside it: the
+            # backend sync reads this sidecar instead of parsing a multi-MB
+            # latest.json + visualization.json just to count markers.
+            atomic_write_json(
+                root / "latest.meta.json",
+                backtest_meta(
+                    run_id=result.run_id,
+                    stats=result.stats,
+                    validation=result.validation,
+                    visualization=result.visualization,
+                ),
+                default=str,
             )
             return {"latest": str(latest), "visualization": str(visualization)}
 

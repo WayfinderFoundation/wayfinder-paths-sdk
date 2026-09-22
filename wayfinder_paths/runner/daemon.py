@@ -69,6 +69,12 @@ BURST_SHORT_POSTPONE_S = 120.0
 # whose evolution campaign is active is fully exempt — its wake supervises
 # the very compute that drained the bucket.
 DEFAULT_SYNC_DEBOUNCE_SECONDS = 90.0
+# The wayfinder-jobs backend sync runs in a forkserver child (see
+# _run_backend_sync_child); a child stuck past this is killed, not waited on.
+BACKEND_SYNC_TIMEOUT_SECONDS = 300.0
+# Per-run report payload cap (the ctl_run_report ceiling): a multi-MB run log
+# read whole into a runnerd thread is retained heap, not telemetry.
+REPORTED_LOG_MAX_BYTES = 200_000
 DEFAULT_MAX_RSS_MB = 900.0
 # While a proposal application is applying, the RSS restart exit is deferred
 # (an os._exit orphans the apply mid-flight AND leaves the job's loops
@@ -476,10 +482,17 @@ class RunnerDaemon:
         # Last time the apply-in-flight RSS deferral was logged (monotonic);
         # seeded so the FIRST deferral always logs.
         self._rss_defer_logged_at = -3600.0
+        # Same pattern for the RSS-after-run INFO line.
+        self._rss_logged_at = -3600.0
         self._sync_debouncer = _SyncDebouncer(
             action=lambda: self._start_backend_sync(),
             delay_seconds=_sync_debounce_seconds(),
         )
+        # One backend sync in flight at a time; requests that land mid-sync
+        # coalesce into a single follow-up pass (see _start_backend_sync).
+        self._sync_state_lock = threading.Lock()
+        self._sync_running = False
+        self._sync_pending = False
 
     def _lock_for_job(self, job_id: int) -> threading.Lock:
         lock = self._job_locks.get(job_id)
@@ -499,6 +512,10 @@ class RunnerDaemon:
                 level=self._log_level,
                 rotation="10 MB",
                 retention="7 days",
+                # No variable dumps or extended tracebacks: one warning from
+                # a side-effect thread was rendering pages of frames.
+                diagnose=False,
+                backtrace=False,
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug(
@@ -508,8 +525,6 @@ class RunnerDaemon:
         aborted = self._db.mark_stale_running_runs_aborted(note="runner restarted")
         if aborted:
             logger.warning(f"Marked {aborted} stale RUNNING runs as ABORTED")
-
-        self._sync_to_backend_async()
 
         self._control = RunnerControlServer(
             sock_path=self._paths.sock_path, daemon=self
@@ -538,6 +553,10 @@ class RunnerDaemon:
         except Exception:  # noqa: BLE001
             logger.opt(exception=True).warning("View server failed to start")
             self._view_server = None
+
+        # After the view-server block so the first sync child forks from the
+        # one shared warm spawner instead of racing to create its own.
+        self._sync_to_backend_async()
 
         try:
             for sig in (signal.SIGINT, signal.SIGTERM):
@@ -721,6 +740,16 @@ class RunnerDaemon:
                 0, self._running_by_job.get(rp.job_id, 1) - 1
             )
 
+        rss_mb = _rss_mb()
+        if rss_mb is not None:
+            now_mono = time.monotonic()
+            if now_mono - self._rss_logged_at >= 60.0:
+                self._rss_logged_at = now_mono
+                logger.info(
+                    f"runnerd RSS {rss_mb:.0f}MB after run {rp.job_name} "
+                    f"({len(self._running)} workers)"
+                )
+
         self._run_side_effect(
             f"notify-session-{rp.job_name}",
             lambda: self._notify_session(rp, status=status, error_text=error_text),
@@ -768,11 +797,7 @@ class RunnerDaemon:
         status: str,
         exit_code: int | None,
     ) -> None:
-        log_output = ""
-        try:
-            log_output = rp.log_path.read_text(errors="replace")
-        except Exception:  # noqa: BLE001
-            pass
+        log_output = _tail_text(rp.log_path, max_bytes=REPORTED_LOG_MAX_BYTES) or ""
         SCHEDULED_JOBS_CLIENT.report_run(
             rp.job_name,
             {
@@ -817,52 +842,126 @@ class RunnerDaemon:
         self._sync_debouncer.request(flush=flush)
 
     def _start_backend_sync(self) -> None:
-        db_path = self._paths.db_path
+        # At most one sync thread at a time. A request that lands while one is
+        # running marks it pending; the running drain runs one more pass
+        # (the sync reads current state at fire time, so nothing is lost).
+        with self._sync_state_lock:
+            self._sync_pending = True
+            if self._sync_running:
+                return
+            self._sync_running = True
+        self._run_side_effect("wayfinder-sync", self._drain_backend_syncs)
 
-        def _sync() -> None:
-            # Scheduled-jobs registry (bulk_sync): registers each runner job
-            # so the backend accepts its per-run reports — report_run 404s
-            # for any job the backend has never seen, which empties the
-            # Strategies UI Activity tab (observed: 345 straight failures
-            # when a past change dropped this push).
-            # Private connection: self._db is shared with the scheduler loop
-            # and control server, and cross-thread use kills this thread
-            # mid-read before the POST.
-            db = RunnerDB(db_path)
+    def _drain_backend_syncs(self) -> None:
+        while True:
+            with self._sync_state_lock:
+                if not self._sync_pending:
+                    self._sync_running = False
+                    return
+                self._sync_pending = False
             try:
-                jobs = []
-                for j in db.list_jobs():
-                    result = db.get_job(name=j["name"])
-                    if not result:
-                        continue
-                    job, state = result
-                    jobs.append(
-                        {
-                            "job_name": job.name,
-                            "job_type": job.type,
-                            "status": state.status,
-                            "interval_seconds": job.interval_seconds,
-                            "schedule_kind": job.schedule_kind,
-                            "cron_expr": job.cron_expr,
-                            "timezone": job.timezone,
-                            "payload": job.payload,
-                        }
-                    )
-            finally:
-                db.close()
-            response = SCHEDULED_JOBS_CLIENT.bulk_sync(jobs)
-            write_cpu_budget_anchor((response or {}).get("cpu_budget"))
+                self._sync_once()
+            except Exception:
+                with self._sync_state_lock:
+                    self._sync_running = False
+                raise
 
-            # 2. Wayfinder-jobs snapshot (per-mode session ids for the
-            #    Conversations panel, proposals, and the reconciled
-            #    scorecard/mode). Lazy-imported to avoid any import cycle with
-            #    the jobs package at daemon startup.
+    def _sync_once(self) -> None:
+        # 1. Scheduled-jobs registry (bulk_sync): registers each runner job
+        #    so the backend accepts its per-run reports — report_run 404s
+        #    for any job the backend has never seen, which empties the
+        #    Strategies UI Activity tab (observed: 345 straight failures
+        #    when a past change dropped this push).
+        #    Private connection: self._db is shared with the scheduler loop
+        #    and control server, and cross-thread use kills this thread
+        #    mid-read before the POST.
+        db = RunnerDB(self._paths.db_path)
+        try:
+            jobs = []
+            for j in db.list_jobs():
+                result = db.get_job(name=j["name"])
+                if not result:
+                    continue
+                job, state = result
+                jobs.append(
+                    {
+                        "job_name": job.name,
+                        "job_type": job.type,
+                        "status": state.status,
+                        "interval_seconds": job.interval_seconds,
+                        "schedule_kind": job.schedule_kind,
+                        "cron_expr": job.cron_expr,
+                        "timezone": job.timezone,
+                        "payload": job.payload,
+                    }
+                )
+        finally:
+            db.close()
+        response = SCHEDULED_JOBS_CLIENT.bulk_sync(jobs)
+        write_cpu_budget_anchor((response or {}).get("cpu_budget"))
+
+        # 2. Wayfinder-jobs snapshot (per-mode session ids for the
+        #    Conversations panel, proposals, and the reconciled
+        #    scorecard/mode). Runs in a short-lived forkserver child: the
+        #    per-job artifact parses (77MB feature stores, 30MB backtest
+        #    graphs) inside a runnerd thread left their freed pages in
+        #    glibc arenas and walked RSS from ~260MB to the 900MB restart
+        #    cap (30 restarts in a month on one box).
+        started = time.monotonic()
+        try:
+            exitcode = self._run_backend_sync_child()
+        except Exception:  # noqa: BLE001
+            logger.opt(exception=True).warning(
+                "Backend sync child spawn failed; syncing in-process"
+            )
+            # Lazy-imported to avoid any import cycle with the jobs package
+            # at daemon startup.
             from wayfinder_paths.jobs.store import JobStore
             from wayfinder_paths.jobs.sync import sync_all_jobs
 
             sync_all_jobs(store=JobStore(repo_root=self._paths.repo_root))
+            return
+        elapsed = time.monotonic() - started
+        if exitcode is None:
+            logger.warning(
+                "Backend sync child timed out after "
+                f"{BACKEND_SYNC_TIMEOUT_SECONDS:.0f}s; killed"
+            )
+        elif exitcode != 0:
+            logger.warning(
+                f"Backend sync child failed (exit={exitcode}); traceback in runnerd.log"
+            )
+        else:
+            rss = _rss_mb()
+            rss_note = f"; runnerd RSS {rss:.0f}MB" if rss is not None else ""
+            logger.info(f"Backend sync done in {elapsed:.1f}s{rss_note}")
 
-        self._run_side_effect("wayfinder-sync", _sync)
+    def _run_backend_sync_child(self) -> int | None:
+        """Fork the backend sync from the warm forkserver and wait for it.
+
+        Returns the child's exit code, or None if it exceeded
+        BACKEND_SYNC_TIMEOUT_SECONDS and was killed. Tests stub this seam.
+        """
+        # Lazy import so a broken warm_spawn module degrades to the in-process
+        # sync instead of failing daemon startup.
+        from wayfinder_paths.runner.warm_spawn import WarmSpawner, _backend_sync_entry
+
+        if self._warm_spawner is None:
+            self._warm_spawner = WarmSpawner()
+        process = self._warm_spawner.context().Process(
+            target=_backend_sync_entry,
+            kwargs={"repo_root": str(self._paths.repo_root)},
+            name="wayfinder-sync-child",
+            daemon=False,
+        )
+        process.start()
+        process.join(BACKEND_SYNC_TIMEOUT_SECONDS)
+        if process.is_alive():
+            process.kill()
+            process.join(5)
+            return None
+        exitcode = process.exitcode
+        return None if exitcode is None else int(exitcode)
 
     def _notify_session(
         self,
@@ -1193,6 +1292,8 @@ class RunnerDaemon:
                 "sock_path": str(self._paths.sock_path),
                 "running_workers": len(self._running),
                 "max_workers": self._max_workers,
+                "rss_mb": _rss_mb(),
+                "max_rss_mb": self._max_rss_mb,
                 "burst_budget": self._burst.snapshot()
                 if self._burst is not None
                 else {"source": "disabled"},

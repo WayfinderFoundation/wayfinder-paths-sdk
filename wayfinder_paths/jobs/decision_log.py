@@ -25,6 +25,7 @@ from wayfinder_paths.jobs.evolution_funnel import (
     format_evolution_funnel,
     summarize_evolution_funnel,
 )
+from wayfinder_paths.jobs.forward import tail_jsonl
 from wayfinder_paths.jobs.store import JobStore
 
 DEFAULT_LIMIT = 50
@@ -72,7 +73,7 @@ def _journal_entries(
 ) -> list[dict[str, Any]]:
     path = root / "journal.jsonl"
     entries: list[dict[str, Any]] = []
-    for event in _read_jsonl_tail(path, _JOURNAL_TAIL_LINES):
+    for event in tail_jsonl(path, _JOURNAL_TAIL_LINES):
         kind = str(event.get("type") or "")
         ts = str(event.get("ts") or "")
         pid = str(event.get("proposal_id") or "") or None
@@ -520,7 +521,7 @@ def _evolution_counts_detail(counts: Any) -> str:
 def _ledger_entries(root: Path) -> list[dict[str, Any]]:
     path = root / "ledgers" / "candidates.jsonl"
     entries: list[dict[str, Any]] = []
-    for row in _read_jsonl_tail(path, _LEDGER_TAIL_ROWS):
+    for row in tail_jsonl(path, _LEDGER_TAIL_ROWS):
         note = str(row.get("note") or "")
         entries.append(
             _entry(
@@ -725,20 +726,6 @@ def _proposal_title(
 def _first_proposal_id(text: str) -> str | None:
     match = _PROPOSAL_ID_RE.search(text or "")
     return match.group(0) if match else None
-
-
-def _read_jsonl_tail(path: Path, limit: int) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    rows: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines()[-limit:]:
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict):
-            rows.append(row)
-    return rows
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:

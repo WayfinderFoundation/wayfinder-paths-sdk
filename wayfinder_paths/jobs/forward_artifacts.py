@@ -14,7 +14,7 @@ from wayfinder_paths.jobs.backtest_artifacts import (
     _parse_ts,
     order_series_for_display,
 )
-from wayfinder_paths.jobs.forward import default_forward_summary
+from wayfinder_paths.jobs.forward import default_forward_summary, tail_jsonl
 from wayfinder_paths.jobs.models import (
     DEFAULT_FORWARD_FILLS,
     DEFAULT_FORWARD_SUMMARY,
@@ -57,7 +57,7 @@ def forward_open_position(
 ) -> dict[str, Any] | None:
     """The currently-open position (if any) from the latest tick's ledger,
     with unrealized PnL marked at the last known close when available."""
-    ticks = _tail_jsonl(forward_dir / Path(DEFAULT_FORWARD_TICKS).name, 1)
+    ticks = tail_jsonl(forward_dir / Path(DEFAULT_FORWARD_TICKS).name, 1)
     if not ticks:
         return None
     tick = ticks[-1]
@@ -817,13 +817,6 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
         if line.strip():
             rows.append(json.loads(line))
     return rows
-
-
-def _tail_jsonl(path: Path, limit: int) -> list[dict[str, Any]]:
-    if not path.exists() or limit <= 0:
-        return []
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    return [json.loads(line) for line in lines[-limit:] if line.strip()]
 
 
 def _read_json(path: Path) -> Any:
