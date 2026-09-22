@@ -1939,8 +1939,15 @@ def run_job_worker(
             )
         if not risk_preempt:
             evolution_wake = _queue_evolution_worker(store, job.id)
+        evolution_blocked = str((evolution_wake or {}).get("blocked") or "")
+        if evolution_blocked:
+            # A denied campaign start is not evolution owning the lane: the
+            # ordinary wake still runs and its report says why nothing started.
+            wake_context["evolution_blocked"] = evolution_blocked
         evolution_claimed_lane = bool(
-            evolution_wake is not None and not evolution_wake.get("error")
+            evolution_wake is not None
+            and not evolution_wake.get("error")
+            and not evolution_blocked
         )
         if not risk_preempt and (
             evolution_claimed_lane or evolution_status in {"active", "finalizing"}
@@ -2119,6 +2126,7 @@ def _queue_evolution_worker(store: JobStore, job_id: str) -> dict[str, Any] | No
     try:
         from wayfinder_paths.jobs.background import spawn_detached_op
         from wayfinder_paths.jobs.evolution_campaign import (
+            campaign_block_reason,
             campaign_due,
             campaign_prompt_block,
             campaign_status,
@@ -2153,13 +2161,34 @@ def _queue_evolution_worker(store: JobStore, job_id: str) -> dict[str, Any] | No
             )
             return {"queued": False, "starting": True, **started}
         if campaign_status(store, job_id).get("status") != "active":
-            return None
+            blocked = campaign_block_reason(store, job_id)
+            if blocked is None:
+                return None
+            _journal_evolution_block(store, job_id, blocked)
+            return {"queued": False, "starting": False, "blocked": blocked}
         campaign = campaign_prompt_block(store, job_id)
     except Exception as exc:  # noqa: BLE001 - the hourly funnel remains independent
         return {"queued": False, "error": str(exc)[:300]}
     if not campaign or campaign.get("status") == "blocked":
         return None
     return _prompt_evolution_session(store, job_id, campaign, source="wake")
+
+
+def _journal_evolution_block(store: JobStore, job_id: str, reason: str) -> None:
+    """One journal row per distinct denial, not one per hourly wake."""
+    latest = next(
+        (
+            row
+            for row in reversed(store.read_jsonl(job_id, "journal.jsonl", limit=200))
+            if row.get("type") == "evolution_campaign_blocked"
+        ),
+        None,
+    )
+    if latest is not None and latest.get("reason") == reason:
+        return
+    store.append_journal(
+        job_id, {"type": "evolution_campaign_blocked", "reason": reason}
+    )
 
 
 def nudge_evolution_session(store: JobStore, job_id: str) -> dict[str, Any] | None:
