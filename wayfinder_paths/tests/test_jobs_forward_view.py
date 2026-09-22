@@ -8,7 +8,10 @@ this exists to fix).
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -344,6 +347,129 @@ def test_price_fetch_failure_degrades_with_note(tmp_path: Path) -> None:
     assert len(result["visualization"]["markers"]) == 4
 
 
+class _RecordingFeed:
+    """A venue feed serving hourly bars whose values are a function of the bar
+    open, so any two fetches agree on overlapping bars; records every call."""
+
+    step_ms = 3_600_000
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def get_completed_bars(
+        self, symbols: list[str], interval: str, *, lookback_bars: int, as_of: Any
+    ) -> Any:
+        from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
+
+        self.calls.append({"lookback_bars": lookback_bars, "as_of": as_of})
+        step = self.step_ms
+        last_open = ((int(as_of.timestamp() * 1000) - step) // step) * step
+        rows: list[Mapping[str, Any]] = []
+        for symbol in symbols:
+            for index in range(lookback_bars):
+                open_ms = last_open - (lookback_bars - 1 - index) * step
+                level = float((open_ms // step) % 1000)
+                rows.append(
+                    {
+                        "timestamp": datetime.fromtimestamp(
+                            (open_ms + step) / 1000, tz=UTC
+                        ).isoformat(),
+                        "symbol": symbol,
+                        "open": level,
+                        "high": level + 1.0,
+                        "low": level - 1.0,
+                        "close": level + 0.5,
+                        "volume": level * 10.0,
+                    }
+                )
+        return CompletedBarsView.from_rows(rows)
+
+
+def test_price_bars_cached_on_disk_with_delta_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The venue is asked once per closed bar, not once per poll: a build
+    inside the bar the cache ends on fetches nothing, the next bar fetches
+    only the delta plus warmup, and a corrupt cache costs one full refetch.
+    The emitted series is the one the uncached frame path produced."""
+    import asyncio
+    from types import SimpleNamespace
+
+    import wayfinder_paths.jobs.execution.venues as venues_module
+    from wayfinder_paths.jobs import forward_artifacts
+
+    store = _seed_job(tmp_path)
+    (store.job_dir("carry") / "execution_spec.json").write_text(
+        json.dumps({"data_contract": {"bar_interval": "1h", "symbols": ["IMX"]}}),
+        encoding="utf-8",
+    )
+    feed = _RecordingFeed()
+    monkeypatch.setattr(
+        venues_module, "build_adapter", lambda *a, **k: SimpleNamespace(feed=feed)
+    )
+    clock = datetime(2026, 7, 20, 12, 34, 56, tzinfo=UTC)
+    monkeypatch.setattr(forward_artifacts, "_utc_now", lambda: clock)
+    cache_path = store.job_dir("carry") / "results" / "forward" / "price_cache.json"
+
+    def _price_series() -> dict[str, Any]:
+        result = load_forward_view("carry", store=store, include_prices=True)
+        assert "price_note" not in result["summary"]
+        return next(
+            s for s in result["visualization"]["series"] if s["kind"] == "market_price"
+        )
+
+    # First tick 2026-07-14T00:00 -> 157 bars of window + 24 warmup.
+    first = _price_series()
+    assert [call["lookback_bars"] for call in feed.calls] == [181]
+    assert first["venue"] == "hyperliquid"
+    assert len(first["points"]) == 181
+    assert first["points"][-1]["timestamp"] == "2026-07-20T12:00:00+00:00"
+    frame = asyncio.run(
+        _RecordingFeed().get_completed_bars(
+            ["IMX"], "1h", lookback_bars=181, as_of=clock
+        )
+    ).to_frame()
+    assert first["points"] == [
+        {
+            "timestamp": row.timestamp.isoformat(),
+            "value": float(row.close),
+            "open": float(row.open),
+            "high": float(row.high),
+            "low": float(row.low),
+            "close": float(row.close),
+            "volume": float(row.volume),
+        }
+        for row in frame.itertuples()
+    ]
+    cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert (
+        cache["interval"] == "1h" and cache["symbols"]["IMX"]["venue"] == "hyperliquid"
+    )
+    assert len(cache["symbols"]["IMX"]["bars"]) == 181
+    assert cache["symbols"]["IMX"]["bars"][-1][0] == int(
+        datetime(2026, 7, 20, 11, tzinfo=UTC).timestamp() * 1000
+    )
+
+    # Same bar: served from disk, no venue call, identical payload.
+    assert _price_series() == first
+    assert len(feed.calls) == 1
+
+    # One bar later: only the missing bar plus warmup, merged in once.
+    monkeypatch.setattr(
+        forward_artifacts, "_utc_now", lambda: clock + timedelta(hours=1)
+    )
+    third = _price_series()
+    assert [call["lookback_bars"] for call in feed.calls] == [181, 25]
+    assert len(third["points"]) == 182
+    assert third["points"][:-1] == first["points"]
+    assert third["points"][-1]["timestamp"] == "2026-07-20T13:00:00+00:00"
+
+    # Corrupt cache: treated as absent, full window refetched, same payload.
+    cache_path.write_text("{not json", encoding="utf-8")
+    assert _price_series() == third
+    assert [call["lookback_bars"] for call in feed.calls] == [181, 25, 182]
+
+
 def test_view_filter_selects_kinds(tmp_path: Path) -> None:
     store = _seed_job(tmp_path)
     result = load_forward_view(
@@ -432,6 +558,111 @@ def test_forward_view_includes_events(tmp_path: Path) -> None:
     result = load_forward_view("carry", store=store, include_prices=False)
     events = result["visualization"]["events"]
     assert [(e["kind"], e["mode"]) for e in events] == [("mode_flip", "live")]
+
+
+def test_curve_is_rebuilt_from_ticks_and_matches_tick_derived_series(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A job recorded before curve.jsonl existed gets its curve backfilled on
+    the first build, and the chart it yields is exactly the one the full tick
+    ledger yields."""
+    from wayfinder_paths.jobs import forward_artifacts
+    from wayfinder_paths.jobs.forward import read_jsonl
+    from wayfinder_paths.jobs.forward_artifacts import (
+        _mark_series,
+        _pnl_series,
+        _read_series,
+    )
+
+    store = _seed_freestyle_job(tmp_path)
+    monkeypatch.setattr(
+        forward_artifacts, "_fetch_hyperliquid_bars", lambda *a, **k: {}
+    )
+    forward = store.job_dir("hormuz") / "results" / "forward"
+    assert not (forward / "curve.jsonl").exists()
+
+    view = load_forward_view("hormuz", store=store)
+
+    ticks = read_jsonl(forward / "ticks.jsonl")
+    curve = read_jsonl(forward / "curve.jsonl")
+    assert len(curve) == len(ticks) == 3
+    assert set(curve[0]) == {
+        "ts",
+        "bar_ts",
+        "mode",
+        "revision",
+        "equity",
+        "unrealized_pnl",
+        "ledger",
+        "marks",
+        "funding",
+        "token_values",
+        "yields",
+    }
+    by_name = {s["name"]: s for s in view["visualization"]["series"]}
+    assert by_name["forward_equity"] == _pnl_series("hormuz", ticks, store=store)
+    for expected in _read_series(ticks) + _mark_series(ticks):
+        assert by_name[expected["name"]] == expected
+
+
+def test_fresh_curve_never_streams_the_tick_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the curve in step with the ticks, a build only seeks the tail of
+    ticks.jsonl (binary, for the last row) and never streams or reads it."""
+    store = _seed_job(tmp_path)
+    load_forward_view("carry", store=store, include_prices=False)
+    original_open = Path.open
+
+    def _tail_only(self: Path, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        if self.name == "ticks.jsonl" and "b" not in mode:
+            raise AssertionError("ticks.jsonl was streamed")
+        return original_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _tail_only)
+
+    result = load_forward_view("carry", store=store, include_prices=False)
+    equity = next(
+        s for s in result["visualization"]["series"] if s["kind"] == "equity_curve"
+    )
+    assert len(equity["points"]) == 6
+    assert result["summary"]["open_position"]["symbol"] == "IMX"
+
+
+def test_curve_behind_the_tick_ledger_is_rebuilt(tmp_path: Path) -> None:
+    """A tick appended without its curve row (torn write, or a writer that
+    predates the curve) is picked up on the next build; a torn trailing line
+    on the tick ledger is skipped, and an oversized last row is still found
+    by the tail read."""
+    from wayfinder_paths.jobs.forward import read_jsonl
+
+    store = _seed_job(tmp_path)
+    forward = store.job_dir("carry") / "results" / "forward"
+    first = load_forward_view("carry", store=store, include_prices=False)
+    late_tick = {
+        "kind": "tick",
+        "ts": "2026-07-17T00:00:00+00:00",
+        "bar_ts": "2026-07-17T00:00:00+00:00",
+        "mode": "live",
+        "ledger": {"realized_pnl": 2.0, "positions": {}},
+        "engine_state_pre": {"blob": "x" * 20_000},
+    }
+    with (forward / "ticks.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(late_tick) + "\n")
+        handle.write('{"kind": "tick", "ts": "torn')
+
+    second = load_forward_view("carry", store=store, include_prices=False)
+
+    def _equity(view: dict) -> list[dict]:
+        return next(
+            s for s in view["visualization"]["series"] if s["kind"] == "equity_curve"
+        )["points"]
+
+    assert len(_equity(second)) == len(_equity(first)) + 1
+    assert _equity(second)[-1]["realized_pnl"] == 2.0
+    curve = read_jsonl(forward / "curve.jsonl")
+    assert curve[-1]["ts"] == "2026-07-17T00:00:00+00:00"
+    assert "engine_state_pre" not in curve[-1]
 
 
 def _seed_freestyle_job(tmp_path: Path) -> JobStore:
