@@ -149,6 +149,50 @@ def test_forward_recorder_uses_env_and_preserves_loose_rows(
     assert summary["trades"]["losses"] == 1
 
 
+def test_record_tick_appends_a_compact_curve_row(tmp_path: Path) -> None:
+    """Every tick lands twice: the full replay row in ticks.jsonl and only the
+    chart-facing fields in curve.jsonl, so the forward chart never parses
+    engine state or reconciliation blocks."""
+    forward_dir = tmp_path / "results" / "forward"
+    recorder = ForwardRecorder(
+        job_id="demo-job", forward_dir=forward_dir, mode="paper", revision="abc123"
+    )
+    recorder.record_tick(
+        ts="2026-07-14T00:05:00+00:00",
+        bar_ts="2026-07-14T00:00:00+00:00",
+        ledger={"realized_pnl": 1.5, "positions": {"IMX": {"size": 1.0}}},
+        equity=101.5,
+        unrealized_pnl=0.25,
+        funding={"hyperliquid:IMX": 0.0001},
+        token_values={},
+        guard_events=[{"kind": "risk_halt", "reason": "drawdown", "source": "engine"}],
+        engine_state_pre={"ledger": {"positions": {}}, "blob": "x" * 5000},
+        reconciliation={"venue_equity": 100.0},
+    )
+    recorder.record_tick(
+        ts="2026-07-14T00:10:00+00:00",
+        bar_ts="2026-07-14T00:05:00+00:00",
+        skipped=True,
+        ledger={},
+    )
+
+    curve = read_jsonl(forward_dir / "curve.jsonl")
+    assert len(curve) == len(read_jsonl(forward_dir / "ticks.jsonl")) == 2
+    assert curve[0] == {
+        "ts": "2026-07-14T00:05:00+00:00",
+        "bar_ts": "2026-07-14T00:00:00+00:00",
+        "mode": "paper",
+        "revision": "abc123",
+        "equity": 101.5,
+        "unrealized_pnl": 0.25,
+        "ledger": {"realized_pnl": 1.5},
+        "funding": {"hyperliquid:IMX": 0.0001},
+        "guard_events": [{"kind": "risk_halt", "reason": "drawdown"}],
+    }
+    assert curve[1]["ledger"] == {}
+    assert "funding" not in curve[1] and "guard_events" not in curve[1]
+
+
 def test_operational_safety_exit_does_not_manufacture_strategy_loss(
     tmp_path: Path,
 ) -> None:

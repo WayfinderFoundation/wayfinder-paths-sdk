@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import os
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.jobs.models import (
+    DEFAULT_FORWARD_CURVE,
     DEFAULT_FORWARD_FILLS,
     DEFAULT_FORWARD_FUNDING,
     DEFAULT_FORWARD_ORDERS,
@@ -18,7 +19,7 @@ from wayfinder_paths.jobs.models import (
     safe_job_id,
     utc_now_iso,
 )
-from wayfinder_paths.runner.monitor_state import atomic_write_json
+from wayfinder_paths.runner.monitor_state import atomic_write_json, atomic_write_text
 
 FORWARD_SCHEMA_VERSION = "0.1"
 TRADE_METRICS_VERSION = 2
@@ -443,6 +444,13 @@ class ForwardRecorder:
 
         path = self.forward_dir / Path(FORWARD_FILES[kind]).name
         _append_jsonl(path, row)
+        if kind == "tick":
+            # Same append helper, same call: a torn write leaves the curve at
+            # most one row behind the tick ledger, which the reader repairs.
+            _append_jsonl(
+                self.forward_dir / Path(DEFAULT_FORWARD_CURVE).name,
+                forward_curve_row(row),
+            )
         self._update_summary(kind, row)
         return row
 
@@ -572,10 +580,61 @@ def _merge_payload(
     return merged
 
 
+# The tick fields the forward chart reads. Everything else on a tick (engine
+# state, reconciliation, intents, snapshot) is replay evidence the chart never
+# touches, and it is what makes the tick ledger tens of MB.
+_CURVE_READ_FIELDS = ("marks", "funding", "token_values", "yields")
+
+
+def forward_curve_row(tick: Mapping[str, Any]) -> dict[str, Any]:
+    ledger = tick.get("ledger") or {}
+    row: dict[str, Any] = {
+        "ts": tick.get("ts"),
+        "bar_ts": tick.get("bar_ts"),
+        "mode": tick.get("mode"),
+        "revision": tick.get("revision"),
+        "equity": tick.get("equity"),
+        "unrealized_pnl": tick.get("unrealized_pnl"),
+        "ledger": (
+            {"realized_pnl": ledger["realized_pnl"]} if "realized_pnl" in ledger else {}
+        ),
+    }
+    for field in _CURVE_READ_FIELDS:
+        values = tick.get(field)
+        if values:
+            row[field] = dict(values)
+    guards = [
+        {"kind": guard.get("kind"), "reason": guard.get("reason")}
+        for guard in tick.get("guard_events") or []
+    ]
+    if guards:
+        row["guard_events"] = guards
+    return row
+
+
+def rebuild_forward_curve(forward_dir: Path) -> Path:
+    """Rewrite curve.jsonl from ticks.jsonl in one streaming pass: the lazy
+    backfill for jobs recorded before the curve existed, and the repair when
+    a torn append left it behind the tick ledger."""
+    ticks_path = forward_dir / Path(DEFAULT_FORWARD_TICKS).name
+    curve_path = forward_dir / Path(DEFAULT_FORWARD_CURVE).name
+    lines: list[str] = []
+    if ticks_path.exists():
+        with ticks_path.open(encoding="utf-8", errors="replace") as handle:
+            for tick in _parse_jsonl_rows(handle):
+                lines.append(_jsonl_line(forward_curve_row(tick)))
+    atomic_write_text(curve_path, "".join(lines))
+    return curve_path
+
+
+def _jsonl_line(row: Mapping[str, Any]) -> str:
+    return json.dumps(row, sort_keys=True, default=str) + "\n"
+
+
 def _append_jsonl(path: Path, row: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(row, sort_keys=True, default=str) + "\n")
+        handle.write(_jsonl_line(row))
 
 
 def _read_json(path: Path, default: Any) -> Any:
@@ -602,6 +661,19 @@ def tail_jsonl(path: Path, limit: int) -> list[dict[str, Any]]:
     # shortens the tail below `limit`.
     with path.open(encoding="utf-8", errors="replace") as handle:
         lines = deque(handle, maxlen=int(limit) + 1)
+    return _parse_jsonl_rows(lines)[-int(limit) :]
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    """Every object row of an append-only JSONL ledger, streamed line by line;
+    a torn or blank line is skipped, never fatal."""
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        return _parse_jsonl_rows(handle)
+
+
+def _parse_jsonl_rows(lines: Iterable[str]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for line in lines:
         if not line.strip():
@@ -612,4 +684,4 @@ def tail_jsonl(path: Path, limit: int) -> list[dict[str, Any]]:
             continue
         if isinstance(row, dict):
             rows.append(row)
-    return rows[-int(limit) :]
+    return rows

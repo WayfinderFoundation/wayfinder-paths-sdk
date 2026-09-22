@@ -421,7 +421,12 @@ def test_forked_child_loader_error_is_a_500_envelope(
     comes back as the same 500 envelope the in-process server produced."""
     store = _seed_forward_job(tmp_path)
     ticks = store.job_dir("carry") / "results" / "forward" / "ticks.jsonl"
-    ticks.write_text('{"kind": "tick", not json\n', encoding="utf-8")
+    # A torn line is skipped by the ledger readers; a parseable tick whose
+    # ledger is not an object is corruption the curve rebuild fails hard on.
+    ticks.write_text(
+        '{"kind": "tick", "bar_ts": "2026-07-14T00:00:00+00:00", "ledger": 5}\n',
+        encoding="utf-8",
+    )
 
     status, body = _get(server.port, "/forward-view?job_id=carry&no_prices=1")
     assert status == 500

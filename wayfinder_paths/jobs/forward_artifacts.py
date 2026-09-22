@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
@@ -14,8 +15,13 @@ from wayfinder_paths.jobs.backtest_artifacts import (
     _parse_ts,
     order_series_for_display,
 )
-from wayfinder_paths.jobs.forward import default_forward_summary, tail_jsonl
+from wayfinder_paths.jobs.forward import (
+    default_forward_summary,
+    read_jsonl,
+    rebuild_forward_curve,
+)
 from wayfinder_paths.jobs.models import (
+    DEFAULT_FORWARD_CURVE,
     DEFAULT_FORWARD_FILLS,
     DEFAULT_FORWARD_SUMMARY,
     DEFAULT_FORWARD_TICKS,
@@ -40,7 +46,7 @@ def forward_pnl_breakdown(forward_dir: Path) -> dict[str, Any]:
     """
     pnl = {"paper": 0.0, "live": 0.0}
     counts = {"paper": 0, "live": 0}
-    for row in _read_jsonl(forward_dir / Path(DEFAULT_FORWARD_TRADES).name):
+    for row in read_jsonl(forward_dir / Path(DEFAULT_FORWARD_TRADES).name):
         mode = str(row.get("mode") or "paper")
         if mode not in pnl:
             continue
@@ -57,10 +63,9 @@ def forward_open_position(
 ) -> dict[str, Any] | None:
     """The currently-open position (if any) from the latest tick's ledger,
     with unrealized PnL marked at the last known close when available."""
-    ticks = tail_jsonl(forward_dir / Path(DEFAULT_FORWARD_TICKS).name, 1)
-    if not ticks:
+    tick = _last_jsonl_row(forward_dir / Path(DEFAULT_FORWARD_TICKS).name)
+    if tick is None:
         return None
-    tick = ticks[-1]
     # Skipped ticks (no_new_bar) record an empty top-level ledger; the real
     # unchanged state lives in engine_state_pre. Without this fallback the
     # open position vanishes from the snapshot on every between-bar tick.
@@ -109,15 +114,16 @@ def load_forward_view(
     (backend proxy + FE renderer) is reused, but is built on demand from the
     forward artifacts instead of a pre-written visualization.json:
     - markers from fills.jsonl, each tagged with the MODE it executed under
-    - a PnL curve from the tick ledger's realized_pnl progression
+    - a PnL curve from the curve ledger (the chart-facing fields of each
+      tick; the full tick ledger is replay evidence and is never parsed here)
     - market_price OHLC series fetched through the same venue feed the driver
       uses (forward ticks don't persist bars); on fetch failure the payload
       degrades to markers + PnL with a `price_note` instead of failing.
     """
     store = store or JobStore()
     forward_dir = store.job_dir(job_id) / "results" / "forward"
-    fills = _read_jsonl(forward_dir / Path(DEFAULT_FORWARD_FILLS).name)
-    ticks = _read_jsonl(forward_dir / Path(DEFAULT_FORWARD_TICKS).name)
+    fills = read_jsonl(forward_dir / Path(DEFAULT_FORWARD_FILLS).name)
+    ticks = _forward_curve(forward_dir)
     if not fills and not ticks:
         return {"available": False}
 
@@ -227,6 +233,53 @@ def load_forward_view(
         # replaces the raw 50-row tail the UI could not interpret.
         "trades": trades,
     }
+
+
+def _forward_curve(forward_dir: Path) -> list[dict[str, Any]]:
+    """The chart's per-tick rows from curve.jsonl, rebuilt from ticks.jsonl
+    once when the curve is missing or its last row is not the last tick (a
+    job recorded before the curve existed, or a torn append)."""
+    last_tick = _last_jsonl_row(forward_dir / Path(DEFAULT_FORWARD_TICKS).name)
+    if last_tick is None:
+        return []
+    curve_path = forward_dir / Path(DEFAULT_FORWARD_CURVE).name
+    last_curve = _last_jsonl_row(curve_path)
+    if last_curve is None or _tick_stamp(last_curve) != _tick_stamp(last_tick):
+        rebuild_forward_curve(forward_dir)
+    return read_jsonl(curve_path)
+
+
+def _tick_stamp(row: Mapping[str, Any]) -> str | None:
+    stamp = row.get("ts") or row.get("bar_ts")
+    return str(stamp) if stamp else None
+
+
+def _last_jsonl_row(path: Path, *, chunk_bytes: int = 8192) -> dict[str, Any] | None:
+    """The last complete object row of a JSONL ledger, read from the file's
+    tail — learning the final tick must not stream a 32 MB ledger. A torn or
+    blank last line yields the row before it, as `tail_jsonl` does."""
+    if not path.exists():
+        return None
+    with path.open("rb") as handle:
+        size = handle.seek(0, os.SEEK_END)
+        window = min(size, chunk_bytes)
+        while True:
+            handle.seek(size - window)
+            lines = handle.read(window).split(b"\n")
+            # Unless the window is the whole file its first fragment may
+            # start mid-line, so it is never a candidate.
+            for line in reversed(lines if window == size else lines[1:]):
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line.decode("utf-8", errors="replace"))
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    return row
+            if window == size:
+                return None
+            window = min(size, window * 2)
 
 
 def forward_events(
@@ -354,7 +407,7 @@ def _closed_trades(
         position_side_of_close,
     )
 
-    rows = _read_jsonl(forward_dir / Path(DEFAULT_FORWARD_TRADES).name)[-limit:]
+    rows = read_jsonl(forward_dir / Path(DEFAULT_FORWARD_TRADES).name)[-limit:]
     trades: list[dict[str, Any]] = []
     for trade in rows:
         symbol = str(trade.get("symbol") or "")
@@ -807,16 +860,6 @@ def _fetch_spec_price_series(
             }
         )
     return series
-
-
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    rows = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if line.strip():
-            rows.append(json.loads(line))
-    return rows
 
 
 def _read_json(path: Path) -> Any:

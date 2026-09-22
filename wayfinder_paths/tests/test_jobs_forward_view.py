@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -432,6 +433,111 @@ def test_forward_view_includes_events(tmp_path: Path) -> None:
     result = load_forward_view("carry", store=store, include_prices=False)
     events = result["visualization"]["events"]
     assert [(e["kind"], e["mode"]) for e in events] == [("mode_flip", "live")]
+
+
+def test_curve_is_rebuilt_from_ticks_and_matches_tick_derived_series(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A job recorded before curve.jsonl existed gets its curve backfilled on
+    the first build, and the chart it yields is exactly the one the full tick
+    ledger yields."""
+    from wayfinder_paths.jobs import forward_artifacts
+    from wayfinder_paths.jobs.forward import read_jsonl
+    from wayfinder_paths.jobs.forward_artifacts import (
+        _mark_series,
+        _pnl_series,
+        _read_series,
+    )
+
+    store = _seed_freestyle_job(tmp_path)
+    monkeypatch.setattr(
+        forward_artifacts, "_fetch_hyperliquid_bars", lambda *a, **k: {}
+    )
+    forward = store.job_dir("hormuz") / "results" / "forward"
+    assert not (forward / "curve.jsonl").exists()
+
+    view = load_forward_view("hormuz", store=store)
+
+    ticks = read_jsonl(forward / "ticks.jsonl")
+    curve = read_jsonl(forward / "curve.jsonl")
+    assert len(curve) == len(ticks) == 3
+    assert set(curve[0]) == {
+        "ts",
+        "bar_ts",
+        "mode",
+        "revision",
+        "equity",
+        "unrealized_pnl",
+        "ledger",
+        "marks",
+        "funding",
+        "token_values",
+        "yields",
+    }
+    by_name = {s["name"]: s for s in view["visualization"]["series"]}
+    assert by_name["forward_equity"] == _pnl_series("hormuz", ticks, store=store)
+    for expected in _read_series(ticks) + _mark_series(ticks):
+        assert by_name[expected["name"]] == expected
+
+
+def test_fresh_curve_never_streams_the_tick_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the curve in step with the ticks, a build only seeks the tail of
+    ticks.jsonl (binary, for the last row) and never streams or reads it."""
+    store = _seed_job(tmp_path)
+    load_forward_view("carry", store=store, include_prices=False)
+    original_open = Path.open
+
+    def _tail_only(self: Path, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        if self.name == "ticks.jsonl" and "b" not in mode:
+            raise AssertionError("ticks.jsonl was streamed")
+        return original_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _tail_only)
+
+    result = load_forward_view("carry", store=store, include_prices=False)
+    equity = next(
+        s for s in result["visualization"]["series"] if s["kind"] == "equity_curve"
+    )
+    assert len(equity["points"]) == 6
+    assert result["summary"]["open_position"]["symbol"] == "IMX"
+
+
+def test_curve_behind_the_tick_ledger_is_rebuilt(tmp_path: Path) -> None:
+    """A tick appended without its curve row (torn write, or a writer that
+    predates the curve) is picked up on the next build; a torn trailing line
+    on the tick ledger is skipped, and an oversized last row is still found
+    by the tail read."""
+    from wayfinder_paths.jobs.forward import read_jsonl
+
+    store = _seed_job(tmp_path)
+    forward = store.job_dir("carry") / "results" / "forward"
+    first = load_forward_view("carry", store=store, include_prices=False)
+    late_tick = {
+        "kind": "tick",
+        "ts": "2026-07-17T00:00:00+00:00",
+        "bar_ts": "2026-07-17T00:00:00+00:00",
+        "mode": "live",
+        "ledger": {"realized_pnl": 2.0, "positions": {}},
+        "engine_state_pre": {"blob": "x" * 20_000},
+    }
+    with (forward / "ticks.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(late_tick) + "\n")
+        handle.write('{"kind": "tick", "ts": "torn')
+
+    second = load_forward_view("carry", store=store, include_prices=False)
+
+    def _equity(view: dict) -> list[dict]:
+        return next(
+            s for s in view["visualization"]["series"] if s["kind"] == "equity_curve"
+        )["points"]
+
+    assert len(_equity(second)) == len(_equity(first)) + 1
+    assert _equity(second)[-1]["realized_pnl"] == 2.0
+    curve = read_jsonl(forward / "curve.jsonl")
+    assert curve[-1]["ts"] == "2026-07-17T00:00:00+00:00"
+    assert "engine_state_pre" not in curve[-1]
 
 
 def _seed_freestyle_job(tmp_path: Path) -> JobStore:
