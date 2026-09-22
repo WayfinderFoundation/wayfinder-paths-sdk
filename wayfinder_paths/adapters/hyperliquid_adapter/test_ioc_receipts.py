@@ -97,6 +97,12 @@ def test_partial_canceled_ioc_reconciles_exact_fill_without_double_builder_fee(r
     assert reconcile_ioc_fill(**receipt) == IocFill(D("0.01"), D("2000"), 1, D("0.1"))
 
 
+def test_client_order_id_is_a_case_insensitive_hex_identifier(receipt):
+    receipt["cloid"] = "0x" + "AB" * 16
+    receipt["status"]["order"]["order"]["cloid"] = "0x" + "ab" * 16
+    assert reconcile_ioc_fill(**receipt) == IocFill(D("0.01"), D("2000"), 1, D("0.1"))
+
+
 def test_filled_ioc_requires_complete_history(receipt):
     receipt["status"]["order"].update(status="filled")
     receipt["status"]["order"]["order"]["sz"] = "0"

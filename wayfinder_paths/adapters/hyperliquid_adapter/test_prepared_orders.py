@@ -137,7 +137,11 @@ async def test_cancellation_after_dispatch_remains_uncertain(submit_args):
     "asset,size,price",
     [
         (True, "1", "1"),
+        (-1, "1", "1"),
         (10000, "1", "1"),
+        (100000, "1", "1"),
+        (109999, "1", "1"),
+        (100000000, "1", "1"),
         (1, "0", "1"),
         (1, "NaN", "1"),
         (1, "1", "Infinity"),
@@ -147,6 +151,40 @@ async def test_cancellation_after_dispatch_remains_uncertain(submit_args):
 def test_invalid_orders_rejected(asset, size, price):
     with pytest.raises(ValueError):
         PerpIocOrder(asset, Decimal(size), Decimal(price))
+
+
+@pytest.mark.asyncio
+async def test_prepared_ioc_supports_hip3_reductions(submit_args):
+    order = PerpIocOrder(110012, Decimal("-0.02"), Decimal("2000"))
+    await submit_prepared_ioc(
+        **{
+            **submit_args,
+            "orders": (order,),
+            "cloids": submit_args["cloids"][:1],
+            "reduce_only": True,
+        }
+    )
+    wire = submit_args["post_exchange"].call_args.args[0]["action"]["orders"][0]
+    assert wire["a"] == 110012
+    assert wire["r"] is True
+    assert wire["b"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["signed_size", "limit_price"])
+async def test_prepared_terms_never_silently_round_to_zero(submit_args, field):
+    fields = {"asset_id": 1, "signed_size": Decimal(1), "limit_price": Decimal(1)}
+    fields[field] = Decimal("1E-13")
+    with pytest.raises(IocNotSubmitted):
+        await submit_prepared_ioc(
+            **{
+                **submit_args,
+                "orders": (PerpIocOrder(**fields),),
+                "cloids": submit_args["cloids"][:1],
+            }
+        )
+    submit_args["sign"].assert_not_awaited()
+    submit_args["post_exchange"].assert_not_awaited()
 
 
 @pytest.mark.parametrize(

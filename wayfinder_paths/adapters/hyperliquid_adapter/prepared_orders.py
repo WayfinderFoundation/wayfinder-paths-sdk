@@ -1,4 +1,4 @@
-"""Single-attempt execution of persisted core-perp IOC orders.
+"""Single-attempt execution of persisted perp IOC orders and native brackets.
 
 The caller owns policy, fresh capacity/positions, builder/account setup and
 durable IDs. This boundary must not refresh prices, change terms, enable account
@@ -8,7 +8,7 @@ modes, approve fees, or retry an uncertain submission behind that coordinator.
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from hyperliquid.exchange import get_timestamp_ms
@@ -18,7 +18,7 @@ from hyperliquid.utils.signing import (
     get_l1_action_payload,
     order_wires_to_order_action,
 )
-from hyperliquid.utils.types import BuilderInfo
+from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET, BuilderInfo
 
 from wayfinder_paths.core.constants.hyperliquid import DEFAULT_HYPERLIQUID_BUILDER_FEE
 
@@ -32,13 +32,16 @@ class PerpIocOrder:
     def __post_init__(self) -> None:
         if (
             type(self.asset_id) is not int
-            or not 0 <= self.asset_id < 10_000
+            or not (
+                0 <= self.asset_id < 10_000
+                or 110_000 <= self.asset_id < OUTCOME_ASSET_OFFSET
+            )
             or not self.signed_size.is_finite()
             or self.signed_size == 0
             or not self.limit_price.is_finite()
             or self.limit_price <= 0
         ):
-            raise ValueError("Invalid core-perp IOC order")
+            raise ValueError("Invalid perp IOC order")
 
     def as_dict(self) -> dict[str, int | str]:
         return {
@@ -50,6 +53,10 @@ class PerpIocOrder:
 
 class IocNotSubmitted(Exception):
     """Validation/signing expired or failed before the exchange was called."""
+
+
+class BracketNotSubmitted(Exception):
+    """No part of the bracket was submitted; validation/signing failed first."""
 
 
 @dataclass(frozen=True)
@@ -137,8 +144,10 @@ def reconcile_ioc_fill(
         return None
     envelope = status["order"]
     order, state = envelope["order"], envelope["status"]
+    observed_cloid = order.get("cloid")
     if (
-        order.get("cloid") != cloid
+        not isinstance(observed_cloid, str)
+        or observed_cloid.lower() != cloid.lower()
         or order.get("coin") != coin
         or order.get("side") != ("B" if signed_size > 0 else "A")
         or Decimal(order["origSz"]) != abs(signed_size)
@@ -197,49 +206,142 @@ async def submit_prepared_ioc(
     An exception after post_exchange starts is uncertain, NOT IocNotSubmitted.
     """
     try:
-        nonce = get_timestamp_ms()
         if (
-            type(expires_after) is not int
-            or not nonce < expires_after <= nonce + 30_000
-            or type(reduce_only) is not bool
+            type(reduce_only) is not bool
             or not 1 <= len(orders) <= 2
-            or len(cloids) != len(orders)
-            or len(set(cloids)) != len(cloids)
             or len({order.asset_id for order in orders}) != len(orders)
         ):
-            raise ValueError("Invalid IOC batch or expired execution window")
-        wires: list[OrderWire] = []
-        for order, cloid in zip(orders, cloids, strict=True):
-            if not cloid.startswith("0x") or len(cloid) != 34:
-                raise ValueError("Invalid client order ID")
-            UUID(cloid[2:])
+            raise ValueError("Invalid IOC batch")
+        _validate_cloids(cloids, len(orders))
+        payload = await _sign_prepared_orders(
+            [
+                _ioc_wire(order, cloid, reduce_only=reduce_only)
+                for order, cloid in zip(orders, cloids, strict=True)
+            ],
+            grouping="na",
+            expires_after=expires_after,
+            sign=sign,
+        )
+    except Exception as exc:
+        raise IocNotSubmitted("IOC batch was not submitted") from exc
+    return await post_exchange(payload)
+
+
+async def submit_prepared_bracket(
+    entry: PerpIocOrder,
+    *,
+    take_profit_price: Decimal,
+    stop_loss_price: Decimal,
+    cloids: Sequence[str],
+    expires_after: int,
+    sign: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
+    post_exchange: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Submit one IOC entry with fixed-size, reduce-only market TP/SL children.
+
+    IDs are ordered entry, take profit, stop loss. Persist all three before
+    calling. The response is NOT proof of a protected position: inspect each
+    order, and reconcile by ID after uncertainty. A partially filled IOC can
+    cancel its children; repair only the confirmed remaining exposure, never
+    resend the entry. Expiry bounds submission, not the lifetime of the exits.
+    """
+    try:
+        _validate_cloids(cloids, 3)
+        if any(
+            not price.is_finite() or price <= 0
+            for price in (take_profit_price, stop_loss_price)
+        ):
+            raise ValueError("Invalid bracket trigger price")
+        lower, upper = (
+            (stop_loss_price, take_profit_price)
+            if entry.signed_size > 0
+            else (take_profit_price, stop_loss_price)
+        )
+        if not lower < entry.limit_price < upper:
+            raise ValueError("Entry limit must be inside the bracket")
+        parent = _ioc_wire(entry, cloids[0], reduce_only=False)
+        wires = [parent]
+        for price, tpsl, cloid in (
+            (take_profit_price, "tp", cloids[1]),
+            (stop_loss_price, "sl", cloids[2]),
+        ):
+            trigger = _exact_wire_decimal(price)
             wires.append(
                 {
-                    "a": order.asset_id,
-                    "b": order.signed_size > 0,
-                    "p": float_to_wire(float(order.limit_price)),
-                    "s": float_to_wire(float(abs(order.signed_size))),
-                    "r": reduce_only,
-                    "t": {"limit": {"tif": "Ioc"}},
+                    "a": entry.asset_id,
+                    "b": not parent["b"],
+                    "p": trigger,
+                    "s": parent["s"],
+                    "r": True,
+                    "t": {
+                        "trigger": {
+                            "isMarket": True,
+                            "triggerPx": trigger,
+                            "tpsl": tpsl,
+                        }
+                    },
                     "c": cloid,
                 }
             )
-        builder = BuilderInfo(
-            b=DEFAULT_HYPERLIQUID_BUILDER_FEE["b"].lower(),
-            f=DEFAULT_HYPERLIQUID_BUILDER_FEE["f"],
+        payload = await _sign_prepared_orders(
+            wires, grouping="normalTpsl", expires_after=expires_after, sign=sign
         )
-        action = order_wires_to_order_action(wires, builder)
-        payload = get_l1_action_payload(action, None, nonce, expires_after, True)
-        signature = await sign(payload)
-        if not signature or get_timestamp_ms() >= expires_after:
-            raise ValueError("Signing failed or the IOC execution window expired")
     except Exception as exc:
-        raise IocNotSubmitted("IOC batch was not submitted") from exc
-    return await post_exchange(
-        {
-            "action": action,
-            "nonce": nonce,
-            "signature": signature,
-            "expiresAfter": expires_after,
-        }
+        raise BracketNotSubmitted("Bracket was not submitted") from exc
+    return await post_exchange(payload)
+
+
+def _validate_cloids(cloids: Sequence[str], count: int) -> None:
+    if len(cloids) != count or len({cloid.lower() for cloid in cloids}) != count:
+        raise ValueError("Each order needs a distinct persisted client ID")
+    for cloid in cloids:
+        if not cloid.startswith("0x") or len(cloid) != 34:
+            raise ValueError("Invalid client order ID")
+        UUID(cloid[2:])
+
+
+def _exact_wire_decimal(value: Decimal) -> str:
+    wire = float_to_wire(float(value))
+    if Decimal(wire) != value:
+        raise ValueError("Order precision would change persisted terms")
+    return wire
+
+
+def _ioc_wire(order: PerpIocOrder, cloid: str, *, reduce_only: bool) -> OrderWire:
+    return {
+        "a": order.asset_id,
+        "b": order.signed_size > 0,
+        "p": _exact_wire_decimal(order.limit_price),
+        "s": _exact_wire_decimal(abs(order.signed_size)),
+        "r": reduce_only,
+        "t": {"limit": {"tif": "Ioc"}},
+        "c": cloid,
+    }
+
+
+async def _sign_prepared_orders(
+    wires: list[OrderWire],
+    *,
+    grouping: Literal["na", "normalTpsl"],
+    expires_after: int,
+    sign: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Shared signing only: callers keep dispatch outside their unsent guard."""
+    nonce = get_timestamp_ms()
+    if type(expires_after) is not int or not nonce < expires_after <= nonce + 30_000:
+        raise ValueError("Invalid or expired execution window")
+    builder = BuilderInfo(
+        b=DEFAULT_HYPERLIQUID_BUILDER_FEE["b"].lower(),
+        f=DEFAULT_HYPERLIQUID_BUILDER_FEE["f"],
     )
+    action = order_wires_to_order_action(wires, builder, grouping)
+    payload = get_l1_action_payload(action, None, nonce, expires_after, True)
+    signature = await sign(payload)
+    if not signature or get_timestamp_ms() >= expires_after:
+        raise ValueError("Signing failed or the execution window expired")
+    return {
+        "action": action,
+        "nonce": nonce,
+        "signature": signature,
+        "expiresAfter": expires_after,
+    }

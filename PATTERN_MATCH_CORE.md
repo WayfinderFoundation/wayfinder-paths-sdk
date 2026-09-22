@@ -58,3 +58,21 @@ history agree. This is not an atomic two-leg order. The host must persist IDs
 before sending, unwind incomplete entries, enforce authorization on each sign,
 and monitor the basket independently of the browser. These primitives do not
 enable a deployed trade endpoint or schedule by themselves.
+
+## Native bracket execution boundary (in progress)
+
+`submit_prepared_bracket` adds the original strategy's native `normalTpsl`
+entry/TP/SL group to the same prepared-order boundary. It signs three persisted
+client IDs, uses fixed-size reduce-only market exits, and supports core and HIP-3
+perps without accepting spot or outcome IDs. Market identity, ticks, capacity and
+current entry eligibility must still be resolved by the caller from metadata.
+Persisted decimal terms that would change during wire encoding are rejected
+before signing rather than silently rounded.
+
+The submission is single-attempt, not an execution coordinator. A lost response
+is uncertain, and an acknowledged entry does not prove both exits survived.
+In particular, cancelling a partially filled IOC can cancel its child exits;
+the host must reconcile the fill and each child before repairing protection or
+closing the confirmed remaining position. The signed submission expiry does not
+cancel active exits or implement the research's 24-hour time exit. Durable
+backend recovery and timed-close integration for this strategy remain pending.
