@@ -29,8 +29,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 LOCK_RELATIVE = ".wayfinder/compute.lock"
 EVOLUTION_BUDGET_RELATIVE = ".wayfinder/evolution_compute_budget.json"
+COMPUTE_OVERRIDE_RELATIVE = ".wayfinder/evolution_compute_override.json"
 DEFAULT_TIMEOUT_S = 600.0
 _POLL_S = 2.0
 _local = threading.local()
@@ -191,10 +194,15 @@ def experiment_compute_lock(
         hard_limit = float(completion_duty_fraction) * float(window_hours) * 3600.0
         limit = hard_limit if completion_reserve else soft_limit
         if used >= limit:
-            raise ComputeLockBusy(
-                f"evolution {'completion' if completion_reserve else 'routine'} "
-                f"compute duty exhausted ({used:.1f}/{limit:.1f}s over "
-                f"{window_hours:g}h); retry after rolling debt clears"
+            override_until = _owner_compute_override(store.repo_root, job_id, now=now)
+            if override_until is None:
+                raise ComputeLockBusy(
+                    f"evolution {'completion' if completion_reserve else 'routine'} "
+                    f"compute duty exhausted ({used:.1f}/{limit:.1f}s over "
+                    f"{window_hours:g}h); retry after rolling debt clears"
+                )
+            logger.warning(
+                f"evolution compute budget overridden by owner until {override_until}"
             )
         with heavy_compute_lock(repo_root=store.repo_root, label=label):
             started = time.monotonic()
@@ -240,6 +248,35 @@ def experiment_compute_lock(
                         "events": events,
                     },
                 )
+
+
+def _owner_compute_override(
+    repo_root: Path, job_id: str, *, now: datetime
+) -> str | None:
+    """The owner's override expiry when its marker covers this job's op.
+
+    The marker is written by a forced campaign start and expires with the
+    campaign, so an exhausted budget never strands the campaign mid-flight.
+    An unreadable or expired marker is ignored (expired ones are removed);
+    a marker naming another job never applies.
+    """
+    path = Path(repo_root) / COMPUTE_OVERRIDE_RELATIVE
+    try:
+        marker = json.loads(path.read_text(encoding="utf-8"))
+        expires_at = datetime.fromisoformat(str(marker["expires_at"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if expires_at <= now:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return None
+    if marker.get("job_id") and str(marker["job_id"]) != job_id:
+        return None
+    return str(marker["expires_at"])
 
 
 def evolution_compute_budget_status(

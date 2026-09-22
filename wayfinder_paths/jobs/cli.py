@@ -1404,10 +1404,25 @@ def robustness_check_cmd(
 )
 @click.argument("job_id")
 @click.option("--force", is_flag=True, help="Replace cooldown/completed state.")
-def evolution_start_cmd(job_id: str, force: bool) -> None:
+@click.option(
+    "--override-compute-budget",
+    is_flag=True,
+    help=(
+        "Owner-only: start even when the 12 h evolution compute budget is "
+        "exhausted; the override expires with the campaign and is journaled."
+    ),
+)
+def evolution_start_cmd(
+    job_id: str, force: bool, override_compute_budget: bool
+) -> None:
     store = JobStore()
     try:
-        result = start_campaign(store, job_id, force=force)
+        result = start_campaign(
+            store,
+            job_id,
+            force=force,
+            override_compute_budget=override_compute_budget,
+        )
     except (FileNotFoundError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
     # The op-runner path nudges on op completion; an inline CLI start must

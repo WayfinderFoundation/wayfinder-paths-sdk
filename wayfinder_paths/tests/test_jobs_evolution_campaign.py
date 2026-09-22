@@ -20,7 +20,11 @@ from wayfinder_paths.jobs.archive import (
     quality_diversity_snapshot,
     record_candidate,
 )
-from wayfinder_paths.jobs.compute_lock import ComputeLockBusy
+from wayfinder_paths.jobs.compute_lock import (
+    COMPUTE_OVERRIDE_RELATIVE,
+    EVOLUTION_BUDGET_RELATIVE,
+    ComputeLockBusy,
+)
 from wayfinder_paths.jobs.evolution_campaign import (
     _archive_campaign_candidate,
     _attempt_cap,
@@ -1524,6 +1528,108 @@ def test_denied_campaign_start_names_the_slot_owner(tmp_path, monkeypatch) -> No
     assert campaign_block_reason(store, "a-lab", now=now) is None
     assert campaign_due(store, "a-lab", now=now) is True
     assert campaign_due(store, "b-lab", now=now) is False
+
+
+def test_forced_start_skips_its_own_spacing_but_not_a_running_campaign(
+    tmp_path, monkeypatch
+) -> None:
+    """--force is the owner restarting by hand right after a campaign ended:
+    the start spacing is theirs to skip, the one-campaign-per-box rule is not
+    (a due sibling does not deny the forced start; a running one does)."""
+    now = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    store = _fleet_pair(
+        tmp_path,
+        monkeypatch,
+        {"a-lab-agent": {"status": "ACTIVE"}, "b-lab-agent": {"status": "ACTIVE"}},
+    )
+    first = start_campaign(store, "a-lab", now=now)
+    store.write_json(
+        "a-lab", "state/evolution_campaign.json", {**first, "status": "complete"}
+    )
+
+    soon = now + timedelta(hours=1)
+    with pytest.raises(ValueError, match="start interval"):
+        start_campaign(store, "a-lab", now=soon)
+    assert campaign_due(store, "b-lab", now=soon) is True
+    restarted = start_campaign(store, "a-lab", now=soon, force=True)
+    assert restarted["status"] == "active"
+    assert restarted["campaign_id"] != first["campaign_id"]
+
+    with pytest.raises(
+        TransientInfrastructureError,
+        match=r"machine evolution campaign slot \(a-lab\)",
+    ):
+        start_campaign(store, "b-lab", now=soon, force=True)
+    with pytest.raises(TransientInfrastructureError, match="machine evolution"):
+        start_campaign(store, "b-lab", now=soon)
+    assert campaign_status(store, "b-lab") == {}
+
+
+def test_owner_compute_budget_override_is_written_journaled_and_honoured(
+    tmp_path,
+) -> None:
+    """An exhausted rolling budget refuses a start; the owner's override
+    writes an expiring machine marker, journals it, and the start's own
+    compute lock honours it."""
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    # The ledger and the marker are judged against wall-clock time.
+    now = datetime.now(UTC).replace(microsecond=0)
+    budget_path = tmp_path / EVOLUTION_BUDGET_RELATIVE
+    budget_path.parent.mkdir(parents=True, exist_ok=True)
+    budget_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "2.0",
+                "window_hours": 12,
+                "soft_duty_fraction": 0.20,
+                "hard_duty_fraction": 0.25,
+                "events": [
+                    {
+                        "ts": now.isoformat(),
+                        "job_id": "other-lab",
+                        "class": "routine",
+                        "wall_seconds": 0.20 * 12 * 3600 + 1,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ComputeLockBusy, match="routine compute duty exhausted"):
+        start_campaign(store, job_id, now=now)
+    assert campaign_status(store, job_id) == {}
+    assert not (tmp_path / COMPUTE_OVERRIDE_RELATIVE).exists()
+
+    state = start_campaign(store, job_id, now=now, override_compute_budget=True)
+    assert state["status"] == "active"
+    root = store.job_dir(job_id)
+    manifest = json.loads((root / state["manifest"]).read_text(encoding="utf-8"))
+    expires_at = (
+        datetime.fromisoformat(manifest["deadline_at"]) + timedelta(hours=4)
+    ).isoformat()
+    marker = json.loads(
+        (tmp_path / COMPUTE_OVERRIDE_RELATIVE).read_text(encoding="utf-8")
+    )
+    assert marker == {
+        "job_id": job_id,
+        "campaign_id": state["campaign_id"],
+        "by": "owner",
+        "at": now.isoformat(),
+        "expires_at": expires_at,
+    }
+    rows = [
+        json.loads(line)
+        for line in (root / "journal.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    overridden = [
+        row for row in rows if row["type"] == "evolution_compute_budget_overridden"
+    ]
+    assert len(overridden) == 1
+    assert overridden[0]["by"] == "owner"
+    assert overridden[0]["campaign_id"] == state["campaign_id"]
+    assert overridden[0]["expires_at"] == expires_at
 
 
 def test_runner_command_declares_control_and_heavy_resource_tiers() -> None:
@@ -4560,7 +4666,9 @@ def test_cli_evolution_start_nudges_the_session(monkeypatch, tmp_path) -> None:
 
     calls: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        cli_module, "start_campaign", lambda store, job_id, force: {"status": "active"}
+        cli_module,
+        "start_campaign",
+        lambda store, job_id, force, override_compute_budget: {"status": "active"},
     )
     monkeypatch.setattr(
         cli_module,
@@ -4573,6 +4681,41 @@ def test_cli_evolution_start_nudges_the_session(monkeypatch, tmp_path) -> None:
     assert outcome.exit_code == 0, outcome.output
     assert calls == [("nudge", "job-nudge-demo")]
     assert '"queued": true' in outcome.output
+
+
+def test_cli_evolution_start_passes_the_owner_budget_override(monkeypatch) -> None:
+    from click.testing import CliRunner
+
+    from wayfinder_paths.jobs import cli as cli_module
+
+    seen: dict[str, dict[str, Any]] = {}
+
+    def fake_start(store, job_id, **kwargs):
+        seen[job_id] = kwargs
+        return {"status": "active"}
+
+    monkeypatch.setattr(cli_module, "start_campaign", fake_start)
+    monkeypatch.setattr(
+        cli_module, "nudge_evolution_session", lambda store, job_id: {"queued": True}
+    )
+    runner = CliRunner()
+    overridden = runner.invoke(
+        cli_module.job_cli,
+        [
+            "evolution-start",
+            "job-override-demo",
+            "--force",
+            "--override-compute-budget",
+        ],
+    )
+    assert overridden.exit_code == 0, overridden.output
+    assert seen["job-override-demo"] == {
+        "force": True,
+        "override_compute_budget": True,
+    }
+    plain = runner.invoke(cli_module.job_cli, ["evolution-start", "job-plain-demo"])
+    assert plain.exit_code == 0, plain.output
+    assert seen["job-plain-demo"] == {"force": False, "override_compute_budget": False}
 
 
 def test_risk_ceiling_scale_only_for_risk_only_rejections_with_edge() -> None:
