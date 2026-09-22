@@ -76,3 +76,19 @@ the host must reconcile the fill and each child before repairing protection or
 closing the confirmed remaining position. The signed submission expiry does not
 cancel active exits or implement the research's 24-hour time exit. Durable
 backend recovery and timed-close integration for this strategy remain pending.
+
+`reconcile_bracket_exit` uses the same order-identity and complete-fill checks
+as IOC reconciliation. An open exit counts as protection only when its exact
+trigger price, side, fixed size, market-trigger type and reduce-only flag match
+the persisted plan. `unknownOid` is unresolved, not proof that an exit is absent;
+`triggered` is not a final fill. Terminal trigger orders may be reported as
+ordinary Market orders, so their fills are reconciled without requiring live
+trigger metadata. The host must compare entry and exit receipts together before
+showing a protected position or releasing a reservation.
+
+`submit_prepared_cancels` signs a bounded, single-attempt cancellation for only
+the persisted client IDs of one bracket. It never schedules account-wide
+cancellation, and it shares order submission's exact signing/expiry boundary.
+A cancellation acknowledgement is not a position-close receipt; subsequent
+order/fill reconciliation is still required, including when a trigger races
+the cancellation. These helpers do not enable or deploy the backend worker.

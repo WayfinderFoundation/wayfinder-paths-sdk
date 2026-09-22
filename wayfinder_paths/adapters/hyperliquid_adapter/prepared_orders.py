@@ -30,13 +30,9 @@ class PerpIocOrder:
     limit_price: Decimal
 
     def __post_init__(self) -> None:
+        _validate_perp_asset(self.asset_id)
         if (
-            type(self.asset_id) is not int
-            or not (
-                0 <= self.asset_id < 10_000
-                or 110_000 <= self.asset_id < OUTCOME_ASSET_OFFSET
-            )
-            or not self.signed_size.is_finite()
+            not self.signed_size.is_finite()
             or self.signed_size == 0
             or not self.limit_price.is_finite()
             or self.limit_price <= 0
@@ -57,6 +53,10 @@ class IocNotSubmitted(Exception):
 
 class BracketNotSubmitted(Exception):
     """No part of the bracket was submitted; validation/signing failed first."""
+
+
+class CancelNotSubmitted(Exception):
+    """No cancellation was submitted; validation/signing failed first."""
 
 
 @dataclass(frozen=True)
@@ -291,6 +291,45 @@ async def submit_prepared_bracket(
     return await post_exchange(payload)
 
 
+async def submit_prepared_cancels(
+    asset_id: int,
+    *,
+    cloids: Sequence[str],
+    expires_after: int,
+    sign: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
+    post_exchange: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Cancel only persisted orders from one bracket, with no hidden retry.
+
+    An acknowledgement is not proof of cancellation: an order can fill while
+    this action is in flight. The host must reconcile every ID before releasing
+    its wallet reservation. Never use the account-wide scheduled cancel here.
+    """
+    try:
+        _validate_perp_asset(asset_id)
+        if not 1 <= len(cloids) <= 3:
+            raise ValueError("Cancel one bracket's orders at a time")
+        _validate_cloids(cloids, len(cloids))
+        payload = await _sign_prepared_action(
+            {
+                "type": "cancelByCloid",
+                "cancels": [{"asset": asset_id, "cloid": cloid} for cloid in cloids],
+            },
+            expires_after=expires_after,
+            sign=sign,
+        )
+    except Exception as exc:
+        raise CancelNotSubmitted("Cancellation was not submitted") from exc
+    return await post_exchange(payload)
+
+
+def _validate_perp_asset(asset_id: int) -> None:
+    if type(asset_id) is not int or not (
+        0 <= asset_id < 10_000 or 110_000 <= asset_id < OUTCOME_ASSET_OFFSET
+    ):
+        raise ValueError("Invalid perp asset ID")
+
+
 def _validate_cloids(cloids: Sequence[str], count: int) -> None:
     if len(cloids) != count or len({cloid.lower() for cloid in cloids}) != count:
         raise ValueError("Each order needs a distinct persisted client ID")
@@ -327,14 +366,23 @@ async def _sign_prepared_orders(
     sign: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
 ) -> dict[str, Any]:
     """Shared signing only: callers keep dispatch outside their unsent guard."""
-    nonce = get_timestamp_ms()
-    if type(expires_after) is not int or not nonce < expires_after <= nonce + 30_000:
-        raise ValueError("Invalid or expired execution window")
     builder = BuilderInfo(
         b=DEFAULT_HYPERLIQUID_BUILDER_FEE["b"].lower(),
         f=DEFAULT_HYPERLIQUID_BUILDER_FEE["f"],
     )
     action = order_wires_to_order_action(wires, builder, grouping)
+    return await _sign_prepared_action(action, expires_after=expires_after, sign=sign)
+
+
+async def _sign_prepared_action(
+    action: dict[str, Any],
+    *,
+    expires_after: int,
+    sign: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
+) -> dict[str, Any]:
+    nonce = get_timestamp_ms()
+    if type(expires_after) is not int or not nonce < expires_after <= nonce + 30_000:
+        raise ValueError("Invalid or expired execution window")
     payload = get_l1_action_payload(action, None, nonce, expires_after, True)
     signature = await sign(payload)
     if not signature or get_timestamp_ms() >= expires_after:
