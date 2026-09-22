@@ -36,11 +36,62 @@ campaign's frozen diagnostic pack and manifest. Connect measured failures to
 causal mechanisms; do not dump raw result files, inspect the wider SDK, or
 implement strategy code.
 
+Before the design stage a campaign may run composition rounds: the prompt
+states the signal DSL, the bar and store columns, and the funnel, and you
+propose up to twelve signal definitions with
+`wayfinder_core_jobs(action="evolution_compose", job_id=..., signal_proposals=[...])`.
+The harness scans them in seconds with the library under one family and
+reports each proposal's best row; survivors become citable
+`/validated_signals/...` entries for the design. Propose the mechanisms the
+funnel and the replicated rows point at (a regime or session gate, a
+composition, a different window), never restatements of library signals; a
+rejected list costs no round, and an empty list ends composition.
+
 Submit exactly the requested number of idea slots with
 `wayfinder_core_jobs(action="evolution_design", ...)`. Grounded hypotheses must
 cite exact JSON-pointer evidence references from the diagnostic pack. Wildcard
 slots must be explicitly labelled and may explore freely. Facts constrain what
 the design claims to repair; they never constrain the mechanism you invent.
+When the pack offers validated signals (`/validated_signals/signals/<i>`:
+fold-stable, cost-net, family-corrected edges on this dataset), every grounded
+de_novo or research_context slot must cite one and build its entry on it; a
+design that cites none is rejected. Narratives about why a mechanism should
+earn are not evidence; the near misses are direction, not evidence.
+When the pack carries a policy scan (`/policy_scan`: rotation, defensive
+relay, cross-sectional rank and sleeve policies swept on the whole panel,
+ranked on one window and reported on another), its survivors are evidence of
+the same standing and its falsified families are dead on this panel. A
+`policy_kernel` slot with `policy_ref` set to a survivor's pointer instantiates
+that survivor's kernel with its scanned params as the candidate, with no new
+code; prefer it over asking a worker to reinvent a rotation or a sleeve book.
+
+After every initial slot has had its screen attempt you get one redesign
+turn (`wayfinder_core_jobs(action="evolution_redesign", job_id=...,
+redesign={"abandon": [...], "keep": [...], "hypotheses": [...], "slots":
+[...]})`): read the whole screen table once, abandon the candidates whose
+family the screen falsified (cost-negative gross, no trades, a slice loss the
+mechanism cannot fix), keep the ones a bounded repair can fix, and add up to
+the allowed number of replacement slots for what the screens and the pack
+point at instead — a policy-scan survivor not yet tried, a different family,
+a different basket. Kept candidates plus replacements become the focus set.
+Repairing a dead family is the one move this turn exists to stop.
+Cash is the first bar: `/baseline/vs_cash` says whether the incumbent beat
+doing nothing over its window; every slot must beat cash on its own validation
+window, and a campaign that finds nothing while the incumbent loses to cash
+retires it to cash.
+Costs come first: `/baseline/economics` states the round-trip cost, what the
+incumbent captures per trade and what it pays in fees; a slot whose trades
+cannot plausibly capture the hurdle multiple of that cost gross is rejected at
+the screen before anything else, so size the expected move per trade against it.
+A signal whose move is real but smaller than the taker round trip is not dead:
+post-only resting entries at an offset (`limit_price`, `time_in_force="ALO"`,
+`expires_after_bars`) pay the maker round trip (`/baseline/maker_round_trip_bps`)
+and the offset is price improvement; state that execution in the mechanism when
+it is the slot's economics.
+If a hypothesis needs elapsed time (arm-then-confirm, cooldown, expiry), state
+it in bars of `ctx.bar_ordinal` or timestamps; a design that counts
+`ctx.bar_index` cannot execute, because that value is the bounded view length,
+not a clock.
 
 This lane is paper-only. Never edit workspaces, trade, apply, approve, or
 promote. End the stage immediately after the design is accepted.

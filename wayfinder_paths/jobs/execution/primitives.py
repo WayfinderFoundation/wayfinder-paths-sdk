@@ -101,6 +101,9 @@ class MarketBar:
         }
 
 
+_NO_DEFAULT = object()
+
+
 class CompletedBarsView:
     """Immutable view over completed OHLC bars.
 
@@ -230,15 +233,24 @@ class CompletedBarsView:
             self._symbol_positions_offset = 0
         return self._symbol_positions
 
-    def feature(self, name: str, symbol: str | None = None) -> Any:
+    def feature(
+        self, name: str, symbol: str | None = None, *, default: Any = _NO_DEFAULT
+    ) -> Any:
         """Latest non-null value of an exogenous feature column (merged by
         the driver/dataset loader per execution_spec.data_contract.features).
-        Pure — reads only view data, purity-sandbox safe."""
+        Pure — reads only view data, purity-sandbox safe.
+
+        Derived columns start later than the price history (the macro regime
+        needs 28 days, the leader state 7): pass ``default`` for the bars
+        before the first value. An undeclared column raises regardless — that
+        is a contract error, not missing history."""
         frame = self._filter_symbol(symbol)
         if name not in frame.columns:
             raise ValueError(f"No feature column {name!r} in view")
         series = frame[name].dropna()
         if series.empty:
+            if default is not _NO_DEFAULT:
+                return default
             raise ValueError(f"No values yet for feature {name!r}")
         return series.iloc[-1]
 
@@ -813,8 +825,40 @@ class ExecutionContext:
         data actually available, cheaply (no DataFrame touched). NOT a
         cadence clock — live hands a sliding fixed-length window, so this
         stays constant tick after tick and `bar_index % n` silently never
-        (or always) fires. Use `ctx.every_n_bars(n)` for cadence."""
+        (or always) fires. Use `ctx.every_n_bars(n)` for cadence. NOT a clock
+        either: never stamp it into strategy_state to measure an age, cooldown
+        or expiry — the view length is constant once warm, so
+        `ctx.bar_index - stored` reads 0 forever and an armed state machine
+        never fires. Use `ctx.bar_ordinal` / `ctx.bars_since(stamp)`."""
         return len(self.view._ensure_timestamps())
+
+    @property
+    def bar_ordinal(self) -> int | None:
+        """Global position of the latest completed bar: timestamp // interval.
+
+        Advances one per bar in backtest AND live (the sliding window's END
+        moves), survives restarts, and is a plain int, so stamp it into
+        strategy_state for ages, cooldowns, TTLs and expiries and measure with
+        `ctx.bars_since(stamp)`. None without a declared bar_interval or an
+        empty view. A data gap counts as elapsed bars (wall-clock semantics).
+        """
+        timestamps = self.view._ensure_timestamps()
+        if not timestamps:
+            return None
+        interval = bar_interval_seconds(
+            self.execution_spec.data_contract.get("bar_interval")
+        )
+        if not interval:
+            return None
+        return int(timestamps[-1].timestamp() // interval)
+
+    def bars_since(self, stamp: Any) -> int | None:
+        """Bars elapsed since a stored `bar_ordinal`; None when either side is
+        missing."""
+        ordinal = self.bar_ordinal
+        if ordinal is None or stamp is None:
+            return None
+        return ordinal - int(stamp)
 
     def every_n_bars(self, n: int, *, offset: int = 0) -> bool:
         """Epoch-aligned cadence gate: True when the latest completed bar's
@@ -825,18 +869,16 @@ class ExecutionContext:
         for a full warmup period). `offset` pins WHICH bars fire: a strategy
         validated on a particular rebalance phase keeps that exact schedule
         (phase can matter — a one-day shift materially changed a break-even
-        daily basket's 4-year path)."""
+        daily basket's 4-year path). For elapsed time (an age, cooldown or
+        expiry) use `bar_ordinal` / `bars_since`."""
         if n <= 1:
             return True
-        timestamps = self.view._ensure_timestamps()
-        if not timestamps:
+        if not self.view._ensure_timestamps():
             return False
-        interval = bar_interval_seconds(
-            self.execution_spec.data_contract.get("bar_interval")
-        )
-        if not interval:
+        ordinal = self.bar_ordinal
+        if ordinal is None:
             return True
-        return int(timestamps[-1].timestamp() // interval) % n == offset % n
+        return ordinal % n == offset % n
 
 
 def mark_to_market_equity(ctx: ExecutionContext) -> float:

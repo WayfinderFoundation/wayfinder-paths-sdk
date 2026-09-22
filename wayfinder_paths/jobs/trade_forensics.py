@@ -30,6 +30,56 @@ STOP_GRID = (0.02, 0.025, 0.03, 0.035)
 # exit_reason IS the protective stop (strategy closes always label themselves).
 BRACKET_EXIT_REASON = "bracket_stop"
 BRACKET_TAKE_PROFIT_REASON = "bracket_take_profit"
+UNLABELED_EXIT_REASON = "unlabeled"
+# Exit reasons that count as a protective stop when a receipt is summarized:
+# the engine's bracket close and any strategy label that names a stop.
+_STOP_REASON_TOKEN = "stop"
+
+
+_ACTION_EXIT_REASONS = {"TAKE_PROFIT": "take_profit", "STOP_LOSS": "stop_loss"}
+
+
+def fill_exit_reason(
+    metadata: Mapping[str, Any] | None, *, action: str | None = None
+) -> str:
+    """The exit label of one closing fill from its intent metadata.
+
+    Strategy closes label themselves (``exit_reason``); engine closes carry a
+    marker instead (``bracket`` for the protective stop or take-profit,
+    ``liquidation``, ``stale_policy``). A bracket close carries the engine's
+    exit type, and a take-profit is not a stop. A TAKE_PROFIT or STOP_LOSS
+    intent names its own kind, so an unlabeled one still reads
+    ``take_profit``/``stop_loss`` (with the ``exit_stage`` its metadata may
+    carry). A plain CLOSE with none of these is ``unlabeled`` so the summary
+    shows the strategy is not saying why.
+    """
+    meta = metadata or {}
+    reason = meta.get("exit_reason")
+    if reason:
+        return str(reason)
+    bracket = meta.get("bracket")
+    if bracket:
+        exit_type = str(
+            (bracket if isinstance(bracket, Mapping) else {}).get("exit_type")
+            or action
+            or ""
+        ).upper()
+        if exit_type == "TAKE_PROFIT":
+            return BRACKET_TAKE_PROFIT_REASON
+        return BRACKET_EXIT_REASON
+    if meta.get("liquidation"):
+        return "liquidation"
+    if meta.get("stale_policy"):
+        return "stale_flat"
+    kind = _ACTION_EXIT_REASONS.get(str(action or "").upper())
+    if kind:
+        stage = meta.get("exit_stage")
+        return f"{kind}:{stage}" if stage else kind
+    return UNLABELED_EXIT_REASON
+
+
+def is_stop_exit_reason(reason: str | None) -> bool:
+    return bool(reason) and _STOP_REASON_TOKEN in str(reason).lower()
 
 
 def _bps(value: float, entry_price: float) -> float:
@@ -84,18 +134,8 @@ def _closing_fill_reason(
             # freestyle runtime writes it at the top level.
             raw = fill.get("raw") or {}
             meta = raw.get("intent_metadata") or (fill.get("intent_metadata") or {})
-            if meta.get("exit_reason"):
-                return str(meta["exit_reason"])
-            # A bracket close carries the engine's exit type instead of a
-            # strategy reason; a take-profit is not a stop.
-            exit_type = str(
-                raw.get("intent_action")
-                or (meta.get("bracket") or {}).get("exit_type")
-                or ""
-            ).upper()
-            if exit_type == "TAKE_PROFIT":
-                return BRACKET_TAKE_PROFIT_REASON
-            return None
+            reason = fill_exit_reason(meta, action=raw.get("intent_action"))
+            return None if reason == UNLABELED_EXIT_REASON else reason
     return None
 
 
@@ -244,7 +284,11 @@ def forensics_for_closed_trades(
         meta = raw.get("intent_metadata") or {}
         entry_raw = entry.get("raw") or {}
         entry_meta = entry_raw.get("intent_metadata") or {}
-        exit_reason = meta.get("exit_reason") or trade.get("exit_reason")
+        exit_reason = trade.get("exit_reason") or fill_exit_reason(
+            meta, action=raw.get("intent_action")
+        )
+        if exit_reason == UNLABELED_EXIT_REASON:
+            exit_reason = None
         if not exit_reason:
             # Forward trade-close rows carry no intent metadata — the reason
             # lives on the CLOSING fill (same symbol/timestamp, reduce_only).

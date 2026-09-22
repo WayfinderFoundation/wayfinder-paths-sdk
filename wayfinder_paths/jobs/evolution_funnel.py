@@ -45,6 +45,11 @@ def summarize_evolution_funnel(state: dict[str, Any]) -> dict[str, Any]:
         str(candidate.get("status") or "") in _FULL_DEV_PASS_STATUSES
         for candidate in candidates
     )
+    # A specialist whose validation window lacked its declared regime was
+    # evaluated but neither passed nor rejected; it waits for the regime.
+    full_dev_awaiting = sum(
+        candidate.get("status") == "awaiting_regime" for candidate in candidates
+    )
     optuna_completed = sum(
         isinstance(candidate.get("tuning"), dict)
         and _value(candidate["tuning"].get("trials")) > 0
@@ -93,7 +98,10 @@ def summarize_evolution_funnel(state: dict[str, Any]) -> dict[str, Any]:
             "evaluated": full_dev_evaluated,
             "target": _optional_count(budgets, "full_development"),
             "passed": full_dev_passed,
-            "rejected": max(full_dev_evaluated - full_dev_passed, 0),
+            "rejected": max(
+                full_dev_evaluated - full_dev_passed - full_dev_awaiting, 0
+            ),
+            "awaiting_regime": full_dev_awaiting,
             "running": sum(
                 candidate.get("status") == "full_dev_running"
                 for candidate in candidates

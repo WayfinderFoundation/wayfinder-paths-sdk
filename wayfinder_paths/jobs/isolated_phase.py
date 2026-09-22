@@ -130,13 +130,21 @@ def _child_entry(
     try:
         sender.send({"ok": True, "result": target(*args)})
     except Exception as exc:  # noqa: BLE001 - serialize candidate evidence
+        # A ValueError is the candidate's contract failing (the window probe,
+        # a missing search space) and stays evidence whatever words its
+        # explanation uses: the probe's hint says "incremental memory", and
+        # the broad string classifier would otherwise turn that candidate
+        # into a transient failure that kills the whole finalize.
+        transient = isinstance(
+            exc, (ComputeLockBusy, MemoryError, TransientInfrastructureError)
+        ) or (
+            not isinstance(exc, ValueError)
+            and classify_failure(str(exc)) == "infrastructure"
+        )
         sender.send(
             {
                 "ok": False,
-                "transient": isinstance(
-                    exc, (ComputeLockBusy, MemoryError, TransientInfrastructureError)
-                )
-                or classify_failure(str(exc)) == "infrastructure",
+                "transient": transient,
                 "error": str(exc)[:1000],
             }
         )

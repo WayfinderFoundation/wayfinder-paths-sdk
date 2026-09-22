@@ -486,3 +486,21 @@ def test_bracket_take_profit_is_not_labelled_a_stop() -> None:
     ]
     rows = forensics_for_closed_trades({"LIT": bars}, trades, fills, post_bars=(1,))
     assert rows[0]["exit_reason"] == "bracket_take_profit"
+
+
+def test_fill_exit_reason_is_one_rule_for_every_consumer() -> None:
+    from wayfinder_paths.jobs.trade_forensics import (
+        fill_exit_reason,
+        is_stop_exit_reason,
+    )
+
+    assert fill_exit_reason({"exit_reason": "tp_tier_one"}) == "tp_tier_one"
+    assert fill_exit_reason({"bracket": {"kind": "stop"}}) == "bracket_stop"
+    assert fill_exit_reason({"liquidation": True, "position_side": "long"}) == (
+        "liquidation"
+    )
+    assert fill_exit_reason({"stale_policy": "flat"}) == "stale_flat"
+    assert fill_exit_reason({}) == "unlabeled"
+    assert fill_exit_reason(None) == "unlabeled"
+    assert is_stop_exit_reason("bracket_stop") and is_stop_exit_reason("atr_stop")
+    assert not is_stop_exit_reason("time_exit") and not is_stop_exit_reason(None)

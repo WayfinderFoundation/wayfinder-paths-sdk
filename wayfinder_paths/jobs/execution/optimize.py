@@ -49,6 +49,63 @@ def _is_typed_dimension(value: Any) -> bool:
             return False
 
 
+def normalize_search_space(payload: Any) -> Any:
+    """Accept the shorthand shapes agents write for dimensions.
+
+    ``[low, high]``, ``{"low": .., "high": ..}`` without a type, and
+    ``{"choices": [...]}`` are promoted to typed dimensions; numeric type is
+    inferred from the endpoints.  Anything else is returned untouched so the
+    typed check still rejects it with the offending key named.
+    """
+    if not isinstance(payload, Mapping):
+        return payload
+    normalized: dict[str, Any] = {}
+    for name, value in payload.items():
+        normalized[name] = _promote_dimension(value)
+    return normalized
+
+
+def _promote_dimension(value: Any) -> Any:
+    if _is_typed_dimension(value):
+        return value
+    if (
+        isinstance(value, list)
+        and len(value) == 2
+        and all(
+            isinstance(item, int | float) and not isinstance(item, bool)
+            for item in value
+        )
+    ):
+        low, high = value
+        kind = "int" if all(isinstance(item, int) for item in value) else "float"
+        return {"type": kind, "low": min(low, high), "high": max(low, high)}
+    if isinstance(value, Mapping) and "type" not in value:
+        if "choices" in value and isinstance(value["choices"], list):
+            return {"type": "categorical", **dict(value)}
+        if "low" in value and "high" in value:
+            endpoints = (value["low"], value["high"])
+            if all(
+                isinstance(item, int | float) and not isinstance(item, bool)
+                for item in endpoints
+            ):
+                kind = (
+                    "int"
+                    if all(isinstance(item, int) for item in endpoints)
+                    else "float"
+                )
+                return {"type": kind, **dict(value)}
+    return value
+
+
+def untyped_search_keys(payload: Mapping[str, Any]) -> list[str]:
+    """Keys that look like dimensions (lists or dicts) but are not typed."""
+    return [
+        str(name)
+        for name, value in payload.items()
+        if isinstance(value, list | Mapping) and not _is_typed_dimension(value)
+    ]
+
+
 def is_search_space(payload: Any) -> bool:
     """True when the payload contains at least one typed search dimension."""
     match payload:

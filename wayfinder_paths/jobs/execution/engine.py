@@ -11,6 +11,13 @@ from typing import Any
 
 import pandas as pd
 
+from wayfinder_paths.jobs.defense import (
+    active_stand_down_symbols,
+    current_ood_entry_scale,
+    defense_policy,
+    record_stop_loss_result,
+    scale_entry_intents,
+)
 from wayfinder_paths.jobs.execution.gates import latest_gate_state
 from wayfinder_paths.jobs.execution.primitives import (
     DEFAULT_INITIAL_CAPITAL,
@@ -35,6 +42,10 @@ from wayfinder_paths.jobs.execution.venues import (
     Broker,
     MarketEvent,
     NativeProtectionBroker,
+)
+from wayfinder_paths.jobs.regime import (
+    current_portfolio_regime,
+    declared_regimes,
 )
 
 OPEN_SIDES_SHORT = frozenset({"short", "sell"})
@@ -108,6 +119,7 @@ class EngineState:
     daily_notional: dict[str, float] = field(default_factory=dict)
     revision: str | None = None
     strategy_state: dict[str, Any] = field(default_factory=dict)
+    defense_state: dict[str, Any] = field(default_factory=dict)
     liquidated_at: str | None = None
     # Mode that produced this state ("paper" | "live"); the driver archives
     # and resets state on a mode flip so paper test ticks can't pollute live.
@@ -127,6 +139,7 @@ class EngineState:
             "daily_notional": dict(self.daily_notional),
             "revision": self.revision,
             "strategy_state": dict(self.strategy_state),
+            "defense_state": dict(self.defense_state),
             "liquidated_at": self.liquidated_at,
             "mode": self.mode,
         }
@@ -155,6 +168,7 @@ class EngineState:
             },
             revision=payload.get("revision"),
             strategy_state=dict(payload.get("strategy_state") or {}),
+            defense_state=dict(payload.get("defense_state") or {}),
             liquidated_at=payload.get("liquidated_at"),
             mode=payload.get("mode"),
         )
@@ -205,6 +219,7 @@ async def run_tick(
     client_order_prefix: str | None = None,
     blocked_entry_symbols: set[str] | None = None,
     liquidation: LiquidationConfig | None = None,
+    record_strategy_state: bool = False,
 ) -> TickResult:
     """One engine tick, identical across backtest, paper, and live.
 
@@ -238,6 +253,7 @@ async def run_tick(
             blocked_entry_symbols=blocked_entry_symbols,
             liquidation=liquidation,
             result=result,
+            record_strategy_state=record_strategy_state,
         )
     finally:
         trace.guard_events.extend(result.guard_events)
@@ -262,6 +278,7 @@ async def _run_tick_inner(
     blocked_entry_symbols: set[str] | None,
     liquidation: LiquidationConfig | None,
     result: TickResult,
+    record_strategy_state: bool = False,
 ) -> TickResult:
     bar_ts = view.timestamps[-1] if view.timestamps else None
     if bar_ts is None:
@@ -290,12 +307,12 @@ async def _run_tick_inner(
         result.guard_events.append(
             {"kind": "stale_data", "reason": stale, "timestamp": bar_iso}
         )
-        policy = str(spec.data_contract.get("stale_policy") or "skip")
-        if policy == "skip":
+        stale_policy = str(spec.data_contract.get("stale_policy") or "skip")
+        if stale_policy == "skip":
             result.skipped = True
             result.skip_reason = "stale_data"
             return result
-        if policy == "flat":
+        if stale_policy == "flat":
             await flatten_positions(
                 brokers=brokers,
                 state=state,
@@ -315,6 +332,44 @@ async def _run_tick_inner(
         result.skip_reason = "no_bars_at_timestamp"
         return result
     result.gates = latest_gate_state(view)
+    defense_config = defense_policy(params)
+    state.defense_state["policy"] = defense_config
+    defense_enabled = bool(defense_config["enabled"])
+    # Shadow mode measures every would-have-fired decision without acting, so
+    # fleet-wide trigger rates exist before any job gets automatic action.
+    defense_active = defense_enabled and defense_config["mode"] == "active"
+    defense_blocked_symbols = (
+        active_stand_down_symbols(state.defense_state, now=bar_ts)
+        if defense_enabled
+        else set()
+    )
+    ood_entry_scale = current_ood_entry_scale(view) if defense_enabled else 1.0
+    target_regimes = declared_regimes(params)
+    current_regime = current_portfolio_regime(view) if target_regimes else None
+    effective_blocked_symbols = set(blocked_entry_symbols or set()) | (
+        defense_blocked_symbols if defense_active else set()
+    )
+    if defense_enabled:
+        result.gates["defense_overlay"] = {
+            "mode": defense_config["mode"],
+            "ood_entry_scale": ood_entry_scale,
+            "stand_down_symbols": sorted(defense_blocked_symbols),
+        }
+        if not defense_active and (ood_entry_scale < 1.0 or defense_blocked_symbols):
+            result.guard_events.append(
+                {
+                    "kind": "defense_shadow_would_fire",
+                    "ood_entry_scale": ood_entry_scale,
+                    "stand_down_symbols": sorted(defense_blocked_symbols),
+                    "timestamp": bar_iso,
+                }
+            )
+    if target_regimes:
+        result.gates["portfolio_regime"] = {
+            "current": current_regime,
+            "target": list(target_regimes),
+            "in_target_regime": current_regime in target_regimes,
+        }
     state.ledger.on_bar_tick(bar_ts)
 
     await _settle_resting_orders(
@@ -326,7 +381,7 @@ async def _run_tick_inner(
         trace=trace,
         result=result,
         reduce_only=False,
-        blocked_entry_symbols=blocked_entry_symbols,
+        blocked_entry_symbols=effective_blocked_symbols,
     )
 
     # A symbol absent from this timestamp's bars has no market to fill against.
@@ -336,7 +391,7 @@ async def _run_tick_inner(
     # dropped and the strategy re-emits when it can be priced honestly.
     deferred_intents: list[OrderIntent] = []
     for intent in state.pending_intents:
-        if intent.symbol in (blocked_entry_symbols or set()) and not (
+        if intent.symbol in effective_blocked_symbols and not (
             is_risk_reducing_intent(intent)
         ):
             result.guard_events.append(
@@ -405,7 +460,7 @@ async def _run_tick_inner(
         trace=trace,
         result=result,
         reduce_only=True,
-        blocked_entry_symbols=blocked_entry_symbols,
+        blocked_entry_symbols=effective_blocked_symbols,
     )
 
     if liquidation is not None and state.ledger.positions:
@@ -480,6 +535,33 @@ async def _run_tick_inner(
             decided = list(decided)
     intents = [OrderIntent.from_any(item) for item in decided]
     _apply_engine_leverage(intents, params)
+    _apply_size_scale(intents, params)
+    scaled_intents = (
+        scale_entry_intents(intents, ood_entry_scale) if defense_active else 0
+    )
+    if scaled_intents:
+        result.guard_events.append(
+            {
+                "kind": "ood_breadth_exposure_scaled",
+                "entry_scale": ood_entry_scale,
+                "intents": scaled_intents,
+                "timestamp": bar_iso,
+            }
+        )
+
+    # A stop settled earlier in this same tick can arm the circuit breaker
+    # before decide() emits the next entry.
+    defense_blocked_symbols = (
+        active_stand_down_symbols(state.defense_state, now=bar_ts)
+        if defense_enabled
+        else set()
+    )
+    if defense_active:
+        effective_blocked_symbols |= defense_blocked_symbols
+    if defense_enabled:
+        result.gates["defense_overlay"]["stand_down_symbols"] = sorted(
+            defense_blocked_symbols
+        )
 
     for index, intent in enumerate(intents):
         if (client_order_prefix or intent.limit_price is not None) and (
@@ -491,16 +573,21 @@ async def _run_tick_inner(
             digest = hashlib.sha256(seed.encode()).hexdigest()
             intent.client_order_id = f"0x{digest[:32]}"
         trace.intents.append({"timestamp": bar_iso, **intent.to_dict()})
-        if intent.symbol in (blocked_entry_symbols or set()) and not (
+        if intent.symbol in effective_blocked_symbols and not (
             is_risk_reducing_intent(intent)
         ):
+            reason = (
+                f"loss-streak stand-down active for {intent.symbol}"
+                if intent.symbol in defense_blocked_symbols
+                else (
+                    f"new entries for {intent.symbol} are blocked by a "
+                    "durable symbol risk override"
+                )
+            )
             result.guard_events.append(
                 {
                     "kind": "intent_rejected",
-                    "reason": (
-                        f"new entries for {intent.symbol} are blocked by a "
-                        "durable symbol risk override"
-                    ),
+                    "reason": reason,
                     "intent": intent.to_dict(),
                     "timestamp": bar_iso,
                 }
@@ -645,9 +732,26 @@ async def _run_tick_inner(
             "visible_latest_timestamp": _latest_visible_timestamp(ctx.view),
             "guard_event_count": len(result.guard_events),
             "gates": result.gates,
+            # Only the sequence preview asks for this: a per-key digest of the
+            # strategy's own state so a replay can see whether a state
+            # machine advances, without growing stored traces.
+            **(
+                {"strategy_state_digest": _strategy_state_digest(state.strategy_state)}
+                if record_strategy_state
+                else {}
+            ),
         }
     )
     return result
+
+
+def _strategy_state_digest(strategy_state: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        str(key): hashlib.sha1(
+            json.dumps(value, sort_keys=True, default=str).encode()
+        ).hexdigest()[:12]
+        for key, value in strategy_state.items()
+    }
 
 
 async def _settle_resting_orders(
@@ -820,6 +924,35 @@ def _apply_engine_leverage(
         intent.metadata = metadata
 
 
+def _apply_size_scale(intents: list[OrderIntent], params: Mapping[str, Any]) -> None:
+    """Multiplicative sizing knob (params.size_scale in (0, 1]) applied at the
+    same seam as leverage, so the evolution finalist gate can size a strategy
+    to the drawdown ceiling mechanically. Keyed on its OWN stamp rather than
+    `leverage_applied` so it composes with leverage: compound-mode strategies
+    stamp `leverage_applied` themselves and must still be scaled. Defensive-
+    inert: out-of-range values never raise mid-tick (clamp_size_scale enforces
+    the range upstream)."""
+    try:
+        scale = float(params.get("size_scale") or 1.0)
+    except (TypeError, ValueError):
+        return
+    if scale == 1.0 or scale <= 0 or scale > 1:
+        return
+    for intent in intents:
+        if intent.reduce_only or str(intent.action).upper() in REDUCE_ONLY_ACTIONS:
+            continue
+        if (intent.metadata or {}).get("size_scale_applied"):
+            continue
+        if intent.notional is not None:
+            intent.notional = float(intent.notional) * scale
+        if intent.size is not None:
+            intent.size = float(intent.size) * scale
+        metadata = dict(intent.metadata or {})
+        metadata["size_scale_applied"] = True
+        metadata["engine_size_scale"] = scale
+        intent.metadata = metadata
+
+
 def _record_fill(
     fill: FillEvent,
     *,
@@ -828,6 +961,8 @@ def _record_fill(
     trace: ExecutionTrace,
     result: TickResult,
 ) -> None:
+    position_before = state.ledger.positions.get(fill.symbol)
+    direction_before = position_before.side if position_before is not None else None
     realized_before = state.ledger.realized_pnl
     state.ledger.apply_fill(fill)
     trace.fills.append(fill.to_dict())
@@ -837,6 +972,16 @@ def _record_fill(
         row = fill.to_dict()
         row["realized_pnl_delta"] = state.ledger.realized_pnl - realized_before
         result.trade_rows.append(row)
+        if fill.reduce_only or (intent is not None and is_risk_reducing_intent(intent)):
+            event = record_stop_loss_result(
+                state.defense_state,
+                symbol=fill.symbol,
+                direction=direction_before,
+                realized_pnl=float(row["realized_pnl_delta"]),
+                timestamp=fill.timestamp,
+            )
+            if event is not None:
+                result.guard_events.append(event)
         position = state.ledger.positions.get(fill.symbol)
         if intent is not None and intent.bracket and not intent.reduce_only:
             if position is not None:

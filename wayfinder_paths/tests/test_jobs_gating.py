@@ -4,13 +4,18 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
 import yaml
 
 from wayfinder_paths.jobs.execution import ExecutionSpec
 from wayfinder_paths.jobs.execution.job import backtest_execution_job
 from wayfinder_paths.jobs.execution.preflight import run_preflight
 from wayfinder_paths.jobs.execution.validation import validate_execution_job
-from wayfinder_paths.jobs.gating import compute_workspace_revision, evaluate_live_gate
+from wayfinder_paths.jobs.gating import (
+    clamp_size_scale,
+    compute_workspace_revision,
+    evaluate_live_gate,
+)
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import snapshot_job
@@ -246,3 +251,12 @@ def test_operator_dial_legacy_revision_can_be_reproduced(tmp_path: Path) -> None
 
     assert compute_workspace_revision(root) == current
     assert compute_workspace_revision(root, retain_operator_dials=True) != legacy
+
+
+def test_clamp_size_scale_bounds() -> None:
+    assert clamp_size_scale(None) == 1.0
+    assert clamp_size_scale(0.5) == 0.5
+    assert clamp_size_scale(1.0) == 1.0
+    for bad in (0, 1.5, -1):
+        with pytest.raises(ValueError, match="size_scale must be in"):
+            clamp_size_scale(bad)

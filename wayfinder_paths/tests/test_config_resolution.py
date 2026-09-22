@@ -75,6 +75,19 @@ def test_api_base_url_defaults_to_wayfinder_api(restore_global_config: None) -> 
     assert config.get_api_base_url() == "https://wayfinder.ai/api/v1"
 
 
+def test_api_base_url_supports_env_override(
+    restore_global_config: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config.set_config(
+        {"system": {"api_base_url": "https://strategies.wayfinder.ai/api/v1"}}
+    )
+    monkeypatch.setenv(
+        "WAYFINDER_API_BASE_URL", "https://strategies-dev.wayfinder.ai/api/v1/"
+    )
+
+    assert config.get_api_base_url() == "https://strategies-dev.wayfinder.ai/api/v1"
+
+
 @pytest.mark.asyncio
 async def test_web3s_fallback_to_rpc_proxy(
     restore_global_config: None,
