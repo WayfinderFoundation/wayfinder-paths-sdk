@@ -25,6 +25,37 @@ PRICE_COLUMNS = [f"shape_{i}" for i in range(24)] + ["log_range", "log_variation
 POSITIONING_COLUMNS = PRICE_COLUMNS + POSITION_COLUMNS
 POSITIONING_HORIZON_BARS = 96
 POSITIONING_COST = 0.0009
+# The frozen development study's asset universe; BTC is the hedge, not a query.
+POSITIONING_UNIVERSE = frozenset(
+    {
+        "AAVE",
+        "ADA",
+        "ASTER",
+        "BNB",
+        "CRV",
+        "DOGE",
+        "ENA",
+        "ETH",
+        "FARTCOIN",
+        "HYPE",
+        "LINK",
+        "LIT",
+        "MON",
+        "NEAR",
+        "PENGU",
+        "PUMP",
+        "SOL",
+        "SPX",
+        "SUI",
+        "TAO",
+        "TRUMP",
+        "UNI",
+        "XPL",
+        "XRP",
+        "ZEC",
+        "ZRO",
+    }
+)
 TREE_PARAMETERS = {
     "iterations": 64,
     "depth": 4,
@@ -91,7 +122,13 @@ def aggregate_positions(
 
 
 def position_state(snapshots: pd.DataFrame) -> pd.DataFrame:
-    """Keep the tested 24-hour lag and unknown growth across missing days."""
+    """A 24-hour minimum lag, with conservative source availability when supplied.
+
+    Legacy research inputs omit source_modified_at and retain their original
+    assumed clock. Production supplies it; growth also waits for publication
+    of the preceding observation used in its denominator. Modification time
+    may reflect a rewrite, so it is not proof of an object's first publication.
+    """
     snapshots = snapshots.copy()
     snapshots["observed_at"] = pd.to_datetime(snapshots.observed_at, utc=True)
     snapshots = snapshots.sort_values(["coin", "observed_at"])
@@ -104,21 +141,42 @@ def position_state(snapshots: pd.DataFrame) -> pd.DataFrame:
         gap.between(pd.Timedelta(hours=20), pd.Timedelta(hours=28))
     )
     snapshots["position_available_at"] = snapshots.observed_at + pd.Timedelta(days=1)
+    if "source_modified_at" in snapshots:
+        publication = pd.to_datetime(snapshots.source_modified_at, utc=True)
+        if publication.isna().any() or (publication < snapshots.observed_at).any():
+            raise ValueError("Invalid position snapshot publication time")
+        snapshots["source_modified_at"] = publication
+        previous_publication = snapshots.groupby("coin").source_modified_at.shift(1)
+        snapshots["position_available_at"] = pd.concat(
+            [snapshots.position_available_at, publication, previous_publication], axis=1
+        ).max(axis=1)
     return snapshots.sort_values(["position_available_at", "coin"])
 
 
 def join_positions(frame: pd.DataFrame, snapshots: pd.DataFrame) -> pd.DataFrame:
-    """Backward-only join; expired or incomplete observations stay missing."""
+    """Latest observed state actually available, never rejuvenated by late upload."""
     state = position_state(snapshots)
-    return pd.merge_asof(
+    maximum_age = pd.Timedelta(hours=54)  # 24-hour minimum lag + 30-hour tolerance
+    state = state[
+        state.position_available_at <= state.observed_at + maximum_age
+    ].sort_values(["position_available_at", "observed_at", "coin"])
+    # A late older file cannot replace a newer observation already published.
+    state = state[state.observed_at.eq(state.groupby("coin").observed_at.cummax())]
+    columns = ["observed_at", "position_available_at", *POSITION_COLUMNS]
+    result = pd.merge_asof(
         frame.sort_values(["query_time", "coin"]),
-        state[["coin", "observed_at", "position_available_at"] + POSITION_COLUMNS],
+        state[["coin", *columns]],
         by="coin",
         left_on="query_time",
         right_on="position_available_at",
         direction="backward",
         tolerance=pd.Timedelta(hours=30),
     )
+    # The source-age limit is measured from observation, not late publication.
+    result[columns] = result[columns].where(
+        result.query_time - result.observed_at <= maximum_age
+    )
+    return result
 
 
 def partitions(

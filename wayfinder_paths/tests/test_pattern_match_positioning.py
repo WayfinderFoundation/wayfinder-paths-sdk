@@ -146,6 +146,69 @@ def test_duplicate_snapshots_are_rejected() -> None:
         positioning.position_state(pd.concat([source, source.iloc[:1]]))
 
 
+def test_publication_delay_waits_for_both_growth_observations() -> None:
+    source = snapshots().iloc[:3].copy()
+    source["source_modified_at"] = source.observed_at + pd.Timedelta(hours=12)
+    source.loc[0, "source_modified_at"] = pd.Timestamp("2026-05-03T10:00Z")
+    source.loc[1, "source_modified_at"] = pd.Timestamp("2026-05-03T11:00Z")
+    state = positioning.position_state(source)
+    second = state.loc[state.observed_at.eq(source.observed_at.iloc[1])].iloc[0]
+    assert second.position_available_at == pd.Timestamp("2026-05-03T11:00Z")
+    queries = pd.DataFrame(
+        {
+            "coin": "ETH",
+            "query_time": pd.to_datetime(["2026-05-03T10:59Z", "2026-05-03T11:00Z"]),
+        }
+    )
+    result = positioning.join_positions(queries, source)
+    assert result[positioning.POSITION_COLUMNS].iloc[0].isna().all()
+    assert result.position_growth.iloc[1] == pytest.approx(np.tanh(np.log(2)))
+
+
+def test_late_publication_does_not_extend_the_original_source_age_limit() -> None:
+    source = snapshots().iloc[:2].copy()
+    source["source_modified_at"] = source.observed_at + pd.Timedelta(hours=40)
+    queries = pd.DataFrame(
+        {
+            "coin": "ETH",
+            "query_time": pd.to_datetime(
+                ["2026-05-04T06:05Z", "2026-05-04T06:05:00.001Z"], format="mixed"
+            ),
+        }
+    )
+    result = positioning.join_positions(queries, source)
+    assert result.position_growth.iloc[0] == pytest.approx(np.tanh(np.log(2)))
+    assert result[positioning.POSITION_COLUMNS].iloc[1].isna().all()
+
+
+def test_late_older_snapshot_cannot_replace_a_newer_observation() -> None:
+    source = snapshots().iloc[:3].copy()
+    source["source_modified_at"] = pd.to_datetime(
+        ["2026-05-04T03:00Z", "2026-05-02T01:00Z", "2026-05-03T01:00Z"]
+    )
+    # First observation arrives after the second was observed. The second's
+    # growth waits for it, but a newer complete state still takes precedence.
+    queries = pd.DataFrame(
+        {"coin": "ETH", "query_time": pd.to_datetime(["2026-05-04T04:00Z"])}
+    )
+    result = positioning.join_positions(queries, source)
+    assert result.observed_at.iloc[0] == source.observed_at.iloc[2]
+    assert result.position_growth.iloc[0] == pytest.approx(np.tanh(np.log(1.5)))
+
+
+@pytest.mark.parametrize("publication", [None, "2026-04-01T00:00Z"])
+def test_unknown_or_impossible_publication_times_fail(publication: str | None) -> None:
+    source = snapshots()
+    source["source_modified_at"] = publication
+    with pytest.raises(ValueError, match="publication time"):
+        positioning.join_positions(
+            pd.DataFrame(
+                {"coin": ["ETH"], "query_time": [pd.Timestamp("2026-05-04T00:05Z")]}
+            ),
+            source,
+        )
+
+
 def test_daily_partitions_are_disjoint_causal_and_timestamp_unit_independent() -> None:
     source = history()
     cutoff = pd.Timestamp("2026-05-02T00:00Z")
