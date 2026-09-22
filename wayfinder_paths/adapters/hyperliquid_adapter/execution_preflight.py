@@ -1,4 +1,4 @@
-"""Read-only checks shared by hosted perp brackets and positioning baskets.
+"""Read-only Hyperliquid market, account and order-capacity checks.
 
 Transport is injected. These helpers never approve fees, alter account mode,
 change leverage, sign or submit orders.
@@ -146,6 +146,6 @@ async def validate_perp_capacity(
                 "Increase the amount: each leg must meet the $10 limit-order minimum"
             )
         required_margin += notional / leverage + notional * fee_rate
-    # Both basket legs spend the same margin; never budget it twice.
+    # Orders share available margin; never budget it twice.
     if required_margin > min(margins):
         raise ValueError("Insufficient combined margin for the trade and entry fees")
