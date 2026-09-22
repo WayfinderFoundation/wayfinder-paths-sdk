@@ -2392,6 +2392,7 @@ def _prompt_evolution_session(
     store: JobStore, job_id: str, campaign: dict[str, Any], *, source: str
 ) -> dict[str, Any] | None:
     from wayfinder_paths.jobs.compute_lock import job_state_lock
+    from wayfinder_paths.jobs.improver.spec import ImproverSpec
 
     campaign_id = str(campaign.get("campaign_id") or "").strip()
     if not campaign_id:
@@ -2399,6 +2400,10 @@ def _prompt_evolution_session(
     session_stage = str(campaign.get("session_stage") or "").strip()
     if not session_stage:
         return {"queued": False, "error": "evolution session stage missing"}
+    evolution_model = (
+        str(ImproverSpec.load(store.job_dir(job_id)).evolution.get("model") or "")
+        or None
+    )
     artifact_key = str(campaign.get("artifact_key") or session_stage).strip()
     prior_handoff = _latest_evolution_stage_handoff(store, job_id, campaign_id)
     existing = store.read_json(job_id, EVOLUTION_SESSION_PATH, default={}) or {}
@@ -2496,6 +2501,7 @@ def _prompt_evolution_session(
                 session_id=session_id,
                 text=prompt,
                 agent=agent_name,
+                model=evolution_model,
             )
             if queued:
                 session.update(

@@ -2070,7 +2070,7 @@ def test_evolution_uses_a_dedicated_stage_session(tmp_path, monkeypatch) -> None
         def create_session(self, **kwargs):
             raise AssertionError("the stable evolution session should be reused")
 
-        def prompt_async(self, *, session_id, text, agent):
+        def prompt_async(self, *, session_id, text, agent, model=None):
             self.prompts.append((session_id, text, agent))
             return True
 
@@ -2129,7 +2129,7 @@ def test_evolution_design_stage_uses_the_normal_temperature_designer(
             self.created.append(kwargs)
             return "designer-session"
 
-        def prompt_async(self, *, session_id, text, agent):
+        def prompt_async(self, *, session_id, text, agent, model=None):
             self.prompts.append((session_id, agent))
             return True
 
@@ -2156,6 +2156,7 @@ class _FakeEvolutionClient:
     def __init__(self, job_id: str) -> None:
         self.job_id = job_id
         self.prompts: list[tuple[str, str, str]] = []
+        self.models: list[str | None] = []
 
     def healthy(self) -> bool:
         return True
@@ -2173,8 +2174,11 @@ class _FakeEvolutionClient:
     def create_session(self, **kwargs: Any) -> str:
         raise AssertionError("the stable evolution session should be reused")
 
-    def prompt_async(self, *, session_id: str, text: str, agent: str) -> bool:
+    def prompt_async(
+        self, *, session_id: str, text: str, agent: str, model: str | None = None
+    ) -> bool:
         self.prompts.append((session_id, text, agent))
+        self.models.append(model)
         return True
 
 
@@ -2201,6 +2205,7 @@ def test_op_completion_nudge_reuses_session_and_respects_kill_switch(
     result = nudge_evolution_session(store, job_id)
 
     assert result == {"queued": True, "session_id": "evolution-session"}
+    assert client.models == ["wayfinder/deepseek-v4-flash"]
     assert len(client.prompts) == 1
     session = store.read_json(job_id, "reports/evolution/session.json")
     assert session["session_id"] == "evolution-session"
@@ -2300,7 +2305,9 @@ def test_parentless_evolution_nudges_reuse_persisted_campaign_session(
             self.sessions.add(session_id)
             return session_id
 
-        def prompt_async(self, *, session_id: str, text: str, agent: str) -> bool:
+        def prompt_async(
+            self, *, session_id: str, text: str, agent: str, model: str | None = None
+        ) -> bool:
             self.prompts.append(session_id)
             return True
 
@@ -2468,7 +2475,9 @@ def test_evaluation_completion_rotates_stage_and_passes_bounded_handoff(
             self.sessions.discard(session_id)
             return True
 
-        def prompt_async(self, *, session_id: str, text: str, agent: str) -> bool:
+        def prompt_async(
+            self, *, session_id: str, text: str, agent: str, model: str | None = None
+        ) -> bool:
             self.prompts.append((session_id, text))
             return True
 

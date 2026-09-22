@@ -152,11 +152,23 @@ class OpenCodeClient:
             return False
 
     def prompt_async(
-        self, session_id: str, text: str, *, agent: str | None = None
+        self,
+        session_id: str,
+        text: str,
+        *,
+        agent: str | None = None,
+        model: str | None = None,
     ) -> bool:
+        """Queue a prompt; `model` is "<providerID>/<modelID>" and overrides the
+        server's default model for this message only."""
         payload: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
         if agent:
             payload["agent"] = agent
+        if model:
+            provider_id, separator, model_id = model.partition("/")
+            if not (provider_id and separator and model_id):
+                raise ValueError(f"model must be '<provider>/<model>', got {model!r}")
+            payload["model"] = {"providerID": provider_id, "modelID": model_id}
         try:
             return self.client.post(
                 f"{self.base_url}/session/{session_id}/prompt_async",
