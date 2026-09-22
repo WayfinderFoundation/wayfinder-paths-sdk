@@ -18,13 +18,17 @@ from typing import Any
 
 import pandas as pd
 
-from wayfinder_paths.jobs.archive import find_candidate
+from wayfinder_paths.jobs.archive import find_candidate, record_candidate
 from wayfinder_paths.jobs.bundles import copy_job_bundle
 from wayfinder_paths.jobs.compute_lock import job_state_lock
 from wayfinder_paths.jobs.constitution import load_constitution
 from wayfinder_paths.jobs.economics import block_bootstrap_lcb
 from wayfinder_paths.jobs.execution.job import _load_job_yaml
 from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
+from wayfinder_paths.jobs.execution.validation import (
+    candidate_validation_passed,
+    validate_execution_job,
+)
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.improver.spec import ImproverSpec, revision_stamp
 from wayfinder_paths.jobs.models import utc_now_iso
@@ -44,7 +48,7 @@ PROBATION_FORWARD_ROOT = "results/forward/probation"
 PROBATION_VIEW_PATH = "state/probation_view.json"
 TRIAL_ACTIVE_STATUSES = frozenset({"burn_in", "active"})
 TRIAL_TERMINAL_STATUSES = frozenset(
-    {"graduated", "killed", "inconclusive", "superseded"}
+    {"graduated", "killed", "inconclusive", "superseded", "cancelled"}
 )
 # Owner-facing trial identity: a trial card names the STRATEGY, not the
 # plumbing that delivered it. "evolution" is the pipeline, never a family.
@@ -794,6 +798,223 @@ def stage_evolution_probation(
             },
         )
         return trial
+
+
+def stage_probation_trial(
+    store: JobStore,
+    job_id: str,
+    *,
+    candidate_dir: Path,
+    revision: str,
+    family: str,
+    summary: str | None,
+    by: str,
+    source: str = "chat",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Owner/agent-staged trial: the variant earns the same validation a
+    research seed does, then rides the standard probation rail beside the
+    incumbent. Caps and the duplicate-revision short-circuit surface as
+    ValueError so the caller can say why."""
+    root = store.job_dir(job_id).resolve()
+    source_root = candidate_dir.resolve()
+    if not source_root.is_relative_to(root):
+        raise ValueError("probation candidate must be inside its job root")
+    safe_revision = _safe_component(revision, "candidate revision")
+    if compute_workspace_revision(source_root) != safe_revision:
+        raise ValueError("probation candidate revision does not match its bundle")
+    if not candidate_validation_passed(
+        validate_execution_job(job_id, candidate_dir=source_root, store=store)
+    ):
+        raise ValueError(
+            "probation candidate does not satisfy the executable job contract"
+        )
+    if safe_revision == compute_workspace_revision(root):
+        raise ValueError("probation candidate is byte-identical to the incumbent")
+    trial_family = str(family).strip()
+    if trial_family.lower() in PLACEHOLDER_TRIAL_FAMILIES:
+        raise ValueError("probation candidate needs a real strategy family")
+    digest = hashlib.sha256(f"{trial_family}|{safe_revision}".encode()).hexdigest()
+    candidate_id = f"{source}-{digest[:12]}"
+    staged = stage_evolution_probation(
+        store,
+        job_id,
+        candidate_id=candidate_id,
+        candidate_root=source_root,
+        revision=safe_revision,
+        source=source,
+        family=trial_family,
+        summary=summary,
+        evidence={"source": source, "by": by},
+        now=now,
+    )
+    status = str(staged.get("status") or "")
+    if status == "duplicate":
+        raise ValueError(
+            f"revision {safe_revision[:12]} is already on probation as trial "
+            f"{staged.get('trial_id')} ({staged.get('trial_status')})"
+        )
+    if status == "deferred":
+        raise ValueError(str(staged.get("reason") or "probation capacity full"))
+    # The archive is the lineage every verdict syncs into; a chat-staged
+    # variant must leave the same trace an evolution candidate does.
+    record_candidate(
+        store,
+        job_id,
+        candidate_id=candidate_id,
+        family=trial_family,
+        summary=str(summary or "").strip()[:TRIAL_SUMMARY_MAX_CHARS],
+        status="probation",
+        objective=None,
+        revision=safe_revision,
+        evidence=f"staged for probation by {by} via {source}",
+    )
+    store.append_journal(
+        job_id,
+        {
+            "type": "probation_trial_staged",
+            "trial_id": staged["trial_id"],
+            "candidate_id": candidate_id,
+            "revision": safe_revision,
+            "status": status,
+            "by": by,
+            "source": source,
+        },
+    )
+    return staged
+
+
+def cancel_probation_trial(
+    store: JobStore,
+    job_id: str,
+    trial_id: str,
+    *,
+    by: str,
+    reason: str,
+    source: str = "chat",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Close a live or queued trial on the owner's say-so; a queued trial
+    takes the freed slot the same way it would after a mechanical verdict."""
+    current = _aware(now or datetime.now(UTC))
+    max_active = int(
+        (ImproverSpec.load(store.job_dir(job_id)).evolution.get("probation") or {}).get(
+            "max_active"
+        )
+        or 3
+    )
+    with job_state_lock(store.repo_root, job_id, name="probation"):
+        doc = load_probation(store, job_id)
+        trial = _find_trial(doc, trial_id)
+        if trial.get("status") in TRIAL_TERMINAL_STATUSES:
+            raise ValueError(
+                f"probation trial {trial_id} is already {trial.get('status')}"
+            )
+        _close_trial(trial, "cancelled", reason=reason, current=current)
+        trial["cancelled_by"] = by
+        activated = _activate_queued_trials(doc, current=current, max_active=max_active)
+        store.write_json(job_id, PROBATION_PATH, doc)
+    outcome = {
+        "action": "probation_cancelled",
+        "trial_id": trial_id,
+        "candidate_id": trial.get("candidate_id"),
+        "reason": reason,
+    }
+    _sync_trial_archive(store, job_id, outcome)
+    store.append_journal(
+        job_id,
+        {"type": "probation_trial_cancelled", **outcome, "by": by, "source": source},
+    )
+    for row in activated:
+        store.append_journal(job_id, {"type": str(row["action"]), **row})
+    return {"trial": trial, "activated": [str(row["trial_id"]) for row in activated]}
+
+
+def promote_probation_trial_early(
+    store: JobStore,
+    job_id: str,
+    trial_id: str,
+    *,
+    by: str,
+    reason: str,
+    source: str = "chat",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Graduate an active forward trial ahead of its day-7 checkpoint. The
+    promotion still lands as the owner-approved `prop-probation-<trial>`
+    proposal — never an immediate apply."""
+    current = _aware(now or datetime.now(UTC))
+    with job_state_lock(store.repo_root, job_id, name="probation"):
+        doc = load_probation(store, job_id)
+        trial = _find_trial(doc, trial_id)
+        if trial.get("status") != "active" or trial.get("phase") != "forward":
+            raise ValueError(
+                f"probation trial {trial_id} is {trial.get('status')}/"
+                f"{trial.get('phase')}; only an active forward trial can be "
+                "promoted early"
+            )
+        metrics = _paired_forward_metrics(store, job_id, trial, current=current)
+        trial["forward"]["metrics"] = metrics
+        trial["updated_at"] = current.isoformat()
+        paired_days = int(metrics["paired_days"])
+        trades = int(metrics["candidate_trade_count"])
+        trade_floor = int(trial["forward"].get("min_candidate_trades", 3))
+        if paired_days < 1 or trades < trade_floor:
+            store.write_json(job_id, PROBATION_PATH, doc)
+            raise ValueError(
+                f"probation trial {trial_id} has {paired_days} paired day(s) and "
+                f"{trades} closed candidate trade(s); early promotion needs at "
+                f"least 1 paired day and {trade_floor} closed trades"
+            )
+        _close_trial(
+            trial,
+            "graduated",
+            reason=f"promoted early by {by}: {reason}",
+            current=current,
+        )
+        trial["early_by"] = by
+        trial["early_reason"] = reason
+        trial["early_at"] = current.isoformat()
+        trial["promotion"] = {"status": "pending", "proposal_id": None}
+        store.write_json(job_id, PROBATION_PATH, doc)
+    _sync_trial_archive(
+        store,
+        job_id,
+        {
+            "action": "probation_graduated",
+            "trial_id": trial_id,
+            "candidate_id": trial.get("candidate_id"),
+            "reason": trial.get("verdict_reason"),
+            "metrics": metrics,
+        },
+    )
+    promotion = _stage_trial_promotion(store, job_id, trial_id)
+    proposal_id = promotion.get("proposal_id")
+    store.append_journal(
+        job_id,
+        {
+            "type": "probation_trial_promoted_early",
+            "trial_id": trial_id,
+            "candidate_id": trial.get("candidate_id"),
+            "proposal_id": proposal_id,
+            "paired_days": paired_days,
+            "candidate_trade_count": trades,
+            "reason": reason,
+            "by": by,
+            "source": source,
+        },
+    )
+    trial = _find_trial(load_probation(store, job_id), trial_id)
+    return {"trial": trial, "proposal_id": proposal_id, "promotion": promotion}
+
+
+def _find_trial(doc: dict[str, Any], trial_id: str) -> dict[str, Any]:
+    trial = next(
+        (item for item in doc["trials"] if item.get("trial_id") == trial_id), None
+    )
+    if trial is None:
+        raise ValueError(f"unknown probation trial {trial_id!r}")
+    return trial
 
 
 def active_probation_trials(store: JobStore, job_id: str) -> bool:
@@ -1623,6 +1844,7 @@ def _sync_trial_archive(store: JobStore, job_id: str, outcome: dict[str, Any]) -
         "probation_graduated": "paper_experiment",
         "probation_killed": "refuted",
         "probation_inconclusive": "archived",
+        "probation_cancelled": "archived",
     }
     status = status_by_action.get(str(outcome.get("action") or ""))
     candidate_id = str(outcome.get("candidate_id") or "")

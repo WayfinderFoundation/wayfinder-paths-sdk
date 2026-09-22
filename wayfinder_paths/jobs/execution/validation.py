@@ -1741,6 +1741,20 @@ def report_from_checks(checks: list[dict[str, Any]], *, strict: bool) -> dict[st
     return _report(checks, strict=strict)
 
 
+def candidate_validation_passed(report: dict[str, Any]) -> bool:
+    """Ignore only deployment artifacts that an isolated bundle cannot own."""
+    research_only = {
+        "declared_features_available",
+        "preflight_report_present",
+        "preflight_passed",
+        "wallet_label_declared",
+    }
+    return not any(
+        not check.get("passed") and check.get("name") not in research_only
+        for check in report.get("checks") or []
+    )
+
+
 def _suggestions(messages: list[str]) -> list[str]:
     suggestions: list[str] = []
     joined = " ".join(messages).lower()
