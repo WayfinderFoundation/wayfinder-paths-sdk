@@ -70,6 +70,10 @@ from wayfinder_paths.jobs.regime import (
     declared_regimes,
 )
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.trade_forensics import (
+    UNLABELED_EXIT_REASON,
+    UNRECORDED_EXIT_REASON,
+)
 from wayfinder_paths.jobs.triggers import fire_triggers
 from wayfinder_paths.runner.monitor_state import atomic_write_json
 
@@ -1268,6 +1272,12 @@ def _trade_close_payload(
         exit_reason = "bracket_stop"
     elif not exit_reason and action == "TAKE_PROFIT":
         exit_reason = "bracket_take_profit"
+    elif not exit_reason:
+        # A fill without the engine's intent stamp reached the ledger before
+        # exit telemetry existed: unknown, never assumed to be the stop.
+        exit_reason = (
+            UNLABELED_EXIT_REASON if "intent_action" in raw else UNRECORDED_EXIT_REASON
+        )
     trigger_price = (
         native_stop.get("trigger_price")
         if native_stop is not None

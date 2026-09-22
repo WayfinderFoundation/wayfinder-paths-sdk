@@ -413,6 +413,7 @@ def _closed_trades(
     import pandas as pd
 
     from wayfinder_paths.jobs.trade_forensics import (
+        UNRECORDED_EXIT_REASON,
         _closing_fill_reason,
         match_entry_fill,
         position_side_of_close,
@@ -454,7 +455,7 @@ def _closed_trades(
                 "exit_reason": _closing_fill_reason(
                     fills, symbol=symbol, exit_ts=exit_ts
                 )
-                or "bracket_stop",
+                or UNRECORDED_EXIT_REASON,
                 "mode": str(trade.get("mode") or "paper"),
             }
         )

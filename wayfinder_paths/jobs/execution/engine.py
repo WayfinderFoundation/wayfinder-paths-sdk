@@ -1173,7 +1173,9 @@ def resolve_fill_bracket(
         direction = -1.0 if side == "long" else 1.0
         resolved["stop_loss"] = entry_price * (1.0 + direction * stop_pct)
     take_profit_pct = _float_or_none(resolved.get("take_profit_pct"))
-    if take_profit_pct is not None:
+    # 0 means "no take-profit"; a level at the fill price would close every
+    # trade at breakeven on the next touch.
+    if take_profit_pct is not None and take_profit_pct > 0:
         direction = 1.0 if side == "long" else -1.0
         resolved["take_profit"] = entry_price * (1.0 + direction * take_profit_pct)
     resolved["entry_price"] = entry_price

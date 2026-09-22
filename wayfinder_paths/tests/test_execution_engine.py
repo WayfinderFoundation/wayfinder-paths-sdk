@@ -21,6 +21,7 @@ from wayfinder_paths.jobs.execution import (
     VenueState,
     run_tick,
 )
+from wayfinder_paths.jobs.execution.engine import resolve_fill_bracket
 from wayfinder_paths.jobs.execution.primitives import PositionRecord
 from wayfinder_paths.jobs.execution.venues import MarketEvent
 
@@ -1573,3 +1574,19 @@ async def test_run_tick_records_strategy_state_digest_only_when_asked() -> None:
     first, second = (row["strategy_state_digest"] for row in recorded.runs[-2:])
     assert set(first) == {"n", "fixed"}
     assert first["n"] != second["n"] and first["fixed"] == second["fixed"]
+
+
+def test_zero_take_profit_pct_means_no_take_profit() -> None:
+    resolved = resolve_fill_bracket(
+        {"stop_loss_pct": 0.03, "take_profit_pct": 0.0},
+        "long",
+        100.0,
+        "hyperliquid",
+        "c1",
+    )
+    assert resolved["stop_loss"] == 97.0 and "take_profit" not in resolved
+
+    armed = resolve_fill_bracket(
+        {"take_profit_pct": 0.04}, "short", 100.0, "hyperliquid", "c1"
+    )
+    assert armed["take_profit"] == 96.0

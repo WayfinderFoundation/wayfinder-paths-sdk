@@ -277,7 +277,10 @@ def test_forward_view_trades_and_marker_directions(tmp_path) -> None:
             "status": "filled",
             "timestamp": "2026-07-22T16:05:00+00:00",
             "avg_price": 2.3908,
-            "raw": {"intent_metadata": {"exit_reason": ""}},
+            "raw": {
+                "intent_action": "STOP_LOSS",
+                "intent_metadata": {"bracket": {"exit_type": "STOP_LOSS"}},
+            },
         },
     ]
     (forward / "fills.jsonl").write_text(
