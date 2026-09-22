@@ -18,7 +18,7 @@ import pytest
 from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT
 from wayfinder_paths.runner.daemon import RunnerDaemon, _kill_process_group
 from wayfinder_paths.runner.paths import RunnerPaths
-from wayfinder_paths.runner.warm_spawn import WarmChild
+from wayfinder_paths.runner.warm_spawn import WarmChild, _backend_sync_entry
 
 
 def _forkserver_ctx() -> multiprocessing.context.BaseContext:
@@ -187,3 +187,20 @@ def test_warm_spawn_failure_falls_back_to_popen(
     run = daemon._db.get_run(run_id=run_id)
     assert run is not None and run["pid"] == 4242
     assert daemon._running[run_id].popen is popen
+
+
+def test_backend_sync_entry_syncs_the_given_repo_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The forkserver target for the backend sync: it must build the store
+    from the repo_root the daemon passed, not from the child's cwd."""
+    stores: list = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.sync.sync_all_jobs",
+        lambda **kwargs: stores.append(kwargs["store"]),
+    )
+
+    _backend_sync_entry(repo_root=str(tmp_path))
+
+    assert len(stores) == 1
+    assert stores[0].repo_root == tmp_path.resolve()

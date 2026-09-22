@@ -5,6 +5,7 @@ the same debounced action, so they always fire together."""
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 from unittest.mock import Mock
@@ -181,7 +182,7 @@ def test_debounced_fire_runs_both_backend_pushes_together(
 ) -> None:
     """The action behind the debouncer is the real _start_backend_sync: one
     fire drives BOTH the scheduled-jobs registry bulk_sync and the
-    wayfinder-jobs sync_all_jobs."""
+    wayfinder-jobs sync child."""
     from wayfinder_paths.core.clients.ScheduledJobsClient import SCHEDULED_JOBS_CLIENT
 
     monkeypatch.setenv("OPENCODE_INSTANCE_ID", "inst-debounce")
@@ -189,7 +190,7 @@ def test_debounced_fire_runs_both_backend_pushes_together(
     daemon = RunnerDaemon(paths=_paths(tmp_path))
 
     bulk_calls: list[list[dict]] = []
-    sync_all_calls: list[dict] = []
+    child_calls: list[int] = []
     anchor_calls: list[dict] = []
     budget = {
         "balance_cpu_seconds": 640.0,
@@ -207,15 +208,55 @@ def test_debounced_fire_runs_both_backend_pushes_together(
         lambda payload: anchor_calls.append(payload),
     )
     monkeypatch.setattr(
-        "wayfinder_paths.jobs.sync.sync_all_jobs",
-        lambda **kwargs: sync_all_calls.append(kwargs),
+        daemon, "_run_backend_sync_child", lambda: child_calls.append(0) or 0
     )
 
     daemon._sync_to_backend_async(flush=False)
     daemon._sync_to_backend_async(flush=False)
 
-    assert _wait_for(lambda: len(bulk_calls) == 1 and len(sync_all_calls) == 1)
+    assert _wait_for(lambda: len(bulk_calls) == 1 and len(child_calls) == 1)
     time.sleep(0.2)
     assert len(bulk_calls) == 1
-    assert len(sync_all_calls) == 1
+    assert len(child_calls) == 1
     assert anchor_calls == [budget]
+
+
+def test_backend_syncs_run_one_at_a_time_and_coalesce_while_busy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Requests that land while a sync is in flight collapse into ONE
+    follow-up pass, and two syncs never overlap."""
+    from wayfinder_paths.core.clients.ScheduledJobsClient import SCHEDULED_JOBS_CLIENT
+
+    monkeypatch.setenv("OPENCODE_INSTANCE_ID", "inst-debounce")
+    daemon = RunnerDaemon(paths=_paths(tmp_path))
+    monkeypatch.setattr(SCHEDULED_JOBS_CLIENT, "bulk_sync", lambda jobs: None)
+
+    release = threading.Event()
+    first_started = threading.Event()
+    lock = threading.Lock()
+    counts = {"runs": 0, "in_flight": 0, "max_in_flight": 0}
+
+    def _blocking_child() -> int:
+        with lock:
+            counts["runs"] += 1
+            counts["in_flight"] += 1
+            counts["max_in_flight"] = max(counts["max_in_flight"], counts["in_flight"])
+        first_started.set()
+        release.wait(5)
+        with lock:
+            counts["in_flight"] -= 1
+        return 0
+
+    monkeypatch.setattr(daemon, "_run_backend_sync_child", _blocking_child)
+
+    daemon._start_backend_sync()
+    assert first_started.wait(5)
+    daemon._start_backend_sync()  # lands mid-sync: marked pending
+    daemon._start_backend_sync()  # coalesces into that same pending pass
+    release.set()
+
+    assert _wait_for(lambda: counts["runs"] == 2 and not daemon._sync_running)
+    time.sleep(0.2)
+    assert counts["runs"] == 2
+    assert counts["max_in_flight"] == 1

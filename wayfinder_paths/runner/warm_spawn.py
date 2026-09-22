@@ -67,6 +67,21 @@ def _warm_tick_entry(*, env: dict[str, str], log_path: str, cwd: str) -> None:
     raise SystemExit(0 if payload.get("ok") else 1)
 
 
+def _backend_sync_entry(*, repo_root: str) -> None:
+    """Runs inside a forkserver child: the wayfinder-jobs backend sync.
+
+    Lazy imports for the same reason the daemon lazy-imports the jobs stack:
+    the per-job artifact parses this sync performs (feature stores, backtest
+    graphs, ledgers) must land in this short-lived child's heap, never in
+    runnerd's. Returning is exit 0; an exception propagates — multiprocessing
+    prints the traceback to stderr (runnerd.log) and exits 1.
+    """
+    from wayfinder_paths.jobs.store import JobStore
+    from wayfinder_paths.jobs.sync import sync_all_jobs
+
+    sync_all_jobs(store=JobStore(repo_root=Path(repo_root)))
+
+
 class WarmChild:
     """Popen-shaped handle over a forked tick, for the daemon's `_reap`."""
 
