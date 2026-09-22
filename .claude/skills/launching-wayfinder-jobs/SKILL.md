@@ -49,6 +49,7 @@ One flow for every kind of job. Seven steps, in this order, every time.
 - Shells wallets are gasless: never check or bridge gas.
 - The rules files in this skill carry the whole contract for each kind: building, validating, launching and watching a job needs no reading of the SDK source.
 - Job state comes only from `core_jobs` (`list`, `status`). A `not found` means the job does not exist here: say so and stop; never search the filesystem or the SDK source for it, and never build a stand-in unless asked.
+- Retiring a job is `core_jobs(action="remove", job_id=...)`: it deletes the loops and archives the job directory (undo: CLI `wayfinder job restore <id>`). It refuses while the job is live, venue-funded, holding positions or running a background op — go paper and withdraw first; only the owner may force it, from the CLI. Never remove a job the user did not ask to remove.
 
 ## Intervention reviews
 

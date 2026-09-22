@@ -51,6 +51,7 @@ from wayfinder_paths.jobs.readout import (
     feasible_holdout,
 )
 from wayfinder_paths.jobs.regime_health import regime_health_job
+from wayfinder_paths.jobs.remove import remove_job
 from wayfinder_paths.jobs.risk_flags import acknowledge_risk_flags
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.starters import create_starter_job, starter_catalog
@@ -132,6 +133,7 @@ JobAction = Literal[
     "halt",
     "resume_from_halt",
     "delete",
+    "remove",
     "sync",
 ]
 
@@ -587,6 +589,10 @@ async def core_jobs(
         owner's Fund/Withdraw buttons. Raw hyperliquid_deposit_usdc /
         hyperliquid_withdraw_usdc against a job-bound wallet moves money
         without the capital bookkeeping and de-syncs live sizing.
+      - `remove` deletes the loops and archives the job to
+        `.wayfinder/jobs_archived/` (undo with the CLI `wayfinder job
+        restore`); refused while live or funded — the owner goes paper and
+        withdraws first.
     """
 
     store = JobStore()
@@ -1491,6 +1497,15 @@ async def core_jobs(
                     error=error,
                 )
             )
+
+    if action == "remove":
+        if not job_id:
+            return err("invalid_request", "remove requires job_id")
+        # No force through MCP: orphaning venue money stays an owner CLI act.
+        try:
+            return ok(remove_job(store, job_id, by="agent"))
+        except ValueError as exc:
+            return err("remove_blocked", str(exc))
 
     if action in {"pause", "resume", "delete"}:
         job = store.load(job_id)
