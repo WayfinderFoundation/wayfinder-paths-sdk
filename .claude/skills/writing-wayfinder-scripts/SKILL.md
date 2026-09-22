@@ -158,6 +158,29 @@ Hard constraints for execution-spec trading jobs:
   value, or internal estimates.
 - Represent protective exits as bracket metadata or explicit stop/TP intents.
 
+Bracket contract (the only protective-exit mechanism the engine runs):
+
+- Declare it on the OPEN intent: `bracket={"stop_loss_pct": 0.02,
+  "take_profit_pct": 0.04}` — fractions of the fill price (absolute
+  `stop_loss` / `take_profit` prices also work). `policy` defaults to
+  `conservative`: a bar that touches both levels counts as the stop.
+- Backtest, paper and live evaluate the same bracket once per tick against the
+  completed bar's high/low and close at market. Live checks happen only on
+  ticks that ran; bars between ticks are never examined.
+- On Hyperliquid perps a live fill also gets a venue-side trigger order for the
+  STOP (the default; `bracket["native_required"]` or
+  `execution_params.native_stop_required` override it). There is no
+  venue-native take-profit — the take-profit is always the engine's per-tick
+  check.
+- Omitting `take_profit_pct` (or setting it to 0) means no take-profit. Never
+  hand-roll a close-based stop or take-profit in `decide()` when a bracket
+  exists: the engine owns same-bar precedence and labels the exit.
+- Stop width is a PRICE move; equity at risk is `stop_pct × leverage` (a 3%
+  stop at 3× is a 9% loss before slippage).
+- Every close intent the strategy emits carries `metadata={"exit_reason": ...}`.
+  The engine labels only its own exits (`bracket_stop`, `bracket_take_profit`);
+  a strategy close without a reason is recorded `unlabeled`.
+
 Mandatory self-check before emitting any `OrderIntent`:
 
 1. Is the market view completed-only?

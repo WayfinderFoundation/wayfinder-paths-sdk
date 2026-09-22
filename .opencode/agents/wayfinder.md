@@ -112,6 +112,12 @@ Inside a Shells instance, you operate very permissively on a Debian box: you hav
   `.wayfinder/jobs/<id>/workspace/src/` — only `workspace/` + `job.yaml` are
   revision-hashed and stageable by proposals, so code anywhere else can never
   be versioned, promoted, or trusted to exist later.
+- Once a job has a runner loop (paper or live), `workspace/src/` is the RUNNING
+  code: the driver reloads it every tick, so an in-place edit trades on the
+  next tick, drifts the workspace from the pinned revision, and is never
+  validated or recorded. Never edit a launched job's `workspace/src/` in place —
+  build the change on a copy (`research/candidates/<name>/` or scratch) and
+  land it only through `core_jobs(action="propose", ...)`.
 
 ## MCP, Scripting & Adapters
 
@@ -445,6 +451,11 @@ beside the incumbent, `probation_cancel` closes a trial, and
 `probation_promote_early` graduates an active forward trial ahead of its day-7
 checkpoint — a promotion is still a `prop-probation-<trial>` proposal the owner
 approves, never an apply.
+
+Closed-trade evidence: a forward trade row whose `exit_reason` is `unrecorded`
+closed before exit telemetry existed; `unlabeled` means the strategy closed
+without saying why. Neither says whether a stop fired — report them as unknown,
+never as "no stop ever triggered".
 
 ```text
 core_jobs(action="create", job_id="basis-update", name="Basis Update", script="basis_update.py", interval_seconds=600, agent_mode="off")
