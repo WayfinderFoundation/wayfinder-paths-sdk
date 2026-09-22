@@ -99,6 +99,7 @@ from wayfinder_paths.jobs.resource_envelope import (
     require_evolution_launch_headroom,
 )
 from wayfinder_paths.jobs.robustness import _strategy_warmup_bars
+from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.starter_casebook import select_starter_cases
 from wayfinder_paths.jobs.starters import (
     STARTER_DEFINITIONS,
@@ -160,20 +161,26 @@ def campaign_status(store: JobStore, job_id: str) -> dict[str, Any]:
     return store.read_json(job_id, CAMPAIGN_STATE_PATH, default={}) or {}
 
 
-def _fleet_campaign_turn(
-    store: JobStore,
-    job_id: str,
-    *,
-    now: datetime,
-) -> bool:
-    """One campaign per box; oldest due eligible job wins deterministically."""
+def _fleet_campaign_owner(store: JobStore, *, now: datetime) -> str | None:
+    """One campaign per box: a running campaign owns the slot, otherwise the
+    oldest due eligible job wins deterministically."""
     jobs = sorted(store.list_jobs(), key=lambda item: item.id)
     for job in jobs:
         state = campaign_status(store, job.id)
         if state.get("status") in {"active", "finalizing"}:
-            return job.id == job_id
+            return job.id
+    # A job that cannot wake cannot use the slot: a job whose agent loop was
+    # paused once held the box's only slot for a week while the running job
+    # was silently denied. An unreachable runner reports nothing and must not
+    # change scheduling.
+    runner_states = RunnerBridge(repo_root=store.repo_root).job_states()
     due: list[tuple[datetime, str]] = []
     for job in jobs:
+        if runner_states and (
+            runner_states.get(job.agent_loop.runner_job_name, {}).get("status")
+            != "ACTIVE"
+        ):
+            continue
         try:
             spec = ImproverSpec.load(store.job_dir(job.id))
             if not spec.evolution_eligibility(store.job_dir(job.id), job.id)[
@@ -200,7 +207,16 @@ def _fleet_campaign_turn(
         except (OSError, TypeError, ValueError):
             continue
     due.sort(key=lambda item: (item[0], item[1]))
-    return bool(due and due[0][1] == job_id)
+    return due[0][1] if due else None
+
+
+def _fleet_campaign_turn(
+    store: JobStore,
+    job_id: str,
+    *,
+    now: datetime,
+) -> bool:
+    return _fleet_campaign_owner(store, now=now) == job_id
 
 
 def evolution_compute_window_open(
@@ -258,20 +274,15 @@ def _parse_utc_clock(value: Any) -> time:
         raise ValueError(f"invalid UTC pricing-window time: {value!r}") from exc
 
 
-def campaign_due(store: JobStore, job_id: str, *, now: datetime | None = None) -> bool:
-    """Cheap, read-only cadence check used before spawning campaign setup."""
+def _campaign_start_ready(store: JobStore, job_id: str, *, now: datetime) -> bool:
+    """Everything a campaign start needs except the machine slot."""
     spec = ImproverSpec.load(store.job_dir(job_id))
     if not spec.evolution_eligibility(store.job_dir(job_id), job_id)["eligible"]:
         return False
     existing = campaign_status(store, job_id)
     if existing.get("status") in {"active", "finalizing"}:
         return False
-    current = _campaign_now(now)
-    if not evolution_compute_window_open(
-        store, job_id, now=current, reserve_campaign=True
-    ):
-        return False
-    if not _fleet_campaign_turn(store, job_id, now=current):
+    if not evolution_compute_window_open(store, job_id, now=now, reserve_campaign=True):
         return False
     anchor = existing.get("started_at")
     if not anchor:
@@ -282,7 +293,29 @@ def campaign_due(store: JobStore, job_id: str, *, now: datetime | None = None) -
             or spec.evolution["cooldown_hours"]
         )
     )
-    return current - _parse(anchor) >= cadence
+    return now - _parse(anchor) >= cadence
+
+
+def campaign_due(store: JobStore, job_id: str, *, now: datetime | None = None) -> bool:
+    """Cheap, read-only cadence check used before spawning campaign setup."""
+    current = _campaign_now(now)
+    return _campaign_start_ready(store, job_id, now=current) and _fleet_campaign_turn(
+        store, job_id, now=current
+    )
+
+
+def campaign_block_reason(
+    store: JobStore, job_id: str, *, now: datetime | None = None
+) -> str | None:
+    """Name the job holding the machine slot when this job's campaign is due
+    but denied; None when only cadence, eligibility or pricing stops a start."""
+    current = _campaign_now(now)
+    if not _campaign_start_ready(store, job_id, now=current):
+        return None
+    owner = _fleet_campaign_owner(store, now=current)
+    if owner is None or owner == job_id:
+        return None
+    return f"another eligible job owns the machine evolution campaign slot ({owner})"
 
 
 def maybe_start_campaign(

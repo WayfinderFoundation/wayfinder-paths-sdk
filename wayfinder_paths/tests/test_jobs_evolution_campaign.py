@@ -24,6 +24,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _claim_full_dev,
     _commit_designed_attempt,
     _commit_full_dev,
+    _fleet_campaign_turn,
     _isolated_full_dev,
     _materialize_candidate_seed,
     _parameter_tuning_preview,
@@ -33,6 +34,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _select_full_dev_candidate,
     _select_parent_plan,
     _write_timeseries_prefix,
+    campaign_block_reason,
     campaign_due,
     campaign_prompt_block,
     campaign_status,
@@ -600,6 +602,85 @@ def test_only_one_automatic_campaign_owns_a_machine(tmp_path) -> None:
         start_campaign(store, second, now=now, force=True)
 
 
+def _fleet_pair(tmp_path, monkeypatch, runner_states: dict[str, Any]) -> JobStore:
+    store, _ = _job(tmp_path, "a-lab")
+    _job(tmp_path, "b-lab")
+
+    class FakeBridge:
+        def __init__(self, *, repo_root: Any) -> None:
+            assert repo_root == store.repo_root
+
+        def job_states(self) -> dict[str, Any]:
+            return runner_states
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign.RunnerBridge", FakeBridge
+    )
+    return store
+
+
+def test_campaign_slot_skips_jobs_whose_agent_loop_is_not_running(
+    tmp_path, monkeypatch
+) -> None:
+    now = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    states = {"a-lab-agent": {"status": "PAUSED"}, "b-lab-agent": {"status": "ACTIVE"}}
+    store = _fleet_pair(tmp_path, monkeypatch, states)
+
+    assert _fleet_campaign_turn(store, "b-lab", now=now) is True
+    assert _fleet_campaign_turn(store, "a-lab", now=now) is False
+    assert campaign_due(store, "b-lab", now=now) is True
+    assert campaign_due(store, "a-lab", now=now) is False
+
+    del states["a-lab-agent"]
+    assert _fleet_campaign_turn(store, "b-lab", now=now) is True
+    assert _fleet_campaign_turn(store, "a-lab", now=now) is False
+
+
+def test_campaign_slot_keeps_oldest_first_when_the_runner_is_unreachable(
+    tmp_path, monkeypatch
+) -> None:
+    now = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    store = _fleet_pair(tmp_path, monkeypatch, {})
+
+    assert _fleet_campaign_turn(store, "a-lab", now=now) is True
+    assert _fleet_campaign_turn(store, "b-lab", now=now) is False
+
+
+def test_running_campaign_owns_the_slot_regardless_of_runner_state(
+    tmp_path, monkeypatch
+) -> None:
+    now = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    store = _fleet_pair(
+        tmp_path,
+        monkeypatch,
+        {"a-lab-agent": {"status": "ACTIVE"}, "b-lab-agent": {"status": "PAUSED"}},
+    )
+    store.write_json(
+        "b-lab",
+        "state/evolution_campaign.json",
+        {"campaign_id": "campaign-1", "status": "active"},
+    )
+
+    assert _fleet_campaign_turn(store, "b-lab", now=now) is True
+    assert _fleet_campaign_turn(store, "a-lab", now=now) is False
+
+
+def test_denied_campaign_start_names_the_slot_owner(tmp_path, monkeypatch) -> None:
+    now = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    store = _fleet_pair(
+        tmp_path,
+        monkeypatch,
+        {"a-lab-agent": {"status": "ACTIVE"}, "b-lab-agent": {"status": "ACTIVE"}},
+    )
+
+    assert campaign_block_reason(store, "b-lab", now=now) == (
+        "another eligible job owns the machine evolution campaign slot (a-lab)"
+    )
+    assert campaign_block_reason(store, "a-lab", now=now) is None
+    assert campaign_due(store, "a-lab", now=now) is True
+    assert campaign_due(store, "b-lab", now=now) is False
+
+
 def test_runner_command_declares_control_and_heavy_resource_tiers() -> None:
     assert "--resource-tier=control" in op_runner_command("evolution_prepare")
     assert "--resource-tier=control" in op_runner_command("evolution_design")
@@ -701,6 +782,67 @@ def test_governor_diagnostic_error_does_not_wedge_the_intervention_lane(
     )
 
     assert run_job_worker(job_id, mode="intervene") is normal_report
+
+
+def test_denied_campaign_start_is_journaled_once_per_reason(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    reason = "another eligible job owns the machine evolution campaign slot (a-lab)"
+
+    class FakeClient:
+        def healthy(self) -> bool:
+            return True
+
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.OPENCODE_CLIENT", FakeClient())
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign.campaign_due",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign.campaign_block_reason",
+        lambda *args, **kwargs: reason,
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.background.spawn_detached_op",
+        lambda *args, **kwargs: pytest.fail("a denied start must not spawn"),
+    )
+
+    first = _queue_evolution_worker(store, job_id)
+    second = _queue_evolution_worker(store, job_id)
+
+    assert first == {"queued": False, "starting": False, "blocked": reason}
+    assert second == first
+    rows = [
+        row
+        for row in store.read_jsonl(job_id, "journal.jsonl")
+        if row.get("type") == "evolution_campaign_blocked"
+    ]
+    assert [row["reason"] for row in rows] == [reason]
+
+
+def test_denied_campaign_start_does_not_claim_the_intervention_lane(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    reason = "another eligible job owns the machine evolution campaign slot (a-lab)"
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.JobStore", lambda: store)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker._queue_evolution_worker",
+        lambda *args: {"queued": False, "starting": False, "blocked": reason},
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.maybe_skip_wake", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker._ensure_worker_session", lambda *args: None
+    )
+
+    report = run_job_worker(job_id, mode="intervene")
+
+    assert report["evolution_blocked"] == reason
+    assert report["queued"] is False
+    assert "evolution" not in report["summary"]
 
 
 @pytest.mark.parametrize(
