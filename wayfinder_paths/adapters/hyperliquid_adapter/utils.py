@@ -1,8 +1,32 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any
+
+
+def round_order_price(
+    price: float, price_decimals: int, *, round_up: bool = False
+) -> float:
+    """Round to HL's decimal and five-significant-figure tick constraints.
+
+    Integer prices are always valid. Use round_up for a sell limit to avoid
+    crossing below a caller's minimum tolerated execution price.
+    """
+    if price <= 0:
+        return 0.0
+    if float(price).is_integer():
+        return float(int(price))
+    rounding = ROUND_UP if round_up else ROUND_DOWN
+    decimal_step = Decimal(10) ** (-price_decimals)
+    p = (Decimal(str(price)) / decimal_step).to_integral_value(
+        rounding=rounding
+    ) * decimal_step
+    if p > 0:
+        sig_step = Decimal(10) ** (p.adjusted() - 4)
+        if sig_step > decimal_step:
+            p = (p / sig_step).to_integral_value(rounding=rounding) * sig_step
+    return float(p)
 
 
 def spot_index_from_asset_id(spot_asset_id: int) -> int:
