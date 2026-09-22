@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
 from wayfinder_paths.core.clients.ScheduledJobsClient import SCHEDULED_JOBS_CLIENT
-from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JobStatus
-from wayfinder_paths.runner.daemon import RunnerDaemon
+from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JobStatus, RunStatus
+from wayfinder_paths.runner.daemon import RunnerDaemon, RunningProcess
 from wayfinder_paths.runner.paths import RunnerPaths
 
 
@@ -318,3 +320,40 @@ def test_side_effect_failure_logs_at_warning(
     finally:
         logger.remove(sink_id)
     assert any("Runner side effect explode failed" in r for r in records)
+
+
+def test_reported_run_log_is_capped_to_the_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """report_run ships a bounded tail of the run log, never the whole file."""
+    daemon = RunnerDaemon(paths=_paths(tmp_path))
+    log_path = daemon._paths.logs_dir / "job-a" / "1.log"
+    log_path.parent.mkdir(parents=True)
+    lines = [f"line {index:07d} " + "x" * 90 for index in range(10_500)]
+    log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert log_path.stat().st_size > 1_000_000
+
+    reported: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        SCHEDULED_JOBS_CLIENT,
+        "report_run",
+        lambda name, data: reported.append((name, data)),
+    )
+    now = int(time.time())
+    rp = RunningProcess(
+        run_id=1,
+        job_id=1,
+        job_name="job-a",
+        started_at=now,
+        reason="schedule",
+        scheduled_for=now,
+        timeout_seconds=None,
+        popen=Mock(pid=1),
+        log_path=log_path,
+    )
+
+    daemon._report_finished_run(rp, finished_at=now, status=RunStatus.OK, exit_code=0)
+
+    (_name, data) = reported[0]
+    assert len(data["log_output"].encode("utf-8")) <= 200_000
+    assert data["log_output"].endswith(lines[-1])

@@ -260,3 +260,58 @@ def test_backend_syncs_run_one_at_a_time_and_coalesce_while_busy(
     time.sleep(0.2)
     assert counts["runs"] == 2
     assert counts["max_in_flight"] == 1
+
+
+def test_rss_after_run_log_is_rate_limited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two run finishes inside a second produce ONE RSS line."""
+    from loguru import logger
+
+    from wayfinder_paths.runner import daemon as daemon_module
+
+    monkeypatch.delenv("OPENCODE_INSTANCE_ID", raising=False)
+    daemon = RunnerDaemon(paths=_paths(tmp_path))
+    monkeypatch.setattr(daemon_module, "_rss_mb", lambda: 321.0)
+    job_id = daemon._db.add_job(
+        name="job-a",
+        job_type=JOB_TYPE_SCRIPT,
+        payload={"script_path": "x.py"},
+        interval_seconds=60,
+        next_run_at=0,
+    )
+    now = int(time.time())
+
+    def _finish_one() -> None:
+        run_id = daemon._db.reserve_run(
+            job_id=job_id,
+            started_at=now,
+            next_run_at=now + 60,
+            reason="schedule",
+            scheduled_for=now,
+        )
+        rp = RunningProcess(
+            run_id=run_id,
+            job_id=job_id,
+            job_name="job-a",
+            started_at=now,
+            reason="schedule",
+            scheduled_for=now,
+            timeout_seconds=None,
+            popen=Mock(pid=123),
+            log_path=daemon._paths.logs_dir / "job-a" / f"{run_id}.log",
+        )
+        daemon._finish_run(
+            rp, finished_at=now, status=RunStatus.OK, exit_code=0, error_text=None
+        )
+
+    records: list[str] = []
+    sink_id = logger.add(lambda message: records.append(str(message)), level="INFO")
+    try:
+        _finish_one()
+        _finish_one()
+    finally:
+        logger.remove(sink_id)
+
+    rss_lines = [r for r in records if "runnerd RSS 321MB after run job-a" in r]
+    assert len(rss_lines) == 1

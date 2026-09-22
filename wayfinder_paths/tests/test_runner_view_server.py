@@ -533,6 +533,71 @@ def _daemon_paths(tmp_path: Path):
     )
 
 
+def test_ctl_status_reports_rss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from wayfinder_paths.runner import daemon as daemon_module
+
+    monkeypatch.setenv("WAYFINDER_RUNNERD_MAX_RSS_MB", "900")
+    daemon = daemon_module.RunnerDaemon(paths=_daemon_paths(tmp_path))
+    monkeypatch.setattr(daemon_module, "_rss_mb", lambda: 512.5)
+
+    result = daemon.ctl_status()["result"]
+    assert result["rss_mb"] == 512.5
+    assert result["max_rss_mb"] == 900.0
+
+
+def test_daemon_file_log_sink_is_quiet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The file sink renders neither variable dumps nor extended tracebacks:
+    one warning from a side-effect thread must stay one line-ish, not pages."""
+    import shutil
+
+    from wayfinder_paths.runner import daemon as daemon_module
+    from wayfinder_paths.runner.paths import RunnerPaths
+
+    class _RecordingLogger:
+        def __init__(self, inner) -> None:
+            self._inner = inner
+            self.adds: list[dict] = []
+
+        def add(self, sink, **kwargs):
+            self.adds.append({"sink": sink, **kwargs})
+            return self._inner.add(sink, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    recording = _RecordingLogger(daemon_module.logger)
+    monkeypatch.setattr(daemon_module, "logger", recording)
+    monkeypatch.setenv("WAYFINDER_VIEW_PORT", "0")
+    runner_dir = Path("/tmp") / f"wf-sink-{time.time_ns()}"
+    runner_dir.mkdir(parents=True, exist_ok=True)
+    paths = RunnerPaths(
+        repo_root=tmp_path,
+        runner_dir=runner_dir,
+        db_path=runner_dir / "state.db",
+        logs_dir=runner_dir / "logs",
+        sock_path=runner_dir / "runner.sock",
+    )
+    daemon = daemon_module.RunnerDaemon(paths=paths, tick_seconds=0.05)
+    daemon._shutdown.set()  # start() does its setup, then the loop exits at once
+    thread = threading.Thread(target=daemon.start, name="runner-sink-daemon")
+    try:
+        thread.start()
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+    finally:
+        shutil.rmtree(runner_dir, ignore_errors=True)
+
+    daemon_log = str(paths.logs_dir / "wayfinder-daemon.log")
+    file_sinks = [entry for entry in recording.adds if entry["sink"] == daemon_log]
+    assert len(file_sinks) == 1
+    assert file_sinks[0]["diagnose"] is False
+    assert file_sinks[0]["backtrace"] is False
+
+
 def test_memory_watchdog_exits_cleanly_when_rss_exceeds_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -52,6 +52,12 @@ def spawn_detached(
 ) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     env_out = dict(env) if env is not None else os.environ.copy()
+    # glibc gives each thread its own malloc arena and arenas keep freed
+    # memory; runnerd's short-lived side-effect threads (sync, report,
+    # notify) were leaving their peaks resident in arenas nobody reuses.
+    # Two arenas bound that. Ignored on macOS/musl; an operator's explicit
+    # value wins.
+    env_out.setdefault("MALLOC_ARENA_MAX", "2")
 
     popen_kwargs: dict[str, Any] = {
         "cwd": str(repo_root),

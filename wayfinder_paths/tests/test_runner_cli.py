@@ -6,6 +6,7 @@ from typing import Any
 from click.testing import CliRunner
 
 from wayfinder_paths.runner import cli as runner_cli_module
+from wayfinder_paths.runner import lifecycle
 from wayfinder_paths.runner.cli import runner_cli
 
 
@@ -125,3 +126,33 @@ def test_update_job_cli_accepts_cron(monkeypatch) -> None:
     assert calls[0][1]["cron_expr"] == "0 9 * * 1-5"
     assert calls[0][1]["timezone"] == "America/Toronto"
     assert "interval_seconds" not in calls[0][1]
+
+
+def test_spawn_detached_caps_malloc_arenas_unless_overridden(
+    monkeypatch, tmp_path: Path
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _FakePopen:
+        pid = 4321
+
+        def __init__(self, cmd: list[str], **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(lifecycle.subprocess, "Popen", _FakePopen)
+    monkeypatch.delenv("MALLOC_ARENA_MAX", raising=False)
+    log_path = tmp_path / "runnerd.log"
+
+    pid = lifecycle.spawn_detached(
+        cmd=["runnerd"], repo_root=tmp_path, log_path=log_path
+    )
+    assert pid == 4321
+    assert captured["env"]["MALLOC_ARENA_MAX"] == "2"
+
+    lifecycle.spawn_detached(
+        cmd=["runnerd"],
+        repo_root=tmp_path,
+        log_path=log_path,
+        env={"MALLOC_ARENA_MAX": "8"},
+    )
+    assert captured["env"]["MALLOC_ARENA_MAX"] == "8"

@@ -72,6 +72,9 @@ DEFAULT_SYNC_DEBOUNCE_SECONDS = 90.0
 # The wayfinder-jobs backend sync runs in a forkserver child (see
 # _run_backend_sync_child); a child stuck past this is killed, not waited on.
 BACKEND_SYNC_TIMEOUT_SECONDS = 300.0
+# Per-run report payload cap (the ctl_run_report ceiling): a multi-MB run log
+# read whole into a runnerd thread is retained heap, not telemetry.
+REPORTED_LOG_MAX_BYTES = 200_000
 DEFAULT_MAX_RSS_MB = 900.0
 # While a proposal application is applying, the RSS restart exit is deferred
 # (an os._exit orphans the apply mid-flight AND leaves the job's loops
@@ -479,6 +482,8 @@ class RunnerDaemon:
         # Last time the apply-in-flight RSS deferral was logged (monotonic);
         # seeded so the FIRST deferral always logs.
         self._rss_defer_logged_at = -3600.0
+        # Same pattern for the RSS-after-run INFO line.
+        self._rss_logged_at = -3600.0
         self._sync_debouncer = _SyncDebouncer(
             action=lambda: self._start_backend_sync(),
             delay_seconds=_sync_debounce_seconds(),
@@ -507,6 +512,10 @@ class RunnerDaemon:
                 level=self._log_level,
                 rotation="10 MB",
                 retention="7 days",
+                # No variable dumps or extended tracebacks: one warning from
+                # a side-effect thread was rendering pages of frames.
+                diagnose=False,
+                backtrace=False,
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug(
@@ -731,6 +740,16 @@ class RunnerDaemon:
                 0, self._running_by_job.get(rp.job_id, 1) - 1
             )
 
+        rss_mb = _rss_mb()
+        if rss_mb is not None:
+            now_mono = time.monotonic()
+            if now_mono - self._rss_logged_at >= 60.0:
+                self._rss_logged_at = now_mono
+                logger.info(
+                    f"runnerd RSS {rss_mb:.0f}MB after run {rp.job_name} "
+                    f"({len(self._running)} workers)"
+                )
+
         self._run_side_effect(
             f"notify-session-{rp.job_name}",
             lambda: self._notify_session(rp, status=status, error_text=error_text),
@@ -778,11 +797,7 @@ class RunnerDaemon:
         status: str,
         exit_code: int | None,
     ) -> None:
-        log_output = ""
-        try:
-            log_output = rp.log_path.read_text(errors="replace")
-        except Exception:  # noqa: BLE001
-            pass
+        log_output = _tail_text(rp.log_path, max_bytes=REPORTED_LOG_MAX_BYTES) or ""
         SCHEDULED_JOBS_CLIENT.report_run(
             rp.job_name,
             {
@@ -1277,6 +1292,8 @@ class RunnerDaemon:
                 "sock_path": str(self._paths.sock_path),
                 "running_workers": len(self._running),
                 "max_workers": self._max_workers,
+                "rss_mb": _rss_mb(),
+                "max_rss_mb": self._max_rss_mb,
                 "burst_budget": self._burst.snapshot()
                 if self._burst is not None
                 else {"source": "disabled"},
