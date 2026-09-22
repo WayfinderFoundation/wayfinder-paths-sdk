@@ -7,6 +7,8 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from wayfinder_paths.jobs.models import (
     DEFAULT_FORWARD_CURVE,
     DEFAULT_FORWARD_FILLS,
@@ -447,10 +449,14 @@ class ForwardRecorder:
         if kind == "tick":
             # Same append helper, same call: a torn write leaves the curve at
             # most one row behind the tick ledger, which the reader repairs.
-            _append_jsonl(
-                self.forward_dir / Path(DEFAULT_FORWARD_CURVE).name,
-                forward_curve_row(row),
-            )
+            # The curve is a chart sidecar; a live tick must never fail on it.
+            try:
+                _append_jsonl(
+                    self.forward_dir / Path(DEFAULT_FORWARD_CURVE).name,
+                    forward_curve_row(row),
+                )
+            except Exception as exc:  # noqa: BLE001 - chart sidecar only
+                logger.warning(f"forward curve append skipped: {exc!r}")
         self._update_summary(kind, row)
         return row
 
