@@ -7,11 +7,13 @@ import json
 import subprocess
 import sys
 import textwrap
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from wayfinder_paths.jobs.compute_lock import (
+    COMPUTE_OVERRIDE_RELATIVE,
     EVOLUTION_BUDGET_RELATIVE,
     ComputeLockBusy,
     evolution_compute_budget_status,
@@ -205,4 +207,81 @@ def test_evolution_completion_reserve_stops_at_hard_cap(tmp_path) -> None:
             label="finalist-gate",
             completion_reserve=True,
         ):
+            pass
+
+
+def _write_owner_override(tmp_path, *, job_id: str, expires_at: datetime) -> Path:
+    path = tmp_path / COMPUTE_OVERRIDE_RELATIVE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "job_id": job_id,
+                "campaign_id": "campaign-1",
+                "by": "owner",
+                "at": datetime.now(UTC).isoformat(),
+                "expires_at": expires_at.isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_owner_override_lets_the_named_job_past_an_exhausted_budget(
+    tmp_path,
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    _write_evolution_usage(tmp_path, wall_seconds=0.20 * 12 * 3600 + 1)
+    with pytest.raises(ComputeLockBusy, match="routine compute duty exhausted"):
+        with experiment_compute_lock(store, "second-job", label="evolution-start"):
+            pass
+
+    _write_owner_override(
+        tmp_path,
+        job_id="second-job",
+        expires_at=datetime.now(UTC) + timedelta(hours=30),
+    )
+    with experiment_compute_lock(
+        store, "second-job", label="evolution-start"
+    ) as budget:
+        assert budget["remaining_seconds"] == 0.0
+    # The op still pays into the ledger: the override bypasses the gate, not
+    # the accounting.
+    ledger = json.loads((tmp_path / EVOLUTION_BUDGET_RELATIVE).read_text("utf-8"))
+    assert ledger["events"][-1]["job_id"] == "second-job"
+    assert ledger["events"][-1]["label"] == "evolution-start"
+    assert (tmp_path / COMPUTE_OVERRIDE_RELATIVE).exists()
+
+
+def test_owner_override_never_applies_to_another_jobs_ops(tmp_path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    _write_evolution_usage(tmp_path, wall_seconds=0.20 * 12 * 3600 + 1)
+    _write_owner_override(
+        tmp_path,
+        job_id="second-job",
+        expires_at=datetime.now(UTC) + timedelta(hours=30),
+    )
+    with pytest.raises(ComputeLockBusy, match="routine compute duty exhausted"):
+        with experiment_compute_lock(store, "third-job", label="quick-screen"):
+            pass
+    assert (tmp_path / COMPUTE_OVERRIDE_RELATIVE).exists()
+
+
+def test_expired_or_unreadable_owner_override_is_ignored(tmp_path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    _write_evolution_usage(tmp_path, wall_seconds=0.20 * 12 * 3600 + 1)
+    marker = _write_owner_override(
+        tmp_path,
+        job_id="second-job",
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    with pytest.raises(ComputeLockBusy, match="routine compute duty exhausted"):
+        with experiment_compute_lock(store, "second-job", label="evolution-start"):
+            pass
+    assert not marker.exists()
+
+    marker.write_text("{not json", encoding="utf-8")
+    with pytest.raises(ComputeLockBusy, match="routine compute duty exhausted"):
+        with experiment_compute_lock(store, "second-job", label="evolution-start"):
             pass

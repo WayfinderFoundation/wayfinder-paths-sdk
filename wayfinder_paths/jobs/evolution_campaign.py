@@ -48,6 +48,7 @@ from wayfinder_paths.jobs.bench.leaders import (
 )
 from wayfinder_paths.jobs.bundles import copy_job_bundle
 from wayfinder_paths.jobs.compute_lock import (
+    COMPUTE_OVERRIDE_RELATIVE,
     ComputeLockBusy,
     experiment_compute_lock,
     job_state_lock,
@@ -277,14 +278,21 @@ def campaign_status(store: JobStore, job_id: str) -> dict[str, Any]:
     return store.read_json(job_id, CAMPAIGN_STATE_PATH, default={}) or {}
 
 
+def _active_campaign_owner(store: JobStore) -> str | None:
+    """The job whose campaign is running on this box, if any."""
+    for job in sorted(store.list_jobs(), key=lambda item: item.id):
+        if campaign_status(store, job.id).get("status") in {"active", "finalizing"}:
+            return job.id
+    return None
+
+
 def _fleet_campaign_owner(store: JobStore, *, now: datetime) -> str | None:
     """One campaign per box: a running campaign owns the slot, otherwise the
     oldest due eligible job wins deterministically."""
+    running = _active_campaign_owner(store)
+    if running is not None:
+        return running
     jobs = sorted(store.list_jobs(), key=lambda item: item.id)
-    for job in jobs:
-        state = campaign_status(store, job.id)
-        if state.get("status") in {"active", "finalizing"}:
-            return job.id
     # A job that cannot wake cannot use the slot: a job whose agent loop was
     # paused once held the box's only slot for a week while the running job
     # was silently denied. An unreachable runner reports nothing and must not
@@ -466,16 +474,57 @@ def maybe_start_campaign(
             return _start_campaign(store, job_id, now=now)
 
 
+def _record_compute_budget_override(
+    store: JobStore,
+    job_id: str,
+    *,
+    campaign_id: str,
+    now: datetime,
+    deadline: datetime,
+) -> None:
+    """Owner override of the rolling compute budget for one campaign: every
+    op of this campaign reads the marker, so a start that bypassed the budget
+    is not stranded at its next lock; it outlives the deadline by a margin
+    for finalization and is journaled on the job."""
+    expires_at = (deadline + timedelta(hours=4)).isoformat()
+    atomic_write_json(
+        store.repo_root / COMPUTE_OVERRIDE_RELATIVE,
+        {
+            "job_id": job_id,
+            "campaign_id": campaign_id,
+            "by": "owner",
+            "at": now.isoformat(),
+            "expires_at": expires_at,
+        },
+    )
+    store.append_journal(
+        job_id,
+        {
+            "type": "evolution_compute_budget_overridden",
+            "by": "owner",
+            "campaign_id": campaign_id,
+            "expires_at": expires_at,
+        },
+    )
+
+
 def start_campaign(
     store: JobStore,
     job_id: str,
     *,
     now: datetime | None = None,
     force: bool = False,
+    override_compute_budget: bool = False,
 ) -> dict[str, Any]:
     with machine_state_lock(store.repo_root, name="evolution_campaign_slot"):
         with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
-            return _start_campaign(store, job_id, now=now, force=force)
+            return _start_campaign(
+                store,
+                job_id,
+                now=now,
+                force=force,
+                override_compute_budget=override_compute_budget,
+            )
 
 
 def _start_campaign(
@@ -484,6 +533,7 @@ def _start_campaign(
     *,
     now: datetime | None = None,
     force: bool = False,
+    override_compute_budget: bool = False,
 ) -> dict[str, Any]:
     spec = ImproverSpec.load(store.job_dir(job_id))
     eligibility = spec.evolution_eligibility(store.job_dir(job_id), job_id)
@@ -511,7 +561,16 @@ def _start_campaign(
         store, job_id, now=current, reserve_campaign=True
     ):
         raise ValueError("evolution campaign does not fit outside peak pricing")
-    if not _fleet_campaign_turn(store, job_id, now=current):
+    # A forced start skips the cadence, so the due-ordered turn would deny it
+    # for its own spacing; only the one-campaign-per-box rule still holds.
+    if force:
+        running = _active_campaign_owner(store)
+        if running is not None and running != job_id:
+            raise TransientInfrastructureError(
+                "another job's campaign owns the machine evolution campaign slot "
+                f"({running})"
+            )
+    elif not _fleet_campaign_turn(store, job_id, now=current):
         raise TransientInfrastructureError(
             "another eligible job owns the machine evolution campaign slot"
         )
@@ -538,6 +597,10 @@ def _start_campaign(
         campaign_id = f"{campaign_stem}-{suffix}"
         suffix += 1
     deadline = current + timedelta(hours=float(spec.evolution["campaign_hours"]))
+    if override_compute_budget:
+        _record_compute_budget_override(
+            store, job_id, campaign_id=campaign_id, now=current, deadline=deadline
+        )
     with experiment_compute_lock(store, job_id, label=f"evolution-start:{job_id}"):
         experience = build_forward_experience(store, job_id, now=current)
     if existing and existing.get("status") not in {"active", "finalizing"}:
