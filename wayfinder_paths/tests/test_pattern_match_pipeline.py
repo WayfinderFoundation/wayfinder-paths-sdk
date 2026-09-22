@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -66,7 +67,7 @@ def clear_match_cache() -> None:
     pipeline._clear_pattern_match_cache()
 
 
-async def test_match_returns_exact_baseline_and_reuses_cached_history(
+async def test_match_needs_only_candles_and_reuses_cached_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
@@ -77,10 +78,9 @@ async def test_match_returns_exact_baseline_and_reuses_cached_history(
         calls.append(coin)
         return _rows(500)
 
+    # No funding, open-interest or positioning methods exist on this client.
     monkeypatch.setattr(
-        pipeline.HYPERLIQUID_DATA_CLIENT,
-        "get_candles",
-        get_candles,
+        pipeline, "HYPERLIQUID_DATA_CLIENT", SimpleNamespace(get_candles=get_candles)
     )
     exact = await pipeline.run_pattern_match(
         request=_request(start_bar=484),
@@ -155,7 +155,9 @@ async def test_onchain_history_pages_before_selected_window(
         calls.append(before_timestamp)
         return rows[50:] if len(calls) == 1 else rows[:50]
 
-    monkeypatch.setattr(pipeline.TOKEN_CLIENT, "get_candles", get_candles)
+    monkeypatch.setattr(
+        pipeline, "TOKEN_CLIENT", SimpleNamespace(get_candles=get_candles)
+    )
     result = await pipeline.run_pattern_match(
         request=_request("onchain"),
         now_ms=110 * INTERVAL_MS,
