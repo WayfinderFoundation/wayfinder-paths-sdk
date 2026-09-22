@@ -95,6 +95,9 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "excluded_job_ids": [],
         "campaign_hours": 4,
         "start_interval_hours": 48,
+        # Campaign sessions are long and many; they run on the cheap tier while
+        # the intervention wakes keep the box's default model.
+        "model": "wayfinder/deepseek-v4-flash",
         # DeepSeek has announced 2x pricing during 09:00-12:00 and
         # 14:00-18:00 Beijing time. Keep this in UTC so host DST cannot move it.
         # The guard leaves one hourly worker interval for the final prompt to

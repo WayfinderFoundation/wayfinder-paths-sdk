@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from wayfinder_paths.core.clients.OpenCodeClient import OpenCodeClient
 
 
@@ -101,3 +103,35 @@ def test_exact_session_lifecycle_uses_server_api() -> None:
         ("POST", "http://localhost:3096/session/session-1/abort"),
         ("DELETE", "http://localhost:3096/session/session-1"),
     ]
+
+
+def test_prompt_async_sends_the_model_override_as_provider_and_model_ids() -> None:
+    posted: list[tuple[str, dict]] = []
+
+    class Response:
+        is_success = True
+
+    class PromptStub:
+        def post(self, url: str, json: dict) -> Response:
+            posted.append((url, json))
+            return Response()
+
+    client = OpenCodeClient()
+    client.client = PromptStub()  # type: ignore[assignment]
+
+    assert client.prompt_async("session-1", "go", agent="worker") is True
+    assert client.prompt_async(
+        "session-1", "go", agent="worker", model="wayfinder/deepseek-v4-flash"
+    )
+    assert "model" not in posted[0][1]
+    assert posted[1][1]["model"] == {
+        "providerID": "wayfinder",
+        "modelID": "deepseek-v4-flash",
+    }
+    assert posted[1][1]["agent"] == "worker"
+
+
+def test_prompt_async_refuses_a_model_without_a_provider() -> None:
+    client = OpenCodeClient()
+    with pytest.raises(ValueError, match="<provider>/<model>"):
+        client.prompt_async("session-1", "go", model="deepseek-v4-flash")
