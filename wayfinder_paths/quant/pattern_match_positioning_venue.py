@@ -4,78 +4,30 @@ Provider transport and wallet policy are injected by the host. No signing,
 account-mode changes, leverage changes or fee approvals happen in these reads.
 """
 
-import asyncio
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+from wayfinder_paths.adapters.hyperliquid_adapter.execution_preflight import (
+    InfoRequest,
+    perp_ioc_order,
+    perp_markets,
+    read_perp_entry_preflight,
+    validate_perp_capacity,
+)
+from wayfinder_paths.adapters.hyperliquid_adapter.execution_preflight import (
+    decimal_value as _decimal,
+)
 from wayfinder_paths.adapters.hyperliquid_adapter.prepared_orders import (
     IocFill,
     PerpIocOrder,
 )
 from wayfinder_paths.adapters.hyperliquid_adapter.utils import (
-    round_order_price,
     round_size_for_asset,
 )
-from wayfinder_paths.core.constants.hyperliquid import (
-    DEFAULT_HYPERLIQUID_BUILDER_FEE,
-    MIN_ORDER_USD_NOTIONAL,
-)
 from wayfinder_paths.quant.pattern_match_positioning_trade import size_positioning_trade
-
-InfoRequest = Callable[[dict[str, Any]], Awaitable[Any]]
-
-
-def _decimal(value: Any) -> Decimal:
-    number = Decimal(str(value))
-    if not number.is_finite():
-        raise ValueError("Non-finite Hyperliquid value")
-    return number
-
-
-def _markets(raw: Any) -> tuple[dict[str, int], dict[int, Decimal], dict[int, int]]:
-    meta, contexts = raw
-    universe = meta["universe"]
-    if len(universe) != len(contexts):
-        raise ValueError("Incomplete core-perp metadata")
-    ids, prices, decimals = {}, {}, {}
-    for asset_id, (asset, context) in enumerate(zip(universe, contexts, strict=True)):
-        if asset.get("isDelisted"):
-            continue
-        coin = asset["name"]
-        if coin in ids:
-            raise ValueError("Duplicate core-perp market")
-        ids[coin] = asset_id
-        if context.get("midPx") is not None:
-            prices[asset_id] = _decimal(context["midPx"])
-        decimals[asset_id] = asset["szDecimals"]
-    return ids, prices, decimals
-
-
-def _order(
-    asset: int,
-    size: Decimal,
-    prices: Mapping[int, Decimal],
-    decimals: Mapping[int, int],
-    slippage_bps: int,
-) -> PerpIocOrder:
-    if type(slippage_bps) is not int or not 0 <= slippage_bps <= 100:
-        raise ValueError("Positioning slippage must be between 0 and 100 basis points")
-    price = prices[asset]
-    if price <= 0:
-        raise ValueError("Missing live mid price")
-    sign = 1 if size > 0 else -1
-    limit = price * (1 + sign * Decimal(slippage_bps) / 10_000)
-    rounded = round_order_price(float(limit), 6 - decimals[asset], round_up=size < 0)
-    result = PerpIocOrder(asset, size, Decimal(str(rounded)))
-    # Float conversion must never loosen the caller's slippage limit.
-    if (size > 0 and result.limit_price > limit) or (
-        size < 0 and result.limit_price < limit
-    ):
-        raise ValueError("Price rounding exceeded the slippage bound")
-    return result
 
 
 async def prepare_positioning_entry(
@@ -88,38 +40,11 @@ async def prepare_positioning_entry(
     gross_notional: Decimal,
     slippage_bps: int,
 ) -> tuple[PerpIocOrder, ...]:
-    builder = DEFAULT_HYPERLIQUID_BUILDER_FEE
-    markets, state, open_orders, abstraction, builder_fee, fees = await asyncio.gather(
-        info({"type": "metaAndAssetCtxs"}),
-        info({"type": "clearinghouseState", "user": address}),
-        info({"type": "frontendOpenOrders", "user": address}),
-        info({"type": "userAbstraction", "user": address}),
-        info(
-            {"type": "maxBuilderFee", "user": address, "builder": builder["b"].lower()}
-        ),
-        info({"type": "userFees", "user": address}),
-    )
-    if abstraction != "unifiedAccount":
-        raise ValueError("Enable the unified Hyperliquid account before this trade")
-    if _decimal(builder_fee) < builder["f"]:
-        raise ValueError("Approve the Wayfinder builder fee before this trade")
-    if not isinstance(open_orders, list) or not isinstance(
-        state["assetPositions"], list
-    ):
-        raise ValueError("Missing live positions or open orders")
     coins = (coin, "BTC") if hedge_beta else (coin,)
-    for item in state["assetPositions"]:
-        position = item["position"]
-        if position["coin"] in coins and _decimal(position["szi"]) != 0:
-            raise ValueError("Manage the existing position before opening this basket")
-    if any(order["coin"] in coins for order in open_orders):
-        raise ValueError(
-            "Cancel existing orders in these markets before opening this basket"
-        )
-    state_time = datetime.fromtimestamp(state["time"] / 1000, UTC)
-    if not -5 <= (datetime.now(UTC) - state_time).total_seconds() <= 30:
-        raise ValueError("Position preflight is stale")
-    ids, prices, decimals = _markets(markets)
+    markets, fee_rate = await read_perp_entry_preflight(
+        info, address=address, coins=coins
+    )
+    ids, prices, decimals = perp_markets(markets)
     legs = size_positioning_trade(
         direction=direction,
         hedge_beta=hedge_beta,
@@ -131,42 +56,14 @@ async def prepare_positioning_entry(
         size_decimals=decimals,
     )
     orders = tuple(
-        _order(
+        perp_ioc_order(
             leg.asset_id, Decimal(str(leg.signed_size)), prices, decimals, slippage_bps
         )
         for leg in legs
     )
-    capacities = await asyncio.gather(
-        *(
-            info({"type": "activeAssetData", "user": address, "coin": name})
-            for name in coins
-        )
+    await validate_perp_capacity(
+        info, address=address, coins=coins, orders=orders, fee_rate=fee_rate
     )
-    required_margin = Decimal(0)
-    margins = []
-    fee_rate = _decimal(fees["userCrossRate"]) + Decimal(builder["f"]) / 100_000
-    if fee_rate < 0:
-        raise ValueError("Invalid taker fee rate")
-    for name, order, capacity in zip(coins, orders, capacities, strict=True):
-        if capacity["coin"] != name or capacity["user"].lower() != address.lower():
-            raise ValueError("Trade capacity belongs to another market or wallet")
-        side = 0 if order.signed_size > 0 else 1
-        leverage = _decimal(capacity["leverage"]["value"])
-        if leverage <= 0 or abs(order.signed_size) > _decimal(
-            capacity["maxTradeSzs"][side]
-        ):
-            raise ValueError("Insufficient side-specific trade capacity")
-        margins.append(_decimal(capacity["availableToTrade"][side]))
-        notional = abs(order.signed_size) * order.limit_price
-        if notional < Decimal(str(MIN_ORDER_USD_NOTIONAL)):
-            raise ValueError(
-                "Increase the amount: each leg must meet the $10 limit-order minimum"
-            )
-        required_margin += notional / leverage + notional * fee_rate
-    # Both legs draw from the same wallet. Checking each against the full free
-    # margin independently would allow the pair to spend it twice.
-    if required_margin > min(margins):
-        raise ValueError("Insufficient margin for both legs and entry fees")
     return orders
 
 
@@ -177,7 +74,7 @@ async def prepare_positioning_exit(
     coins: Mapping[int, str],
     slippage_bps: int,
 ) -> tuple[PerpIocOrder, ...]:
-    ids, prices, decimals = _markets(await info({"type": "metaAndAssetCtxs"}))
+    ids, prices, decimals = perp_markets(await info({"type": "metaAndAssetCtxs"}))
     result = []
     for asset, size in remaining.items():
         if not size:
@@ -186,7 +83,7 @@ async def prepare_positioning_exit(
             raise ValueError("Exit market identity changed")
         rounded = round_size_for_asset(decimals, asset, abs(size))
         close_size = Decimal(str(rounded)) * (-1 if size > 0 else 1)
-        result.append(_order(asset, close_size, prices, decimals, slippage_bps))
+        result.append(perp_ioc_order(asset, close_size, prices, decimals, slippage_bps))
     return tuple(result)
 
 

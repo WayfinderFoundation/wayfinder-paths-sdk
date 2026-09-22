@@ -91,7 +91,7 @@ async def test_both_legs_cannot_each_spend_the_same_margin(provider):
     args, data = provider
     for coin in ("BTC", "ETH"):
         data[coin]["availableToTrade"] = ["7", "7"]
-    with pytest.raises(ValueError, match="both legs"):
+    with pytest.raises(ValueError, match="combined margin"):
         await prepare_positioning_entry(**args)
 
 
