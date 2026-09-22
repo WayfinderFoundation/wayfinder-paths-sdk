@@ -45,6 +45,36 @@ class PatternOutcome:
     data_status: str = "complete"
 
 
+def funding_return_between(
+    funding: pd.DataFrame,
+    *,
+    entry_time: pd.Timestamp,
+    exit_time: pd.Timestamp,
+    as_of: pd.Timestamp,
+    direction: int,
+) -> float | None:
+    """Entry-notional funding approximation; missing coverage is never zero."""
+    expected = pd.date_range(entry_time.floor("h"), exit_time.floor("h"), freq="h")
+    # HL timestamps can be milliseconds past the hour. Validate by bucket but
+    # charge the actual timestamp (entry < t <= exit), using only known rates.
+    covered = funding[
+        (funding.timestamp.dt.floor("h") >= entry_time.floor("h"))
+        & (funding.timestamp.dt.floor("h") <= exit_time.floor("h"))
+        & (funding.timestamp <= as_of)
+    ]
+    hours = covered.timestamp.dt.floor("h")
+    if (
+        hours.duplicated().any()
+        or set(hours) != set(expected)
+        or not np.isfinite(covered.funding_rate.to_numpy(dtype=float)).all()
+    ):
+        return None
+    payments = covered[
+        (covered.timestamp > entry_time) & (covered.timestamp <= exit_time)
+    ]
+    return -direction * float(payments.funding_rate.sum())
+
+
 def resolve_pattern_outcome(
     bars: pd.DataFrame,
     funding: pd.DataFrame,
@@ -92,25 +122,15 @@ def resolve_pattern_outcome(
             continue
         status, gross = hit
         exit_time = bar.timestamp + INTERVAL
-        expected = pd.date_range(entry_time.floor("h"), exit_time.floor("h"), freq="h")
-        # HL timestamps can be milliseconds past the hour. Validate hourly
-        # coverage by bucket but charge the actual timestamp (entry < t <= exit).
-        covered = funding[
-            (funding.timestamp.dt.floor("h") >= entry_time.floor("h"))
-            & (funding.timestamp.dt.floor("h") <= exit_time.floor("h"))
-            & (funding.timestamp <= as_of)
-        ]
-        hours = covered.timestamp.dt.floor("h")
-        payments = funding[
-            (funding.timestamp > entry_time) & (funding.timestamp <= exit_time)
-        ]
-        if (
-            hours.duplicated().any()
-            or set(hours) != set(expected)
-            or not np.isfinite(covered.funding_rate.to_numpy(dtype=float)).all()
-        ):
+        income = funding_return_between(
+            funding,
+            entry_time=entry_time,
+            exit_time=exit_time,
+            as_of=as_of,
+            direction=direction,
+        )
+        if income is None:
             return PatternOutcome("open", entry, data_status="missing_funding")
-        income = -direction * float(payments.funding_rate.sum())
         return PatternOutcome(
             "stop" if status == "both_stop" else status,
             entry,
