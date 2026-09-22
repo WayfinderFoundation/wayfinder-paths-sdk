@@ -9,6 +9,7 @@ or the symmetric-bracket Pattern Match strategy.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import isfinite
 
 import numpy as np
 import pandas as pd
@@ -69,6 +70,20 @@ TREE_PARAMETERS = {
     "allow_writing_files": False,
     "verbose": False,
 }
+
+
+def positioning_weights(direction: int, hedge_beta: float) -> tuple[float, float]:
+    """Signed asset/BTC weights per dollar of gross entry notional."""
+    if (
+        isinstance(direction, bool)
+        or direction not in (-1, 1)
+        or isinstance(hedge_beta, bool)
+        or not isfinite(hedge_beta)
+        or not -3 <= hedge_beta <= 3
+    ):
+        raise ValueError("Invalid positioning direction or hedge beta")
+    asset_weight = direction / (1 + abs(hedge_beta))
+    return asset_weight, -hedge_beta * asset_weight
 
 
 def aggregate_positions(

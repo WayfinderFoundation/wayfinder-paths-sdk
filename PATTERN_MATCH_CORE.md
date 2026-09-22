@@ -24,6 +24,22 @@ outcome/funding behavior. The fixture manifest records source hashes.
 Original fold 3 overlaps calibration development: the 62.59% win rate is a
 retrospective regression reference, not a clean out-of-sample claim.
 
-This PR extracts only the reusable research core from #738 onto current main.
-It does not restore that PR's SDK job, runner, CLI or execution changes and
-does not bump the package version.
+The extraction does not restore #738's SDK job, runner or CLI and does not bump
+the package version.
+
+## Positioning trade support (in progress)
+
+`pattern_match_positioning_trade` sizes a user-selected gross-notional budget
+across the asset and BTC with the same signed weights as the outcome resolver.
+It reuses the Hyperliquid adapter's size rounding and minimum-order constant.
+Negative beta puts both legs in the same direction; exactly zero beta omits BTC.
+A nonzero hedge below the minimum after rounding rejects the whole plan rather
+than silently turning it into an outright trade.
+
+Its pure basket-exit decision accepts user-selected stop/take return fractions
+on gross entry notional, not margin. A time limit or a reduced leg requests a
+whole-basket exit even when PnL is unavailable. These are execution helpers, not
+an order coordinator: they neither submit orders nor run while a browser is
+closed. The backend must own authorization, durable orders/fills, retries and
+the exit worker. The original positioning research remains a fixed 24-hour
+markout; adding protective exits does not inherit its reported performance.

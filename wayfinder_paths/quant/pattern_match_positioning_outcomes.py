@@ -9,7 +9,10 @@ from wayfinder_paths.quant.pattern_match_outcomes import (
     PatternOutcome,
     funding_return_between,
 )
-from wayfinder_paths.quant.pattern_match_positioning import POSITIONING_HORIZON_BARS
+from wayfinder_paths.quant.pattern_match_positioning import (
+    POSITIONING_HORIZON_BARS,
+    positioning_weights,
+)
 from wayfinder_paths.quant.pattern_match_universe import INTERVAL
 
 
@@ -35,12 +38,8 @@ def resolve_positioning_outcome(
     The caller sets entry_time to signal time + 15 minutes. Missing prices or
     funding keep the result unresolved; neither leg is silently dropped.
     """
-    if (
-        direction not in {-1, 1}
-        or not np.isfinite([hedge_beta, cost_bps]).all()
-        or not -3 <= hedge_beta <= 3
-        or cost_bps < 0
-    ):
+    asset_weight, hedge_weight = positioning_weights(direction, hedge_beta)
+    if not np.isfinite(cost_bps) or cost_bps < 0:
         raise ValueError("Invalid positioning outcome terms")
     exit_time = entry_time + POSITIONING_HORIZON_BARS * INTERVAL
     through = min(as_of, exit_time)
@@ -80,20 +79,12 @@ def resolve_positioning_outcome(
             data_status="missing_funding",
             hedge_entry_price=hedge_entry,
         )
-    gross = (
-        direction
-        * (
-            float(legs[0].close.iloc[-1]) / entry
-            - 1
-            - hedge_beta * (float(legs[1].close.iloc[-1]) / hedge_entry - 1)
-        )
-        / (1 + abs(hedge_beta))
-    )
+    gross = asset_weight * (
+        float(legs[0].close.iloc[-1]) / entry - 1
+    ) + hedge_weight * (float(legs[1].close.iloc[-1]) / hedge_entry - 1)
     asset_income, hedge_income = incomes
     assert asset_income is not None and hedge_income is not None
-    income = (
-        direction * (asset_income - hedge_beta * hedge_income) / (1 + abs(hedge_beta))
-    )
+    income = asset_weight * asset_income + hedge_weight * hedge_income
     return PositioningOutcome(
         status="closed",
         entry_price=entry,
