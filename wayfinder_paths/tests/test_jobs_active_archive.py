@@ -210,3 +210,99 @@ def test_sparse_developed_candidates_cannot_become_qd_elites(tmp_path) -> None:
     }
     assert archived["cand-sparse"]["on_frontier"] is False
     assert archived["cand-participating"]["on_frontier"] is True
+
+
+def test_status_metadata_merges_into_the_entry(tmp_path) -> None:
+    store, job_id = _job(tmp_path)
+    _record(store, job_id, "cand-fwd", metadata={"campaign_id": "c1"})
+
+    entry = set_candidate_status(
+        store,
+        job_id,
+        "cand-fwd",
+        "refuted",
+        evidence="paired utility UCB < 0",
+        metadata={"forward": {"verdict": "killed", "paired_days": 7}},
+    )
+
+    assert entry["status"] == "refuted"
+    assert entry["metadata"] == {
+        "campaign_id": "c1",
+        "forward": {"verdict": "killed", "paired_days": 7},
+    }
+
+
+def test_lessons_carry_validation_exits_forensics_and_forward_verdicts(
+    tmp_path,
+) -> None:
+    from wayfinder_paths.jobs.archive import evolution_lessons_block
+
+    store, job_id = _job(tmp_path)
+    _record(
+        store,
+        job_id,
+        "cand-dev",
+        status="dev_frontier",
+        metadata={
+            "campaign_id": "c1",
+            "dev": {
+                "validation": {
+                    "stats": {"net_return": 0.02, "trade_count": 9},
+                    "exits": {
+                        "closes": 9,
+                        "stop_share": 0.33,
+                        "by_reason": {
+                            "time_exit": {"count": 6, "net_pnl": 3.0, "win_rate": 0.5},
+                            "bracket_stop": {
+                                "count": 3,
+                                "net_pnl": -1.0,
+                                "win_rate": 0.0,
+                            },
+                        },
+                    },
+                    "forensics": {
+                        "closes": 9,
+                        "by_exit_reason": {
+                            "time_exit": {
+                                "count": 6,
+                                "avg_realized_bps": 20.0,
+                                "avg_hold_mae_bps": 30.0,
+                                "avg_hold_mfe_bps": 50.0,
+                                "avg_post_exit_favorable_bps": {"+4": 1.0},
+                                "stop_survival_rate": {"0.02": 1.0},
+                            }
+                        },
+                    },
+                }
+            },
+        },
+    )
+    _record(
+        store,
+        job_id,
+        "cand-killed",
+        status="refuted",
+        metadata={
+            "campaign_id": "c1",
+            "forward": {"verdict": "killed", "paired_days": 7, "lcb": -0.0003},
+        },
+    )
+
+    lessons = {
+        row["candidate_id"]: row
+        for row in evolution_lessons_block(store, job_id)["outcomes"]
+    }
+
+    dev = lessons["cand-dev"]
+    assert dev["validation_result"] == {"net_return": 0.02, "trade_count": 9}
+    assert dev["validation_exits"]["stop_share"] == 0.33
+    assert dev["validation_forensics"] == {
+        "time_exit": {
+            "count": 6,
+            "avg_realized_bps": 20.0,
+            "avg_hold_mae_bps": 30.0,
+            "avg_hold_mfe_bps": 50.0,
+            "stop_survival_rate": {"0.02": 1.0},
+        }
+    }
+    assert lessons["cand-killed"]["forward"]["paired_days"] == 7

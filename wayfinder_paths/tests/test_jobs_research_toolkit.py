@@ -92,6 +92,50 @@ def test_shared_return_volatility_and_breadth_are_causal() -> None:
     assert pd.isna(breadth.iloc[1])
 
 
+def test_positioning_indicator_specs_read_the_declared_feeds() -> None:
+    n = 200
+    close = pd.Series(100.0, index=range(n))
+    close.iloc[150:] = 100.0 * (1.0 - 0.10 * (pd.Series(range(50)) / 49).to_numpy())
+    frame = pd.DataFrame(
+        {
+            "close": close,
+            "open": close,
+            "high": close + 0.5,
+            "low": close - 0.5,
+            "volume": 1.0,
+        }
+    )
+    # without the feeds every positioning spec is NaN / 0, never an error
+    assert compute_indicator(frame, "fundz:48")["fundz48"].isna().all()
+    assert compute_indicator(frame, "oichg:24")["oichg24"].isna().all()
+    assert (compute_indicator(frame, "funddiv")["funddiv"] == 0).all()
+    assert (compute_indicator(frame, "flush:8:10")["flush"] == 0).all()
+
+    funding = pd.Series(
+        0.0001 + 0.00002 * ((pd.Series(range(n)) % 7) - 3), index=range(n)
+    )
+    funding.iloc[60:80] = 0.003
+    open_interest = pd.Series(1.0e6 + 100.0 * pd.Series(range(n)), index=range(n))
+    open_interest.iloc[150:] = 1.0e6 * (
+        1.0 - 0.20 * (pd.Series(range(50)) / 49).to_numpy()
+    )
+    fed = frame.assign(funding=funding, open_interest=open_interest)
+    zscore = compute_indicator(fed, "fundz:48")["fundz48"]
+    assert zscore.iloc[60] > 2.0  # the first spike bar against a calm window
+    change = compute_indicator(fed, "oichg:24")["oichg24"]
+    assert change.iloc[199] < -0.10
+    # crowded longs, flat price, open interest building -> short side
+    divergence = compute_indicator(fed, "funddiv:2:24:48")["funddiv"]
+    assert (divergence.iloc[60:80] == -1).any()
+    # the default 2,880-bar window cannot warm up on 200 bars: no signal
+    assert (compute_indicator(fed, "funddiv:2:24")["funddiv"] == 0).all()
+    # a 10% drop with a 20% open-interest collapse -> buy the flush
+    flush = compute_indicator(fed, "flush:8:10")["flush"]
+    assert (flush.iloc[190:] == 1).all()
+    with pytest.raises(ValueError, match="funddiv:Z:R:W"):
+        compute_indicator(fed, "funddiv:2:24:48:1")
+
+
 def test_gate_snapshots_distinguish_portfolio_and_symbol_scope() -> None:
     view = CompletedBarsView.from_rows(_rows(gates=True))
     gates = latest_gate_state(view)

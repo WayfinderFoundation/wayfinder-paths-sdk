@@ -17,6 +17,7 @@ from wayfinder_paths.jobs import feeds
 from wayfinder_paths.jobs.execution import ExecutionSpec
 from wayfinder_paths.jobs.execution.driver import tick_job
 from wayfinder_paths.jobs.execution.features import (
+    DEFAULT_FEATURES_PATH,
     load_feature_rows,
     parse_feature_specs,
 )
@@ -307,6 +308,44 @@ def test_refresh_is_incremental_reconciles_revisions_and_noops_without_feeds(
     )
     unchanged = feeds.refresh_declared_feeds(job_id, store=store, delta_client=client)
     assert unchanged["rows_appended"] == 0 and unchanged["revised_rows"] == 0
+
+
+def test_feed_rows_live_in_the_protected_store_under_the_ownership_rule(
+    tmp_path: Path,
+) -> None:
+    """A declared feed writes the job's own state/features.jsonl: that path
+    passes the containment rule, is read from the protected root even when a
+    candidate bundle carries a copy of the store, and the refresh finds it."""
+    store, job_id = _make_job(tmp_path, days=400.0)
+    client = _lending_client()
+    feeds.fetch_yield_features(job_id, feeds=[LEND_NAME], store=store, client=client)
+    root = store.job_dir(job_id)
+    assert (root / DEFAULT_FEATURES_PATH).exists()
+    specs = parse_feature_specs(
+        ExecutionSpec.from_dict(store.load(job_id).execution_spec)
+    )
+    assert [spec.path for spec in specs] == [DEFAULT_FEATURES_PATH]
+    bundle = tmp_path / "bundle"
+    (bundle / DEFAULT_FEATURES_PATH).parent.mkdir(parents=True)
+    (bundle / DEFAULT_FEATURES_PATH).write_text(
+        json.dumps(
+            {
+                "timestamp": "2020-01-01T00:00:00+00:00",
+                "name": LEND_NAME,
+                "value": 9.0,
+                "symbol": None,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    from_store = load_feature_rows([root], specs)[LEND_NAME]
+    with_bundle = load_feature_rows([bundle, root], specs)[LEND_NAME]
+    assert len(from_store) == 3
+    assert with_bundle["value"].tolist() == from_store["value"].tolist()
+    refreshed = feeds.refresh_declared_feeds(job_id, store=store, delta_client=client)
+    assert refreshed["feeds"] == 1 and refreshed["errors"] == {}
+    assert refreshed["rows_appended"] == 0 and refreshed["revised_rows"] == 0
 
 
 def test_refresh_appends_healthy_feeds_then_raises_for_the_failed_one(

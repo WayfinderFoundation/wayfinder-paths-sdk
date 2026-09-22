@@ -144,4 +144,18 @@ STARTER_LEVERAGE_RESULTS: dict[str, tuple[dict[str, Any], ...]] = {
         _result(4, 1.3958, 1.2622, -0.3883, 191, 234.93, OTHER_STARTER_HALT),
         _result(5, 1.8399, 1.2679, -0.4697, 193, 307.15, OTHER_STARTER_HALT),
     ),
+    "diversified-liquidation-flush-maker-15m": (
+        _result(1, 0.1534, 1.9476, -0.0432, 602, 96.92, OTHER_STARTER_HALT),
+        _result(2, 0.3260, 1.9578, -0.0853, 602, 207.93, OTHER_STARTER_HALT),
+        _result(3, 0.5196, 1.9678, -0.1265, 602, 334.82, OTHER_STARTER_HALT),
+        _result(4, 0.7359, 1.9776, -0.1667, 602, 479.56, OTHER_STARTER_HALT),
+        _result(5, 0.9768, 1.9872, -0.2059, 602, 644.26, OTHER_STARTER_HALT),
+    ),
+    "diversified-funding-oi-divergence-taker-15m": (
+        _result(1, 0.0632, 0.8755, -0.0475, 792, 184.94, OTHER_STARTER_HALT),
+        _result(2, 0.1252, 0.8791, -0.0931, 792, 381.69, OTHER_STARTER_HALT),
+        _result(3, 0.1857, 0.8827, -0.1369, 792, 589.50, OTHER_STARTER_HALT),
+        _result(4, 0.2440, 0.8863, -0.1788, 792, 807.48, OTHER_STARTER_HALT),
+        _result(5, 0.2996, 0.8899, -0.2191, 792, 1034.64, OTHER_STARTER_HALT),
+    ),
 }

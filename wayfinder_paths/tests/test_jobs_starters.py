@@ -242,7 +242,7 @@ def dataset_fetch_spawns(monkeypatch) -> list[dict[str, Any]]:
 
 def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
     catalog = starter_catalog()
-    assert len(catalog) == 16
+    assert len(catalog) == 18
     assert {item["timeframe"] for item in catalog} == {
         "5m",
         "15m",
@@ -251,7 +251,7 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
         "1d",
     }
     assert [item["timeframe"] for item in catalog].count("5m") == 3
-    assert [item["timeframe"] for item in catalog].count("15m") == 5
+    assert [item["timeframe"] for item in catalog].count("15m") == 7
     assert [item["timeframe"] for item in catalog].count("1h") == 5
     assert [item["timeframe"] for item in catalog].count("4h") == 1
     assert [item["timeframe"] for item in catalog].count("1d") == 2
@@ -269,6 +269,8 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
             "low_volatility_ranking",
             "regime_rotation",
             "relative_value_pair",
+            "funding_divergence",
+            "liquidation_flush",
         }
         assert isinstance(item["cautions"], list)
         assert item["strategy_inception_at"]
@@ -297,11 +299,25 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
         assert engine["return_after_fees_and_slippage"] > 0
         assert engine["funding_included"] is False
         assert engine["trace_valid"] is True
-        assert engine["full_period_vs_no_stop"] in {"unchanged", "improved"}
-        if item["family"] == "maker_mean_reversion":
-            assert 0 <= engine["chronological_folds_non_regressing"] <= 4
+        if item["family"] == "liquidation_flush":
+            # The flush buys into cascades by construction; its only stop in
+            # the evidence year is the 2025-10-10 wick. A single stop may cost
+            # the full period at most 0.5% against the no-stop path and may
+            # regress at most one quarter; the evidence records the delta.
+            assert engine["full_period_vs_no_stop"] in {
+                "unchanged",
+                "improved",
+                "regressed",
+            }
+            assert engine["no_stop_return_delta"] >= -0.005
+            assert engine["stop_count"] <= 1
+            assert 3 <= engine["chronological_folds_non_regressing"] <= 4
         else:
-            assert engine["chronological_folds_non_regressing"] == 4
+            assert engine["full_period_vs_no_stop"] in {"unchanged", "improved"}
+            if item["family"] == "maker_mean_reversion":
+                assert 0 <= engine["chronological_folds_non_regressing"] <= 4
+            else:
+                assert engine["chronological_folds_non_regressing"] == 4
         assert engine["stop_count"] >= 0
         sweep = item["research_evidence"]["jobs_v1_leverage_sweep"]
         assert sweep["leverage_semantics"] == "target_exposure"
@@ -450,6 +466,8 @@ EXPECTED_STARTER_LOOKBACK_BARS = {
     "diversified-trend-sleeves-15m": 792,
     "diversified-momentum-taker-15m": 792,
     "crypto-gold-regime-relay-15m": 984,
+    "diversified-liquidation-flush-maker-15m": 216,
+    "diversified-funding-oi-divergence-taker-15m": 2904,
 }
 
 
@@ -596,6 +614,36 @@ def test_create_starter_sets_driver_lookback_above_warmup(tmp_path) -> None:
     assert lookback == 2904
     strategy = MixedSleeveMomentumStrategy(dict(job.execution_params))
     assert lookback > strategy.warmup_bars  # 2884: momentum_bars 2880 + 4
+
+
+def test_feed_starters_declare_their_feeds_and_stand_without_them(tmp_path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    expected_feeds = {
+        "diversified-funding-oi-divergence-taker-15m": {"funding", "open_interest"},
+        "diversified-liquidation-flush-maker-15m": {"open_interest"},
+    }
+    for starter_id, feeds in expected_feeds.items():
+        create_starter_job(starter_id, store=store, compile_job=False)
+        job = store.load(starter_id)
+        declared = {
+            feature["name"]: feature
+            for feature in job.execution_spec["data_contract"]["features"]
+        }
+        assert set(declared) == feeds
+        if "funding" in declared:
+            assert declared["funding"]["max_age_seconds"] == 7200
+        assert declared["open_interest"]["max_age_seconds"] == 172_800
+        assert all(f["stale_policy"] == "skip" for f in declared.values())
+        assert job.execution_params["stop_min_pct"] == 0.30
+    taker = store.load("diversified-funding-oi-divergence-taker-15m")
+    assert taker.execution_params["oi_confirmation"] == "building"
+    flush = store.load("diversified-liquidation-flush-maker-15m")
+    assert flush.execution_params["entry_order_type"] == "maker"
+    assert flush.execution_params["hold_after_signal_bars"] == 12
+    # starters without feeds keep the contract unchanged
+    create_starter_job("mixed-sleeve-momentum-15m", store=store, compile_job=False)
+    plain = store.load("mixed-sleeve-momentum-15m")
+    assert "features" not in plain.execution_spec["data_contract"]
 
 
 def test_momentum_rank_longs_leaders_and_shorts_laggards() -> None:

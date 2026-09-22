@@ -298,8 +298,7 @@ def _journal_entries(
                 _entry(
                     ts,
                     "proposal",
-                    f"Lifecycle controller {decision} probation leg "
-                    f"{event.get('leg')}",
+                    f"Lifecycle controller {decision} probation leg {event.get('leg')}",
                     f"{metrics.get('closed_trades')} trades, "
                     f"WR {metrics.get('win_rate')}, net {metrics.get('net_pnl')} USD "
                     "— pre-registered rules, evaluated mechanically",
@@ -391,6 +390,11 @@ def _journal_entries(
                     metadata={
                         "campaign_id": event.get("campaign_id"),
                         "funnel": funnel,
+                        **(
+                            {"evaluation_plan": event["evaluation_plan"]}
+                            if event.get("evaluation_plan") is not None
+                            else {}
+                        ),
                     }
                     if isinstance(funnel, dict)
                     else None,
@@ -418,6 +422,11 @@ def _journal_entries(
                     metadata={
                         "campaign_id": event.get("campaign_id"),
                         "funnel": funnel,
+                        **(
+                            {"evaluation_plan": event["evaluation_plan"]}
+                            if event.get("evaluation_plan") is not None
+                            else {}
+                        ),
                     }
                     if isinstance(funnel, dict)
                     else None,
@@ -477,7 +486,15 @@ def _active_evolution_entry(root: Path) -> dict[str, Any] | None:
         format_evolution_funnel(funnel),
         "info",
         actor="harness",
-        metadata={"campaign_id": state.get("campaign_id"), "funnel": funnel},
+        metadata={
+            "campaign_id": state.get("campaign_id"),
+            "funnel": funnel,
+            **(
+                {"evaluation_plan": state["evaluation_plan"]}
+                if state.get("evaluation_plan") is not None
+                else {}
+            ),
+        },
     )
 
 

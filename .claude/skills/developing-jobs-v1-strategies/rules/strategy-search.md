@@ -179,7 +179,13 @@ the user's goal — different families, not different parameters:
 One `signal-scan` covers the trigger families for the job's symbols in a
 single call (canonical + workspace defs); signal-check a single custom
 sketch it doesn't cover, `rank-check` a cross-sectional ranking over the
-job's multi-symbol view. Build only
+job's multi-symbol view. The `positioning` family (funding/open-interest
+divergence, liquidation flush) only measures on jobs that declare the
+`funding` and `open_interest` feeds in `data_contract.features`; elsewhere
+the scan lists it as `missing_feed` rather than dead. The same indicators
+are chart specs (`fundz:N`, `oichg:N`, `funddiv:Z:R`, `flush:R:O`) and
+`wayfinder_paths.jobs.indicators` functions a `precompute()` can call
+directly. Build only
 the most promising. One structural idea
 failing does not mean "tune it harder" — it means try the next branch. The
 best strategy for the user is usually in a different family than the first

@@ -452,3 +452,15 @@ def test_op_runner_lowers_its_priority() -> None:
         assert oom_s == "1000"
     if io_s != "na":  # ionice present — moved to the idle I/O class
         assert "idle" in io_s
+
+
+def test_rank_ic_spaces_observations_by_horizon() -> None:
+    from wayfinder_paths.jobs.research import rank_ic
+
+    frames = _cross_section(400, 10, informative=True)
+    spaced = rank_ic(frames, "score", horizons=[1, 10])
+    by_horizon = {row["horizon"]: row for row in spaced["horizons"]}
+    # Adjacent 10-bar forward windows share nine bars; only every tenth
+    # timestamp is an independent observation.
+    assert by_horizon[1]["n"] >= 300
+    assert 35 <= by_horizon[10]["n"] <= 40

@@ -8,6 +8,8 @@ from typing import Any
 from wayfinder_paths.jobs.bench.env import atomic_json
 from wayfinder_paths.jobs.economics import block_bootstrap_lcb
 
+_COST_PARITY_BASES = frozenset({"tokens", "attempts"})
+
 
 def aggregate_experiment(
     rows: list[dict[str, Any]],
@@ -17,9 +19,15 @@ def aggregate_experiment(
     confidence: float = 0.90,
     max_cost_ratio: float = 1.25,
     pilot: bool = False,
+    cost_parity_basis: str = "tokens",
 ) -> dict[str, Any]:
     if len(arm_order) != 2:
         raise ValueError("campaign A/B aggregation requires exactly two arms")
+    if cost_parity_basis not in _COST_PARITY_BASES:
+        raise ValueError(
+            f"cost_parity_basis must be one of {sorted(_COST_PARITY_BASES)}, "
+            f"got {cost_parity_basis!r}"
+        )
     invalid_rows = [row for row in rows if row.get("invalid_reason")]
     by_key = {
         (str(row["world_id"]), int(row["seed"]), str(row["arm"])): row
@@ -59,8 +67,8 @@ def aggregate_experiment(
         arm: [row for row in rows if row.get("arm") == arm] for arm in arm_order
     }
     arm_stats = {arm: _arm_stats(items) for arm, items in arm_rows.items()}
-    a_cost = arm_stats[arm_order[0]]["tokens_total"]
-    b_cost = arm_stats[arm_order[1]]["tokens_total"]
+    a_cost = _arm_cost(arm_stats[arm_order[0]], cost_parity_basis)
+    b_cost = _arm_cost(arm_stats[arm_order[1]], cost_parity_basis)
     cost_ratio = (
         max(a_cost, b_cost) / min(a_cost, b_cost) if min(a_cost, b_cost) > 0 else None
     )
@@ -86,6 +94,7 @@ def aggregate_experiment(
             "primary": "paired LCB of holdout utility delta across world/seed",
             "confidence": confidence,
             "cost_ratio_max": max_cost_ratio,
+            "cost_parity_basis": cost_parity_basis,
             "decision": (
                 (
                     "pilot reports direction and process metrics only; it cannot "
@@ -93,8 +102,9 @@ def aggregate_experiment(
                 )
                 if pilot
                 else (
-                    "winner only when the paired interval excludes zero and token "
-                    "cost ratio is within the pre-registered bound"
+                    "winner only when the paired interval excludes zero and "
+                    f"{cost_parity_basis} cost ratio is within the pre-registered "
+                    "bound"
                 )
             ),
         },
@@ -116,7 +126,11 @@ def aggregate_experiment(
             }
             for row in invalid_rows
         ],
-        "cost_parity": {"ratio": cost_ratio, "matched": cost_matched},
+        "cost_parity": {
+            "basis": cost_parity_basis,
+            "ratio": cost_ratio,
+            "matched": cost_matched,
+        },
         "decision": decision,
     }
     if output_dir is not None:
@@ -132,6 +146,12 @@ def _holdout_estimate(row: dict[str, Any]) -> float:
     return float(paired.get("estimate") or 0.0)
 
 
+def _arm_cost(stats: dict[str, Any], basis: str) -> int:
+    if basis == "attempts":
+        return int(stats["funnel"]["attempts"])
+    return int(stats["tokens_total"])
+
+
 def _arm_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     funnel_keys = (
         "candidates_generated",
@@ -140,6 +160,7 @@ def _arm_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "full_dev",
         "gate_passed",
         "staged",
+        "awaiting_regime",
     )
     funnel = {
         key: sum(int((row.get("funnel") or {}).get(key) or 0) for row in rows)
@@ -172,6 +193,9 @@ def _arm_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "quick_simulations",
             "behavior_preview_rejections",
             "behavior_preview_ticks",
+            "sequence_previews",
+            "sequence_preview_frozen",
+            "no_progress_preview_rejections",
         )
     }
     process["policy_denied_attempts"] = sum(
@@ -229,11 +253,13 @@ def _arm_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _format_report(report: dict[str, Any]) -> str:
     primary = report["primary"]
+    parity = report["cost_parity"]
     return (
         f"Campaign A/B decision: {report['decision']}\n"
         f"Arms: {report['arms'][0]} vs {report['arms'][1]}\n"
         f"Paired runs: {primary['pairs']}\n"
         f"Mean paired utility delta: {primary['estimate']}\n"
         f"90% interval: [{primary['lcb']}, {primary['ucb']}]\n"
-        f"Cost parity: {report['cost_parity']}\n"
+        f"Cost parity ({parity['basis']}): ratio={parity['ratio']} "
+        f"matched={parity['matched']}\n"
     )

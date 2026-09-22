@@ -358,3 +358,130 @@ async def test_evolution_designer_can_launch_then_end_before_stage_nudge(
         "op": "evolution_design",
         "kwargs": {"job_id": "majors-5m-lab", "campaign_design": design},
     }
+
+
+@pytest.mark.asyncio
+async def test_evolution_compose_is_a_synchronous_control_op(
+    tmp_path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs.execution.op_process import _CONTROL_PLANE_OPS
+    from wayfinder_paths.jobs.execution.op_runner import _NUDGE_OPS
+
+    captured: dict = {}
+
+    async def fake_sync(op, kwargs):
+        captured.update({"op": op, "kwargs": kwargs})
+        return {"ok": True, "result": {"status": "scanned"}}
+
+    monkeypatch.setattr(jobs_module, "_run_job_op", fake_sync)
+    monkeypatch.setattr(jobs_module, "JobStore", lambda: JobStore(repo_root=tmp_path))
+    proposals = [{"name": "ws_x", "expression": "close(f) > 0", "min_bars": 2}]
+
+    result = await core_jobs(
+        action="evolution_compose",
+        job_id="majors-5m-lab",
+        signal_proposals=proposals,
+    )
+
+    assert result["result"]["status"] == "scanned"
+    assert captured == {
+        "op": "evolution_compose",
+        "kwargs": {"job_id": "majors-5m-lab", "signal_proposals": proposals},
+    }
+    # An empty list is a valid submission (it ends composition); a missing
+    # list is not.
+    captured.clear()
+    await core_jobs(
+        action="evolution_compose", job_id="majors-5m-lab", signal_proposals=[]
+    )
+    assert captured["kwargs"] == {"job_id": "majors-5m-lab", "signal_proposals": []}
+    missing = await core_jobs(action="evolution_compose", job_id="majors-5m-lab")
+    assert "requires job_id and signal_proposals" in json.dumps(missing)
+    assert (
+        "evolution_compose" in _CONTROL_PLANE_OPS and "evolution_compose" in _NUDGE_OPS
+    )
+
+
+@pytest.mark.asyncio
+async def test_evolution_mechanism_grid_is_a_synchronous_control_op(
+    tmp_path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs.execution.op_process import _CONTROL_PLANE_OPS
+
+    captured: dict = {}
+
+    async def fake_sync(op, kwargs):
+        captured.update({"op": op, "kwargs": kwargs})
+        return {"ok": True, "result": {"pointer": "/mechanism_grids/0"}}
+
+    monkeypatch.setattr(jobs_module, "_run_job_op", fake_sync)
+    monkeypatch.setattr(jobs_module, "JobStore", lambda: JobStore(repo_root=tmp_path))
+    result = await core_jobs(
+        action="evolution_mechanism_grid",
+        job_id="majors-5m-lab",
+        signal_ref="/validated_signals/replicated/0",
+        side="short",
+    )
+    assert result["result"]["pointer"] == "/mechanism_grids/0"
+    assert captured == {
+        "op": "evolution_mechanism_grid",
+        "kwargs": {
+            "job_id": "majors-5m-lab",
+            "signal_ref": "/validated_signals/replicated/0",
+            "side": "short",
+        },
+    }
+    missing = await core_jobs(action="evolution_mechanism_grid", job_id="majors-5m-lab")
+    assert "requires job_id and signal_ref" in json.dumps(missing)
+    assert "evolution_mechanism_grid" in _CONTROL_PLANE_OPS
+
+
+async def test_evolution_redesign_is_a_synchronous_control_op(
+    tmp_path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs.execution.op_process import _CONTROL_PLANE_OPS
+    from wayfinder_paths.jobs.execution.op_runner import _NUDGE_OPS
+
+    captured: dict = {}
+
+    async def fake_sync(op, kwargs):
+        captured.update({"op": op, "kwargs": kwargs})
+        return {"ok": True, "result": {"status": "accepted"}}
+
+    monkeypatch.setattr(jobs_module, "_run_job_op", fake_sync)
+    monkeypatch.setattr(jobs_module, "JobStore", lambda: JobStore(repo_root=tmp_path))
+    decision = {"abandon": ["c04"], "keep": ["c02"], "hypotheses": [], "slots": []}
+
+    result = await core_jobs(
+        action="evolution_redesign", job_id="majors-5m-lab", redesign=decision
+    )
+
+    assert result["result"]["status"] == "accepted"
+    assert captured == {
+        "op": "evolution_redesign",
+        "kwargs": {"job_id": "majors-5m-lab", "redesign": decision},
+    }
+    missing = await core_jobs(action="evolution_redesign", job_id="majors-5m-lab")
+    assert "requires job_id and redesign" in json.dumps(missing)
+    assert (
+        "evolution_redesign" in _CONTROL_PLANE_OPS
+        and "evolution_redesign" in _NUDGE_OPS
+    )
+
+
+def test_redesign_nudge_retries_while_the_designer_session_is_busy(monkeypatch) -> None:
+    from wayfinder_paths.jobs.execution import op_runner
+
+    seen: list[str] = []
+    replies = iter([{"busy": True}, {"transition_pending": True}, {"ok": True}])
+
+    def fake_nudge(store, job_id):
+        seen.append(job_id)
+        return next(replies, {"ok": True})
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.nudge_evolution_session", fake_nudge
+    )
+    monkeypatch.setattr(op_runner.time, "sleep", lambda _seconds: None)
+    op_runner._nudge_evolution("evolution_redesign", {"job_id": "majors-5m-lab"})
+    assert len(seen) == 3

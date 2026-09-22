@@ -1576,6 +1576,11 @@ def _expire_evolution_campaign(
                 "finalize_attempts": attempts,
                 "reason": state["failure_reason"],
                 "funnel": summarize_evolution_funnel(state),
+                **(
+                    {"evaluation_plan": state["evaluation_plan"]}
+                    if state.get("evaluation_plan") is not None
+                    else {}
+                ),
             },
         )
     campaign_id = str(state.get("campaign_id") or "")

@@ -9,14 +9,26 @@ from typing import Any
 import pandas as pd
 
 from wayfinder_paths.jobs.compute_lock import job_state_lock
-from wayfinder_paths.jobs.execution.engine import EngineState, run_tick
-from wayfinder_paths.jobs.execution.features import apply_precompute
+from wayfinder_paths.jobs.defense import (
+    add_defense_features,
+    defense_feature_warmup_bars,
+    defense_policy,
+)
+from wayfinder_paths.jobs.execution.engine import EngineState, TickResult, run_tick
+from wayfinder_paths.jobs.execution.features import (
+    apply_precompute,
+    feature_staleness,
+    load_feature_rows,
+    merge_features,
+    parse_feature_specs,
+)
 from wayfinder_paths.jobs.execution.job import _load_job_yaml
 from wayfinder_paths.jobs.execution.paper import PaperBroker
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
     ExecutionSpec,
     StateSnapshot,
+    bar_interval_seconds,
     resolve_compute_window,
 )
 from wayfinder_paths.jobs.execution.simulator import (
@@ -38,12 +50,51 @@ from wayfinder_paths.jobs.probation import (
     resolve_probation_bundle,
     update_probation_target,
 )
+from wayfinder_paths.jobs.regime import (
+    REGIME_FEATURE_WARMUP_BARS,
+    add_portfolio_regime_feature,
+    declared_regimes,
+)
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.runner.monitor_state import atomic_write_json
 
 
 def active_candidate_shadows(store: JobStore, job_id: str) -> bool:
     return active_probation_trials(store, job_id)
+
+
+def candidate_shadow_lookback_bars(store: JobStore, job_id: str) -> int:
+    """Deepest input window needed by an active paper A/B participant.
+
+    The live feed is shared with the incumbent, but every strategy is sliced
+    back to its own declared window before decide(). This only prevents a
+    short-lookback incumbent from starving a candidate's engine-owned feature
+    calculation of history.
+    """
+    required = 0
+    for target in probation_targets(store, job_id):
+        candidate_root = resolve_probation_bundle(store, job_id, target)
+        job_data = _load_job_yaml(candidate_root)
+        params = dict(job_data.get("execution_params") or {})
+        script = store.resolve_script_entrypoint(
+            job_id, job_data, candidate_dir=candidate_root
+        )
+        if script is None or not script.exists():
+            raise FileNotFoundError("candidate execution script missing")
+        strategy = _load_strategy(script, params)
+        spec_data, _ = resolve_execution_spec(candidate_root, job_data)
+        interval = (spec_data.get("data_contract") or {}).get("bar_interval")
+        required = max(
+            required,
+            resolve_compute_window(params, strategy).live_depth,
+            REGIME_FEATURE_WARMUP_BARS if declared_regimes(params) else 0,
+            (
+                defense_feature_warmup_bars(bar_interval_seconds(interval))
+                if defense_policy(params)["enabled"]
+                else 0
+            ),
+        )
+    return required
 
 
 async def run_candidate_shadows(
@@ -172,12 +223,35 @@ async def _run_target(
         raise FileNotFoundError("candidate execution script missing")
     params = dict(job_data.get("execution_params") or {})
     strategy = _load_strategy(script, params)
+    # The candidate's declared file features (a derived column such as the
+    # macro regime) ride from its own bundle first, then the job store, with
+    # the driver's window and staleness rule: a stale feature whose policy is
+    # skip skips the shadow tick exactly as it skips the live tick. Columns
+    # already on the queued view under a declared name are dropped first so
+    # the candidate's own merge wins instead of pandas suffixing both away.
+    declared = parse_feature_specs(spec)
+    feature_skip = False
+    if declared:
+        stamps = view.timestamps
+        feature_window = (stamps[0], stamps[-1]) if stamps else None
+        feature_frames = load_feature_rows(
+            [candidate_root, root], declared, window=feature_window
+        )
+        _, feature_skip = feature_staleness(declared, feature_frames, timestamp)
+        if not feature_skip:
+            view = merge_features(
+                _without_columns(view, [item.column_name for item in declared]),
+                feature_frames,
+                declared,
+            )
+    view = add_defense_features(view, params)
+    view = add_portfolio_regime_feature(view, params)
     # Same bounded window the simulator replays with and the live driver
     # fetches — the shadow lane must not hand candidates deeper history than
     # production would.
     window = resolve_compute_window(params, strategy)
     view = window.slice_view(view, len(view.timestamps) - 1)
-    candidate_view = apply_precompute(strategy, view)
+    candidate_view = view if feature_skip else apply_precompute(strategy, view)
     shadow_root = _target_shadow_state_root(root, target)
     engine_state = EngineState.load(shadow_root / "engine_state.json")
     engine_state.mode = "paper"
@@ -188,24 +262,32 @@ async def _run_target(
         slippage_bps=float(params.get("slippage_bps") or 0.0),
     )
     engine_state_pre = engine_state.to_dict()
-    tick = await run_tick(
-        strategy,
-        view=candidate_view,
-        brokers={"*": broker},
-        state=engine_state,
-        spec=spec,
-        params=params,
-        timestamp=timestamp,
-        snapshot=StateSnapshot(status="valid"),
-        client_order_prefix=(
-            f"paper-ab-{target['legacy_shadow_arm']}-champion-{target['revision'][:8]}"
-            if target.get("bundle_scope") == "legacy_experiment"
-            else (
-                f"probation-{target['trial_id'][:12]}-{target['role']}-"
-                f"{target['revision'][:8]}"
-            )
-        ),
-    )
+    if feature_skip:
+        tick = TickResult(
+            skipped=True,
+            skip_reason="stale_feature",
+            bar_timestamp=bar_iso,
+            snapshot=StateSnapshot(status="valid"),
+        )
+    else:
+        tick = await run_tick(
+            strategy,
+            view=candidate_view,
+            brokers={"*": broker},
+            state=engine_state,
+            spec=spec,
+            params=params,
+            timestamp=timestamp,
+            snapshot=StateSnapshot(status="valid"),
+            client_order_prefix=(
+                f"paper-ab-{target['legacy_shadow_arm']}-champion-{target['revision'][:8]}"
+                if target.get("bundle_scope") == "legacy_experiment"
+                else (
+                    f"probation-{target['trial_id'][:12]}-{target['role']}-"
+                    f"{target['revision'][:8]}"
+                )
+            ),
+        )
     engine_state.save(shadow_root / "engine_state.json")
     recorder = ForwardRecorder(
         job_id=job_id,
@@ -234,6 +316,12 @@ async def _run_target(
         "intents": len(tick.intents),
         "fills": len(tick.fills),
     }
+
+
+def _without_columns(view: CompletedBarsView, names: list[str]) -> CompletedBarsView:
+    frame = view.to_frame()
+    present = [name for name in names if name in frame.columns]
+    return CompletedBarsView(frame.drop(columns=present)) if present else view
 
 
 def _advance_cursor(
