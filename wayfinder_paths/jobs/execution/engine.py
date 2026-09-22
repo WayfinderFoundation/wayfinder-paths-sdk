@@ -968,6 +968,12 @@ def _record_fill(
     trace: ExecutionTrace,
     result: TickResult,
 ) -> None:
+    if intent is not None:
+        # Live brokers return the exchange payload as `raw`; backtest and paper
+        # brokers already stamp the intent. Close-row telemetry and forensics
+        # read the intent from the fill row, so every mode must carry it.
+        fill.raw.setdefault("intent_action", intent.action)
+        fill.raw.setdefault("intent_metadata", dict(intent.metadata))
     position_before = state.ledger.positions.get(fill.symbol)
     direction_before = position_before.side if position_before is not None else None
     realized_before = state.ledger.realized_pnl

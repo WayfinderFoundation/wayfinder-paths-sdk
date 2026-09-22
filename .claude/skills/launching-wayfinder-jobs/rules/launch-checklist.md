@@ -17,8 +17,8 @@ Read the failing items first, with their `detail` (it names the fix). Then the w
 
 | code | means | fix |
 |---|---|---|
-| `no_stop_loss` | nothing bounds a losing position | brackets / `native_stop_required` (harnessed); `max_loss` on actions or `SPEC.max_loss_usd` (freestyle) |
-| `no_native_stop` | stops are engine-side only | `execution_params.native_stop_required: true` |
+| `no_stop_loss` | nothing bounds a losing position | brackets on OPEN intents (harnessed); `max_loss` on actions or `SPEC.max_loss_usd` (freestyle) |
+| `no_native_stop` | venue-side stop not pinned (live perp entries still get one by default unless `native_stop_required` is false; an engine-side stop is checked once per tick and dies with the runner) | `execution_params.native_stop_required: true` |
 | `no_max_drawdown`, `no_max_daily_loss`, `unbounded_notional`, `no_position_cap`, `no_consecutive_loss_pause` | risk_limits.json gaps | `set_watchdog(kill_switches={…})` |
 | `no_kill_switch` | freestyle script has no halt condition and no risk file | `SPEC.halt_when` or kill switches |
 | `no_per_tick_notional_cap` | one tick can open unlimited size | `SPEC.max_notional_per_tick` |

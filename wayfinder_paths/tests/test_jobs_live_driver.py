@@ -1088,6 +1088,59 @@ async def test_risk_halt_downgrade_preserves_snapshot_data(tmp_path: Path) -> No
     assert result["snapshot"]["data"]["account_value"] == 42.0
 
 
+async def test_live_stop_close_row_carries_exit_reason_and_protection_type(
+    tmp_path: Path,
+) -> None:
+    class ExchangePayloadBroker(FakeLiveBroker):
+        """Returns only the exchange payload as raw, like the real perp broker."""
+
+        async def place(
+            self, intent: OrderIntent, *, timestamp: str, price: float | None = None
+        ) -> FillEvent:
+            fill = await super().place(intent, timestamp=timestamp, price=price)
+            fill.raw = {"status": "ok"}
+            return fill
+
+    store, job, root = _make_job(tmp_path, mode="live", params={"leverage": 3})
+    position = PositionRecord(symbol="SNX", side="long", size=1.0, avg_price=10.0)
+    state = EngineState(mode="live")
+    state.ledger.positions["SNX"] = position
+    # An engine-side stop (opted out of venue protection) inside the latest
+    # bar's range: low 10.2 < 10.4.
+    state.brackets["SNX"] = {
+        "stop_loss": 10.4,
+        "venue": "hyperliquid",
+        "native_required": False,
+    }
+    state.save(root / "state" / "engine_state.json")
+    broker = ExchangePayloadBroker(
+        venue_positions={"SNX": position}, account_value=100.0
+    )
+    view = _view(2)
+
+    await tick_job(
+        job,
+        root,
+        "live",
+        store=store,
+        adapters={"hyperliquid": FakeAdapter(view, broker)},
+        now=_now(view),
+    )
+
+    rows = [
+        json.loads(line)
+        for line in (root / "results" / "forward" / "trades.jsonl")
+        .read_text()
+        .splitlines()
+    ]
+    close = next(row for row in rows if row["symbol"] == "SNX")
+    assert close["exit_reason"] == "bracket_stop"
+    assert close["protection_type"] == "engine_market"
+    assert close["stop_trigger_price"] == 10.4
+    assert close["effective_leverage"] == 3
+    assert "venue_stop_slippage_tolerance_bps" not in close
+
+
 async def test_live_tick_recovers_silent_bracket_under_the_default(
     tmp_path: Path,
 ) -> None:

@@ -440,6 +440,36 @@ def test_stop_close_payload_preserves_trigger_and_slippage_evidence() -> None:
     assert payload["stop_trigger_price"] == 100.0
     assert payload["stop_slippage_bps"] == 1_000.0
     assert payload["effective_leverage"] == 3
+    # An engine STOP_LOSS closes at market from the per-tick OHLC check; the
+    # venue's trigger tolerance only applies to a venue-side stop.
+    assert payload["protection_type"] == "engine_market"
+    assert "venue_stop_slippage_tolerance_bps" not in payload
+
+
+def test_native_trigger_close_payload_is_tagged_from_the_stop_cloid() -> None:
+    payload = _trade_close_payload(
+        {
+            "venue": "hyperliquid",
+            "symbol": "HYPE",
+            "side": "buy",
+            "filled_size": 2.0,
+            "avg_price": 101.0,
+            "fee": 0.25,
+            "reduce_only": True,
+            "realized_pnl_delta": -10.0,
+            "timestamp": _ts(3).isoformat(),
+            "client_order_id": "0xstop",
+            "raw": {"status": "ok"},
+        },
+        params={"leverage": 3},
+        native_stops={"0xstop": {"client_order_id": "0xstop", "trigger_price": 100.0}},
+    )
+
+    assert payload["exit_reason"] == "bracket_stop"
+    assert payload["exit_category"] == "strategy"
+    assert payload["protection_type"] == "native_trigger"
+    assert payload["stop_trigger_price"] == 100.0
+    assert payload["stop_slippage_bps"] == 100.0
     assert payload["venue_stop_slippage_tolerance_bps"] == 1_000
 
 

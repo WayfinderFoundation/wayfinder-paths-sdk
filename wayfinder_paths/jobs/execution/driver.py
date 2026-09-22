@@ -426,6 +426,10 @@ async def tick_job(
                         {"cloid": protection["client_order_id"]}
                     )
 
+    native_stops_by_cloid = {
+        str(protection["client_order_id"]): dict(protection)
+        for protection in state.native_protections.values()
+    }
     (
         protection_notes,
         protection_fills,
@@ -688,6 +692,7 @@ async def tick_job(
         funding_rows=funding_rows,
         root=root,
         mode=mode,
+        native_stops=native_stops_by_cloid,
     )
     # Evolution probation is a true parallel A/B lane: same incoming bars,
     # separate state/telemetry, PaperBroker only. It is deliberately
@@ -1183,6 +1188,7 @@ def _record(
     funding_rows: list[dict[str, Any]] | None = None,
     root: Path | None = None,
     mode: str | None = None,
+    native_stops: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> None:
     intents = [intent.to_dict() for intent in tick.intents]
     fills = [fill.to_dict() for fill in tick.fills]
@@ -1194,7 +1200,9 @@ def _record(
     # trade_rows are FillEvent.to_dict() + realized_pnl_delta: fixed shape.
     for row in tick.trade_rows:
         if row["reduce_only"]:
-            recorder.record_trade_close(_trade_close_payload(row, params=params))
+            recorder.record_trade_close(
+                _trade_close_payload(row, params=params, native_stops=native_stops)
+            )
     for row in funding_rows or []:
         recorder.record_funding(row)
     # Reconciliation runs AFTER the rows above so summary totals include
@@ -1237,22 +1245,37 @@ def _record(
 
 
 def _trade_close_payload(
-    row: Mapping[str, Any], *, params: Mapping[str, Any]
+    row: Mapping[str, Any],
+    *,
+    params: Mapping[str, Any],
+    native_stops: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Preserve the execution facts needed to diagnose a live stop-out."""
+    """Preserve the execution facts needed to diagnose a live stop-out.
+
+    The engine stamps intent_action/intent_metadata on every fill row, so a
+    live close reads like a paper one. A close whose cloid is one of this
+    job's venue-side stops (`native_stops`, keyed by cloid) is the venue
+    trigger firing; an engine STOP_LOSS is the once-per-tick OHLC emulation
+    closing at market."""
     raw = dict(row.get("raw") or {})
     metadata = dict(raw.get("intent_metadata") or {})
     action = str(raw.get("intent_action") or "").upper()
     bracket = dict(metadata.get("bracket") or {})
+    native_stop = (native_stops or {}).get(str(row.get("client_order_id") or ""))
+    stop_close = action == "STOP_LOSS" or native_stop is not None
     exit_reason = metadata.get("exit_reason")
-    if not exit_reason and action == "STOP_LOSS":
+    if not exit_reason and stop_close:
         exit_reason = "bracket_stop"
     elif not exit_reason and action == "TAKE_PROFIT":
         exit_reason = "bracket_take_profit"
-    trigger_price = bracket.get("trigger_price")
+    trigger_price = (
+        native_stop.get("trigger_price")
+        if native_stop is not None
+        else bracket.get("trigger_price")
+    )
     fill_price = row.get("avg_price")
     stop_slippage_bps = None
-    if action == "STOP_LOSS" and trigger_price and fill_price:
+    if stop_close and trigger_price and fill_price:
         exit_side = str(row.get("side") or "").lower()
         adverse_move = (
             float(fill_price) - float(trigger_price)
@@ -1277,7 +1300,7 @@ def _trade_close_payload(
         "size_scale": params.get("size_scale") or 1.0,
     }
     payload["exit_category"] = forward_exit_category(payload)
-    if action == "STOP_LOSS":
+    if stop_close:
         payload.update(
             {
                 "stop_trigger_price": trigger_price,
@@ -1286,11 +1309,14 @@ def _trade_close_payload(
                 "stop_gap_at_open": bracket.get("gap_at_open"),
                 "stop_slippage_bps": stop_slippage_bps,
                 "stop_slippage_bps_applied": raw.get("slippage_bps_applied"),
-                "protection_type": "trigger_market",
-                "venue_stop_slippage_tolerance_bps": (
-                    1_000 if venue == "hyperliquid" else None
+                "protection_type": (
+                    "native_trigger" if native_stop is not None else "engine_market"
                 ),
             }
+        )
+    if native_stop is not None:
+        payload["venue_stop_slippage_tolerance_bps"] = (
+            1_000 if venue == "hyperliquid" else None
         )
     return payload
 

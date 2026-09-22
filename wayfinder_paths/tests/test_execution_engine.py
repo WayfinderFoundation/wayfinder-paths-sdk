@@ -1095,6 +1095,39 @@ async def test_paper_fill_places_no_native_stop_and_no_skip_event() -> None:
     ]
 
 
+async def test_live_fill_rows_carry_the_intent_like_paper_rows() -> None:
+    class ExchangePayloadBroker(FakeNativeBroker):
+        async def place(
+            self, intent: OrderIntent, *, timestamp: str, price: float | None = None
+        ) -> FillEvent:
+            fill = await super().place(intent, timestamp=timestamp, price=price)
+            fill.raw = {"status": "ok"}
+            return fill
+
+    state = EngineState(mode="live")
+    intent = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="long",
+        size=1.0,
+        bracket={"stop_loss_pct": 0.05},
+        metadata={"entry_reason": "breakout"},
+    )
+
+    result = await _tick(
+        _strategy([intent]),
+        _view([10.0, 10.5]),
+        state=state,
+        brokers={"hyperliquid": ExchangePayloadBroker()},
+    )
+
+    row = result.trade_rows[0]
+    assert row["raw"]["status"] == "ok"
+    assert row["raw"]["intent_action"] == "OPEN"
+    assert row["raw"]["intent_metadata"] == {"entry_reason": "breakout"}
+
+
 async def test_short_rejected_on_long_only_venue() -> None:
     broker = FakeBroker(capabilities=PREDICTION_CAPS)
     intent = OrderIntent(
