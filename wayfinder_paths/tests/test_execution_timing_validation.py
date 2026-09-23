@@ -865,3 +865,62 @@ def test_bounded_index_clock_follows_typed_and_chained_aliases(tmp_path: Path) -
     assert check["passed"] is False
     assert any("state['typed'] = now" in hit for hit in check["details"])
     assert any("state['chained'] = later" in hit for hit in check["details"])
+
+
+def _stop_equity_report(
+    tmp_path: Path,
+    *,
+    params: dict[str, Any],
+    max_drawdown: float | None = None,
+    strict: bool = False,
+) -> dict[str, Any]:
+    store, job_id = _make_job(tmp_path, interval_seconds=300, bar_interval="5m")
+    job = store.load(job_id)
+    job.execution_params.update(params)
+    if strict:
+        job.execution_spec["validation"]["mode"] = "strict"
+    store.save(job)
+    if max_drawdown is not None:
+        (store.job_dir(job_id) / "workspace" / "risk_limits.json").write_text(
+            json.dumps({"max_drawdown": max_drawdown}), encoding="utf-8"
+        )
+    return validate_execution_job(job_id, store=store)
+
+
+def test_leveraged_stop_warns_with_the_equity_at_risk(tmp_path: Path) -> None:
+    report = _stop_equity_report(
+        tmp_path, params={"leverage": 3, "stop_pct": 0.03}, strict=True
+    )
+    check = _check(report, "stop_equity_at_risk")
+    assert check["passed"] is False
+    assert check["blocking"] is False
+    assert check["details"]["equity_at_risk_pct"] == 9.0
+    assert check["details"]["budget_pct"] == 5.0
+    assert "3% price stop at 3x leverage is a 9% equity stop" in check["hint"]
+    # Advice, even under strict validation.
+    assert check in report["warnings"]
+
+
+def test_unleveraged_stop_is_within_the_equity_budget(tmp_path: Path) -> None:
+    report = _stop_equity_report(tmp_path, params={"leverage": 1, "stop_pct": 0.03})
+    assert _check(report, "stop_equity_at_risk")["passed"] is True
+
+
+def test_drawdown_cap_tightens_the_stop_budget(tmp_path: Path) -> None:
+    report = _stop_equity_report(
+        tmp_path, params={"leverage": 2, "stop_max_pct": 0.03}, max_drawdown=-0.05
+    )
+    check = _check(report, "stop_equity_at_risk")
+    assert check["passed"] is False
+    assert (
+        check["details"]["drawdown_budget_pct"],
+        check["details"]["budget_pct"],
+    ) == (
+        5.0,
+        2.5,
+    )
+
+
+def test_stop_equity_check_needs_a_declared_stop(tmp_path: Path) -> None:
+    report = _stop_equity_report(tmp_path, params={"leverage": 3})
+    assert not any(check["name"] == "stop_equity_at_risk" for check in report["checks"])

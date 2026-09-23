@@ -133,16 +133,16 @@ def _jobs_v1_flags(
 ) -> list[RiskFlag]:
     flags: list[RiskFlag] = []
     source = _strategy_source(job, root)
-    has_stop = params.get("native_stop_required") or any(
-        token in source for token in STOP_TOKENS
-    )
+    # The job-level flag cannot conjure a stop price: only a strategy that
+    # emits one has a stop.
+    has_stop = any(token in source for token in STOP_TOKENS)
     if not has_stop:
         flags.append(
             RiskFlag(
                 "no_stop_loss",
                 "warn",
                 "the strategy never emits a stop: positions exit only on signal",
-                "attach a bracket to OPEN intents, or require a venue-native stop (execution_params.native_stop_required)",
+                "attach a bracket (stop_loss / stop_loss_pct) to OPEN intents",
                 "strategy",
             )
         )
@@ -150,9 +150,9 @@ def _jobs_v1_flags(
         flags.append(
             RiskFlag(
                 "no_native_stop",
-                "info",
-                "stops (if any) are engine-side; a venue-native stop survives a dead runner",
-                "set execution_params.native_stop_required: true on venues that support it",
+                "warn",
+                "venue-side stop not pinned: a live perp entry still gets one by default (unless execution_params.native_stop_required is false); an engine-side stop is checked once per tick and dies with the runner",
+                "set execution_params.native_stop_required: true on venues that support it — an entry whose venue stop cannot be confirmed is then unwound",
                 "strategy",
             )
         )

@@ -21,6 +21,7 @@ from wayfinder_paths.jobs.execution import (
     VenueState,
     run_tick,
 )
+from wayfinder_paths.jobs.execution.engine import resolve_fill_bracket
 from wayfinder_paths.jobs.execution.primitives import PositionRecord
 from wayfinder_paths.jobs.execution.venues import MarketEvent
 
@@ -918,6 +919,216 @@ async def test_unconfirmed_replaced_stop_cancel_requests_halt() -> None:
     assert state.native_protections["SNX"]["size"] == 2.0
 
 
+async def test_live_fill_with_stop_gets_native_protection_by_default() -> None:
+    broker = FakeNativeBroker()
+    state = EngineState(mode="live")
+    intent = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="long",
+        size=2.0,
+        bracket={"stop_loss_pct": 0.05},
+    )
+
+    result = await _tick(
+        _strategy([intent]),
+        _view([10.0, 10.5]),
+        state=state,
+        brokers={"hyperliquid": broker},
+    )
+
+    assert broker.stops[0]["trigger_price"] == pytest.approx(9.975)
+    assert state.brackets["SNX"]["native_required"] is True
+    assert "SNX" in state.native_protections
+    assert not [
+        event
+        for event in result.guard_events
+        if event["kind"] == "native_protection_skipped"
+    ]
+
+
+@pytest.mark.parametrize(
+    "bracket, params",
+    [
+        ({"stop_loss_pct": 0.05, "native_required": False}, {}),
+        ({"stop_loss_pct": 0.05}, {"native_stop_required": False}),
+    ],
+)
+async def test_explicit_opt_out_skips_native_protection(
+    bracket: dict[str, Any], params: dict[str, Any]
+) -> None:
+    broker = FakeNativeBroker()
+    state = EngineState(mode="live")
+    intent = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="long",
+        size=1.0,
+        bracket=bracket,
+    )
+
+    result = await _tick(
+        _strategy([intent]),
+        _view([10.0, 10.5]),
+        state=state,
+        brokers={"hyperliquid": broker},
+        params=params,
+    )
+
+    assert broker.stops == []
+    assert "SNX" in state.ledger.positions
+    assert state.brackets["SNX"]["native_required"] is False
+    skipped = next(
+        event
+        for event in result.guard_events
+        if event["kind"] == "native_protection_skipped"
+    )
+    assert (skipped["symbol"], skipped["mode"], skipped["reason"]) == (
+        "SNX",
+        "live",
+        "opted_out",
+    )
+
+
+async def test_unsupported_broker_skips_by_default_but_fails_closed_when_pinned() -> (
+    None
+):
+    intent = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="long",
+        size=1.0,
+        bracket={"stop_loss_pct": 0.05},
+    )
+
+    broker = FakeBroker()
+    state = EngineState(mode="live")
+    result = await _tick(
+        _strategy([intent]),
+        _view([10.0, 10.5]),
+        state=state,
+        brokers={"hyperliquid": broker},
+    )
+    assert "SNX" in state.ledger.positions
+    assert state.brackets["SNX"]["native_required"] is False
+    kinds = [event["kind"] for event in result.guard_events]
+    assert "native_protection_unsupported" not in kinds
+    skipped = next(
+        event
+        for event in result.guard_events
+        if event["kind"] == "native_protection_skipped"
+    )
+    assert skipped["reason"] == "unsupported_broker"
+
+    broker = FakeBroker()
+    state = EngineState(mode="live")
+    result = await _tick(
+        _strategy([intent]),
+        _view([10.0, 10.5]),
+        state=state,
+        brokers={"hyperliquid": broker},
+        params={"native_stop_required": True},
+    )
+    assert "SNX" not in state.ledger.positions
+    kinds = {event["kind"] for event in result.guard_events}
+    assert {"native_protection_unsupported", "native_protection_failed"} <= kinds
+
+
+async def test_bracket_without_stop_is_journaled_not_unwound() -> None:
+    broker = FakeNativeBroker()
+    state = EngineState(mode="live")
+    intent = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="long",
+        size=1.0,
+        bracket={"take_profit_pct": 0.10},
+    )
+
+    result = await _tick(
+        _strategy([intent]),
+        _view([10.0, 10.5]),
+        state=state,
+        brokers={"hyperliquid": broker},
+        params={"native_stop_required": True},
+    )
+
+    assert broker.stops == []
+    assert "SNX" in state.ledger.positions
+    assert state.brackets["SNX"]["native_required"] is False
+    skipped = next(
+        event
+        for event in result.guard_events
+        if event["kind"] == "native_protection_skipped"
+    )
+    assert skipped["reason"] == "no_stop_loss"
+
+
+async def test_paper_fill_places_no_native_stop_and_no_skip_event() -> None:
+    broker = FakeNativeBroker()
+    state = EngineState(mode="paper")
+    intent = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="long",
+        size=1.0,
+        bracket={"stop_loss_pct": 0.05},
+    )
+
+    result = await _tick(
+        _strategy([intent]),
+        _view([10.0, 10.5]),
+        state=state,
+        brokers={"hyperliquid": broker},
+    )
+
+    assert broker.stops == []
+    assert "native_required" not in state.brackets["SNX"]
+    assert not [
+        event
+        for event in result.guard_events
+        if event["kind"].startswith("native_protection")
+    ]
+
+
+async def test_live_fill_rows_carry_the_intent_like_paper_rows() -> None:
+    class ExchangePayloadBroker(FakeNativeBroker):
+        async def place(
+            self, intent: OrderIntent, *, timestamp: str, price: float | None = None
+        ) -> FillEvent:
+            fill = await super().place(intent, timestamp=timestamp, price=price)
+            fill.raw = {"status": "ok"}
+            return fill
+
+    state = EngineState(mode="live")
+    intent = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="long",
+        size=1.0,
+        bracket={"stop_loss_pct": 0.05},
+        metadata={"entry_reason": "breakout"},
+    )
+
+    result = await _tick(
+        _strategy([intent]),
+        _view([10.0, 10.5]),
+        state=state,
+        brokers={"hyperliquid": ExchangePayloadBroker()},
+    )
+
+    row = result.trade_rows[0]
+    assert row["raw"]["status"] == "ok"
+    assert row["raw"]["intent_action"] == "OPEN"
+    assert row["raw"]["intent_metadata"] == {"entry_reason": "breakout"}
+
+
 async def test_short_rejected_on_long_only_venue() -> None:
     broker = FakeBroker(capabilities=PREDICTION_CAPS)
     intent = OrderIntent(
@@ -1363,3 +1574,19 @@ async def test_run_tick_records_strategy_state_digest_only_when_asked() -> None:
     first, second = (row["strategy_state_digest"] for row in recorded.runs[-2:])
     assert set(first) == {"n", "fixed"}
     assert first["n"] != second["n"] and first["fixed"] == second["fixed"]
+
+
+def test_zero_take_profit_pct_means_no_take_profit() -> None:
+    resolved = resolve_fill_bracket(
+        {"stop_loss_pct": 0.03, "take_profit_pct": 0.0},
+        "long",
+        100.0,
+        "hyperliquid",
+        "c1",
+    )
+    assert resolved["stop_loss"] == 97.0 and "take_profit" not in resolved
+
+    armed = resolve_fill_bracket(
+        {"take_profit_pct": 0.04}, "short", 100.0, "hyperliquid", "c1"
+    )
+    assert armed["take_profit"] == 96.0

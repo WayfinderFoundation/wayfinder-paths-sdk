@@ -24,6 +24,7 @@ def test_perps_stay_the_default() -> None:
         3.5,
         3,
     )
+    assert params["native_stop_required"] is True
 
 
 def test_onchain_jobs_trade_token_ids_on_supported_intervals() -> None:
@@ -38,6 +39,7 @@ def test_onchain_jobs_trade_token_ids_on_supported_intervals() -> None:
     assert params["venue"] == "onchain"
     assert (params["fee_bps"], params["slippage_bps"]) == (30.0, 50.0)
     assert "leverage" not in params
+    assert "native_stop_required" not in params
 
 
 def test_hyperliquid_spot_jobs_trade_pairs() -> None:
@@ -45,6 +47,7 @@ def test_hyperliquid_spot_jobs_trade_pairs() -> None:
     params = harnessed_execution_params(["HYPE/USDC"], venue="hyperliquid_spot")
     assert spec["market_kind"] == "spot" and spec["venues"] == ["hyperliquid_spot"]
     assert (params["fee_bps"], params["slippage_bps"]) == (7.0, 10.0)
+    assert "native_stop_required" not in params
 
 
 @pytest.mark.parametrize(

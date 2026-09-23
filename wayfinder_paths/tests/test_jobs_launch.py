@@ -228,6 +228,35 @@ def test_block_flags_cannot_be_acknowledged(tmp_path: Path) -> None:
     )
 
 
+def test_jobs_v1_native_stop_flag_is_a_warning_until_pinned(tmp_path: Path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "carry",
+        script="workspace/src/carry.py",
+        interval_seconds=60,
+        execution_contract="jobs_v1",
+    )
+    store.save(job)
+    root = store.job_dir(job.id)
+
+    flags = {f["code"]: f for f in risk_flags(store.load(job.id), root)}
+    assert flags["no_native_stop"]["severity"] == "warn"
+    assert "by default" in flags["no_native_stop"]["message"]
+    checklist = evaluate_launch_checklist(job.id, store=store, target="live")
+    assert any(
+        i["id"] == "risk:no_native_stop" and i["status"] == "ack_required"
+        for i in checklist["items"]
+    )
+
+    job.execution_params["native_stop_required"] = True
+    store.save(job)
+    flags = {f["code"]: f for f in risk_flags(store.load(job.id), root)}
+    assert "no_native_stop" not in flags
+    # The job-level flag cannot conjure a stop price: a strategy that never
+    # emits one is still flagged.
+    assert flags["no_stop_loss"]["severity"] == "warn"
+
+
 def test_jobs_v1_readiness_still_is_the_live_gate(tmp_path: Path) -> None:
     store = JobStore(repo_root=tmp_path)
     job = WayfinderJob.new(

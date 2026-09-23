@@ -317,6 +317,7 @@ async def _run_tick_inner(
                 brokers=brokers,
                 state=state,
                 view=view,
+                params=params,
                 timestamp=bar_iso,
                 trace=trace,
                 result=result,
@@ -416,6 +417,7 @@ async def _run_tick_inner(
                 intent=intent,
                 brokers=brokers,
                 state=state,
+                params=params,
                 trace=trace,
                 result=result,
                 timestamp=bar_iso,
@@ -443,6 +445,7 @@ async def _run_tick_inner(
         bars_by_symbol={
             symbol: bar.to_dict() for symbol, bar in bars_by_symbol.items()
         },
+        params=params,
         timestamp=bar_iso,
         trace=trace,
         result=result,
@@ -686,6 +689,7 @@ async def _run_tick_inner(
                     intent=intent,
                     brokers=brokers,
                     state=state,
+                    params=params,
                     trace=trace,
                     result=result,
                     timestamp=bar_iso,
@@ -712,6 +716,7 @@ async def _run_tick_inner(
                     intent=intent,
                     brokers=brokers,
                     state=state,
+                    params=params,
                     trace=trace,
                     result=result,
                     timestamp=bar_iso,
@@ -826,6 +831,7 @@ async def _settle_resting_orders(
                     intent=intent,
                     brokers=brokers,
                     state=state,
+                    params=params,
                     trace=trace,
                     result=result,
                     timestamp=timestamp,
@@ -844,6 +850,7 @@ async def _settle_resting_orders(
                         brokers=brokers,
                         state=state,
                         bars_by_symbol={intent.symbol: bar.to_dict()},
+                        params=params,
                         timestamp=timestamp,
                         trace=trace,
                         result=result,
@@ -961,6 +968,12 @@ def _record_fill(
     trace: ExecutionTrace,
     result: TickResult,
 ) -> None:
+    if intent is not None:
+        # Live brokers return the exchange payload as `raw`; backtest and paper
+        # brokers already stamp the intent. Close-row telemetry and forensics
+        # read the intent from the fill row, so every mode must carry it.
+        fill.raw.setdefault("intent_action", intent.action)
+        fill.raw.setdefault("intent_metadata", dict(intent.metadata))
     position_before = state.ledger.positions.get(fill.symbol)
     direction_before = position_before.side if position_before is not None else None
     realized_before = state.ledger.realized_pnl
@@ -1018,6 +1031,7 @@ async def _record_fill_and_protect(
     intent: OrderIntent,
     brokers: Mapping[str, Broker],
     state: EngineState,
+    params: Mapping[str, Any],
     trace: ExecutionTrace,
     result: TickResult,
     timestamp: str,
@@ -1037,8 +1051,25 @@ async def _record_fill_and_protect(
         )
         return
 
-    bracket = state.brackets.get(fill.symbol) or {}
-    if not bracket.get("native_required"):
+    bracket = state.brackets.get(fill.symbol)
+    skip_reason = native_protection_skip_reason(
+        bracket or {}, params, brokers.get(intent.venue) or brokers.get("*")
+    )
+    if bracket is not None:
+        # The persisted contract is what monitor_native_protection enforces on
+        # every later tick, so it must carry the resolved flag, not the
+        # strategy's silence.
+        bracket["native_required"] = skip_reason is None
+    if skip_reason is not None:
+        result.guard_events.append(
+            {
+                "kind": "native_protection_skipped",
+                "symbol": fill.symbol,
+                "mode": state.mode,
+                "reason": skip_reason,
+                "timestamp": timestamp,
+            }
+        )
         return
     installed = await sync_native_protection(
         brokers=brokers,
@@ -1103,6 +1134,32 @@ async def _record_fill_and_protect(
     )
 
 
+def native_protection_skip_reason(
+    bracket: Mapping[str, Any],
+    params: Mapping[str, Any],
+    broker: Broker | None,
+) -> str | None:
+    """Why a live entry gets no venue-side stop, or None when one is required.
+
+    The bracket's own `native_required` is authoritative, then the job-level
+    `execution_params.native_stop_required`; with neither, a live fill is
+    protected whenever its bracket carries a stop and the broker can place
+    one. Opting out takes an explicit False. A bracket that explicitly
+    requires protection keeps the fail-closed contract even without a stop
+    price; the defaults only ever require what can actually be installed.
+    """
+    if bracket.get("native_required") is not None:
+        return None if bracket["native_required"] else "opted_out"
+    pinned = params.get("native_stop_required")
+    if pinned is not None and not pinned:
+        return "opted_out"
+    if _float_or_none(bracket.get("stop_loss")) is None:
+        return "no_stop_loss"
+    if pinned is None and not isinstance(broker, NativeProtectionBroker):
+        return "unsupported_broker"
+    return None
+
+
 def resolve_fill_bracket(
     policy: Mapping[str, Any],
     side: str,
@@ -1116,7 +1173,9 @@ def resolve_fill_bracket(
         direction = -1.0 if side == "long" else 1.0
         resolved["stop_loss"] = entry_price * (1.0 + direction * stop_pct)
     take_profit_pct = _float_or_none(resolved.get("take_profit_pct"))
-    if take_profit_pct is not None:
+    # 0 means "no take-profit"; a level at the fill price would close every
+    # trade at breakeven on the next touch.
+    if take_profit_pct is not None and take_profit_pct > 0:
         direction = 1.0 if side == "long" else -1.0
         resolved["take_profit"] = entry_price * (1.0 + direction * take_profit_pct)
     resolved["entry_price"] = entry_price
@@ -1302,6 +1361,7 @@ async def _evaluate_brackets(
     brokers: Mapping[str, Broker],
     state: EngineState,
     bars_by_symbol: Mapping[str, dict[str, Any]],
+    params: Mapping[str, Any],
     timestamp: str,
     trace: ExecutionTrace,
     result: TickResult,
@@ -1350,6 +1410,7 @@ async def _evaluate_brackets(
                 intent=intent,
                 brokers=brokers,
                 state=state,
+                params=params,
                 trace=trace,
                 result=result,
                 timestamp=timestamp,
@@ -1504,6 +1565,7 @@ async def flatten_positions(
     brokers: Mapping[str, Broker],
     state: EngineState,
     view: CompletedBarsView,
+    params: Mapping[str, Any],
     timestamp: str,
     trace: ExecutionTrace,
     result: TickResult,
@@ -1543,6 +1605,7 @@ async def flatten_positions(
                 intent=intent,
                 brokers=brokers,
                 state=state,
+                params=params,
                 trace=trace,
                 result=result,
                 timestamp=timestamp,
