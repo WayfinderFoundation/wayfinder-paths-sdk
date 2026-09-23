@@ -235,10 +235,11 @@ def _run_op(op: str, kwargs: dict[str, Any]) -> Any:
             result["backtest"] = summarize_backtest_payload(backtest)
         return result
     if op == "restamp":
-        # Full gate refresh after an execution_params change (leverage knob):
-        # any job.yaml edit bumps the workspace revision and invalidates the
-        # validation/backtest/preflight stamps — re-run all three and report
-        # the resulting gate. backtest takes the heavy-compute lock itself.
+        # Full gate refresh after the workspace revision moved (leverage knob,
+        # watchdog stale-gate repair): any job.yaml edit invalidates the
+        # backtest/preflight/validation stamps — re-run all three and report
+        # the resulting gate. Validation runs last because it reads the
+        # preflight report. backtest takes the heavy-compute lock itself.
         from wayfinder_paths.jobs.execution.job import backtest_execution_job
         from wayfinder_paths.jobs.execution.preflight import run_preflight
         from wayfinder_paths.jobs.execution.validation import (
@@ -247,9 +248,9 @@ def _run_op(op: str, kwargs: dict[str, Any]) -> Any:
         from wayfinder_paths.jobs.gating import evaluate_live_gate
 
         job_id = kwargs.pop("job_id")
-        validation = validate_execution_job(job_id)
         backtest = backtest_execution_job(job_id)
         preflight = run_preflight(job_id)
+        validation = validate_execution_job(job_id)
         return {
             "validation": (validation or {}).get("status"),
             "backtest": ((backtest.get("result") or {}).get("stats") or {}).get(

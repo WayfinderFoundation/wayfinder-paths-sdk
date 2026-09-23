@@ -187,3 +187,93 @@ def test_wake_context_carries_assignment_and_quant_rule(tmp_path) -> None:
     store2.save(job2)
     prepare_job_worker_prompt(store=store2, job_id=job2.id, mode="monitor")
     assert load_scheduler_state(store2, job2.id)["total"] == 0
+
+
+def _background_ops_fixture(tmp_path):
+    from wayfinder_paths.jobs import heavy_lane
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("isl-bgops", agent_mode="intervene")
+    store.save(job)
+    heavy_lane.submit_heavy_op(
+        tmp_path, job.id, "experiments", {"job_id": job.id}, submitted_by="worker"
+    )
+    ops = store.job_dir(job.id) / "state" / "background_ops"
+    finished = datetime.now(UTC).isoformat()
+    for op, extra in (
+        ("backtest_job", {}),
+        ("signal_scan", {"harvested": True}),
+        ("evolution_finalize", {}),
+    ):
+        (ops / f"{op}.json").write_text(
+            json.dumps({"op": op, "state": "done", "finished_at": finished, **extra}),
+            encoding="utf-8",
+        )
+        (ops / f"{op}.result.json").write_text(
+            json.dumps({"backtest": {"stats": {"sharpe": 1.4, "trade_count": 12}}}),
+            encoding="utf-8",
+        )
+    return store, job
+
+
+def test_wake_context_lists_queued_and_unharvested_background_ops(tmp_path) -> None:
+    from wayfinder_paths.jobs.worker import prepare_job_worker_prompt
+
+    store, job = _background_ops_fixture(tmp_path)
+
+    sections = prepare_job_worker_prompt(store=store, job_id=job.id, mode="intervene")
+
+    assert sections["harvestable_ops"] == ["backtest_job"]
+    prompt = sections["prompt"]
+    compact = "".join(prompt.split())
+    assert '"background_ops"' in prompt
+    assert '"op":"experiments","position":0' in compact
+    assert f"core_jobs(action='op_status', job_id='{job.id}', op='backtest_job')" in (
+        prompt
+    )
+    assert '"sharpe":1.4' in compact
+    assert "op='signal_scan'" not in prompt  # already harvested
+    assert "op='evolution_finalize'" not in prompt  # the campaign's, not the wake's
+    assert "submit them and END the wake" in sections["stable_prefix"]
+
+
+class _WakeClient:
+    def __init__(self, *, accept: bool) -> None:
+        self.accept = accept
+
+    def healthy(self) -> bool:
+        return True
+
+    def find_child_session(self, *, parent_id, title):  # noqa: ANN001
+        return "session-bgops"
+
+    def prompt_async(self, session_id, text, *, agent=None) -> bool:  # noqa: ANN001
+        return self.accept
+
+
+def test_background_ops_harvested_only_after_the_prompt_is_queued(
+    tmp_path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs.worker import run_job_worker
+
+    store, job = _background_ops_fixture(tmp_path)
+    status_path = (
+        store.job_dir(job.id) / "state" / "background_ops" / "backtest_job.json"
+    )
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.JobStore", lambda: store)
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.OPENCODE_CLIENT", _WakeClient(accept=False)
+    )
+    dropped = run_job_worker(job.id, mode="intervene", force_llm=True)
+    assert dropped["queued"] is False
+    assert "harvested" not in json.loads(status_path.read_text(encoding="utf-8"))
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.OPENCODE_CLIENT", _WakeClient(accept=True)
+    )
+    delivered = run_job_worker(job.id, mode="intervene", force_llm=True)
+    assert delivered["queued"] is True
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status["harvested"] is True
+    assert status["harvested_by"].startswith("wake-")

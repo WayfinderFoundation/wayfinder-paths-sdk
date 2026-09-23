@@ -87,13 +87,25 @@ def op_status_summary(job_dir: Path, op: str) -> dict[str, Any] | None:
 
 
 def spawn_detached_op(
-    store: JobStore, job_id: str, op: str, kwargs: dict[str, Any]
+    store: JobStore,
+    job_id: str,
+    op: str,
+    kwargs: dict[str, Any],
+    *,
+    submitted_by: str = "cli",
+    notify: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Start `op` detached — or, where the heavy lane runs, hand a heavy op
-    to it (`submit_heavy_op` takes the same per-op lock itself)."""
+    to it (`submit_heavy_op` takes the same per-op lock itself). `notify`
+    only reaches the lane; a direct spawn has no completion hook."""
     if op in heavy_lane.HEAVY_LANE_OPS and heavy_lane.lane_enabled():
         return heavy_lane.submit_heavy_op(
-            store.repo_root, job_id, op, kwargs, submitted_by="cli"
+            store.repo_root,
+            job_id,
+            op,
+            kwargs,
+            submitted_by=submitted_by,
+            notify=notify,
         )
     with job_state_lock(store.repo_root, job_id, name=f"background_{op}"):
         return _spawn_detached_op(store, job_id, op, kwargs)

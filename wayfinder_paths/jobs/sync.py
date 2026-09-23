@@ -14,6 +14,7 @@ from wayfinder_paths.core.config import (
     get_opencode_instance_id,
     is_opencode_instance,
 )
+from wayfinder_paths.jobs import heavy_lane
 from wayfinder_paths.jobs.background import op_status_summary
 from wayfinder_paths.jobs.backtest_artifacts import summarize_backtest_artifacts
 from wayfinder_paths.jobs.compiler import JobCompiler
@@ -246,6 +247,7 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
     )
 
     scorecard["evolution_compute"] = evolution_compute_budget_status(store.repo_root)
+    scorecard["pending_ops"] = heavy_lane.lane_view_for_job(store.repo_root, job_id)
     blocks = active_symbol_blocks(store, job_id)
     scorecard["risk_symbol_blocks"] = sorted(blocks)
     dataset_fetch = _dataset_fetch_state(store, job_id)
@@ -635,7 +637,9 @@ def apply_execution_leverage(
         try:
             from wayfinder_paths.jobs.background import spawn_detached_op
 
-            restamp = spawn_detached_op(store, job_id, "restamp", {"job_id": job_id})
+            restamp = spawn_detached_op(
+                store, job_id, "restamp", {"job_id": job_id}, submitted_by="sync"
+            )
             store.append_journal(
                 job_id, {"type": "gate_restamp_kicked", "trigger": "set_leverage"}
             )

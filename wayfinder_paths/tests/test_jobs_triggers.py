@@ -192,3 +192,20 @@ def test_infrastructure_event_wakes_without_configured_trigger(
     assert fired is not None
     assert fired["triggers"] == ["proposal_restage_requested"]
     assert len(wakes) == 1
+
+
+def test_background_op_finished_wakes_without_configured_trigger(
+    tmp_path: Path, wakes: list[dict[str, Any]]
+) -> None:
+    """The heavy lane's ping-back: an agent that submitted a heavy op and
+    ended its wake is owed the result whatever its trigger list says."""
+    store, job = _make_job(tmp_path)
+    job.agent_loop.triggers = []
+    store.save(job)
+
+    fired = fire_triggers(store, job, ["background_op_finished"], source="heavy_lane")
+
+    assert fired is not None
+    assert fired["triggers"] == ["background_op_finished"]
+    assert wakes[0]["wake_source"] == "heavy_lane"
+    assert wakes[0]["wake_triggers"] == ["background_op_finished"]

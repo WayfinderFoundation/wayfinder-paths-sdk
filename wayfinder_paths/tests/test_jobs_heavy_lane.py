@@ -19,18 +19,21 @@ from typing import Any
 
 import pytest
 
-from wayfinder_paths.jobs import background, heavy_lane, watchdog
+from wayfinder_paths.jobs import background, heavy_lane
 from wayfinder_paths.jobs import contracts as contracts_module
 from wayfinder_paths.jobs import readout as readout_module
 from wayfinder_paths.jobs import remove as remove_module
 from wayfinder_paths.jobs import sync as sync_module
 from wayfinder_paths.jobs.execution import op_runner
 from wayfinder_paths.jobs.execution import simulator as simulator_module
-from wayfinder_paths.jobs.execution.op_process import process_identity_fields
-from wayfinder_paths.jobs.failures import HEAVY_STEAL_THRESHOLD_PCT
+from wayfinder_paths.jobs.execution.op_process import (
+    process_identity_fields,
+    terminate_campaign_ops,
+)
 from wayfinder_paths.jobs.improver.scheduler import _continuation_ops
-from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.models import WayfinderJob, utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.triggers import ALWAYS_WAKE_EVENTS
 
 JOB_A = "job-a"
 JOB_B = "job-b"
@@ -834,5 +837,121 @@ def test_effective_workers_leaves_one_core_for_the_live_tick(monkeypatch) -> Non
     assert simulator_module._effective_workers(0, "process") == 1
 
 
-def test_watchdog_restamp_threshold_is_the_shared_heavy_threshold() -> None:
-    assert watchdog.RESTAMP_STEAL_THRESHOLD_PCT == HEAVY_STEAL_THRESHOLD_PCT == 60.0
+# --- system submitters ----------------------------------------------------
+
+
+def test_system_heavy_ops_join_the_lane() -> None:
+    assert {"evolution_evaluate", "evolution_finalize", "restamp"} <= (
+        heavy_lane.HEAVY_LANE_OPS
+    )
+    assert heavy_lane.classify("evolution_finalize", "watchdog", None) == "evolution"
+    assert heavy_lane.classify("restamp", "sync", None) == "correctness"
+
+
+def test_spawn_detached_op_passes_submitter_and_notify_to_the_lane(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = _store(tmp_path)
+    monkeypatch.setattr(heavy_lane, "lane_enabled", lambda: True)
+
+    result = background.spawn_detached_op(
+        store,
+        JOB_A,
+        "restamp",
+        {"job_id": JOB_A},
+        submitted_by="watchdog",
+        notify={"wake": True},
+    )
+
+    assert result["queued"] is True
+    assert result["class"] == "correctness"
+    status = _read(_status_path(store, JOB_A, "restamp"))
+    assert status["submitted_by"] == "watchdog"
+    assert status["notify"]["wake"] is True
+    (entry,) = heavy_lane.queued_entries(tmp_path)
+    assert entry["submitted_by"] == "watchdog"
+    assert entry["notify"]["wake"] is True
+
+
+def test_completion_hook_wakes_the_job_when_asked(tmp_path: Path, monkeypatch) -> None:
+    store = _store(tmp_path)
+    job = WayfinderJob.new(JOB_A, agent_mode="intervene")
+    assert job.id == JOB_A
+    store.save(job)
+    entry = _finished_entry(tmp_path, store, notify={"wake": True})
+    fired: list[dict[str, Any]] = []
+
+    def fake_fire(store_arg, job_arg, events, *, source):  # noqa: ANN001
+        fired.append({"job_id": job_arg.id, "events": events, "source": source})
+        return {"triggers": events}
+
+    monkeypatch.setattr(heavy_lane, "fire_triggers", fake_fire)
+    client = _FakeClient()
+
+    outcome = heavy_lane.run_completion_hook(entry, client=client, sleep=lambda s: None)
+
+    assert fired == [
+        {"job_id": JOB_A, "events": ["background_op_finished"], "source": "heavy_lane"}
+    ]
+    assert outcome == {"journaled": True, "notified": False, "woke": True}
+    assert client.prompts == []  # no user session asked for a prompt
+    assert "background_op_finished" in ALWAYS_WAKE_EVENTS
+
+
+def test_completion_hook_without_wake_never_fires_triggers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = _store(tmp_path)
+    entry = _finished_entry(tmp_path, store, notify=None)
+    monkeypatch.setattr(
+        heavy_lane,
+        "fire_triggers",
+        lambda *a, **k: pytest.fail("no wake was requested"),
+    )
+
+    outcome = heavy_lane.run_completion_hook(
+        entry, client=_FakeClient(), sleep=lambda s: None
+    )
+
+    assert "woke" not in outcome
+
+
+def test_terminate_campaign_ops_withdraws_queued_campaign_entries(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path, JOB_A, JOB_B)
+    for job_id in (JOB_A, JOB_B):
+        heavy_lane.submit_heavy_op(
+            tmp_path,
+            job_id,
+            "evolution_evaluate",
+            {"job_id": job_id, "candidate_id": "c01"},
+            submitted_by="watchdog",
+        )
+    heavy_lane.submit_heavy_op(
+        tmp_path, JOB_A, "experiments", {"job_id": JOB_A}, submitted_by="cli"
+    )
+
+    reaped = terminate_campaign_ops(store, JOB_A, "campaign-1")
+
+    assert reaped == [{"pid": None, "op": "evolution_evaluate", "state": "queued"}]
+    assert _read(_status_path(store, JOB_A, "evolution_evaluate"))["state"] == (
+        heavy_lane.CANCELLED
+    )
+    still_queued = {(e["job_id"], e["op"]) for e in heavy_lane.queued_entries(tmp_path)}
+    assert still_queued == {(JOB_B, "evolution_evaluate"), (JOB_A, "experiments")}
+
+
+def test_sync_scorecard_carries_the_job_lane_view(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.save(WayfinderJob.new(JOB_A, agent_mode="intervene"))
+    heavy_lane.submit_heavy_op(
+        tmp_path, JOB_A, "restamp", {"job_id": JOB_A}, submitted_by="sync"
+    )
+
+    scorecard = sync_module.snapshot_job(JOB_A, store=store)["scorecard"]
+
+    assert [
+        (row["op"], row["state"], row["position"]) for row in scorecard["pending_ops"]
+    ] == [("restamp", heavy_lane.QUEUED, 0)]
+    assert scorecard["pending_ops"][0]["submitted_by"] == "sync"

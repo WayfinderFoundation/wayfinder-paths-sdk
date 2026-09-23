@@ -31,7 +31,7 @@ def test_apply_execution_leverage_writes_and_journals(tmp_path, monkeypatch) -> 
     )
     monkeypatch.setattr(
         "wayfinder_paths.jobs.background.spawn_detached_op",
-        lambda *args: {"started": True},
+        lambda *args, **kwargs: {"started": True},
     )
 
     result = apply_execution_leverage(job_id, 3.5, store=store)

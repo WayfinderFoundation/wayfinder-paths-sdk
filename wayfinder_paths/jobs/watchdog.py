@@ -27,11 +27,7 @@ from textwrap import dedent
 from typing import Any, TypedDict
 
 from wayfinder_paths.jobs.application import complete_application
-from wayfinder_paths.jobs.failures import (
-    HEAVY_STEAL_THRESHOLD_PCT,
-    classify_failure,
-    cpu_steal_pct,
-)
+from wayfinder_paths.jobs.failures import classify_failure
 from wayfinder_paths.jobs.lifecycle import lifecycle_sweep
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
@@ -683,12 +679,8 @@ _REVISION_MISMATCH_RE = re.compile(
     r"is for revision [0-9a-f]{6,}, workspace is [0-9a-f]{6,}"
 )
 _GATE_RESTAMP_MARKER = "state/gate_restamp.json"
-# A gate re-stamp is a full 120d backtest. Under heavy hypervisor CPU steal
-# (observed 81-93% on the production box) that backtest held the
-# heavy-compute lock 45-60 minutes — starving everything else for a repair
-# that is merely housekeeping. Deferral is safe-closed: the gate stays red a
-# little longer; the next 5-minute pass retries when the box breathes again.
-RESTAMP_STEAL_THRESHOLD_PCT = HEAVY_STEAL_THRESHOLD_PCT
+_RESTAMP_OP = "restamp"
+_IN_FLIGHT = frozenset({"queued", "running"})
 
 
 def _recover_stale_gate(
@@ -709,7 +701,21 @@ def _recover_stale_gate(
     REAL reasons. A convergence marker stops the repair from looping: red at
     a revision we already re-stamped escalates once instead of burning a
     backtest every pass.
+
+    The chain is the `restamp` op, submitted to the heavy lane (a full 120d
+    backtest must queue behind the live tick, and the lane's admission owns
+    CPU-steal deferral). A later pass that finds the op finished writes the
+    marker and the recovery row.
     """
+    from wayfinder_paths.jobs.background import op_status_summary, spawn_detached_op
+
+    restamp = op_status_summary(store.job_dir(job_id), _RESTAMP_OP) or {}
+    if restamp.get("status") in _IN_FLIGHT:
+        return {
+            "stalled_status": "stale_gate",
+            "action": "gate_restamp_in_flight",
+            "restamp_status": restamp.get("status"),
+        }
     if any(p["application"].get("status") in {"queued", "applying"} for p in proposals):
         return None  # promotion re-stamps as a side effect; let the apply run
     # circular import: gating -> store; job/preflight/validation import deeply
@@ -720,6 +726,9 @@ def _recover_stale_gate(
 
     root = store.job_dir(job_id)
     marker = store.read_json(job_id, _GATE_RESTAMP_MARKER) or {}
+    submitted = marker.get("submitted")
+    if isinstance(submitted, dict):
+        return _settle_submitted_restamp(store, job_id, marker, submitted, restamp)
     gate = evaluate_live_gate(job_id, store=store)
     if gate.get("live_ready"):
         if marker:
@@ -748,35 +757,50 @@ def _recover_stale_gate(
         return None
     if not allow_restamp:
         return None  # one re-stamp (a backtest) per pass; next pass retries
-    steal = cpu_steal_pct()
-    if steal is not None and steal > RESTAMP_STEAL_THRESHOLD_PCT:
-        event = {
-            "type": "restamp_deferred_load",
-            "stalled_status": "stale_gate",
-            "action": "restamp_deferred_load",
-            "cpu_steal_pct": round(steal, 1),
-            "revision": revision,
-        }
-        store.append_journal(job_id, event)
-        return event  # safe-closed: gate stays red; next pass retries
+    submission = spawn_detached_op(
+        store,
+        job_id,
+        _RESTAMP_OP,
+        {"job_id": job_id},
+        submitted_by="watchdog",
+        # The next watchdog pass settles the result; an agent wake for
+        # housekeeping would only spend burst credit.
+        notify={"wake": False},
+    )
+    marker["submitted"] = {"revision": revision, "at": utc_now_iso()}
+    store.write_json(job_id, _GATE_RESTAMP_MARKER, marker)
+    return {
+        "stalled_status": "stale_gate",
+        "action": "gate_restamp_submitted",
+        "revision": revision,
+        "queued": _lane_queued(submission),
+    }
 
-    from wayfinder_paths.jobs.compute_lock import ComputeLockBusy
-    from wayfinder_paths.jobs.execution.job import backtest_execution_job
-    from wayfinder_paths.jobs.execution.preflight import run_preflight
-    from wayfinder_paths.jobs.execution.validation import validate_execution_job
 
-    try:
-        backtest_execution_job(job_id, store=store)
-        run_preflight(job_id, store=store)
-        validate_execution_job(job_id, store=store)
-    except ComputeLockBusy:
-        return None  # heavy compute in progress; retry next pass
-    except Exception as exc:
+def _settle_submitted_restamp(
+    store: JobStore,
+    job_id: str,
+    marker: dict[str, Any],
+    submitted: dict[str, Any],
+    restamp: dict[str, Any],
+) -> dict[str, Any] | None:
+    """The restamp this watchdog submitted has left the lane: record the
+    convergence marker at the revision it re-stamped, or, on failure, clear
+    the submission so the next pass may try again."""
+    from wayfinder_paths.jobs.gating import evaluate_live_gate
+
+    marker.pop("submitted")
+    revision = str(submitted.get("revision") or "")
+    if restamp.get("status") != "done":
+        store.write_json(job_id, _GATE_RESTAMP_MARKER, marker)
         store.append_journal(
             job_id,
             {
                 "type": "application_watchdog_skipped",
-                "reason": f"gate restamp failed: {str(exc)[:250]}",
+                "reason": (
+                    f"gate restamp {restamp.get('status') or 'missing'} "
+                    f"at revision {revision}"
+                ),
             },
         )
         return None
@@ -1664,6 +1688,13 @@ def _run_evolution_campaign_pass(
     if now - deadline >= _CAMPAIGN_FINALIZE_MAX_AGE:
         return _expire_evolution_campaign(store, job_id, now)
     evaluating = op_status_summary(store.job_dir(job_id), "evolution_evaluate")
+    if (evaluating or {}).get("status") == "queued":
+        # Waiting its turn in the heavy lane: not lost, nothing to retry.
+        return {
+            "action": "evolution_campaign_waiting_for_evaluation",
+            "campaign_id": state.get("campaign_id"),
+            "queued": True,
+        }
     if (evaluating or {}).get("status") == "running":
         return {
             "action": "evolution_campaign_waiting_for_evaluation",
@@ -1751,15 +1782,25 @@ def _run_evolution_campaign_pass(
             job_id,
             "evolution_evaluate",
             {"job_id": job_id, "candidate_id": candidate_id},
+            submitted_by="watchdog",
         )
         return {
             "action": "evolution_candidate_evaluation_started",
             "campaign_id": state.get("campaign_id"),
             "candidate_id": candidate_id,
             "pid": spawned.get("pid"),
+            "queued": _lane_queued(spawned),
         }
 
     op = op_status_summary(store.job_dir(job_id), "evolution_finalize")
+    if (op or {}).get("status") == "queued":
+        # A finalize waiting in the heavy lane has no process to supervise:
+        # health checks, reaping and retry backoff apply once it runs.
+        return {
+            "action": "evolution_campaign_waiting_for_finalize",
+            "campaign_id": state.get("campaign_id"),
+            "queued": True,
+        }
     past_grace = now - deadline >= _CAMPAIGN_FINALIZE_GRACE
     if past_grace:
         # A healthy finalizer may outlive the four-hour generation window.
@@ -1826,13 +1867,24 @@ def _run_evolution_campaign_pass(
         )
         store.write_json(job_id, CAMPAIGN_STATE_PATH, state)
 
-    spawned = spawn_detached_op(store, job_id, "evolution_finalize", {"job_id": job_id})
+    spawned = spawn_detached_op(
+        store,
+        job_id,
+        "evolution_finalize",
+        {"job_id": job_id},
+        submitted_by="watchdog",
+    )
     return {
         "action": "evolution_campaign_finalize_started",
         "campaign_id": state.get("campaign_id"),
         "attempt": attempts + 1,
         "pid": spawned.get("pid"),
+        "queued": _lane_queued(spawned),
     }
+
+
+def _lane_queued(submission: dict[str, Any]) -> bool:
+    return bool(submission.get("queued") or submission.get("already_queued"))
 
 
 def _run_probation_pass(
@@ -1971,7 +2023,8 @@ def recover_stalled_applications(
     # each watchdog pass to one so the pass stays well inside its timeout;
     # the 5-minute cadence picks up the rest.
     restaged_this_pass = False
-    # A gate re-stamp runs a full backtest — same one-per-pass budget rule.
+    # A gate re-stamp runs a full backtest: while one is queued or running
+    # for any job, no other job submits another this pass.
     restamped_this_pass = False
     # A triage revalidation re-runs candidate validation (a backtest) — same
     # one-per-pass budget rule.
@@ -2060,7 +2113,10 @@ def recover_stalled_applications(
             gate_event = None
         if gate_event is not None:
             recovered.append({"job_id": job.id, **gate_event})
-            if gate_event.get("action") == "gate_restamp":
+            if gate_event.get("action") in {
+                "gate_restamp_submitted",
+                "gate_restamp_in_flight",
+            }:
                 restamped_this_pass = True
         try:
             loop_gap_event = _check_loop_gap(store, job, now)
