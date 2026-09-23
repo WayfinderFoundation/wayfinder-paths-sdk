@@ -480,8 +480,9 @@ class RunnerDaemon:
         self._heavy_lane = (
             HeavyLane(
                 paths.repo_root,
-                burst_over_quota=lambda: self._burst is not None
-                and self._burst.over_quota(),
+                burst_snapshot=lambda: self._burst.snapshot()
+                if self._burst is not None
+                else {"source": "disabled"},
                 running_job_ids=lambda: {rp.job_id for rp in self._running.values()},
                 list_jobs=self._db.list_jobs,
                 tier_of=_burst_postpone_tier,

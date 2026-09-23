@@ -30,7 +30,11 @@ from wayfinder_paths.runner.heavy_lane import (
     ADMISSION_INTERVAL_S,
     ADMISSION_REWRITE_INTERVAL_S,
     JOURNAL_DEFERRED,
+    JOURNAL_PAUSED,
+    JOURNAL_RESUMED,
+    PAUSE_PATH_ENV,
     HeavyLane,
+    lane_pause_path,
 )
 from wayfinder_paths.runner.paths import RunnerPaths
 
@@ -112,12 +116,23 @@ class _PopenSpy:
 class _Box:
     def __init__(self) -> None:
         self.over = False
+        # None: a fresh image governor whose verdict is `over`.
+        self.credit: dict[str, Any] | None = None
         self.running: set[int] = set()
         self.jobs: list[dict[str, Any]] = []
 
+    def burst_snapshot(self) -> dict[str, Any]:
+        if self.credit is not None:
+            return self.credit
+        return {"source": "governor", "allow_new_heavy": not self.over}
+
+    def local_credit(self, balance: float) -> None:
+        self.credit = {"source": "local_estimator", "balance_cpu_seconds": balance}
+
 
 @pytest.fixture(autouse=True)
-def _quiet_box(monkeypatch: pytest.MonkeyPatch) -> None:
+def _quiet_box(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv(PAUSE_PATH_ENV, str(tmp_path / "lane-pause.json"))
     # A Linux CI box reports real memory/steal; pin the probes so only the
     # test under study drives them.
     monkeypatch.setattr(
@@ -143,7 +158,7 @@ def _lane(root: Path) -> tuple[HeavyLane, _Box]:
     box = _Box()
     lane = HeavyLane(
         root,
-        burst_over_quota=lambda: box.over,
+        burst_snapshot=box.burst_snapshot,
         running_job_ids=lambda: box.running,
         list_jobs=lambda: box.jobs,
         tier_of=_burst_postpone_tier,
@@ -480,6 +495,191 @@ def test_cancelled_entries_are_swept(root: Path, popen: _PopenSpy) -> None:
     assert popen.ops()[0][2].payload()["kwargs"] == {"job_id": "job-b"}
 
 
+# ----------------------------------------------------------- credit policy
+
+
+@pytest.fixture
+def killpg(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: calls.append((pgid, sig)))
+    return calls
+
+
+def _pause_file() -> dict[str, Any]:
+    return json.loads(lane_pause_path().read_text(encoding="utf-8"))
+
+
+def test_local_estimator_start_floor(
+    root: Path, popen: _PopenSpy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lane, box = _lane(root)
+    _submit(root)
+    box.local_credit(299.9)
+    lane.tick(T0)
+    assert popen.ops() == []
+    assert _only_entry(root)["admission"]["last_reason"] == "low_credit"
+    box.local_credit(300.0)
+    lane.tick(T0 + STEP)
+    assert len(popen.ops()) == 1
+    monkeypatch.setenv("WAYFINDER_HEAVY_START_FLOOR_CPU_S", "500")
+    assert lane.admission_reason(T0) == "low_credit"
+    box.credit = {"source": "disabled"}
+    assert lane.admission_reason(T0) is None
+
+
+def test_governor_branch_keeps_over_quota(root: Path) -> None:
+    lane, box = _lane(root)
+    box.credit = {"source": "governor", "allow_new_heavy": True, "paused": False}
+    assert lane.admission_reason(T0) is None
+    box.credit = {"source": "governor", "allow_new_heavy": True, "paused": True}
+    assert lane.admission_reason(T0) == "over_quota"
+    box.credit = {"source": "governor", "allow_new_heavy": False, "paused": False}
+    assert lane.admission_reason(T0) == "over_quota"
+
+
+def test_pause_floor_stops_group_then_resumes_at_start_floor(
+    root: Path,
+    popen: _PopenSpy,
+    killpg: list[tuple[int, int]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lane, box = _lane(root)
+    _submit(root)
+    box.local_credit(400.0)
+    lane.tick(T0)
+    proc = popen.ops()[0][2]
+    group = [proc.pid, proc.pid + 7, proc.pid + 9]
+    monkeypatch.setattr(
+        "wayfinder_paths.runner.heavy_lane.process_group_pids", lambda _pgid: group
+    )
+    lane.tick(T0 + 1)
+    assert killpg == []
+    assert _pause_file()["paused"] is False
+    assert _pause_file()["affected_pids"] == group
+
+    box.local_credit(149.0)
+    lane.tick(T0 + 2)
+    assert killpg == [(proc.pid, signal.SIGSTOP)]
+    pause = _pause_file()
+    assert pause["paused"] is True
+    assert pause["affected_pids"] == group
+    assert pause["updated_at"] > 0
+    paused_rows = [row for row in _journal(root) if row["type"] == JOURNAL_PAUSED]
+    assert len(paused_rows) == 1
+    assert paused_rows[0]["balance_cpu_seconds"] == 149.0
+    assert paused_rows[0]["reason"] == "low_credit"
+    snap = lane.snapshot()
+    assert snap["paused"] is True
+    assert snap["credit"] == {
+        "source": "local_estimator",
+        "balance_cpu_seconds": 149.0,
+        "start_floor": 300.0,
+        "pause_floor": 150.0,
+    }
+
+    box.local_credit(299.0)  # between the floors: stays stopped
+    lane.tick(T0 + 3)
+    assert killpg == [(proc.pid, signal.SIGSTOP)]
+    box.local_credit(300.0)
+    lane.tick(T0 + 12)
+    assert killpg[-1] == (proc.pid, signal.SIGCONT)
+    assert _pause_file()["paused"] is False
+    resumed = [row for row in _journal(root) if row["type"] == JOURNAL_RESUMED]
+    assert len(resumed) == 1
+    assert resumed[0]["balance_cpu_seconds"] == 300.0
+    assert lane.snapshot()["paused"] is False
+
+    proc.exit(0)
+    lane.tick(T0 + 13)
+    assert not lane_pause_path().exists()
+    assert lane.snapshot()["paused_s"] == 0.0
+
+
+def test_live_tick_running_pauses_below_start_floor(
+    root: Path, popen: _PopenSpy, killpg: list[tuple[int, int]]
+) -> None:
+    lane, box = _lane(root)
+    _submit(root)
+    box.local_credit(400.0)
+    lane.tick(T0)
+    proc = popen.ops()[0][2]
+    box.jobs = [_job_row(7, LIVE_ENV, next_run_at=T0 + 3600)]
+    box.running = {7}
+    lane.tick(T0 + 1)  # credit above the start floor: the tick can share
+    assert killpg == []
+    box.local_credit(250.0)
+    lane.tick(T0 + 2)
+    assert killpg == [(proc.pid, signal.SIGSTOP)]
+    assert [r["reason"] for r in _journal(root) if r["type"] == JOURNAL_PAUSED] == [
+        "live_tick_running"
+    ]
+
+
+def test_governor_source_takes_over_a_lane_pause(
+    root: Path, popen: _PopenSpy, killpg: list[tuple[int, int]]
+) -> None:
+    lane, box = _lane(root)
+    _submit(root)
+    box.local_credit(300.0)
+    lane.tick(T0)
+    proc = popen.ops()[0][2]
+    box.local_credit(10.0)
+    lane.tick(T0 + 1)
+    box.credit = {"source": "governor", "allow_new_heavy": False, "paused": True}
+    lane.tick(T0 + 2)
+    assert killpg == [(proc.pid, signal.SIGSTOP), (proc.pid, signal.SIGCONT)]
+    lane.tick(T0 + 3)  # the governor pauses on its own: no lane SIGSTOP
+    assert len(killpg) == 2
+
+
+def test_pending_cancel_continues_the_group_for_good(
+    root: Path,
+    popen: _PopenSpy,
+    killpg: list[tuple[int, int]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lane, box = _lane(root)
+    _submit(root)
+    box.local_credit(300.0)
+    lane.tick(T0)
+    proc = popen.ops()[0][2]
+    box.local_credit(10.0)
+    lane.tick(T0 + 1)
+    monkeypatch.setattr(
+        "wayfinder_paths.runner.heavy_lane.sigterm_pending", lambda _pid: True
+    )
+    lane.tick(T0 + 2)
+    assert killpg == [(proc.pid, signal.SIGSTOP), (proc.pid, signal.SIGCONT)]
+    lane.tick(T0 + 3)
+    assert len(killpg) == 2
+
+
+def test_max_runtime_excludes_paused_time(
+    root: Path,
+    popen: _PopenSpy,
+    killpg: list[tuple[int, int]],
+) -> None:
+    lane, box = _lane(root)
+    _submit(root, submitted_by="worker")  # research: 1800s
+    box.local_credit(300.0)
+    lane.tick(T0)
+    proc = popen.ops()[0][2]
+    box.local_credit(10.0)
+    lane.tick(T0 + 100)
+    lane.tick(T0 + 2000)  # 100s active + 1900s stopped
+    assert _status(root)["state"] == RUNNING
+    assert lane.snapshot()["paused"] is True
+    box.local_credit(300.0)
+    lane.tick(T0 + 2100)  # resumes: 2000s paused banked
+    assert _status(root)["state"] == RUNNING
+    lane.tick(T0 + 3800)  # 1800s active
+    assert _status(root)["state"] == RUNNING
+    lane.tick(T0 + 3801)
+    assert killpg[-1] == (proc.pid, signal.SIGKILL)
+    assert _status(root)["state"] == "timeout"
+    assert not lane_pause_path().exists()
+
+
 # -------------------------------------------------------------------- reap
 
 
@@ -613,6 +813,18 @@ def test_adopt_alive_child_then_reconciles_when_it_dies(
     assert _status(root)["state"] == "done"
     assert entries(root) == []
     assert len(popen.hooks()) == 1
+
+
+def test_adopt_continues_a_stopped_child(
+    root: Path, popen: _PopenSpy, killpg: list[tuple[int, int]]
+) -> None:
+    _running_entry_on_disk(root, pid=os.getpid())
+    lane, box = _lane(root)
+    box.local_credit(10.0)
+    lane.adopt()
+    assert killpg == [(os.getpid(), signal.SIGCONT)]
+    lane.tick(T0)  # the next tick re-applies the credit policy
+    assert killpg[-1] == (os.getpid(), signal.SIGSTOP)
 
 
 def test_stop_leaves_child_running(root: Path, popen: _PopenSpy) -> None:

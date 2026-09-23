@@ -322,6 +322,25 @@ def test_cancel_running_terminates_the_child_process_group(tmp_path: Path) -> No
             child.wait(timeout=10)
 
 
+def test_cancel_running_reaches_a_group_the_lane_paused(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session=True,
+    )
+    try:
+        os.killpg(child.pid, signal.SIGSTOP)
+        _write_status(store, JOB_A, "experiments", _running_status(child.pid))
+
+        heavy_lane.cancel_heavy_op(tmp_path, JOB_A, "experiments")
+
+        assert child.wait(timeout=10) == -signal.SIGTERM
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
+
+
 def test_cancel_reports_missing_and_finished_ops(tmp_path: Path) -> None:
     store = _store(tmp_path)
     assert heavy_lane.cancel_heavy_op(tmp_path, JOB_A, "experiments") == {

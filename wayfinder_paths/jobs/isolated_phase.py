@@ -20,6 +20,12 @@ from wayfinder_paths.runner.monitor_state import atomic_write_json
 GOVERNOR_STATE_PATH = Path("/tmp/wayfinder-burst-governor.json")
 HEAVY_OP_REGISTRY_DIR = Path("/tmp/wayfinder-heavy-ops")
 GOVERNOR_STATE_MAX_AGE_SECONDS = 10.0
+# runnerd's heavy lane writes this (same shape as the governor file) while it
+# may SIGSTOP the op's whole process group — this supervisor included.
+LANE_PAUSE_PATH = Path("/tmp/wayfinder-heavy-lane-pause.json")
+# The supervisor polls every ~1s; a longer gap means it was stopped with its
+# process group (or starved), and that gap is not active phase time.
+SUPERVISOR_STALL_SECONDS = 5.0
 HEARTBEAT_SECONDS = 60.0
 
 
@@ -56,6 +62,8 @@ def run_isolated_phase(
     )
     payload: dict[str, Any] | None = None
     paused = False
+    governor_paused = False
+    lane_paused = False
     paused_total_s = 0.0
     stale_pause_s = 0.0
     last_sample = time.monotonic()
@@ -64,21 +72,39 @@ def run_isolated_phase(
         while True:
             now = time.monotonic()
             elapsed = max(0.0, now - last_sample)
-            pause_state = _governor_pause_state(process.pid)
+            governor_state = _governor_pause_state(process.pid)
+            lane_state = _lane_pause_state(process.pid)
+            if lane_paused and lane_state is None:
+                # Only runnerd continues a lane-stopped group, so killing here
+                # would not help; the child is running again or runnerd is gone.
+                print(
+                    "evolution phase: heavy lane pause state went stale while "
+                    "paused; treating the child as running",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            lane_paused = lane_state is True
+            if not paused and elapsed > SUPERVISOR_STALL_SECONDS:
+                deadline += elapsed
+                paused_total_s += elapsed
             if paused:
                 deadline += elapsed
                 paused_total_s += elapsed
-                stale_pause_s = stale_pause_s + elapsed if pause_state is None else 0.0
-                if pause_state is False:
-                    paused = False
-                elif stale_pause_s > GOVERNOR_STATE_MAX_AGE_SECONDS:
+                if governor_paused and governor_state is None:
+                    stale_pause_s += elapsed
+                else:
+                    stale_pause_s = 0.0
+                    governor_paused = governor_state is True
+                if stale_pause_s > GOVERNOR_STATE_MAX_AGE_SECONDS:
                     _resume(process.pid)
                     _kill(process.pid)
                     raise TransientInfrastructureError(
                         "burst governor state went stale while evolution was paused"
                     )
-            elif pause_state is True:
+                paused = governor_paused or lane_paused
+            elif governor_state is True or lane_paused:
                 paused = True
+                governor_paused = governor_state is True
                 stale_pause_s = 0.0
             last_sample = now
             if now - last_heartbeat >= HEARTBEAT_SECONDS:
@@ -239,9 +265,19 @@ def _remove_registration(path: Path | None) -> None:
 
 def _governor_pause_state(pid: int | None) -> bool | None:
     """Return whether this exact child is paused; ``None`` means stale/absent."""
+    path = Path(os.environ.get("WAYFINDER_BURST_STATE_PATH", str(GOVERNOR_STATE_PATH)))
+    return _pause_file_state(path, pid)
+
+
+def _lane_pause_state(pid: int | None) -> bool | None:
+    """Same contract as the governor read, over runnerd's heavy-lane file."""
+    path = Path(os.environ.get("WAYFINDER_HEAVY_LANE_PAUSE_PATH", str(LANE_PAUSE_PATH)))
+    return _pause_file_state(path, pid)
+
+
+def _pause_file_state(path: Path, pid: int | None) -> bool | None:
     if not pid:
         return False
-    path = Path(os.environ.get("WAYFINDER_BURST_STATE_PATH", str(GOVERNOR_STATE_PATH)))
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
         age = max(0.0, time.time() - float(state["updated_at"]))

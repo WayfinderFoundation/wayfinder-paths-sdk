@@ -124,3 +124,95 @@ def test_stale_governor_cannot_strand_a_paused_child(
 
     with pytest.raises(TransientInfrastructureError, match="went stale"):
         run_isolated_phase(_sleeping_child, 5.0, timeout_s=10)
+
+
+def _write_pause_file(
+    path: Path, *, paused: bool, affected_pids: list[int], age_s: float = 0.0
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "paused": paused,
+                "affected_pids": affected_pids,
+                "updated_at": time.time() - age_s,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_lane_pause_state_reads_fresh_lane_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lane_file = tmp_path / "lane-pause.json"
+    monkeypatch.setenv("WAYFINDER_HEAVY_LANE_PAUSE_PATH", str(lane_file))
+    assert isolated_phase._lane_pause_state(321) is None
+    _write_pause_file(lane_file, paused=True, affected_pids=[320, 321])
+    assert isolated_phase._lane_pause_state(321) is True
+    assert isolated_phase._lane_pause_state(322) is False
+    _write_pause_file(lane_file, paused=False, affected_pids=[321])
+    assert isolated_phase._lane_pause_state(321) is False
+    _write_pause_file(lane_file, paused=True, affected_pids=[321], age_s=11)
+    assert isolated_phase._lane_pause_state(321) is None
+
+
+def test_lane_pause_time_does_not_consume_phase_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if "fork" not in multiprocessing.get_all_start_methods():
+        pytest.skip("pause supervision requires fork")
+    started = time.monotonic()
+    monkeypatch.setattr(isolated_phase, "_governor_pause_state", lambda _pid: None)
+    monkeypatch.setattr(
+        isolated_phase,
+        "_lane_pause_state",
+        lambda _pid: time.monotonic() - started < 1.2,
+    )
+
+    result = run_isolated_phase(_sleeping_child, 1.4, timeout_s=0.5)
+
+    assert result == {"complete": True}
+
+
+def test_stale_lane_pause_resumes_instead_of_killing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if "fork" not in multiprocessing.get_all_start_methods():
+        pytest.skip("pause supervision requires fork")
+    calls = 0
+
+    def pause_then_stale(_pid: int | None) -> bool | None:
+        nonlocal calls
+        calls += 1
+        return True if calls == 1 else None
+
+    monkeypatch.setattr(isolated_phase, "_governor_pause_state", lambda _pid: None)
+    monkeypatch.setattr(isolated_phase, "_lane_pause_state", pause_then_stale)
+    monkeypatch.setattr(isolated_phase, "GOVERNOR_STATE_MAX_AGE_SECONDS", 0.1)
+
+    result = run_isolated_phase(_sleeping_child, 1.5, timeout_s=10)
+
+    assert result == {"complete": True}
+
+
+def test_stopped_supervisor_gap_does_not_consume_phase_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if "fork" not in multiprocessing.get_all_start_methods():
+        pytest.skip("pause supervision requires fork")
+    monkeypatch.setattr(isolated_phase, "SUPERVISOR_STALL_SECONDS", 0.5)
+    real_monotonic = time.monotonic
+    jumps = iter([0.0, 0.0, 60.0])
+    offset = 0.0
+
+    def jumping_monotonic() -> float:
+        # One 60s jump, as if runnerd stopped this supervisor with its group.
+        nonlocal offset
+        offset += next(jumps, 0.0)
+        return real_monotonic() + offset
+
+    monkeypatch.setattr(isolated_phase.time, "monotonic", jumping_monotonic)
+
+    result = run_isolated_phase(_sleeping_child, 1.5, timeout_s=30)
+
+    assert result == {"complete": True}

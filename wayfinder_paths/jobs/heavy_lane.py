@@ -329,6 +329,9 @@ def cancel_heavy_op(repo_root: Path, job_id: str, op: str) -> dict[str, Any]:
                 # The child is a session leader (start_new_session), so its
                 # pid is its process group: the pool workers die with it.
                 os.killpg(pid, signal.SIGTERM)
+                # A group the lane paused for low credit cannot act on the
+                # SIGTERM until it runs again.
+                os.killpg(pid, signal.SIGCONT)
             except ProcessLookupError:
                 return {"cancelled": False, "error": "already_finished"}
             return {
