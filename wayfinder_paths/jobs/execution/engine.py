@@ -1217,7 +1217,10 @@ async def sync_native_protection(
                     "kind": "native_protection_canceled"
                     if canceled.confirmed
                     else "native_protection_cancel_unconfirmed",
-                    "halt_required": not canceled.confirmed,
+                    # A closed position's stop that the venue already dropped
+                    # reads as unconfirmed; the protection monitor reconciles
+                    # it against venue orders next tick instead of halting.
+                    "halt_required": False,
                     **canceled.to_dict(),
                 }
             )

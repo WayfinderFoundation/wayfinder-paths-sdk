@@ -318,7 +318,9 @@ async def test_protection_monitor_bounds_close_to_job_ledger_size() -> None:
     assert "SNX" not in state.ledger.positions
 
 
-async def test_protection_monitor_skips_close_without_ledger_position() -> None:
+async def test_protection_monitor_releases_a_stop_the_flat_job_no_longer_has() -> None:
+    # Shared wallet: another owner holds SNX, this job's ledger is flat and
+    # its stop is gone. Nothing of ours to protect or close: release, no halt.
     state = EngineState(mode="live")
     state.native_protections["SNX"] = {
         "venue": "hyperliquid",
@@ -337,12 +339,66 @@ async def test_protection_monitor_skips_close_without_ledger_position() -> None:
         now=pd.Timestamp("2026-01-01T00:05:00Z"),
     )
 
-    assert halt_reason == "owned native stop missing for SNX"
+    assert halt_reason is None
     assert fills == [] and broker.placed == []
-    skip_notes = [
-        note for note in notes if note["kind"] == "native_protection_close_skipped"
-    ]
-    assert skip_notes and skip_notes[0]["symbol"] == "SNX"
+    assert "SNX" not in state.native_protections
+    assert [note["kind"] for note in notes] == ["native_protection_released"]
+
+
+async def test_strategy_close_whose_stop_the_venue_dropped_does_not_halt() -> None:
+    # majors-5m-lab 2026-09-23: a time_exit closed XRP, the venue dropped the
+    # reduce-only stop with the position, the cancel read unconfirmed, and the
+    # next tick halted on "owned native stop missing for XRP".
+    state = EngineState(mode="live")
+    state.native_protections["XRP"] = {
+        "venue": "hyperliquid",
+        "client_order_id": "stop-XRP",
+        "symbol": "XRP",
+        "side": "long",
+        "size": 43.0,
+    }
+    broker = FakeNativeLiveBroker()
+
+    notes, fills, _, halt_reason = await monitor_native_protection(
+        mode="live",
+        state=state,
+        brokers={"hyperliquid": broker},
+        venue_states={"hyperliquid": VenueState(positions={}, open_orders=[])},
+        now=pd.Timestamp("2026-09-23T16:45:00Z"),
+    )
+
+    assert halt_reason is None and fills == []
+    assert state.native_protections == {}
+    assert notes[0]["kind"] == "native_protection_released"
+
+
+async def test_flat_job_cancels_its_stop_still_resting_on_the_venue() -> None:
+    state = EngineState(mode="live")
+    state.native_protections["XRP"] = {
+        "venue": "hyperliquid",
+        "client_order_id": "stop-XRP",
+    }
+    canceled: list[dict[str, Any]] = []
+
+    class RecordingBroker(FakeNativeLiveBroker):
+        async def cancel_stop_loss(self, **kwargs: Any) -> NativeProtectionResult:
+            canceled.append(kwargs)
+            return await super().cancel_stop_loss(**kwargs)
+
+    notes, _, _, halt_reason = await monitor_native_protection(
+        mode="live",
+        state=state,
+        brokers={"hyperliquid": RecordingBroker()},
+        venue_states={
+            "hyperliquid": VenueState(positions={}, open_orders=[{"cloid": "stop-XRP"}])
+        },
+        now=pd.Timestamp("2026-09-23T16:45:00Z"),
+    )
+
+    assert halt_reason is None
+    assert canceled == [{"symbol": "XRP", "client_order_id": "stop-XRP"}]
+    assert state.native_protections == {}
+    assert notes[0]["kind"] == "native_protection_released"
 
 
 async def test_group_loss_budget_scoped_to_job_ledger_exposure() -> None:

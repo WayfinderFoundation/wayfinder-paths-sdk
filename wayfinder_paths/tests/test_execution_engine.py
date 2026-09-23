@@ -21,7 +21,11 @@ from wayfinder_paths.jobs.execution import (
     VenueState,
     run_tick,
 )
-from wayfinder_paths.jobs.execution.engine import resolve_fill_bracket
+from wayfinder_paths.jobs.execution.engine import (
+    TickResult,
+    resolve_fill_bracket,
+    sync_native_protection,
+)
 from wayfinder_paths.jobs.execution.primitives import PositionRecord
 from wayfinder_paths.jobs.execution.venues import MarketEvent
 
@@ -1590,3 +1594,37 @@ def test_zero_take_profit_pct_means_no_take_profit() -> None:
         {"take_profit_pct": 0.04}, "short", 100.0, "hyperliquid", "c1"
     )
     assert armed["take_profit"] == 96.0
+
+
+async def test_unconfirmed_cancel_after_a_close_leaves_it_to_the_monitor() -> None:
+    # A venue drops a reduce-only stop with its position, so the cancel at
+    # close reads unconfirmed; the monitor reconciles against venue orders.
+    broker = FakeNativeBroker(cancel_confirm=False)
+    state = EngineState(mode="live")
+    state.brackets["SNX"] = {
+        "stop_loss": 9.5,
+        "native_required": True,
+        "venue": "hyperliquid",
+    }
+    state.native_protections["SNX"] = {
+        "venue": "hyperliquid",
+        "client_order_id": "0x00000000000000000000000000000001",
+        "generation": 1,
+        "size": 1.0,
+    }
+    result = TickResult()
+
+    await sync_native_protection(
+        brokers={"hyperliquid": broker},
+        state=state,
+        symbol="SNX",
+        venue="hyperliquid",
+        result=result,
+    )
+
+    event = next(
+        item
+        for item in result.guard_events
+        if item["kind"] == "native_protection_cancel_unconfirmed"
+    )
+    assert event["halt_required"] is False
