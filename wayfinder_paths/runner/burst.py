@@ -25,6 +25,9 @@ MAX_BALANCE_CPU_S_PER_VCPU = 500.0
 GOVERNOR_STATE_PATH = Path("/tmp/wayfinder-burst-governor.json")
 CPU_BUDGET_ANCHOR_PATH = Path("/tmp/wayfinder-fly-cpu-anchor.json")
 GOVERNOR_STATE_MAX_AGE_SECONDS = 10.0
+# The backend relays Fly telemetry on each jobs sync (~every few minutes).
+# An older anchor says less about the bucket than the local integrator does.
+CPU_BUDGET_ANCHOR_MAX_AGE_SECONDS = 600.0
 
 
 def _read_busy_jiffies() -> int | None:
@@ -103,6 +106,12 @@ class BurstEstimator:
     def over_quota(self) -> bool:
         return self._enabled and self._balance < self._low_water
 
+    def recalibrate(self, balance_cpu_s: float) -> None:
+        """Replace the integrated guess with a measured balance. The integrator
+        starts near empty after every restart and refills at the baseline rate,
+        so without this a box with a full bucket reads as drained for ~an hour."""
+        self._balance = min(self._cap, max(0.0, float(balance_cpu_s)))
+
 
 def write_cpu_budget_anchor(
     payload: Any,
@@ -161,11 +170,26 @@ class BurstBudget:
         fallback: BurstEstimator,
         *,
         state_path: Path = GOVERNOR_STATE_PATH,
+        anchor_path: Path = CPU_BUDGET_ANCHOR_PATH,
         wall_clock: Callable[[], float] = time.time,
     ) -> None:
         self._fallback = fallback
         self._state_path = state_path
+        self._anchor_path = anchor_path
         self._wall_clock = wall_clock
+        self._applied_anchor_at: float | None = None
+
+    def _fresh_anchor(self) -> dict[str, Any] | None:
+        try:
+            anchor = json.loads(self._anchor_path.read_text(encoding="utf-8"))
+            observed = datetime.fromisoformat(str(anchor["observed_at"])).timestamp()
+            balance = float(anchor["balance_cpu_seconds"])
+        except (OSError, KeyError, TypeError, ValueError):
+            return None
+        age = self._wall_clock() - observed
+        if not math.isfinite(balance) or age > CPU_BUDGET_ANCHOR_MAX_AGE_SECONDS:
+            return None
+        return {"observed_at": observed, "balance": balance, "age": max(0.0, age)}
 
     def _state(self) -> tuple[dict[str, Any], float] | None:
         try:
@@ -197,8 +221,13 @@ class BurstBudget:
         return self._governor_balance(state, capacity)
 
     def update(self) -> None:
-        if self._state() is None:
-            self._fallback.update()
+        if self._state() is not None:
+            return
+        self._fallback.update()
+        anchor = self._fresh_anchor()
+        if anchor is not None and anchor["observed_at"] != self._applied_anchor_at:
+            self._fallback.recalibrate(anchor["balance"])
+            self._applied_anchor_at = anchor["observed_at"]
 
     def over_quota(self) -> bool:
         current = self._state()
@@ -211,8 +240,10 @@ class BurstBudget:
         current = self._state()
         if current is None:
             capacity = self._fallback.capacity
+            anchor = self._fresh_anchor()
             return {
                 "source": "local_estimator" if self._fallback.enabled else "disabled",
+                "anchor_age_seconds": round(anchor["age"], 1) if anchor else None,
                 "balance_cpu_seconds": round(self._fallback.balance, 3),
                 "capacity_cpu_seconds": capacity,
                 "balance_pct": round(self._fallback.balance / capacity * 100, 2)

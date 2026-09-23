@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 import wayfinder_paths.runner.burst as burst_mod
 from wayfinder_paths.runner.burst import (
     BurstBudget,
@@ -260,3 +262,74 @@ def test_scheduled_agent_wake_deferred_not_skipped_under_drain(tmp_path, monkeyp
     assert calls["advanced"] is None  # stays due — deferred, not dropped
     assert calls["reserved"] == 0
     assert 7 in daemon._postponed_since  # floor clock started
+
+
+def _anchor(path, *, balance: float, observed_at: str) -> None:
+    path.write_text(
+        json.dumps({"balance_cpu_seconds": balance, "observed_at": observed_at}),
+        encoding="utf-8",
+    )
+
+
+def test_fresh_anchor_recalibrates_a_just_restarted_estimator(tmp_path, monkeypatch):
+    monkeypatch.setattr(burst_mod, "_read_busy_jiffies", lambda: 0)
+    fallback = BurstEstimator(
+        cap_cpu_s=2000.0, low_water_cpu_s=700.0, initial_balance_cpu_s=20.0
+    )
+    anchor_path = tmp_path / "anchor.json"
+    _anchor(anchor_path, balance=1996.8, observed_at="2026-09-23T13:32:06+00:00")
+    now = 1790170326.0 + 60  # a minute after the observation
+    budget = BurstBudget(
+        fallback,
+        state_path=tmp_path / "absent.json",
+        anchor_path=anchor_path,
+        wall_clock=lambda: now,
+    )
+    assert budget.over_quota() is True
+
+    budget.update()
+
+    assert budget.balance == 1996.8
+    assert budget.over_quota() is False
+    assert budget.snapshot()["anchor_age_seconds"] is not None
+
+
+def test_same_anchor_is_applied_once_so_local_burn_still_counts(tmp_path, monkeypatch):
+    monkeypatch.setattr(burst_mod, "_read_busy_jiffies", lambda: 0)
+    fallback = BurstEstimator(
+        cap_cpu_s=2000.0, low_water_cpu_s=700.0, initial_balance_cpu_s=20.0
+    )
+    anchor_path = tmp_path / "anchor.json"
+    _anchor(anchor_path, balance=1500.0, observed_at="2026-09-23T13:32:06+00:00")
+    budget = BurstBudget(
+        fallback,
+        state_path=tmp_path / "absent.json",
+        anchor_path=anchor_path,
+        wall_clock=lambda: 1790170326.0,
+    )
+    budget.update()
+    fallback.recalibrate(400.0)  # stands in for local burn after the anchor
+
+    budget.update()
+
+    assert budget.balance == pytest.approx(400.0, abs=0.01)
+
+
+def test_stale_anchor_is_ignored(tmp_path, monkeypatch):
+    monkeypatch.setattr(burst_mod, "_read_busy_jiffies", lambda: 0)
+    fallback = BurstEstimator(
+        cap_cpu_s=2000.0, low_water_cpu_s=700.0, initial_balance_cpu_s=20.0
+    )
+    anchor_path = tmp_path / "anchor.json"
+    _anchor(anchor_path, balance=1996.8, observed_at="2026-09-23T12:00:00+00:00")
+    budget = BurstBudget(
+        fallback,
+        state_path=tmp_path / "absent.json",
+        anchor_path=anchor_path,
+        wall_clock=lambda: 1790170326.0,
+    )
+
+    budget.update()
+
+    assert budget.balance == pytest.approx(20.0, abs=0.01)
+    assert budget.snapshot()["anchor_age_seconds"] is None
