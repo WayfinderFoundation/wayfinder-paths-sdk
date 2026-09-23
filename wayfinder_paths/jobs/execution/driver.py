@@ -172,16 +172,18 @@ def _tick_trigger_events(payload: dict[str, Any]) -> list[str]:
     snapshot = payload.get("snapshot") or {}
     if snapshot.get("status") == "ambiguous":
         events.append("reconcile_mismatch")
-    guard_kinds = {
-        str(event.get("kind")) for event in payload.get("guard_events") or []
-    }
+    guard_events = payload.get("guard_events") or []
+    guard_kinds = {str(event.get("kind")) for event in guard_events}
+    # An unconfirmed stop cancel after a close is routine (the venue drops a
+    # reduce-only stop with its position) and halts nothing; only guard
+    # events that actually halt the job may email the owner and wake the
+    # agent as a risk halt.
     if guard_kinds & {
         "risk_halt",
         "manual_halt",
         "native_protection_failed",
         "native_protection_breach",
-        "native_protection_cancel_unconfirmed",
-    }:
+    } or any(event.get("halt_required") for event in guard_events):
         events.append("risk_halt")
     if "mode_divergence" in guard_kinds:
         # Declared vs executed mode disagree — wake the advisor to reconcile
