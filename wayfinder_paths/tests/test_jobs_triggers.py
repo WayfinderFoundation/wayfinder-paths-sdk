@@ -209,3 +209,21 @@ def test_background_op_finished_wakes_without_configured_trigger(
     assert fired["triggers"] == ["background_op_finished"]
     assert wakes[0]["wake_source"] == "heavy_lane"
     assert wakes[0]["wake_triggers"] == ["background_op_finished"]
+
+
+def test_unconfirmed_stop_cancel_triggers_a_halt_only_when_it_halts() -> None:
+    # After a close the venue drops the reduce-only stop, the cancel reads
+    # unconfirmed and nothing halts: no risk_halt email or agent wake
+    # (majors-5m-lab, 2026-09-23 21:05).
+    after_close = {
+        "kind": "native_protection_cancel_unconfirmed",
+        "symbol": "XRP",
+        "halt_required": False,
+    }
+    assert _tick_trigger_events({"ok": True, "guard_events": [after_close]}) == []
+    # Replacing a held position's stop without confirming the old one's
+    # cancel does halt.
+    on_replace = {**after_close, "halt_required": True}
+    assert _tick_trigger_events({"ok": True, "guard_events": [on_replace]}) == [
+        "risk_halt"
+    ]
