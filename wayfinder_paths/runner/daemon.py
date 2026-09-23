@@ -37,6 +37,7 @@ from wayfinder_paths.runner.constants import (
 )
 from wayfinder_paths.runner.control import RunnerControlServer
 from wayfinder_paths.runner.db import RunnerDB
+from wayfinder_paths.runner.heavy_lane import HeavyLane
 from wayfinder_paths.runner.paths import RunnerPaths
 from wayfinder_paths.runner.schedule import (
     SCHEDULE_KIND_CRON,
@@ -473,6 +474,21 @@ class RunnerDaemon:
         self._shutdown = threading.Event()
         self._running: dict[int, RunningProcess] = {}
         self._running_by_job: dict[int, int] = {}
+        # One heavy op at a time, admitted only when the box can afford it.
+        # Same gate as burst admission: the lane exists only where runnerd
+        # runs beside live ticks on a shared-cpu box.
+        self._heavy_lane = (
+            HeavyLane(
+                paths.repo_root,
+                burst_over_quota=lambda: self._burst is not None
+                and self._burst.over_quota(),
+                running_job_ids=lambda: {rp.job_id for rp in self._running.values()},
+                list_jobs=self._db.list_jobs,
+                tier_of=_burst_postpone_tier,
+            )
+            if is_opencode_instance()
+            else None
+        )
 
         self._control = None
         self._view_server: Any | None = None
@@ -525,6 +541,8 @@ class RunnerDaemon:
         aborted = self._db.mark_stale_running_runs_aborted(note="runner restarted")
         if aborted:
             logger.warning(f"Marked {aborted} stale RUNNING runs as ABORTED")
+        if self._heavy_lane is not None:
+            self._heavy_lane.adopt()
 
         self._control = RunnerControlServer(
             sock_path=self._paths.sock_path, daemon=self
@@ -610,6 +628,10 @@ class RunnerDaemon:
             self._reap(now=now)
             for job in self._db.due_jobs(now=now):
                 self._maybe_start_job(job=job, now=now, reason="schedule")
+            # After the due-jobs loop so a live tick due this second is
+            # already in _running when the lane checks admission.
+            if self._heavy_lane is not None:
+                self._heavy_lane.tick(now)
         except Exception:  # noqa: BLE001
             logger.exception("Runner tick error")
 
@@ -1296,6 +1318,9 @@ class RunnerDaemon:
                 "max_rss_mb": self._max_rss_mb,
                 "burst_budget": self._burst.snapshot()
                 if self._burst is not None
+                else {"source": "disabled"},
+                "heavy_lane": self._heavy_lane.snapshot()
+                if self._heavy_lane is not None
                 else {"source": "disabled"},
                 "jobs": self._db.list_jobs(),
                 "recent_runs": self._db.last_runs(limit=20),

@@ -457,6 +457,13 @@ closed before exit telemetry existed; `unlabeled` means the strategy closed
 without saying why. Neither says whether a stop fired — report them as unknown,
 never as "no stop ever triggered".
 
+Heavy research ops (`backtest_job`, `experiments`, `robustness_check`, `signal_scan`,
+`holdout_check`, `rank_check`, `forward_experience`) queue behind the live trading loop:
+the call returns `queued` with a position and what is ahead, one heavy op runs on the box
+at a time, and you are prompted in this session when yours finishes. Never poll
+`op_status` faster than every 60 s and never wrap a run in a timeout;
+`core_jobs(action="op_cancel", ...)` withdraws one you no longer need.
+
 ```text
 core_jobs(action="create", job_id="basis-update", name="Basis Update", script="basis_update.py", interval_seconds=600, agent_mode="off")
 # create returns script_entrypoint (.wayfinder/jobs/<id>/workspace/src/<file>.py) — write the strategy module THERE
@@ -473,6 +480,7 @@ core_jobs(action="probation_cancel", job_id="<job_id>", trial_id="<trial_id>", r
 core_jobs(action="probation_promote_early", job_id="<job_id>", trial_id="<trial_id>", reason="<why>")  # lands as a proposal the owner approves
 core_jobs(action="halt", job_id="<job_id>", reason="<why>")
 core_jobs(action="resume_from_halt", job_id="<job_id>")
+core_jobs(action="op_cancel", job_id="<job_id>", op="experiments")  # withdraw a queued heavy op, or stop a running one
 core_jobs(action="remove", job_id="<job_id>")  # deletes the loops, archives the job to .wayfinder/jobs_archived/; refused while live or funded (go paper + withdraw first); undo: CLI `wayfinder job restore <job_id>`
 ```
 

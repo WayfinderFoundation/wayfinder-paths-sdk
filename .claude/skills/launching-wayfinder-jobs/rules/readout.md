@@ -8,6 +8,6 @@
 
 For freestyle and path jobs the readout carries `performance_claim: null` and the fixed sentence "no backtest exists for this script; nothing here is a performance claim". Read that sentence, then show what the dry run did (`evidence.action_ledger_preview`: symbol, venue, filled/refused and why). A path component without a paper mode says so in `reasons`.
 
-`refresh=true` on a harnessed job starts the backtest, the walk-forward holdout (last ~15% of bars as the test window) and the robustness check as detached ops; the readout returns `pending` with `pending_ops` until they finish (`op_status` polls). Never launch live while ops are pending.
+`refresh=true` on a harnessed job submits the backtest, the walk-forward holdout (last ~15% of bars as the test window) and the robustness check as heavy ops; on a hosted box they queue behind the live trading loop and run one at a time. The readout returns `pending` with `pending_ops` — queued and running ops alike — until they finish; you are prompted when each one does, and `op_status` (no faster than every 60 s) shows the queue position or progress. Never launch live while ops are pending.
 
 Never name an infrastructure or data provider in the readout. Never say "backtested" about a freestyle script or a Path.

@@ -382,10 +382,12 @@ def default_holdout_bars(
 
 
 def _pending_ops(root: Path) -> list[str]:
+    """Ops still owed to the readout: live detached children by name, and
+    heavy-lane submissions that have not started yet as `<op> (queued)`."""
     ops_dir = root / "state" / "background_ops"
     if not ops_dir.is_dir():
         return []
-    running: list[str] = []
+    pending: list[str] = []
     for path in sorted(ops_dir.glob("*.json")):
         if path.name.endswith(".result.json"):
             continue
@@ -393,13 +395,14 @@ def _pending_ops(root: Path) -> list[str]:
             status = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if (
-            isinstance(status, dict)
-            and status.get("state") == "running"
-            and recorded_process_alive(status)
-        ):
-            running.append(path.stem)
-    return running
+        if not isinstance(status, dict):
+            continue
+        state = status.get("state")
+        if state == "running" and recorded_process_alive(status):
+            pending.append(path.stem)
+        elif state == "queued":
+            pending.append(f"{path.stem} (queued)")
+    return pending
 
 
 def _float(value: Any) -> float | None:

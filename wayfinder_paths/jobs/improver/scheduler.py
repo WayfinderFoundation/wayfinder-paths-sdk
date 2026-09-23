@@ -218,10 +218,11 @@ def assign_island(
 
 
 def _continuation_ops(root: Path, *, now: datetime | None) -> list[str]:
-    """Op names with an in-flight or recently-completed-but-unharvested
+    """Op names with a queued, in-flight or recently-completed-but-unharvested
     background op (state/background_ops/<op>.json, written by the MCP
-    detached-op launcher). A running op with a dead pid is a stale marker
-    from a killed run — it must not pin the rotation forever."""
+    detached-op launcher or the heavy lane). A running op with a dead pid is
+    a stale marker from a killed run — it must not pin the rotation forever.
+    A queued op has no pid yet; the lane owns its lifetime."""
     ops_dir = root / "state" / "background_ops"
     if not ops_dir.exists():
         return []
@@ -240,6 +241,9 @@ def _continuation_ops(root: Path, *, now: datetime | None) -> list[str]:
         if op_name == "candidate_shadows" or op_name.startswith("evolution_"):
             continue
         state = str(doc.get("state") or "")
+        if state == "queued":
+            ops.append(op_name)
+            continue
         if state == "running":
             pid = doc.get("pid")
             if isinstance(pid, int) and pid > 0 and not _pid_alive(pid):

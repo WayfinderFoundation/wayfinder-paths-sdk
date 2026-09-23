@@ -887,15 +887,16 @@ def available_cpu_count() -> int:
 
 
 def _effective_workers(workers: int, parallel: str) -> int:
-    """Clamp requested workers so a parameter sweep uses the box's cores fully
-    but never oversubscribes them — the difference between "at CPU" and the
-    thrash/peg of "out of CPU" on a small shared-vCPU machine. `workers <= 0`
-    means "use all available cores"."""
+    """Clamp requested workers so a parameter sweep never oversubscribes the
+    box's cores — the difference between "at CPU" and the thrash/peg of "out
+    of CPU" on a small shared-vCPU machine. `workers <= 0` means "every core
+    but one": the sweep shares the box with the live tick, and a sweep on all
+    cores starves it."""
     if parallel == "serial":
         return 1
     cap = available_cpu_count()
     if workers <= 0:
-        return cap
+        return max(1, cap - 1)
     return max(1, min(workers, cap))
 
 

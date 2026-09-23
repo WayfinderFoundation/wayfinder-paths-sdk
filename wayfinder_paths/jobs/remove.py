@@ -197,8 +197,23 @@ def _refuse_while_background_op_running(store: JobStore, job_id: str) -> None:
         if op_running(job_dir, status_path.stem):
             raise ValueError(
                 "cannot remove: a background operation is still running "
-                f"({status_path.stem}) — wait for it (op_status) and retry"
+                f"({status_path.stem}) — wait for it (op_status) or cancel it "
+                '(core_jobs(action="op_cancel")) and retry'
             )
+        if _op_queued(status_path):
+            raise ValueError(
+                "cannot remove: a background operation is still queued "
+                f"({status_path.stem}) in the heavy lane — cancel it "
+                '(core_jobs(action="op_cancel")) or wait for it (op_status) and retry'
+            )
+
+
+def _op_queued(status_path: Path) -> bool:
+    try:
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(status, dict) and status.get("state") == "queued"
 
 
 def _delete_runner_loops(store: JobStore, job: WayfinderJob) -> list[dict[str, Any]]:

@@ -280,8 +280,13 @@ def test_effective_workers_never_oversubscribes(monkeypatch) -> None:
     monkeypatch.setattr(sim, "available_cpu_count", lambda: 2)
     assert sim._effective_workers(8, "process") == 2  # clamped to cores
     assert sim._effective_workers(1, "process") == 1
-    assert sim._effective_workers(0, "process") == 2  # 0 => all cores
+    assert sim._effective_workers(0, "process") == 1  # 0 => all cores but one
     assert sim._effective_workers(8, "serial") == 1  # serial is always 1
+    monkeypatch.setattr(sim, "available_cpu_count", lambda: 4)
+    assert sim._effective_workers(0, "process") == 3  # one core stays free
+    assert sim._effective_workers(4, "process") == 4  # explicit ask keeps the cap
+    monkeypatch.setattr(sim, "available_cpu_count", lambda: 1)
+    assert sim._effective_workers(0, "process") == 1  # never below one worker
 
 
 def test_quick_bars_truncates_to_last_n() -> None:

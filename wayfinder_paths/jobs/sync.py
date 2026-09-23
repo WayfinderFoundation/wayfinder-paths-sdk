@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 from datetime import UTC, datetime
 from typing import Any
 
@@ -566,36 +568,37 @@ MAX_OPERATOR_LEVERAGE = 25.0
 
 def _gate_with_restamp(job_id: str, store: JobStore) -> dict[str, Any]:
     """Live gate + pending-not-red context: while a detached restamp is
-    running the gate is transiently red by construction — surface that so
-    UIs and wake agents render 'refreshing' instead of alarming. The
+    queued or running the gate is transiently red by construction — surface
+    that so UIs and wake agents render 'refreshing' instead of alarming. The
     authoritative live_ready stays strict."""
     from wayfinder_paths.jobs.contracts import evaluate_live_readiness
 
     # Freestyle and path jobs answer through the launch checklist; jobs_v1
     # keeps evaluate_live_gate. The backend reads this as job.live_gate.
     gate = evaluate_live_readiness(job_id, store=store)
+    status_path = store.job_dir(job_id) / "state" / "background_ops" / "restamp.json"
     try:
-        import json as _json
-        import os
-
-        status_path = (
-            store.job_dir(job_id) / "state" / "background_ops" / "restamp.json"
-        )
-        status = _json.loads(status_path.read_text(encoding="utf-8"))
-        pid = status.get("pid")
-        alive = False
-        if isinstance(pid, int) and pid > 0:
-            try:
-                os.kill(pid, 0)
-                alive = True
-            except OSError:
-                alive = False
-        if status.get("state") == "running" and alive:
-            gate["restamp_in_progress"] = True
-            gate["restamp_started_at"] = status.get("started_at")
+        status = json.loads(status_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        pass
+        return gate
+    if not isinstance(status, dict):
+        return gate
+    state = status.get("state")
+    if state == "queued" or (state == "running" and _pid_alive(status.get("pid"))):
+        gate["restamp_in_progress"] = True
+        gate["restamp_started_at"] = status.get("started_at")
+        gate["restamp_state"] = state
     return gate
+
+
+def _pid_alive(pid: Any) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 def apply_execution_leverage(

@@ -27,7 +27,11 @@ from textwrap import dedent
 from typing import Any, TypedDict
 
 from wayfinder_paths.jobs.application import complete_application
-from wayfinder_paths.jobs.failures import classify_failure, cpu_steal_pct
+from wayfinder_paths.jobs.failures import (
+    HEAVY_STEAL_THRESHOLD_PCT,
+    classify_failure,
+    cpu_steal_pct,
+)
 from wayfinder_paths.jobs.lifecycle import lifecycle_sweep
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
@@ -684,7 +688,7 @@ _GATE_RESTAMP_MARKER = "state/gate_restamp.json"
 # heavy-compute lock 45-60 minutes — starving everything else for a repair
 # that is merely housekeeping. Deferral is safe-closed: the gate stays red a
 # little longer; the next 5-minute pass retries when the box breathes again.
-RESTAMP_STEAL_THRESHOLD_PCT = 60.0
+RESTAMP_STEAL_THRESHOLD_PCT = HEAVY_STEAL_THRESHOLD_PCT
 
 
 def _recover_stale_gate(
