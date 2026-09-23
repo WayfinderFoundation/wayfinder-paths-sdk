@@ -108,6 +108,7 @@ from wayfinder_paths.jobs.execution.simulator import (
 )
 from wayfinder_paths.jobs.execution.validation import (
     BOUNDED_WINDOW_HINT,
+    candidate_validation_passed,
     parameter_behavior_probe,
     resolve_execution_spec,
     sequence_preview,
@@ -3957,7 +3958,7 @@ def submit_research_seed(
             "research seed base revision is stale; rebase it on the current job"
         )
     validation = validate_execution_job(job_id, candidate_dir=source, store=store)
-    if not _candidate_validation_passed(validation):
+    if not candidate_validation_passed(validation):
         raise ValueError("research seed does not satisfy the executable job contract")
     revision = compute_workspace_revision(source)
     if revision == current_revision:
@@ -4514,7 +4515,7 @@ def _evaluate_candidate(
         return _rejected_submission(
             str(contract.get("hint") or contract.get("error") or contract.get("name"))
         )
-    if not _candidate_validation_passed(report):
+    if not candidate_validation_passed(report):
         return {"status": "invalid", "evidence": {"validation": report}}
     revision = compute_workspace_revision(candidate_root)
     manifest = (
@@ -9453,20 +9454,6 @@ _CONTRACT_CHECKS = frozenset(
         "undeclared_feature_read",
     }
 )
-
-
-def _candidate_validation_passed(report: dict[str, Any]) -> bool:
-    """Ignore only deployment artifacts that an isolated bundle cannot own."""
-    research_only = {
-        "declared_features_available",
-        "preflight_report_present",
-        "preflight_passed",
-        "wallet_label_declared",
-    }
-    return not any(
-        not check.get("passed") and check.get("name") not in research_only
-        for check in report.get("checks") or []
-    )
 
 
 def _freeze_parent_pool(

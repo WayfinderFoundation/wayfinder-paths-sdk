@@ -5,10 +5,13 @@ Behavior mapping onto the jobs_v1 engine:
 
 - NewLow5 entry, post-exit re-arm (no new short until a LATER bar closes
   above SMA20), and Min-hold gating are identical to prod.
-- The 7% adverse stop is expressed ONLY as a bracket stop_loss: the engine
-  emulates it intrabar on OHLC highs (ohlc_rules.use_high_low_for_stops),
-  which is equivalent to prod's native Hyperliquid stop order — no duplicate
-  close-based stop check here.
+- The 7% adverse stop is expressed ONLY as a bracket stop_loss. In backtest
+  and paper the engine emulates it once per tick against the completed bar's
+  OHLC highs (ohlc_rules.use_high_low_for_stops); bars skipped between ticks
+  are never examined. Live, the engine installs venue-side protection for
+  the fill (bracket `native_required`, on by default for live perps) and the
+  venue watches mark price continuously — no duplicate close-based stop
+  check here.
 - bars_since_entry = position.bars_held + 1 restores prod's completed-candle
   counting under the engine's next-bar-open fill model: the Min-2 gate
   unlocks at the close of entry+2 in both systems.

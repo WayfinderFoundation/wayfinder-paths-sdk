@@ -16,6 +16,7 @@ from typing import Any
 import yaml
 from croniter import croniter
 
+from wayfinder_paths.core.strategies.risk_limits import RiskLimits
 from wayfinder_paths.jobs.execution.features import (
     apply_precompute,
     load_feature_rows,
@@ -51,6 +52,11 @@ MANUAL_STATE_CLEAR_PATTERNS = (
     "'in_position': False",
     "position = None",
 )
+# The drawdown budget a job is measured against when it pins none, and the
+# share of it one stop-out may consume: a budget two stops exhaust halts the
+# job on an ordinary losing streak.
+DEFAULT_DRAWDOWN_BUDGET = 0.10
+STOP_EQUITY_BUDGET_SHARE = 0.5
 
 
 def validate_execution_trace(
@@ -231,6 +237,7 @@ def validate_execution_job(
         }
     )
     checks.append(entrypoint_inside_workspace_check(root, script_path))
+    checks.extend(_stop_equity_checks(root, job_data))
     if script_path and script_path.exists():
         checks.extend(_script_static_checks(script_path, spec))
         try:
@@ -1623,6 +1630,54 @@ def _script_static_checks(
     return checks
 
 
+def _stop_equity_checks(
+    root: Path, job_data: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """A price stop is a leverage-multiplied equity stop: 3% at 3x is 9% of
+    equity per stop-out, which one live job paid in a single tick. Reads the
+    stop width the params declare (stop_pct, or a starter's stop_max_pct);
+    a strategy that derives its stop elsewhere is not checked here."""
+    params = dict(job_data.get("execution_params") or {})
+    stop_pct = params.get("stop_pct")
+    if stop_pct is None:
+        stop_pct = params.get("stop_max_pct")
+    if stop_pct is None:
+        return []
+    leverage = float(params.get("leverage") or 1.0)
+    equity_at_risk = leverage * float(stop_pct)
+    limits = RiskLimits.load_optional(root / "workspace")
+    drawdown_budget = DEFAULT_DRAWDOWN_BUDGET
+    if limits is not None and limits.max_drawdown is not None:
+        drawdown_budget = min(drawdown_budget, abs(float(limits.max_drawdown)))
+    budget = drawdown_budget * STOP_EQUITY_BUDGET_SHARE
+    passed = equity_at_risk <= budget
+    return [
+        {
+            "name": "stop_equity_at_risk",
+            "passed": passed,
+            "blocking": False,
+            "severity": "warn",
+            "details": {
+                "leverage": leverage,
+                "stop_pct": float(stop_pct),
+                "equity_at_risk_pct": round(equity_at_risk * 100, 2),
+                "budget_pct": round(budget * 100, 2),
+                "drawdown_budget_pct": round(drawdown_budget * 100, 2),
+            },
+            "hint": (
+                f"a {round(float(stop_pct) * 100, 2):g}% price stop at "
+                f"{leverage:g}x leverage is a "
+                f"{round(equity_at_risk * 100, 2):g}% equity stop, above the "
+                f"{round(budget * 100, 2):g}% per-stop budget (half of the "
+                f"{round(drawdown_budget * 100, 2):g}% drawdown cap): lower "
+                "the leverage or tighten the stop"
+            )
+            if not passed
+            else None,
+        }
+    ]
+
+
 def _execution_scenario_checks(
     script_path: Path, job_data: Mapping[str, Any], spec: ExecutionSpec
 ) -> list[dict[str, Any]]:
@@ -1725,8 +1780,13 @@ def _latest_trace_validation(root: Path, spec: ExecutionSpec) -> dict[str, Any] 
 
 def _report(checks: list[dict[str, Any]], *, strict: bool) -> dict[str, Any]:
     failed = [check for check in checks if not check["passed"]]
+    # severity "warn" is advice in every mode; strict promotes the other
+    # non-blocking failures to blocks.
     blocking = [
-        check for check in failed if strict or check.get("blocking") is not False
+        check
+        for check in failed
+        if check.get("severity") != "warn"
+        and (strict or check.get("blocking") is not False)
     ]
     return {
         "status": "passed" if not blocking else "failed",
@@ -1739,6 +1799,20 @@ def _report(checks: list[dict[str, Any]], *, strict: bool) -> dict[str, Any]:
 def report_from_checks(checks: list[dict[str, Any]], *, strict: bool) -> dict[str, Any]:
     """The validation report shape every kind writes to reports/validation."""
     return _report(checks, strict=strict)
+
+
+def candidate_validation_passed(report: dict[str, Any]) -> bool:
+    """Ignore only deployment artifacts that an isolated bundle cannot own."""
+    research_only = {
+        "declared_features_available",
+        "preflight_report_present",
+        "preflight_passed",
+        "wallet_label_declared",
+    }
+    return not any(
+        not check.get("passed") and check.get("name") not in research_only
+        for check in report.get("checks") or []
+    )
 
 
 def _suggestions(messages: list[str]) -> list[str]:

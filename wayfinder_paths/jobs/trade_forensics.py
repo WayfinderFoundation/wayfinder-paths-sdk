@@ -31,6 +31,9 @@ STOP_GRID = (0.02, 0.025, 0.03, 0.035)
 BRACKET_EXIT_REASON = "bracket_stop"
 BRACKET_TAKE_PROFIT_REASON = "bracket_take_profit"
 UNLABELED_EXIT_REASON = "unlabeled"
+# The close reached the ledger without the engine's intent stamp (rows written
+# before exit telemetry existed): says nothing about whether a stop fired.
+UNRECORDED_EXIT_REASON = "unrecorded"
 # Exit reasons that count as a protective stop when a receipt is summarized:
 # the engine's bracket close and any strategy label that names a stop.
 _STOP_REASON_TOKEN = "stop"
@@ -133,9 +136,10 @@ def _closing_fill_reason(
             # The harnessed driver nests intent metadata under `raw`; the
             # freestyle runtime writes it at the top level.
             raw = fill.get("raw") or {}
-            meta = raw.get("intent_metadata") or (fill.get("intent_metadata") or {})
-            reason = fill_exit_reason(meta, action=raw.get("intent_action"))
-            return None if reason == UNLABELED_EXIT_REASON else reason
+            meta = raw.get("intent_metadata") or fill.get("intent_metadata")
+            if meta is None and not raw.get("intent_action"):
+                return UNRECORDED_EXIT_REASON
+            return fill_exit_reason(meta, action=raw.get("intent_action"))
     return None
 
 
@@ -202,10 +206,10 @@ def compute_trade_forensics(
         post_best_bps = None
         reentered = None
 
-    # Only bracket (stop) closes lack an exit_reason: strategy closes carry
-    # intent metadata, the engine's bracket fills do not. Label them instead
-    # of leaking None/"unknown" into the aggregate.
-    reason = exit_reason or BRACKET_EXIT_REASON
+    # Every engine exit labels itself (bracket, liquidation, stale policy) and
+    # strategy closes carry intent metadata, so a missing reason means the row
+    # predates exit telemetry — unknown, never assumed to be the stop.
+    reason = exit_reason or UNRECORDED_EXIT_REASON
 
     # Wider-stop counterfactual. For a stop-out the hypothetical wider-stop
     # hold CONTINUES past the actual exit, so the adverse scan must extend

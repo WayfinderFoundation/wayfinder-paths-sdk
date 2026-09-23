@@ -66,7 +66,7 @@ def test_short_stop_out_with_post_exit_collapse() -> None:
         entry_price=100.0,
         exit_ts=_ts(2),
         exit_price=103.0,
-        exit_reason=None,  # bracket fills carry no strategy label
+        exit_reason="bracket_stop",  # the engine labels its own stops
         post_bars=(2, 4),
         stop_grid=(0.025, 0.035),
     )
@@ -140,7 +140,7 @@ def test_bracket_stop_survival_scans_post_window() -> None:
         entry_price=100.0,
         exit_ts=_ts(1),
         exit_price=103.0,
-        exit_reason=None,
+        exit_reason="bracket_stop",
         post_bars=(2,),
         stop_grid=(0.035, 0.05),
     )
@@ -238,7 +238,8 @@ def test_forensics_for_closed_trades_end_to_end() -> None:
 
 def test_exit_reason_falls_back_to_closing_fill() -> None:
     # Forward trade-close rows carry no intent metadata: the reason lives on
-    # the closing fill. An unlabeled closing fill means the bracket fired.
+    # the closing fill. A closing fill that carries telemetry but no label is
+    # `unlabeled`; one without telemetry at all is `unrecorded`.
     bars = _bars(
         [
             (100, 100.5, 99.5, 100.0),
@@ -275,10 +276,15 @@ def test_exit_reason_falls_back_to_closing_fill() -> None:
     rows = forensics_for_closed_trades({"LIT": bars}, trades, fills, post_bars=(1,))
     assert rows[0]["exit_reason"] == "time_exit"
 
-    # Same trade but the closing fill has no label -> bracket_stop.
+    # Same trade but the closing fill has no label -> unlabeled, never a stop.
     fills[1]["raw"] = {"intent_metadata": {"exit_reason": ""}}
     rows = forensics_for_closed_trades({"LIT": bars}, trades, fills, post_bars=(1,))
-    assert rows[0]["exit_reason"] == "bracket_stop"
+    assert rows[0]["exit_reason"] == "unlabeled"
+
+    # A closing fill written before exit telemetry existed -> unrecorded.
+    fills[1].pop("raw")
+    rows = forensics_for_closed_trades({"LIT": bars}, trades, fills, post_bars=(1,))
+    assert rows[0]["exit_reason"] == "unrecorded"
 
 
 def test_aggregate_groups_by_exit_reason() -> None:
@@ -440,6 +446,36 @@ def test_stop_close_payload_preserves_trigger_and_slippage_evidence() -> None:
     assert payload["stop_trigger_price"] == 100.0
     assert payload["stop_slippage_bps"] == 1_000.0
     assert payload["effective_leverage"] == 3
+    # An engine STOP_LOSS closes at market from the per-tick OHLC check; the
+    # venue's trigger tolerance only applies to a venue-side stop.
+    assert payload["protection_type"] == "engine_market"
+    assert "venue_stop_slippage_tolerance_bps" not in payload
+
+
+def test_native_trigger_close_payload_is_tagged_from_the_stop_cloid() -> None:
+    payload = _trade_close_payload(
+        {
+            "venue": "hyperliquid",
+            "symbol": "HYPE",
+            "side": "buy",
+            "filled_size": 2.0,
+            "avg_price": 101.0,
+            "fee": 0.25,
+            "reduce_only": True,
+            "realized_pnl_delta": -10.0,
+            "timestamp": _ts(3).isoformat(),
+            "client_order_id": "0xstop",
+            "raw": {"status": "ok"},
+        },
+        params={"leverage": 3},
+        native_stops={"0xstop": {"client_order_id": "0xstop", "trigger_price": 100.0}},
+    )
+
+    assert payload["exit_reason"] == "bracket_stop"
+    assert payload["exit_category"] == "strategy"
+    assert payload["protection_type"] == "native_trigger"
+    assert payload["stop_trigger_price"] == 100.0
+    assert payload["stop_slippage_bps"] == 100.0
     assert payload["venue_stop_slippage_tolerance_bps"] == 1_000
 
 
@@ -504,3 +540,44 @@ def test_fill_exit_reason_is_one_rule_for_every_consumer() -> None:
     assert fill_exit_reason(None) == "unlabeled"
     assert is_stop_exit_reason("bracket_stop") and is_stop_exit_reason("atr_stop")
     assert not is_stop_exit_reason("time_exit") and not is_stop_exit_reason(None)
+
+
+def test_missing_exit_reason_is_unrecorded_not_a_stop() -> None:
+    bars = _bars([(100, 101, 99, 100.5), (100.5, 103, 100, 102), (102, 103, 101, 103)])
+    row = compute_trade_forensics(
+        bars,
+        side="short",
+        entry_ts=_ts(0),
+        entry_price=100.0,
+        exit_ts=_ts(2),
+        exit_price=103.0,
+        exit_reason=None,
+        post_bars=(1,),
+        stop_grid=(0.025,),
+    )
+    assert row["exit_reason"] == "unrecorded"
+
+
+def test_close_payload_labels_unlabeled_and_unrecorded_closes() -> None:
+    base = {
+        "venue": "hyperliquid",
+        "symbol": "HYPE",
+        "side": "sell",
+        "filled_size": 2.0,
+        "avg_price": 101.0,
+        "fee": 0.25,
+        "reduce_only": True,
+        "realized_pnl_delta": 2.0,
+        "timestamp": _ts(3).isoformat(),
+        "client_order_id": "0xclose",
+    }
+    stamped = _trade_close_payload(
+        {**base, "raw": {"intent_action": "CLOSE", "intent_metadata": {}}},
+        params={"leverage": 3},
+    )
+    assert stamped["exit_reason"] == "unlabeled"
+    assert "stop_trigger_price" not in stamped
+
+    unstamped = _trade_close_payload({**base, "raw": {"status": "ok"}}, params={})
+    assert unstamped["exit_reason"] == "unrecorded"
+    assert "protection_type" not in unstamped

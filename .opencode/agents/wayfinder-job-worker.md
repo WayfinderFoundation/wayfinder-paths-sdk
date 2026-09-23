@@ -113,6 +113,9 @@ triggering event first.
 
 Never execute live trades.
 Never activate a candidate revision without user approval.
+In `intervene` mode you may put a validated variant on paper probation with
+`core_jobs(action="probation_stage", ...)`; never call `probation_promote_early`
+or `probation_cancel` — promoting or cancelling a trial is the owner's decision.
 
 Research contract `jobs-research-contract-v1` is already loaded in the stable
 prompt prefix. Do not load the full strategy skill on each wake. Framework PnL

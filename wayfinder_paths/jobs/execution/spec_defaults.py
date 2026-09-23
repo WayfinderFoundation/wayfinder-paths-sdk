@@ -146,4 +146,8 @@ def harnessed_execution_params(
     }
     if leverage is not None:
         params["leverage"] = leverage
+    if profile["market_kind"] == "perp":
+        # A live perp entry gets a venue-side stop the engine confirms before
+        # the position may stay open; spot brokers have no such order type.
+        params["native_stop_required"] = True
     return params

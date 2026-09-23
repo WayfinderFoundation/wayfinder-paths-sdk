@@ -55,6 +55,21 @@ def _propose_params(store: JobStore, job_id: str, **overrides):
     )
 
 
+def _journal_types(root: Path) -> list[str]:
+    return [
+        json.loads(line)["type"]
+        for line in (root / "journal.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+
+
+def _journal_events(root: Path, event_type: str) -> list[dict[str, Any]]:
+    rows = [
+        json.loads(line)
+        for line in (root / "journal.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    return [row for row in rows if row.get("type") == event_type]
+
+
 def test_propose_builds_full_candidate_report(tmp_path: Path) -> None:
     store, job_id, root = _make_job(tmp_path)
 
@@ -506,9 +521,9 @@ def test_restage_gate_escalate_keeps_proposal_approved(
 ) -> None:
     """The 2026-08-24 burial class, end to end: a missing backtest dataset
     makes the fail-closed governance gate ESCALATE during a mechanical
-    re-stage. The restage flow's own agent rejection routes through
-    store.reject_proposal, where the guard refuses it — the owner-approved
-    proposal stays approved with restage_requested instead of being buried."""
+    re-stage. The restage flow classifies the refusal itself: the
+    owner-approved proposal stays approved with restage_requested and a
+    retry_needed record instead of being buried — nothing is rejected."""
     _patch_runner(monkeypatch)
     monkeypatch.setattr(
         "wayfinder_paths.jobs.worker.run_job_worker",
@@ -540,14 +555,269 @@ def test_restage_gate_escalate_keeps_proposal_approved(
 
     monkeypatch.setattr(JobStore, "_ensure_governance_gate", raising_governance_gate)
 
-    with pytest.raises(ValueError, match="refusing agent rejection"):
+    with pytest.raises(TransientInfrastructureError, match="approval kept"):
         restage_proposal(store, job_id, pid)
 
     kept = store.load_proposal(job_id, pid)
     assert kept["status"] == "approved", "approval survives the gate ESCALATE"
     assert kept["application"]["restage_requested"] is True
-    journal = (root / "journal.jsonl").read_text(encoding="utf-8")
-    assert "proposal_reject_refused" in journal
+    # The missing-dataset wording is a box condition (input_bars pattern).
+    assert kept["application"]["retry_needed"]["failure_kind"] == "infrastructure"
+    types = _journal_types(root)
+    assert "proposal_apply_retry_needed" in types
+    assert "proposal_rejected" not in types
+
+
+def _stale_approved_params_proposal(store: JobStore, job_id: str, root: Path) -> str:
+    """Propose params, move the workspace under the candidate, approve and
+    apply: the completion defers to a re-stage with approval carried over."""
+    pid = _propose_params(store, job_id)["proposal_id"]
+    script = root / "workspace" / "src" / "strategy.py"
+    script.write_text(
+        script.read_text(encoding="utf-8") + "\n# drift\n", encoding="utf-8"
+    )
+    store.approve_proposal(job_id, pid)
+    claim_application(store, job_id, pid)
+    complete_application(store, job_id, pid, status="applied")
+    assert store.load_proposal(job_id, pid)["application"]["restage_requested"]
+    return pid
+
+
+def _oom_validation(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "checks": [
+            {
+                "name": "candidate_backtest_valid",
+                "passed": False,
+                "error": "backtest child killed (signal 9) — out of memory",
+            }
+        ],
+    }
+
+
+def test_restage_infra_failure_defers_for_retry_instead_of_rejecting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 2026-08-11 burial class: an OOM'd backtest during the mechanical
+    re-stage is a box condition, not a verdict on the change. The approved
+    proposal keeps its approval and re-stage request, records that it is
+    waiting, and the next attempt on a quiet box re-stages it."""
+    from wayfinder_paths.jobs.application import validate_candidate_bundle
+
+    _patch_runner(monkeypatch)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.run_job_worker",
+        lambda job_id, *, mode, **k: {"status": "queued"},
+    )
+    launches: list[str] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.apply_launcher.launch_application",
+        lambda store, job_id, pid: launches.append(pid) or {"launched": pid},
+    )
+    monkeypatch.setenv("WAYFINDER_PROPOSE_LOCK_WAIT_SECONDS", "0.1")
+    store, job_id, root = _make_job(tmp_path)
+    pid = _stale_approved_params_proposal(store, job_id, root)
+
+    box = {"oom": True}
+
+    def validate(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        if box["oom"]:
+            return _oom_validation()
+        return validate_candidate_bundle(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.proposals.validate_candidate_bundle", validate
+    )
+
+    with pytest.raises(TransientInfrastructureError, match="approval kept"):
+        restage_proposal(store, job_id, pid)
+
+    kept = store.load_proposal(job_id, pid)
+    assert kept["status"] == "approved"
+    assert kept["application"]["restage_requested"] is True
+    retry = kept["application"]["retry_needed"]
+    assert retry["failure_kind"] == "infrastructure"
+    assert "out of memory" in retry["reason"]
+    types = _journal_types(root)
+    assert "proposal_apply_retry_needed" in types
+    assert "proposal_rejected" not in types
+    assert "proposal_restaged" not in types, "no candidate was staged"
+    assert launches == []
+
+    box["oom"] = False
+    restaged = restage_proposal(store, job_id, pid)
+    assert restaged["status"] == "approved"
+    assert restaged["application"]["status"] == "queued"
+    assert "retry_needed" not in restaged["application"]
+    assert not restaged["application"].get("restage_requested")
+    assert launches == [pid]
+
+
+def test_restage_gate_escalate_without_box_words_defers_for_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fail-closed gate that refuses to evaluate (no infrastructure wording
+    at all) is still not a verdict: retry, never reject."""
+    _patch_runner(monkeypatch)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.run_job_worker",
+        lambda job_id, *, mode, **k: {"status": "queued"},
+    )
+    store, job_id, root = _make_job(tmp_path)
+    pid = _stale_approved_params_proposal(store, job_id, root)
+
+    def refusing_governance_gate(self, job_id, economic, **_kwargs):  # noqa: ANN001
+        raise ValueError(
+            "ESCALATE: governance changed since the candidate was evaluated "
+            "(report aaa vs current bbb) — re-run the economic report."
+        )
+
+    monkeypatch.setattr(JobStore, "_ensure_governance_gate", refusing_governance_gate)
+
+    with pytest.raises(TransientInfrastructureError, match="approval kept"):
+        restage_proposal(store, job_id, pid)
+
+    kept = store.load_proposal(job_id, pid)
+    assert kept["status"] == "approved"
+    assert kept["application"]["restage_requested"] is True
+    assert kept["application"]["retry_needed"]["failure_kind"] == "escalate"
+    types = _journal_types(root)
+    assert "proposal_restaged" in types, "the candidate was rebuilt; the gate refused"
+    assert "proposal_apply_retry_needed" in types
+    assert "proposal_rejected" not in types
+
+
+def test_rollback_after_promotion_is_an_owner_facing_revert(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An approved change that reached the workspace and was pulled back by
+    the apply's own rollback is journaled as a revert, marked on the
+    proposal, and surfaces as a warn issue, a decided-autonomously item and
+    a wake-prompt alert. Re-applying the proposal clears it."""
+    from wayfinder_paths.jobs.health import build_issues
+    from wayfinder_paths.jobs.owner_attention import build_owner_attention
+    from wayfinder_paths.jobs.worker import (
+        _apply_reverted_block,
+        _build_worker_prompt_sections,
+    )
+    from wayfinder_paths.tests.test_wayfinder_jobs import _worker_snapshot
+
+    _patch_runner(monkeypatch)
+    store, job_id, root = _make_job(tmp_path)
+    pid = _propose_params(store, job_id)["proposal_id"]
+    store.approve_proposal(job_id, pid)
+    claim_application(store, job_id, pid)
+
+    def exploding_gate(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("post-apply artifact stamping exploded")
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.application.evaluate_live_gate", exploding_gate
+    )
+    completed = complete_application(store, job_id, pid, status="applied")
+
+    application = completed["proposal"]["application"]
+    assert application["status"] == "failed"
+    assert application["rollback"]["restored"] is True
+    promoted = application["promoted_revision"]
+    assert promoted
+    assert application["reverted"]["prior_applied_revision"] == promoted
+    assert application["reverted"]["via"] == "rollback"
+    events = _journal_events(root, "proposal_apply_reverted")
+    assert [event["prior_applied_revision"] for event in events] == [promoted]
+    assert "stamping exploded" in events[0]["reason"]
+    assert _journal_types(root).index("proposal_promoted") < _journal_types(root).index(
+        "proposal_apply_reverted"
+    )
+
+    job = store.load(job_id)
+    issues = build_issues(
+        store,
+        job_id,
+        job,
+        heartbeat=None,
+        scorecard=None,
+        features=None,
+        risk_flags=None,
+        launch_checklist=None,
+        proposals=store.proposals(job_id),
+    )
+    issue = next(i for i in issues if i["code"] == "apply_reverted")
+    assert issue["severity"] == "warn"
+    assert pid in issue["message"] and "stamping exploded" in issue["message"]
+    assert issue["ref"] == "owner_attention:apply_reverted"
+
+    decided = build_owner_attention(store, job_id)["decided_autonomously"]
+    item = next(i for i in decided if i["kind"] == "apply_reverted")
+    assert item["ref_id"] == pid and item["decision"] == "reverted"
+    assert "stamping exploded" in item["evidence"]
+
+    assert [t["proposal_id"] for t in _apply_reverted_block(root)] == [pid]
+    prompt = _build_worker_prompt_sections(
+        store=store, job_id=job_id, mode="intervene", snapshot=_worker_snapshot(job)
+    )["prompt"]
+    assert "OWNER ATTENTION" in prompt and pid in prompt
+
+    # The pre-apply snapshot is back; a clean re-apply resolves the revert.
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.application.evaluate_live_gate",
+        lambda *a, **k: {"live_ready": True, "reasons": []},
+    )
+    claim_application(store, job_id, pid)
+    completed = complete_application(store, job_id, pid, status="applied")
+    assert completed["proposal"]["application"]["status"] == "applied"
+    assert "reverted" not in completed["proposal"]["application"]
+    assert [t["proposal_id"] for t in _apply_reverted_block(root)] == []
+
+
+def test_restage_reject_after_rollback_records_one_revert(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Production shape: promoted, rolled back, re-applied against a moved
+    workspace, re-staged, red gate, rejected. The revert is recorded once
+    (at the rollback); the later rejection of the same revision does not
+    duplicate it, and a genuine red gate still rejects."""
+    _patch_runner(monkeypatch)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.run_job_worker",
+        lambda job_id, *, mode, **k: {"status": "queued"},
+    )
+    store, job_id, root = _make_job(tmp_path)
+    pid = _propose_params(store, job_id)["proposal_id"]
+    store.approve_proposal(job_id, pid)
+    claim_application(store, job_id, pid)
+
+    def exploding_gate(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("post-apply artifact stamping exploded")
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.application.evaluate_live_gate", exploding_gate
+    )
+    complete_application(store, job_id, pid, status="applied")
+    promoted = store.load_proposal(job_id, pid)["application"]["promoted_revision"]
+
+    script = root / "workspace" / "src" / "strategy.py"
+    script.write_text(
+        script.read_text(encoding="utf-8") + "\n# moved on\n", encoding="utf-8"
+    )
+    claim_application(store, job_id, pid)
+    complete_application(store, job_id, pid, status="applied")
+    assert store.load_proposal(job_id, pid)["application"]["restage_requested"]
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.proposals.evaluate_live_gate",
+        lambda *a, **k: {"live_ready": False, "reasons": ["backtest regressed"]},
+    )
+
+    rejected = restage_proposal(store, job_id, pid)
+
+    assert rejected["status"] == "rejected"
+    assert "backtest regressed" in str(rejected["rejection"]["reason"])
+    events = _journal_events(root, "proposal_apply_reverted")
+    assert [(e["via"], e["prior_applied_revision"]) for e in events] == [
+        ("rollback", promoted)
+    ]
+    assert rejected["application"]["reverted"]["prior_applied_revision"] == promoted
 
 
 # ── infra-vs-evidence at propose time + revalidation ─────────────────────────

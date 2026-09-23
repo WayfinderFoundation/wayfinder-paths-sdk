@@ -95,7 +95,12 @@ from wayfinder_paths.jobs.models import (
     normalize_agent_mode,
 )
 from wayfinder_paths.jobs.paths_runtime import create_from_path
-from wayfinder_paths.jobs.probation import open_paper_probation_leg
+from wayfinder_paths.jobs.probation import (
+    cancel_probation_trial,
+    open_paper_probation_leg,
+    promote_probation_trial_early,
+    stage_probation_trial,
+)
 from wayfinder_paths.jobs.proposals import (
     propose_change,
     restage_proposal,
@@ -2835,6 +2840,107 @@ def decision_gate_reopen_cmd(job_id: str, gate_id: str, reopened_by: str) -> Non
 def decision_gate_list_cmd(job_id: str) -> None:
     store = JobStore()
     _echo_json({"ok": True, "result": load_decision_gates(store, job_id)})
+
+
+@job_cli.group(
+    name="probation",
+    help="Owner verbs on paper probation trials: stage a variant beside the "
+    "incumbent, cancel a trial, or promote one early. Early promotion lands "
+    "as a proposal the owner approves — never an immediate apply.",
+)
+def probation_group() -> None:
+    pass
+
+
+@probation_group.command(
+    name="stage",
+    help="Validate a candidate bundle inside the job root and put it on paper "
+    "probation beside the incumbent (same caps and duplicate check as evolution).",
+)
+@click.argument("job_id")
+@click.option(
+    "--candidate-dir",
+    required=True,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+)
+@click.option(
+    "--revision", required=True, help="compute_workspace_revision of the bundle."
+)
+@click.option(
+    "--family", required=True, help="Strategy family shown on the trial card."
+)
+@click.option("--summary", default=None, help="One-line hypothesis for the trial card.")
+@click.option("--by", "staged_by", default="owner", show_default=True)
+def probation_stage_cmd(
+    job_id: str,
+    candidate_dir: Path,
+    revision: str,
+    family: str,
+    summary: str | None,
+    staged_by: str,
+) -> None:
+    store = JobStore()
+    try:
+        trial = stage_probation_trial(
+            store,
+            job_id,
+            candidate_dir=candidate_dir,
+            revision=revision,
+            family=family,
+            summary=summary,
+            by=staged_by,
+            source="cli",
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    sync_all_jobs(store=store)
+    _echo_json({"ok": True, "result": trial})
+
+
+@probation_group.command(
+    name="cancel",
+    help="Close a queued or running trial; a queued trial takes the freed slot.",
+)
+@click.argument("job_id")
+@click.argument("trial_id")
+@click.option("--reason", required=True)
+@click.option("--by", "cancelled_by", default="owner", show_default=True)
+def probation_cancel_cmd(
+    job_id: str, trial_id: str, reason: str, cancelled_by: str
+) -> None:
+    store = JobStore()
+    try:
+        result = cancel_probation_trial(
+            store, job_id, trial_id, by=cancelled_by, reason=reason, source="cli"
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    sync_all_jobs(store=store)
+    _echo_json({"ok": True, "result": result})
+
+
+@probation_group.command(
+    name="promote-early",
+    help="Graduate an active forward trial before its day-7 checkpoint (needs "
+    ">= 1 paired day and the trial's closed-trade floor). Creates the "
+    "prop-probation-<trial> proposal for the owner to approve.",
+)
+@click.argument("job_id")
+@click.argument("trial_id")
+@click.option("--reason", required=True)
+@click.option("--by", "promoted_by", default="owner", show_default=True)
+def probation_promote_early_cmd(
+    job_id: str, trial_id: str, reason: str, promoted_by: str
+) -> None:
+    store = JobStore()
+    try:
+        result = promote_probation_trial_early(
+            store, job_id, trial_id, by=promoted_by, reason=reason, source="cli"
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    sync_all_jobs(store=store)
+    _echo_json({"ok": True, "result": result})
 
 
 @job_cli.command(

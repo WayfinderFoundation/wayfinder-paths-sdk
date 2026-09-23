@@ -64,8 +64,11 @@ For every iteration:
   dataset when possible and disclose missing symbols or history.
 - Framework stats, fills, fees, funding, and drawdowns are the source of truth.
   Do not hand-recompute strategy PnL in a scratch script.
-- Put `metadata={"exit_reason": "..."}` on close intents so diagnosis can
-  attribute outcomes.
+- Protective exits are `bracket` metadata on the OPEN intent (`stop_loss_pct`,
+  `take_profit_pct`, optional `native_required`), never close-based checks in
+  `decide()`; the contract is in `/writing-wayfinder-scripts`. Put
+  `metadata={"exit_reason": "..."}` on every close intent the strategy emits so
+  diagnosis can attribute outcomes; the engine labels only its own bracket exits.
 - Model fees and slippage. Use realistic leverage and sweep it against
   drawdown/liquidation risk rather than selecting it from return alone.
 - Recent-run scenarios used to design or select a candidate are development
