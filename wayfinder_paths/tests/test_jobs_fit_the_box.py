@@ -11,9 +11,9 @@ during the OOM cascade the LIVE job's script loop went dark 65 minutes with
 zero alerting. Separately, the box's 2GB /wf volume silently filled to 100%
 — boot rsync died half-way, opencode crash-looped, runnerd stayed down, and
 live loops went dark ~25 minutes with no alert at 90/95/100%. Under test:
-the doctrine lands in the worker prompt, the watchdog sheds deferrable load
-under steal, and a dark loop or a filling volume is journaled and (for live
-jobs) wakes the agent.
+the doctrine lands in the worker prompt, the watchdog queues its re-stamp in
+the heavy lane (whose admission sheds load under steal), and a dark loop or a
+filling volume is journaled and (for live jobs) wakes the agent.
 """
 
 from __future__ import annotations
@@ -154,30 +154,22 @@ def stale_gate(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return attempts
 
 
-def test_restamp_deferred_under_cpu_steal(
+def test_restamp_is_submitted_to_the_lane_even_under_cpu_steal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stale_gate: list[str]
 ) -> None:
+    """Steal deferral moved into the heavy lane's admission: the watchdog
+    always submits, and never runs the backtest chain inline."""
+    from wayfinder_paths.jobs import heavy_lane
+
     store, job = _make_store(tmp_path, "box-steal-hi")
-    monkeypatch.setattr("wayfinder_paths.jobs.watchdog.cpu_steal_pct", lambda: 90.0)
+    monkeypatch.setattr(heavy_lane, "lane_enabled", lambda: True)
+    monkeypatch.setattr("wayfinder_paths.jobs.failures.cpu_steal_pct", lambda: 90.0)
     event = _recover_stale_gate(store, job.id, [], allow_restamp=True)
     assert event is not None
-    assert event["action"] == "restamp_deferred_load"
-    assert event["cpu_steal_pct"] == 90.0
-    assert stale_gate == []  # no backtest launched under load
-    journaled = _journal_events(store, job.id, "restamp_deferred_load")
-    assert len(journaled) == 1
-    assert journaled[0]["cpu_steal_pct"] == 90.0
-
-
-def test_restamp_proceeds_when_steal_low(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stale_gate: list[str]
-) -> None:
-    store, job = _make_store(tmp_path, "box-steal-lo")
-    monkeypatch.setattr("wayfinder_paths.jobs.watchdog.cpu_steal_pct", lambda: 10.0)
-    event = _recover_stale_gate(store, job.id, [], allow_restamp=True)
-    assert event is not None
-    assert event["action"] == "gate_restamp"
-    assert stale_gate == ["backtest", "preflight", "validate"]
+    assert event["action"] == "gate_restamp_submitted"
+    assert event["queued"] is True
+    assert stale_gate == []  # no backtest launched in the watchdog
+    assert [e["op"] for e in heavy_lane.queued_entries(tmp_path)] == ["restamp"]
     assert not _journal_events(store, job.id, "restamp_deferred_load")
 
 

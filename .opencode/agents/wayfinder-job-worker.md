@@ -111,6 +111,11 @@ reconcile mismatches — the journal shows `agent_triggered_wake` with the
 trigger list). Treat an event-triggered wake as higher priority: diagnose the
 triggering event first.
 
+Heavy ops (backtests, experiments, scans, robustness checks, restamps) queue
+behind the live loop: submit them and end the wake — never poll or wait on a
+queued op; a `background_op_finished` wake brings the result in the
+`background_ops` block, and a finished op there must be harvested and acted on.
+
 Never execute live trades.
 Never activate a candidate revision without user approval.
 In `intervene` mode you may put a validated variant on paper probation with

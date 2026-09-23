@@ -169,17 +169,17 @@ def test_apply_execution_leverage_kicks_restamp(tmp_path, monkeypatch) -> None:
     store.save(job)
 
     monkeypatch.setattr(sync_module, "sync_all_jobs", lambda **kwargs: None)
-    spawned: list[tuple[str, str, dict]] = []
+    spawned: list[tuple[str, str, dict, str]] = []
 
-    def fake_spawn(store_arg, job_id, op, kwargs):
-        spawned.append((job_id, op, kwargs))
+    def fake_spawn(store_arg, job_id, op, kwargs, *, submitted_by="cli"):
+        spawned.append((job_id, op, kwargs, submitted_by))
         return {"started": True, "op": op, "pid": 1}
 
     monkeypatch.setattr("wayfinder_paths.jobs.background.spawn_detached_op", fake_spawn)
 
     result = apply_execution_leverage(job.id, 3.0, store=store)
     assert result["restamp"]["started"] is True
-    assert spawned == [(job.id, "restamp", {"job_id": job.id})]
+    assert spawned == [(job.id, "restamp", {"job_id": job.id}, "sync")]
     journal = (store.job_dir(job.id) / "journal.jsonl").read_text()
     assert "gate_restamp_kicked" in journal
 
@@ -189,7 +189,7 @@ def test_apply_execution_leverage_kicks_restamp(tmp_path, monkeypatch) -> None:
     assert len(spawned) == 1
 
     # Spawn failure degrades to an error note; the knob still succeeds.
-    def boom(*args):
+    def boom(*args, **kwargs):
         raise RuntimeError("no subprocess")
 
     monkeypatch.setattr("wayfinder_paths.jobs.background.spawn_detached_op", boom)
@@ -281,7 +281,7 @@ def test_op_runner_restamp_dispatch(monkeypatch, tmp_path) -> None:
         lambda job_id: {"live_ready": True, "reasons": []},
     )
     result = op_runner._run("restamp", {"job_id": "x"})
-    assert calls == ["validate", "backtest", "preflight"]
+    assert calls == ["backtest", "preflight", "validate"]
     assert result["validation"] == "passed"
     assert result["preflight"] == "green"
     assert result["gate"]["live_ready"] is True

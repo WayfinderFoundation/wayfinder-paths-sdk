@@ -33,13 +33,14 @@ from wayfinder_paths.jobs.compute_lock import job_state_lock
 from wayfinder_paths.jobs.execution.op_process import recorded_process_alive
 from wayfinder_paths.jobs.models import safe_job_id, utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.triggers import fire_triggers
 from wayfinder_paths.runner.monitor_state import atomic_write_json
 
 LANE_RELATIVE = Path(".wayfinder") / "heavy_lane"
 SCHEMA_VERSION = 1
 
-# Ops that replay the dataset (grids, folds, robustness) and must never run
-# unpaced beside a live tick. Evolution phases and `restamp` join later.
+# Ops that replay the dataset (grids, folds, robustness, the gate re-stamp's
+# backtest) and must never run unpaced beside a live tick.
 HEAVY_LANE_OPS = frozenset(
     {
         "experiments",
@@ -49,6 +50,9 @@ HEAVY_LANE_OPS = frozenset(
         "holdout_check",
         "rank_check",
         "forward_experience",
+        "evolution_evaluate",
+        "evolution_finalize",
+        "restamp",
     }
 )
 
@@ -67,6 +71,7 @@ RUNNING = "running"
 CANCELLED = "cancelled"
 JOURNAL_FINISHED = "background_op_finished"
 JOURNAL_NOTIFY_DROPPED = "background_op_notify_dropped"
+WAKE_EVENT = JOURNAL_FINISHED
 
 WORKER_BUDGET_ENV = "WAYFINDER_HEAVY_WORKER_BUDGET"
 STATUS_PATH_ENV = "WAYFINDER_OP_STATUS_PATH"
@@ -461,9 +466,10 @@ def run_completion_hook(
     client: Any = OPENCODE_CLIENT,
     sleep: Any = time.sleep,
 ) -> dict[str, Any]:
-    """Journal a finished lane op and prompt the session that submitted it.
-    Runs in its own short-lived process so the runner daemon never imports
-    the jobs machinery or waits on the agent host."""
+    """Journal a finished lane op, prompt the session that submitted it, and
+    wake the job's agent when the submitter asked for a ping-back. Runs in
+    its own short-lived process so the runner daemon never imports the jobs
+    machinery or waits on the agent host."""
     store = JobStore(repo_root=Path(entry["repo_root"]))
     job_id, op = str(entry["job_id"]), str(entry["op"])
     status_path = Path(entry["status_path"])
@@ -508,6 +514,11 @@ def run_completion_hook(
                 },
             )
         atomic_write_json(status_path, status)
+    if notify.get("wake"):
+        wake = fire_triggers(
+            store, store.load(job_id), [WAKE_EVENT], source="heavy_lane"
+        )
+        outcome["woke"] = wake is not None
     return outcome
 
 

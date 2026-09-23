@@ -212,9 +212,20 @@ def track_evolution_process(op: str, kwargs: dict[str, Any]) -> Iterator[None]:
 def terminate_campaign_ops(
     store: JobStore, job_id: str, campaign_id: str
 ) -> list[dict[str, Any]]:
-    """SIGKILL only registered children owned by the closing campaign."""
-    registry_dir = store.job_dir(job_id) / "state" / "running_ops"
+    """SIGKILL only registered children owned by the closing campaign, and
+    withdraw the job's campaign ops still waiting in the heavy lane — they
+    have no process yet, and must not start once the campaign is closed."""
+    # circular import: heavy_lane imports this module's liveness helpers
+    from wayfinder_paths.jobs.heavy_lane import cancel_heavy_op, queued_entries
+
     reaped: list[dict[str, Any]] = []
+    for entry in queued_entries(store.repo_root):
+        op = str(entry.get("op") or "")
+        if entry.get("job_id") != job_id or op not in _CAMPAIGN_OWNED_OPS:
+            continue
+        if cancel_heavy_op(store.repo_root, job_id, op).get("cancelled"):
+            reaped.append({"pid": None, "op": op, "state": "queued"})
+    registry_dir = store.job_dir(job_id) / "state" / "running_ops"
     for path in sorted(registry_dir.glob("*.json")):
         try:
             record = json.loads(path.read_text(encoding="utf-8"))

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from wayfinder_paths.jobs import heavy_lane
 from wayfinder_paths.jobs.application import claim_application, complete_application
 from wayfinder_paths.jobs.apply_launcher import launch_application, start_application
 from wayfinder_paths.jobs.models import WayfinderJob, utc_now_iso
@@ -985,43 +986,114 @@ def _gate(live_ready: bool, reasons: list[str]) -> dict:
 _MISMATCH = "backtest is for revision aaaa11112222, workspace is bbbb33334444"
 
 
-def test_watchdog_restamps_revision_mismatch_gate(tmp_path: Path, monkeypatch) -> None:
-    """Gate red PURELY from revision mismatch → the watchdog re-runs the
-    stamp chain; substantive reds are never touched."""
-    _patch_runner(monkeypatch)
-    store = JobStore(repo_root=tmp_path)
-    job = _make_job(store, "gate-stale")
+def _finish_lane_op(store: JobStore, job_id: str, op: str) -> None:
+    """What the lane dispatcher does when a child exits cleanly."""
+    for entry in heavy_lane.entries(store.repo_root):
+        if entry["job_id"] == job_id and entry["op"] == op:
+            heavy_lane.delete_entry(entry)
+    ops_dir = store.job_dir(job_id) / "state" / "background_ops"
+    status = json.loads((ops_dir / f"{op}.json").read_text(encoding="utf-8"))
+    status.update({"state": "done", "finished_at": utc_now_iso()})
+    (ops_dir / f"{op}.json").write_text(json.dumps(status), encoding="utf-8")
+    (ops_dir / f"{op}.result.json").write_text("{}", encoding="utf-8")
 
-    gates = iter([_gate(False, [_MISMATCH]), _gate(True, [])])
-    chain: list[str] = []
+
+def test_watchdog_restamps_revision_mismatch_gate(tmp_path: Path, monkeypatch) -> None:
+    """Gate red PURELY from revision mismatch → the watchdog submits the
+    `restamp` op to the heavy lane (never the inline chain), waits while it
+    is queued or running — holding the one-per-pass budget for every job —
+    and records the convergence marker once a later pass finds it done."""
+    _patch_runner(monkeypatch)
+    monkeypatch.setattr(heavy_lane, "lane_enabled", lambda: True)
+    store = JobStore(repo_root=tmp_path)
+    first = _make_job(store, "gate-stale-a")
+    second = _make_job(store, "gate-stale-b")
+
+    restamped: set[str] = set()
     monkeypatch.setattr(
         "wayfinder_paths.jobs.gating.evaluate_live_gate",
-        lambda job_id, store=None, **k: next(gates),
+        lambda job_id, store=None, **k: (
+            _gate(True, []) if job_id in restamped else _gate(False, [_MISMATCH])
+        ),
     )
     monkeypatch.setattr(
         "wayfinder_paths.jobs.gating.compute_workspace_revision",
         lambda root: "bbbb33334444",
     )
-    monkeypatch.setattr(
+    chain: list[str] = []
+    for target in (
         "wayfinder_paths.jobs.execution.job.backtest_execution_job",
-        lambda job_id, store=None, **k: chain.append("backtest"),
-    )
-    monkeypatch.setattr(
         "wayfinder_paths.jobs.execution.preflight.run_preflight",
-        lambda job_id, store=None, **k: chain.append("preflight"),
+        "wayfinder_paths.jobs.execution.validation.validate_execution_job",
+    ):
+        monkeypatch.setattr(target, lambda *a, **k: chain.append("inline"))
+
+    def restamp_events(result: dict) -> list[dict]:
+        return [
+            e for e in result["recovered"] if e.get("stalled_status") == "stale_gate"
+        ]
+
+    submitted = restamp_events(recover_stalled_applications(store=store))
+    assert [e["action"] for e in submitted] == ["gate_restamp_submitted"]
+    assert submitted[0]["job_id"] == first.id and submitted[0]["queued"] is True
+    (entry,) = heavy_lane.queued_entries(tmp_path)
+    assert (entry["job_id"], entry["op"]) == (first.id, "restamp")
+    assert entry["submitted_by"] == "watchdog"
+    assert entry["notify"]["wake"] is False
+
+    # Still queued: no resubmit, and the other stale job waits its turn.
+    waiting = restamp_events(recover_stalled_applications(store=store))
+    assert [e["action"] for e in waiting] == ["gate_restamp_in_flight"]
+    assert len(heavy_lane.queued_entries(tmp_path)) == 1
+    assert store.read_json(first.id, "state/gate_restamp.json")["submitted"]
+
+    _finish_lane_op(store, first.id, "restamp")
+    restamped.add(first.id)
+    settled = restamp_events(recover_stalled_applications(store=store))
+
+    assert chain == []
+    recovered = [e for e in settled if e["action"] == "gate_restamp"]
+    assert len(recovered) == 1 and recovered[0]["outcome"] == "green"
+    assert recovered[0]["job_id"] == first.id
+    marker = store.read_json(first.id, "state/gate_restamp.json")
+    assert marker == {"revision": "bbbb33334444"}
+    journal = (store.job_dir(first.id) / "journal.jsonl").read_text()
+    assert '"action": "gate_restamp"' in journal
+    # The settled job freed the budget: the second job's restamp goes in.
+    assert [(e["job_id"], e["op"]) for e in heavy_lane.queued_entries(tmp_path)] == [
+        (second.id, "restamp")
+    ]
+
+
+def test_watchdog_failed_restamp_clears_the_submission(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "gate-restamp-failed")
+    store.write_json(
+        job.id,
+        "state/gate_restamp.json",
+        {"submitted": {"revision": "bbbb33334444", "at": utc_now_iso()}},
+    )
+    ops_dir = store.job_dir(job.id) / "state" / "background_ops"
+    ops_dir.mkdir(parents=True)
+    (ops_dir / "restamp.json").write_text(
+        json.dumps({"op": "restamp", "state": "cancelled"}), encoding="utf-8"
     )
     monkeypatch.setattr(
-        "wayfinder_paths.jobs.execution.validation.validate_execution_job",
-        lambda job_id, store=None, **k: chain.append("validate"),
+        "wayfinder_paths.jobs.gating.evaluate_live_gate",
+        lambda job_id, store=None, **k: pytest.fail("no gate read for a failed op"),
     )
 
     result = recover_stalled_applications(store=store)
 
-    assert chain == ["backtest", "preflight", "validate"]
-    events = [e for e in result["recovered"] if e["action"] == "gate_restamp"]
-    assert len(events) == 1 and events[0]["outcome"] == "green"
-    marker = store.read_json(job.id, "state/gate_restamp.json")
-    assert marker["revision"] == "bbbb33334444"
+    assert not [
+        e for e in result["recovered"] if e.get("stalled_status") == "stale_gate"
+    ]
+    assert store.read_json(job.id, "state/gate_restamp.json") == {}
+    journal = (store.job_dir(job.id) / "journal.jsonl").read_text()
+    assert "gate restamp failed at revision bbbb33334444" in journal
 
 
 def test_watchdog_never_touches_substantive_red_gate(
@@ -1107,7 +1179,7 @@ def test_watchdog_retries_finalization_beyond_the_generation_grace(
     )
     monkeypatch.setattr(
         "wayfinder_paths.jobs.background.spawn_detached_op",
-        lambda store, job_id, op, payload: (
+        lambda store, job_id, op, payload, **kwargs: (
             launches.append((op, payload)) or {"pid": 123}
         ),
     )
@@ -1118,6 +1190,7 @@ def test_watchdog_retries_finalization_beyond_the_generation_grace(
         "campaign_id": "campaign-1",
         "attempt": 1,
         "pid": 123,
+        "queued": False,
     }
     assert launches == [("evolution_finalize", {"job_id": job.id})]
     state = store.read_json(job.id, "state/evolution_campaign.json")
@@ -1256,6 +1329,98 @@ def test_watchdog_waits_for_an_evaluator_during_generation(
     }
 
 
+def test_watchdog_treats_a_queued_evaluator_as_waiting(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "campaign-queued-evaluator")
+    deadline = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    store.write_json(
+        job.id,
+        "state/evolution_campaign.json",
+        {
+            "campaign_id": "campaign-1",
+            "status": "active",
+            "stage": "draining",
+            "deadline_at": deadline.isoformat(),
+            "candidates": [
+                {
+                    "candidate_id": "c01",
+                    "status": "quick_running",
+                    "evaluation_claim_id": "claim-1",
+                    "evaluation_claimed_at": deadline.isoformat(),
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.background.op_status_summary",
+        lambda _root, op: {"status": "queued"} if op == "evolution_evaluate" else None,
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.background.spawn_detached_op",
+        lambda *a, **k: pytest.fail("a queued evaluator was retried"),
+    )
+
+    result = _run_evolution_campaign_pass(store, job.id, deadline + timedelta(hours=2))
+
+    assert result == {
+        "action": "evolution_campaign_waiting_for_evaluation",
+        "campaign_id": "campaign-1",
+        "queued": True,
+    }
+    candidate = store.read_json(job.id, "state/evolution_campaign.json")["candidates"][
+        0
+    ]
+    assert candidate["status"] == "quick_running"  # not recovered as lost
+
+
+def test_watchdog_treats_a_queued_finalizer_as_waiting_past_grace(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "campaign-queued-finalizer")
+    deadline = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    store.write_json(
+        job.id,
+        "state/evolution_campaign.json",
+        {
+            "campaign_id": "campaign-1",
+            "status": "finalizing",
+            "stage": "finalizing",
+            "deadline_at": deadline.isoformat(),
+            "finalize_attempts": 1,
+            "finalize_last_attempt_at": deadline.isoformat(),
+        },
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.background.op_status_summary",
+        lambda _root, op: {"status": "queued"} if op == "evolution_finalize" else None,
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.retire_evolution_session",
+        lambda *args, **kwargs: {"retired": True},
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.background.spawn_detached_op",
+        lambda *a, **k: pytest.fail("a queued finalizer was retried"),
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.watchdog._reap_finalize_group",
+        lambda pid: pytest.fail("a queued finalizer was reaped"),
+    )
+
+    result = _run_evolution_campaign_pass(store, job.id, deadline + timedelta(hours=6))
+
+    assert result == {
+        "action": "evolution_campaign_waiting_for_finalize",
+        "campaign_id": "campaign-1",
+        "queued": True,
+    }
+    state = store.read_json(job.id, "state/evolution_campaign.json")
+    assert state["finalize_attempts"] == 1
+
+
 def test_watchdog_recovers_a_lost_evaluator_claim_before_reprompting(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1327,7 +1492,7 @@ def test_watchdog_finishes_a_prepared_candidate_after_generation_deadline(
     )
     monkeypatch.setattr(
         "wayfinder_paths.jobs.background.spawn_detached_op",
-        lambda store, job_id, op, payload: (
+        lambda store, job_id, op, payload, **kwargs: (
             launches.append((op, payload)) or {"pid": 4321}
         ),
     )
@@ -1339,6 +1504,7 @@ def test_watchdog_finishes_a_prepared_candidate_after_generation_deadline(
         "campaign_id": "campaign-1",
         "candidate_id": "c01",
         "pid": 4321,
+        "queued": False,
     }
     assert launches == [
         (

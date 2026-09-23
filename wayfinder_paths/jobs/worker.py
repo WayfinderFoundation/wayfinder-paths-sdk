@@ -14,6 +14,8 @@ from loguru import logger
 
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.core.config import is_opencode_instance
+from wayfinder_paths.jobs import heavy_lane
+from wayfinder_paths.jobs.background import op_status_summary
 from wayfinder_paths.jobs.derived_features import refresh_derived_features_if_stale
 from wayfinder_paths.jobs.execution.features import summarize_features
 from wayfinder_paths.jobs.execution.job import _load_job_yaml
@@ -974,6 +976,65 @@ def _compute_status_block(root: Path) -> dict[str, Any]:
     }
 
 
+def _background_ops_block(store: JobStore, job_id: str) -> list[dict[str, Any]]:
+    """Heavy ops this job is waiting on (queued with lane position, running)
+    and finished ones no wake has read yet, with a compact result summary.
+    Campaign-owned and per-tick shadow ops are the evolution session's and
+    the driver's, not this wake's."""
+    root = store.job_dir(job_id)
+    ops_dir = root / "state" / "background_ops"
+    if not ops_dir.is_dir():
+        return []
+    rows: list[dict[str, Any]] = []
+    for path in sorted(ops_dir.glob("*.json")):
+        op = path.stem
+        if (
+            path.name.endswith(".result.json")
+            or op == "candidate_shadows"
+            or op.startswith("evolution_")
+        ):
+            continue
+        summary = op_status_summary(root, op)
+        if summary is None:
+            continue
+        status = json.loads(path.read_text(encoding="utf-8"))
+        state = summary["status"]
+        if state == heavy_lane.QUEUED:
+            rows.append(
+                {
+                    "op": op,
+                    "state": state,
+                    "position": heavy_lane.queue_position(
+                        store.repo_root, str(status.get("queue_entry") or "")
+                    ),
+                    "queued_at": status.get("queued_at"),
+                }
+            )
+        elif state == heavy_lane.RUNNING:
+            rows.append(
+                {"op": op, "state": state, "started_at": status.get("started_at")}
+            )
+        elif state == "done" and not status.get("harvested"):
+            try:
+                result = json.loads(
+                    (ops_dir / f"{op}.result.json").read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError):
+                result = None
+            rows.append(
+                {
+                    "op": op,
+                    "state": state,
+                    "finished_at": status.get("finished_at"),
+                    "summary": heavy_lane.result_summary(result),
+                    "read_with": (
+                        f"core_jobs(action='op_status', job_id='{job_id}', op='{op}')"
+                    ),
+                }
+            )
+    return rows
+
+
 def _drop_volatile_stable_keys(value: Any) -> Any:
     match value:
         case dict():
@@ -1226,6 +1287,7 @@ def _build_worker_prompt_sections(
         "research_substrate": _research_substrate_block(root),
         "standing_checks": standing_checks,
         "compute_status": _compute_status_block(root),
+        "background_ops": _background_ops_block(store, job_id),
         "evolution": _evolution_block(store, job_id),
         "archive": _archive_block(store, job_id),
         "restage_tasks": restage_tasks,
@@ -1323,7 +1385,10 @@ def _build_worker_prompt_sections(
         "stale infrastructure beliefs carried from memory, agendas, or "
         "prior reports are VOID when compute_status contradicts them. "
         "Completed background operations must be harvested and acted on "
-        "regardless of this wake's island assignment.\n"
+        "regardless of this wake's island assignment. Heavy ops queue "
+        "behind the live loop: submit them and END the wake — never poll or "
+        "wait on a queued op; a completion wake brings the result in "
+        "`background_ops`.\n"
         "- TOOL CALLS ARE MCP-FIRST: API/research reads (research_*, "
         "hyperliquid_*, onchain_*, core_web_search, delta lab, funding "
         "history, prices) MUST use this session's resident MCP tools — "
@@ -1936,6 +2001,7 @@ def _build_worker_prompt_sections(
                 "attribution",
                 "standing_checks",
                 "compute_status",
+                "background_ops",
                 "wake",
                 "portfolio",
             )
@@ -1953,6 +2019,7 @@ def _build_worker_prompt_sections(
                 "gate",
                 "standing_checks",
                 "compute_status",
+                "background_ops",
                 "restage_tasks",
                 "wake",
             )
@@ -1994,6 +2061,13 @@ def _build_worker_prompt_sections(
         "stable_prefix_hash": hashlib.sha256(stable_prefix.encode()).hexdigest(),
         "dynamic_context_hash": hashlib.sha256(dynamic_context.encode()).hexdigest(),
         "work_order": work_order,
+        "wake_id": wake_id,
+        # Finished ops this prompt shows; stamped harvested once it is sent.
+        "harvestable_ops": [
+            row["op"]
+            for row in prompt_payload.get("background_ops") or []
+            if row["state"] == "done"
+        ],
     }
 
 
@@ -2246,6 +2320,11 @@ def run_job_worker(
         error = "OpenCode server unavailable"
 
     if queued:
+        heavy_lane.mark_harvested(
+            store.job_dir(job.id),
+            prompt_sections["harvestable_ops"],
+            prompt_sections["wake_id"],
+        )
         # Anchor the wake-economy skip window on delivered wakes only: a
         # failed queue leaves the state untouched so the retry runs in full.
         record_full_wake(store, job, wake_source=wake_source)

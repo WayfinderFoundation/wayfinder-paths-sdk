@@ -39,6 +39,9 @@ DEFAULT_DEBOUNCE_SECONDS = 600
 # legacy jobs predate the configurable trigger name, so it always wakes.
 # regime_remediation_due retries an open remediation case until it produces a
 # proposal, bounded evaluation artifact, or structured blocker.
+# background_op_finished is the heavy lane's ping-back: an op submitted with
+# notify.wake finished, and the agent that ended its wake on the submission
+# is owed the result (the wake's background_ops block carries it).
 ALWAYS_WAKE_EVENTS = {
     "proposal_restage_requested",
     "verdict_matured",
@@ -48,6 +51,7 @@ ALWAYS_WAKE_EVENTS = {
     "research_impasse",
     "regime_shift",
     "regime_remediation_due",
+    "background_op_finished",
 }
 
 

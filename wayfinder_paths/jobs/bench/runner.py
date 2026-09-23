@@ -814,7 +814,7 @@ def _recover_dead_finalize(store: JobStore, job_id: str) -> None:
     the loop with no reason recorded. Run it in the foreground once; a
     failure names the cause instead of the clock."""
     op = op_status_summary(store.job_dir(job_id), "evolution_finalize")
-    if op is None or op.get("status") == "running":
+    if op is None or op.get("status") in {"queued", "running"}:
         return
     try:
         finalize_campaign(store, job_id)
