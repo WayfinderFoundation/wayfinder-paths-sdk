@@ -35,6 +35,11 @@ on the job panel — explain those in the same plain terms.
 So even in `intervene`, live behavior changes only after: agent proposes →
 user approves → engine validates. Say exactly that to a cautious user.
 
+The corollary: never edit a launched job's `workspace/src/` in place. The driver
+reloads that file every tick, so a direct edit is live immediately, unvalidated,
+and unrecorded (the workspace revision drifts from the pinned one). Work on a
+copy and `propose` it.
+
 ## Forward-evidence discipline (why the reports can be trusted)
 
 The wake prompt enforces the same honesty bar as backtesting: with zero

@@ -317,9 +317,8 @@ def _auto_apply_proposal(
     journal_type: str = "proposal_auto_applied",
 ) -> dict[str, Any]:
     """Shared mechanical approve/queue/launch path for autonomous tiers."""
-    proposal = store.approve_proposal(job_id, proposal_id)
+    proposal = store.approve_proposal(job_id, proposal_id, by=approved_by)
     proposal["approval"]["required"] = False
-    proposal["approval"]["by"] = approved_by
     proposal["updated_at"] = utc_now_iso()
     store.write_proposal(job_id, proposal)
     report = proposal.get("candidate_report") or {}
