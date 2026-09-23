@@ -1454,10 +1454,30 @@ _FINALIZE_EXTEND_MARKER = "state/evolution_finalize_extend.json"
 _BURST_STATE_PATH = "/tmp/wayfinder-burst-governor.json"
 _HEAVY_OP_REGISTRY_DIR = "/tmp/wayfinder-heavy-ops"
 _BURST_STATE_MAX_AGE_S = 10.0
+# runnerd's heavy lane publishes the same shape while it may SIGSTOP an op's
+# process group; a stale file just means "not paused" (nobody kills on it).
+_LANE_PAUSE_PATH = "/tmp/wayfinder-heavy-lane-pause.json"
+
+
+def _fresh_paused_pids(state_path: Path, now: datetime) -> list[int]:
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        age = max(0.0, now.timestamp() - float(state["updated_at"]))
+    except (OSError, TypeError, ValueError, KeyError):
+        return []
+    affected = state.get("affected_pids")
+    if (
+        age > _BURST_STATE_MAX_AGE_S
+        or not bool(state.get("paused"))
+        or not isinstance(affected, list)
+    ):
+        return []
+    return affected
 
 
 def _op_governor_paused(job_dir: Path, op: str, now: datetime) -> bool:
-    """True only when fresh governor state names this op or its heavy child."""
+    """True only when fresh governor or heavy-lane pause state names this op
+    or its heavy child."""
     from wayfinder_paths.jobs.execution.op_process import (
         proc_parent_pid,
         proc_start_ticks,
@@ -1472,17 +1492,19 @@ def _op_governor_paused(job_dir: Path, op: str, now: datetime) -> bool:
         op_pid = status.get("pid")
         if not isinstance(op_pid, int) or status.get("state") != "running":
             return False
-        state_path = Path(
-            os.environ.get("WAYFINDER_BURST_STATE_PATH", _BURST_STATE_PATH)
-        )
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        age = max(0.0, now.timestamp() - float(state["updated_at"]))
-        affected = state.get("affected_pids")
-        if (
-            age > _BURST_STATE_MAX_AGE_S
-            or not bool(state.get("paused"))
-            or not isinstance(affected, list)
-        ):
+        affected = [
+            *_fresh_paused_pids(
+                Path(os.environ.get("WAYFINDER_BURST_STATE_PATH", _BURST_STATE_PATH)),
+                now,
+            ),
+            *_fresh_paused_pids(
+                Path(
+                    os.environ.get("WAYFINDER_HEAVY_LANE_PAUSE_PATH", _LANE_PAUSE_PATH)
+                ),
+                now,
+            ),
+        ]
+        if not affected:
             return False
         if op_pid in affected:
             return True

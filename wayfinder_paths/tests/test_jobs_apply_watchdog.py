@@ -1618,6 +1618,41 @@ def test_governor_pause_requires_fresh_state_and_matching_pid(
     assert not _op_governor_paused(store.job_dir(job.id), "evolution_evaluate", now)
 
 
+def test_heavy_lane_pause_file_counts_as_governor_pause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "campaign-lane-pause")
+    now = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    ops = store.job_dir(job.id) / "state" / "background_ops"
+    ops.mkdir(parents=True, exist_ok=True)
+    (ops / "evolution_evaluate.json").write_text(
+        json.dumps({"state": "running", "pid": os.getpid()}), encoding="utf-8"
+    )
+    lane_file = tmp_path / "lane-pause.json"
+    monkeypatch.setenv("WAYFINDER_BURST_STATE_PATH", str(tmp_path / "absent.json"))
+    monkeypatch.setenv("WAYFINDER_HEAVY_LANE_PAUSE_PATH", str(lane_file))
+
+    _write_governor_pause(lane_file, now=now, affected_pids=[1, os.getpid()])
+    assert _op_governor_paused(store.job_dir(job.id), "evolution_evaluate", now)
+    # Stale lane state is "not paused": runnerd rewrites it every second.
+    _write_governor_pause(lane_file, now=now, affected_pids=[os.getpid()], age_s=11)
+    assert not _op_governor_paused(store.job_dir(job.id), "evolution_evaluate", now)
+    _write_governor_pause(lane_file, now=now, affected_pids=[os.getpid() + 1])
+    assert not _op_governor_paused(store.job_dir(job.id), "evolution_evaluate", now)
+    lane_file.write_text(
+        json.dumps(
+            {
+                "updated_at": now.timestamp(),
+                "paused": False,
+                "affected_pids": [os.getpid()],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert not _op_governor_paused(store.job_dir(job.id), "evolution_evaluate", now)
+
+
 def test_watchdog_extends_finalize_while_registered_child_is_paused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

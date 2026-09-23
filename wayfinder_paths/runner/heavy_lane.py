@@ -66,6 +66,22 @@ LIVE_TIER = "live-exempt"
 MIN_AVAILABLE_MB_ENV = "WAYFINDER_EVOLUTION_MIN_AVAILABLE_MB"
 DEFAULT_MIN_AVAILABLE_MB = 1100.0
 JOURNAL_DEFERRED = "heavy_op_deferred"
+JOURNAL_PAUSED = "heavy_op_paused"
+JOURNAL_RESUMED = "heavy_op_resumed"
+# Credit floors apply only to the local estimator: on the primary box the
+# background load roughly matches the baseline refill, so the bucket sits
+# flat around ~340 CPU-s and a 35% start threshold would almost never admit.
+START_FLOOR_ENV = "WAYFINDER_HEAVY_START_FLOOR_CPU_S"
+PAUSE_FLOOR_ENV = "WAYFINDER_HEAVY_PAUSE_FLOOR_CPU_S"
+DEFAULT_START_FLOOR_CPU_S = 300.0
+DEFAULT_PAUSE_FLOOR_CPU_S = 150.0
+LOCAL_ESTIMATOR = "local_estimator"
+CREDIT_DISABLED = "disabled"
+# Same shape as the image governor's state file, so isolated_phase and the
+# watchdog read both alike (fresh + paused + pid listed == paused).
+PAUSE_PATH_ENV = "WAYFINDER_HEAVY_LANE_PAUSE_PATH"
+DEFAULT_PAUSE_PATH = Path("/tmp/wayfinder-heavy-lane-pause.json")
+SIGTERM_MASK = 1 << (signal.SIGTERM - 1)
 COMPLETION_HOOK_MODULE = "wayfinder_paths.jobs.heavy_lane"
 # States the child (or a cancel) may already have written into the status
 # file; the reaper never overwrites one of these with its own exit mapping.
@@ -83,6 +99,7 @@ QUEUED_STATUS_KEYS = (
 )
 
 TierClassifier = Callable[[Mapping[str, Any]], tuple[str, float | None]]
+BurstSnapshot = Callable[[], Mapping[str, Any]]
 
 
 @dataclass
@@ -93,6 +110,15 @@ class LaneChild:
     # Popen for a child this daemon spawned; None for one adopted from a
     # previous daemon, which only has pid liveness and no exit code.
     popen: subprocess.Popen[bytes] | None
+    paused_since: float | None = None
+    paused_total_s: float = 0.0
+    # Set once a cancel's SIGTERM was found pending on the stopped group: the
+    # child must run its cancel path, so the lane never stops it again.
+    cancelling: bool = False
+
+    def paused_s(self, now: float) -> float:
+        current = now - self.paused_since if self.paused_since is not None else 0.0
+        return self.paused_total_s + max(0.0, current)
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -143,18 +169,59 @@ def min_available_mb() -> float:
     return float(os.environ.get(MIN_AVAILABLE_MB_ENV, DEFAULT_MIN_AVAILABLE_MB))
 
 
+def start_floor_cpu_s() -> float:
+    return float(os.environ.get(START_FLOOR_ENV, DEFAULT_START_FLOOR_CPU_S))
+
+
+def pause_floor_cpu_s() -> float:
+    return float(os.environ.get(PAUSE_FLOOR_ENV, DEFAULT_PAUSE_FLOOR_CPU_S))
+
+
+def lane_pause_path() -> Path:
+    return Path(os.environ.get(PAUSE_PATH_ENV, str(DEFAULT_PAUSE_PATH)))
+
+
+def process_group_pids(pgid: int) -> list[int]:
+    """Every pid in the group (pool workers, forked isolated-phase children);
+    just the leader off Linux, where there is no /proc."""
+    pids = {pgid}
+    for stat_path in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            text = stat_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        # comm may hold spaces or parens: fields resume after the last ')'.
+        fields = text[text.rfind(")") + 2 :].split()
+        if int(fields[2]) == pgid:
+            pids.add(int(stat_path.parent.name))
+    return sorted(pids)
+
+
+def sigterm_pending(pid: int) -> bool:
+    """True when a SIGTERM (op cancel) waits on a stopped group leader; it
+    cannot be handled until the group is continued."""
+    try:
+        text = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        if line.startswith("ShdPnd:"):
+            return bool(int(line.split()[1], 16) & SIGTERM_MASK)
+    return False
+
+
 class HeavyLane:
     def __init__(
         self,
         repo_root: Path,
         *,
-        burst_over_quota: Callable[[], bool],
+        burst_snapshot: BurstSnapshot,
         running_job_ids: Callable[[], Iterable[int]],
         list_jobs: Callable[[], list[dict[str, Any]]],
         tier_of: TierClassifier,
     ) -> None:
         self._repo_root = Path(repo_root)
-        self._burst_over_quota = burst_over_quota
+        self._burst_snapshot = burst_snapshot
         self._running_job_ids = running_job_ids
         self._list_jobs = list_jobs
         self._tier_of = tier_of
@@ -181,6 +248,9 @@ class HeavyLane:
                         f"(pid {entry.get('pid')}) left untracked"
                     )
                     continue
+                # A previous daemon may have stopped it; nobody else will
+                # continue it. The next tick re-applies the credit policy.
+                _kill_process_group(int(entry["pid"]), sig=signal.SIGCONT)
                 started_wall = _iso_timestamp(entry.get("started_at")) or time.time()
                 self._child = LaneChild(
                     entry=entry,
@@ -222,6 +292,7 @@ class HeavyLane:
         if self._child is not None:
             self._reap(now)
         if self._child is not None:
+            self._govern(self._child, now)
             return
         if now - self._last_admission_at < ADMISSION_INTERVAL_S:
             return
@@ -243,11 +314,22 @@ class HeavyLane:
         self._dispatch(head, now)
 
     def snapshot(self) -> dict[str, Any]:
+        now = time.time()
         snapshot = lane_snapshot(self._repo_root)
         running = snapshot.get("running")
         if self._child is not None and running is not None:
-            running["running_s"] = round(time.time() - self._child.started_wall, 1)
+            running["running_s"] = round(now - self._child.started_wall, 1)
         snapshot["admission"] = dict(self._last_admission)
+        child = self._child
+        snapshot["paused"] = child is not None and child.paused_since is not None
+        snapshot["paused_s"] = round(child.paused_s(now), 1) if child else 0.0
+        credit = self._burst_snapshot()
+        snapshot["credit"] = {
+            "source": credit.get("source"),
+            "balance_cpu_seconds": credit.get("balance_cpu_seconds"),
+            "start_floor": start_floor_cpu_s(),
+            "pause_floor": pause_floor_cpu_s(),
+        }
         return snapshot
 
     # ------------------------------------------------------------- admission
@@ -255,14 +337,12 @@ class HeavyLane:
     def admission_reason(self, now: float) -> str | None:
         """Why the head entry may not start right now; None when it may.
         Cheap checks first; the steal sample sleeps, so it runs last."""
-        if self._burst_over_quota():
-            return "over_quota"
+        credit_refusal = self._credit_refusal()
+        if credit_refusal is not None:
+            return credit_refusal
         jobs = self._list_jobs()
-        by_id = {job["id"]: job for job in jobs}
-        for job_id in self._running_job_ids():
-            job = by_id.get(job_id)
-            if job is not None and self._tier(job) == LIVE_TIER:
-                return "live_tick_running"
+        if self._live_tick_running(jobs):
+            return "live_tick_running"
         for job in jobs:
             next_run_at = job.get("next_run_at")
             if (
@@ -281,6 +361,27 @@ class HeavyLane:
         if steal is not None and steal > HEAVY_STEAL_THRESHOLD_PCT:
             return "high_steal"
         return None
+
+    def _credit_refusal(self) -> str | None:
+        credit = self._burst_snapshot()
+        source = credit.get("source")
+        if source == CREDIT_DISABLED:
+            return None
+        if source == LOCAL_ESTIMATOR:
+            if float(credit["balance_cpu_seconds"]) < start_floor_cpu_s():
+                return "low_credit"
+            return None
+        if credit.get("paused") or credit.get("allow_new_heavy") is not True:
+            return "over_quota"
+        return None
+
+    def _live_tick_running(self, jobs: list[dict[str, Any]]) -> bool:
+        by_id = {job["id"]: job for job in jobs}
+        for job_id in self._running_job_ids():
+            job = by_id.get(job_id)
+            if job is not None and self._tier(job) == LIVE_TIER:
+                return True
+        return False
 
     def _tier(self, job: Mapping[str, Any]) -> str:
         cached = self._tier_cache.get(job["name"])
@@ -327,6 +428,80 @@ class HeavyLane:
                 write_entry(current)
         except ComputeLockBusy:
             return
+
+    # ---------------------------------------------------------------- govern
+
+    def _govern(self, child: LaneChild, now: float) -> None:
+        """Stop the running op's whole process group when local credit runs
+        low (or a live tick needs the CPU), continue it once credit is back.
+        A fresh image governor pauses heavy children itself."""
+        credit = self._burst_snapshot()
+        source = credit.get("source")
+        if source != LOCAL_ESTIMATOR:
+            if child.paused_since is not None:
+                balance = credit.get("balance_cpu_seconds")
+                self._resume(child, now, balance, f"credit_source_{source}")
+        else:
+            balance = float(credit["balance_cpu_seconds"])
+            if child.paused_since is None:
+                reason = None if child.cancelling else self._pause_reason(balance)
+                if reason is not None:
+                    self._pause(child, now, balance, reason)
+            elif sigterm_pending(child.pid):
+                child.cancelling = True
+                self._resume(child, now, balance, "cancel_pending")
+            elif balance >= start_floor_cpu_s():
+                self._resume(child, now, balance, "credit_recovered")
+        atomic_write_json(
+            lane_pause_path(),
+            {
+                "paused": child.paused_since is not None,
+                "affected_pids": process_group_pids(child.pid),
+                "updated_at": time.time(),
+            },
+        )
+
+    def _pause_reason(self, balance: float) -> str | None:
+        if balance < pause_floor_cpu_s():
+            return "low_credit"
+        if balance < start_floor_cpu_s() and self._live_tick_running(self._list_jobs()):
+            return "live_tick_running"
+        return None
+
+    def _pause(self, child: LaneChild, now: float, balance: Any, reason: str) -> None:
+        _kill_process_group(child.pid, sig=signal.SIGSTOP)
+        child.paused_since = now
+        logger.warning(
+            f"heavy lane paused {child.entry['op']} for {child.entry['job_id']} "
+            f"(pgid {child.pid}): {reason}, balance {balance} CPU-s"
+        )
+        self._journal_pause_change(child, JOURNAL_PAUSED, balance, reason)
+
+    def _resume(self, child: LaneChild, now: float, balance: Any, reason: str) -> None:
+        _kill_process_group(child.pid, sig=signal.SIGCONT)
+        assert child.paused_since is not None
+        paused_for = max(0.0, now - child.paused_since)
+        child.paused_total_s += paused_for
+        child.paused_since = None
+        logger.info(
+            f"heavy lane resumed {child.entry['op']} for {child.entry['job_id']} "
+            f"(pgid {child.pid}) after {paused_for:.0f}s: {reason}, "
+            f"balance {balance} CPU-s"
+        )
+        self._journal_pause_change(child, JOURNAL_RESUMED, balance, reason)
+
+    def _journal_pause_change(
+        self, child: LaneChild, event: str, balance: Any, reason: str
+    ) -> None:
+        JobStore(repo_root=self._repo_root).append_journal(
+            str(child.entry["job_id"]),
+            {
+                "type": event,
+                "op": child.entry["op"],
+                "reason": reason,
+                "balance_cpu_seconds": balance,
+            },
+        )
 
     # -------------------------------------------------------------- dispatch
 
@@ -416,7 +591,8 @@ class HeavyLane:
             alive = recorded_process_alive(_identity_record(child.entry))
         if alive:
             max_runtime = child.entry.get("max_runtime_s")
-            if max_runtime is None or now - child.started_wall <= float(max_runtime):
+            active_s = now - child.started_wall - child.paused_s(now)
+            if max_runtime is None or active_s <= float(max_runtime):
                 return
             logger.warning(
                 f"heavy lane killing {child.entry['op']} for {child.entry['job_id']} "
@@ -430,6 +606,7 @@ class HeavyLane:
                     pass
                 exit_code = child.popen.returncode
             self._child = None
+            lane_pause_path().unlink(missing_ok=True)
             self._finalize(
                 child.entry,
                 verb="timed out",
@@ -439,6 +616,7 @@ class HeavyLane:
             )
             return
         self._child = None
+        lane_pause_path().unlink(missing_ok=True)
         self._finalize(
             child.entry, verb="reaped", state=None, exit_code=exit_code, reason=None
         )
