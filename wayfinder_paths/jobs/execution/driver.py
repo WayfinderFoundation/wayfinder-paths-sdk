@@ -92,6 +92,7 @@ def run_scheduled_tick(job_dir: str | Path | None = None) -> dict[str, Any]:
     store = None
     job = None
     divergence: dict[str, Any] | None = None
+    halted_before_tick = False
     try:
         store = JobStore()
         job = WayfinderJob.from_dict(_load_job_yaml(root))
@@ -109,6 +110,7 @@ def run_scheduled_tick(job_dir: str | Path | None = None) -> dict[str, Any]:
                 "action": "downgraded_to_paper",
             }
             mode = "paper"
+        halted_before_tick = read_halt(root) is not None
         payload = asyncio.run(tick_job(job, root, mode, store=store))
     except Exception as exc:
         payload = {"ok": False, "error": str(exc)}
@@ -151,6 +153,12 @@ def run_scheduled_tick(job_dir: str | Path | None = None) -> dict[str, Any]:
     # `wayfinder job tick` runs cannot wake the advisor.
     if store is not None and job is not None:
         events = _tick_trigger_events(payload)
+        if halted_before_tick:
+            # A standing halt re-reports itself every tick; the owner email and
+            # the agent wake belong to the tick that latched it, not to each
+            # tick after (it woke majors-5m-lab every 10 min and drained the
+            # box's burst credit to zero on 2026-09-23).
+            events = [event for event in events if event != "risk_halt"]
         if events:
             fire_triggers(store, job, events, source="scheduled_tick")
     print(json.dumps(payload, default=str))

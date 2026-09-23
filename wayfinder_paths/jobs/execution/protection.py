@@ -58,9 +58,25 @@ async def monitor_native_protection(
         if group_id:
             groups.setdefault(group_id, raw_group)
     breached_groups: set[str] = set()
+    release_notes: list[dict[str, Any]] = []
 
-    for symbol, protection in protections.items():
+    for symbol, protection in list(protections.items()):
         cloid = str(protection.get("client_order_id") or "")
+        if symbol not in state.ledger.positions:
+            # The job holds nothing here. A venue drops a reduce-only stop
+            # with its position, so the cancel at close can come back
+            # unconfirmed and leave a record for an order that no longer
+            # exists; one still resting would act on another owner's size.
+            release_notes.append(
+                await _release_flat_protection(
+                    brokers=brokers,
+                    symbol=symbol,
+                    protection=protection,
+                    resting=bool(cloid) and cloid in open_cloids,
+                    state=state,
+                )
+            )
+            continue
         position = venue_positions.get(symbol)
         protected_size = _optional_positive_float(protection.get("size"))
         size_matches = (
@@ -133,9 +149,9 @@ async def monitor_native_protection(
             )
 
     if not reasons:
-        return [], [], [], None
+        return release_notes, [], [], None
 
-    notes: list[dict[str, Any]] = [
+    notes: list[dict[str, Any]] = release_notes + [
         {
             "kind": "native_protection_breach",
             "reason": reason,
@@ -287,6 +303,50 @@ def _group_loss_limit(group: Mapping[str, Any]) -> float | None:
     if entry_gross is not None:
         limits.append(entry_gross * float(group.get("max_entry_gross_loss_pct") or 0.0))
     return min((value for value in limits if value > 0), default=None)
+
+
+async def _release_flat_protection(
+    *,
+    brokers: Mapping[str, Any],
+    symbol: str,
+    protection: Mapping[str, Any],
+    resting: bool,
+    state: EngineState,
+) -> dict[str, Any]:
+    client_order_id = str(protection.get("client_order_id") or "")
+    if not resting:
+        state.native_protections.pop(symbol, None)
+        return {
+            "kind": "native_protection_released",
+            "symbol": symbol,
+            "client_order_id": client_order_id,
+            "reason": "job flat and the stop is no longer on the venue",
+        }
+    venue = str(protection.get("venue") or "")
+    broker = brokers.get(venue) or (
+        next(iter(brokers.values())) if len(brokers) == 1 else None
+    )
+    if broker is None or not hasattr(broker, "cancel_stop_loss"):
+        return {
+            "kind": "native_protection_release_pending",
+            "symbol": symbol,
+            "client_order_id": client_order_id,
+            "reason": "job flat but its stop is still resting and no broker can cancel it",
+        }
+    canceled = await broker.cancel_stop_loss(
+        symbol=symbol, client_order_id=client_order_id
+    )
+    if canceled.confirmed:
+        state.native_protections.pop(symbol, None)
+    return {
+        "kind": "native_protection_released"
+        if canceled.confirmed
+        else "native_protection_release_pending",
+        **canceled.to_dict(),
+        "reason": "job flat; canceled its resting stop"
+        if canceled.confirmed
+        else "job flat; stop cancel unconfirmed, retrying next tick",
+    }
 
 
 async def _cancel_closed_stop(

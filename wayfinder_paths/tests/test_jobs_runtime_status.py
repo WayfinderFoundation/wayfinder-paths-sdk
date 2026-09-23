@@ -16,6 +16,7 @@ from wayfinder_paths.jobs.execution.driver import (
     _tick_trigger_events,
     run_scheduled_tick,
 )
+from wayfinder_paths.jobs.halt import request_halt
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import snapshot_job
@@ -235,3 +236,46 @@ def test_driver_runs_live_when_declared_live(tmp_path, monkeypatch):
     payload = run_scheduled_tick()
     assert captured["mode"] == "live"
     assert not payload.get("guard_events")
+
+
+async def _halted_tick(job_arg, root, mode, **kw):
+    return {
+        "ok": True,
+        "snapshot": {"status": "risk_halt"},
+        "guard_events": [{"kind": "manual_halt", "reason": "manual halt: x"}],
+    }
+
+
+def test_standing_halt_does_not_rewake_the_agent_every_tick(tmp_path, monkeypatch):
+    store, job = _job(tmp_path, mode="live")
+    fired: list[list[str]] = []
+    monkeypatch.setattr(driver_mod, "tick_job", _halted_tick)
+    monkeypatch.setattr(
+        driver_mod,
+        "fire_triggers",
+        lambda store, job, events, **k: fired.append(events),
+    )
+    monkeypatch.setenv("WAYFINDER_JOB_DIR", str(store.job_dir(job.id)))
+    monkeypatch.setenv("WAYFINDER_JOB_MODE", "live")
+    request_halt(store, job.id, reason="owned native stop missing for XRP")
+
+    run_scheduled_tick()
+
+    assert all("risk_halt" not in events for events in fired)
+
+
+def test_the_tick_that_latches_a_halt_still_wakes_the_agent(tmp_path, monkeypatch):
+    store, job = _job(tmp_path, mode="live")
+    fired: list[list[str]] = []
+    monkeypatch.setattr(driver_mod, "tick_job", _halted_tick)
+    monkeypatch.setattr(
+        driver_mod,
+        "fire_triggers",
+        lambda store, job, events, **k: fired.append(events),
+    )
+    monkeypatch.setenv("WAYFINDER_JOB_DIR", str(store.job_dir(job.id)))
+    monkeypatch.setenv("WAYFINDER_JOB_MODE", "live")
+
+    run_scheduled_tick()
+
+    assert fired and "risk_halt" in fired[0]
