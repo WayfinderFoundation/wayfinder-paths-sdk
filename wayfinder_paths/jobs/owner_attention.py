@@ -480,6 +480,21 @@ def _decided_item(
             "decision": "reject",
             "evidence": _compact(event.get("reason_codes")),
         }
+    if event_type == "proposal_apply_reverted":
+        pid = str(event.get("proposal_id") or "")
+        revision = str(event.get("prior_applied_revision") or "")[:12]
+        return {
+            "kind": "apply_reverted",
+            "job_id": job_id,
+            "ref_id": pid,
+            "ts": ts,
+            "decision": "reverted",
+            "evidence": _compact(
+                f"approved change {pid} had been applied (revision {revision}) "
+                f"and was reverted by {event.get('by') or 'the pipeline'} "
+                f"({event.get('via')}): {event.get('reason')}"
+            ),
+        }
     if event_type in _LIFECYCLE_PARK_EVENTS:
         return {
             "kind": "lifecycle_park",

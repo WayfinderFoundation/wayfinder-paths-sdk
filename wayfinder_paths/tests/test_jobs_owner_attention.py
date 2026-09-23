@@ -600,6 +600,34 @@ def test_probation_items_lead_with_leg_name_and_criterion(tmp_path: Path) -> Non
     assert ghost["evidence"] == "leg ghost-leg killed"
 
 
+def test_reverted_apply_lands_in_decided_feed(tmp_path: Path) -> None:
+    """A machinery revert of an applied change is mechanical-with-visibility:
+    it rides the decided feed with the proposal and the reason, never the
+    approval queue (needs_you kinds are pinned to the FE union)."""
+    store, job_id = _store(tmp_path, wallet_label="main")
+    _journal(
+        store,
+        job_id,
+        {
+            "type": "proposal_apply_reverted",
+            "proposal_id": "prop-rv",
+            "reason": "re-stage gate failed: backtest regressed",
+            "prior_applied_revision": "abcdef1234567890",
+            "via": "rejected",
+            "by": "agent",
+        },
+    )
+
+    attention = build_owner_attention(store, job_id)
+
+    item = next(
+        i for i in attention["decided_autonomously"] if i["kind"] == "apply_reverted"
+    )
+    assert item["ref_id"] == "prop-rv" and item["decision"] == "reverted"
+    assert "prop-rv" in item["evidence"] and "backtest regressed" in item["evidence"]
+    assert _needs_you(store, job_id) == []
+
+
 def test_decided_feed_is_windowed_and_capped(tmp_path: Path) -> None:
     store, job_id = _store(tmp_path)
     journal_path = store.job_dir(job_id) / "journal.jsonl"

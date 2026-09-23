@@ -66,7 +66,7 @@ from wayfinder_paths.jobs.robustness import (
     latest_robustness_summary,
     required_robustness_acknowledgements,
 )
-from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.store import JobStore, failure_kind_of
 from wayfinder_paths.jobs.sync import sync_all_jobs
 from wayfinder_paths.jobs.validation import (
     REQUIRED_INTENT_FIELDS,
@@ -1266,7 +1266,12 @@ def restage_proposal(
 
     If the re-staged candidate fails the approve-time gate on the new base,
     the proposal is auto-rejected (housekeeping) — the world changed
-    materially, so the owner must review a fresh proposal instead.
+    materially, so the owner must review a fresh proposal instead. A failure
+    that is NOT a verdict on the change — a box condition (OOM, lock,
+    timeout, missing dataset) or a fail-closed gate that refused to evaluate
+    — never rejects: the proposal stays approved with ``retry_needed`` and
+    the re-stage request alive, and raises TransientInfrastructureError so
+    the apply watchdog (params) or the next agent wake (code) retries it.
     """
     proposal = store.load_proposal(job_id, proposal_id)
     if proposal["status"] != "approved":
@@ -1293,26 +1298,47 @@ def restage_proposal(
     old_candidate = str((proposal.get("candidate_report") or {}).get("revision") or "")
     base_revision = compute_workspace_revision(root)
 
-    candidate_descriptor = _prepare_candidate_workspace(
-        store, job_id, proposal_id, force_fresh=True
-    )
-    candidate_dir = store.repo_root / candidate_descriptor["candidate_dir"]
-    _overlay_change(candidate_dir, candidate_source=candidate_source, params=params)
-    changed_files = _diff_workspaces(root, candidate_dir)
+    try:
+        candidate_descriptor = _prepare_candidate_workspace(
+            store, job_id, proposal_id, force_fresh=True
+        )
+        candidate_dir = store.repo_root / candidate_descriptor["candidate_dir"]
+        _overlay_change(candidate_dir, candidate_source=candidate_source, params=params)
+        changed_files = _diff_workspaces(root, candidate_dir)
 
-    proposal["base_revision"] = base_revision
-    proposal["changed_files"] = changed_files
-    application.update(candidate_descriptor)
-    application["restage_requested"] = False
-    application["error"] = None
-    _, candidate_report = _generate_candidate_report(
-        store,
-        job_id,
-        proposal,
-        candidate_dir,
-        base_revision=base_revision,
-        pid=proposal_id,
-    )
+        proposal["base_revision"] = base_revision
+        proposal["changed_files"] = changed_files
+        application.update(candidate_descriptor)
+        application["restage_requested"] = False
+        application["error"] = None
+        application.pop("retry_needed", None)
+        _, candidate_report = _generate_candidate_report(
+            store,
+            job_id,
+            proposal,
+            candidate_dir,
+            base_revision=base_revision,
+            pid=proposal_id,
+        )
+    except Exception as exc:
+        if (
+            not isinstance(exc, (TransientInfrastructureError, ComputeLockBusy))
+            and classify_failure(str(exc)) != "infrastructure"
+        ):
+            raise
+        _defer_restage_for_retry(
+            store,
+            job_id,
+            proposal_id,
+            base_revision=base_revision,
+            reason=str(exc),
+            failure_kind="infrastructure",
+        )
+        raise TransientInfrastructureError(
+            "transient infrastructure failure — retry when the box is quiet: "
+            f"re-stage of approved proposal {proposal_id} deferred, approval "
+            f"kept: {str(exc)[:300]}"
+        ) from exc
     proposal["candidate_report"] = candidate_report
     proposal["updated_at"] = utc_now_iso()
     store.write_proposal(job_id, proposal)
@@ -1336,6 +1362,31 @@ def restage_proposal(
         # Exact approve-time gate semantics (live-ready + candidate freshness).
         store._ensure_candidate_report_gate(job_id, proposal, allow_ungated=False)
     except ValueError as exc:
+        # Classify on THIS re-stage's evidence only (the fresh report and the
+        # gate's own words) — the store's rejection guard also reads stale
+        # error fields from earlier attempts, which could dress a genuine
+        # red gate up as a box condition.
+        summary = candidate_report.get("validation_summary") or {}
+        failure_kind = (
+            "infrastructure"
+            if summary.get("failure_kind") == "infrastructure"
+            else failure_kind_of(str(exc))
+        )
+        if failure_kind:
+            _defer_restage_for_retry(
+                store,
+                job_id,
+                proposal_id,
+                base_revision=base_revision,
+                reason=str(exc),
+                failure_kind=failure_kind,
+            )
+            raise TransientInfrastructureError(
+                "transient infrastructure failure — retry when the box is "
+                f"quiet: re-stage gate on current base {base_revision} could "
+                f"not evaluate approved proposal {proposal_id} ({failure_kind}), "
+                f"approval kept: {str(exc)[:300]}"
+            ) from exc
         rejected = store.reject_proposal(
             job_id,
             proposal_id,
@@ -1355,6 +1406,49 @@ def restage_proposal(
     launch_application(store, job_id, proposal_id)
     sync_all_jobs(store=store)
     return store.load_proposal(job_id, proposal_id)
+
+
+def _defer_restage_for_retry(
+    store: JobStore,
+    job_id: str,
+    proposal_id: str,
+    *,
+    base_revision: str,
+    reason: str,
+    failure_kind: str,
+) -> None:
+    """Park an approved proposal whose re-stage could not produce a verdict.
+
+    Production (2026-08-11, 2026-08-24): owner-approved, already-applied fixes
+    were rejected on re-stage over an OOM'd backtest and a governance gate
+    that refused to evaluate (``economic_ready=None``) — no human said no,
+    and the jobs kept the unsafe behaviour for weeks. Neither is evidence
+    against the change, so the approval and the re-stage request stay, the
+    wait is recorded on the proposal and in the journal, and the apply
+    watchdog (params) or the next agent wake (code) retries. Reads the
+    on-disk record: the caller's copy holds un-persisted candidate edits.
+    """
+    proposal = store.load_proposal(job_id, proposal_id)
+    application = proposal["application"]
+    application["restage_requested"] = True
+    application["restage_last_error"] = reason[:300]
+    application["retry_needed"] = {
+        "reason": reason[:300],
+        "failure_kind": failure_kind,
+        "ts": utc_now_iso(),
+    }
+    proposal["updated_at"] = utc_now_iso()
+    store.write_proposal(job_id, proposal)
+    store.append_journal(
+        job_id,
+        {
+            "type": "proposal_apply_retry_needed",
+            "proposal_id": proposal_id,
+            "failure_kind": failure_kind,
+            "reason": reason[:300],
+            "base_revision": base_revision,
+        },
+    )
 
 
 def _replace_tree(source: Path, destination: Path) -> None:

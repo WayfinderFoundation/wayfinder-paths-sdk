@@ -807,6 +807,19 @@ class JobStore:
         if kind is not None and kind not in REJECTION_KINDS:
             raise ValueError(f"rejection kind must be one of {sorted(REJECTION_KINDS)}")
         rejection_kind = kind or _infer_rejection_kind(reason)
+        # An owner saying no to a change they had applied is their decision;
+        # machinery rejecting it (re-stage mechanics) is a revert they must hear about.
+        reverted = (
+            self._note_apply_reverted(
+                job_id,
+                proposal,
+                reason=reason or "rejected without a reason",
+                via="rejected",
+                by=by,
+            )
+            if by != "owner"
+            else None
+        )
         proposal["status"] = "rejected"
         proposal["approval"]["status"] = "rejected"
         # Provenance is the difference between "the owner said no" (binding —
@@ -863,6 +876,15 @@ class JobStore:
                 "reason": reason,
             },
         )
+        if reverted is not None:
+            self.append_journal(
+                job_id,
+                {
+                    "type": "proposal_apply_reverted",
+                    "proposal_id": proposal_id,
+                    **reverted,
+                },
+            )
         self.refresh_scorecard(job_id)
         return proposal
 
@@ -928,6 +950,18 @@ class JobStore:
         application["runner_responses"] = runner_responses or []
         application["promoted_revision"] = promoted_revision
         application["rollback"] = rollback
+        reverted = None
+        if status == "applied":
+            application.pop("reverted", None)
+        elif promoted_revision and (rollback or {}).get("restored"):
+            reverted = self._note_apply_reverted(
+                job_id,
+                proposal,
+                reason=error or "apply failed after promotion",
+                via="rollback",
+                by="system",
+                prior_applied_revision=promoted_revision,
+            )
         proposal["updated_at"] = utc_now_iso()
         self.write_proposal(job_id, proposal)
         from wayfinder_paths.jobs.remediation import handle_remediation_application
@@ -943,6 +977,15 @@ class JobStore:
                 "error": error,
             },
         )
+        if reverted is not None:
+            self.append_journal(
+                job_id,
+                {
+                    "type": "proposal_apply_reverted",
+                    "proposal_id": proposal_id,
+                    **reverted,
+                },
+            )
         self.refresh_scorecard(job_id)
         return proposal
 
@@ -1037,6 +1080,53 @@ class JobStore:
         proposal.setdefault("scenario_plan", {"scenarios": []})
         return proposal
 
+    def _note_apply_reverted(
+        self,
+        job_id: str,
+        proposal: dict[str, Any],
+        *,
+        reason: str,
+        via: str,
+        by: str,
+        prior_applied_revision: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Mark a proposal whose promoted change is no longer in the workspace.
+
+        Owner-facing by design: an approved change that reached the workspace
+        and was then pulled back by machinery (an apply rolled back after
+        promotion, a re-stage that rejected) left a production job running
+        the unsafe behaviour for weeks with nobody told. The marker feeds the
+        health issue, the owner-attention feed and the wake prompt; the
+        caller journals ``proposal_apply_reverted`` from the returned payload.
+        None when the proposal was never promoted, or when this revision's
+        revert is already recorded (a rollback followed by the rejection of
+        the same proposal is one revert, not two).
+        """
+        application = proposal["application"]
+        promoted = prior_applied_revision or self._last_promoted_revision(
+            job_id, str(proposal["proposal_id"])
+        )
+        if not promoted:
+            return None
+        if (application.get("reverted") or {}).get(
+            "prior_applied_revision"
+        ) == promoted:
+            return None
+        payload = {
+            "reason": reason[:300],
+            "prior_applied_revision": promoted,
+            "via": via,
+            "by": by,
+        }
+        application["reverted"] = {**payload, "ts": utc_now_iso()}
+        return payload
+
+    def _last_promoted_revision(self, job_id: str, proposal_id: str) -> str | None:
+        for row in reversed(self.read_jsonl(job_id, "versions/revisions.jsonl")):
+            if str(row.get("proposal_id") or "") == proposal_id:
+                return str(row.get("revision") or "") or None
+        return None
+
     def _set_application_status(
         self, proposal: dict[str, Any], status: ApplicationStatus
     ) -> None:
@@ -1100,6 +1190,17 @@ def _contains_fail_closed_escalate(text: str) -> bool:
     the line.
     """
     return "escalate:" in (text or "").lower()
+
+
+def failure_kind_of(text: str) -> str | None:
+    """Why ``text`` must not count as evidence against a change: a box
+    condition ("infrastructure"), a fail-closed gate that refused to
+    evaluate ("escalate"), or None for a genuine verdict."""
+    if classify_failure(text) == "infrastructure":
+        return "infrastructure"
+    if _contains_fail_closed_escalate(text):
+        return "escalate"
+    return None
 
 
 def _latest_failure_text(proposal: Mapping[str, Any], reason: str | None) -> str:

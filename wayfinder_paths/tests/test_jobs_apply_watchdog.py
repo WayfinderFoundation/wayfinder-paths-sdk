@@ -746,6 +746,83 @@ def test_watchdog_mechanically_restages_params_carryover(
     assert len(restaged) == 1
 
 
+def test_watchdog_retries_a_restage_deferred_by_a_box_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """End to end: the mechanical re-stage hits an OOM'd backtest, the
+    proposal is parked approved + retry_needed (not rejected, one bounded
+    attempt consumed), and the next watchdog pass on a quiet box re-stages
+    and re-queues it."""
+    from wayfinder_paths.jobs.application import validate_candidate_bundle
+    from wayfinder_paths.tests.test_jobs_gating import _make_job as _make_gated_job
+    from wayfinder_paths.tests.test_jobs_propose import _propose_params
+
+    _patch_runner(monkeypatch)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.run_job_worker",
+        lambda job_id, *, mode, **k: {"status": "queued"},
+    )
+    launches: list[str] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.apply_launcher.launch_application",
+        lambda store, job_id, pid: launches.append(pid) or {"launched": pid},
+    )
+    monkeypatch.setenv("WAYFINDER_PROPOSE_LOCK_WAIT_SECONDS", "0.1")
+    store, job_id, root = _make_gated_job(tmp_path)
+    pid = _propose_params(store, job_id)["proposal_id"]
+    script = root / "workspace" / "src" / "strategy.py"
+    script.write_text(
+        script.read_text(encoding="utf-8") + "\n# drift\n", encoding="utf-8"
+    )
+    store.approve_proposal(job_id, pid)
+    claim_application(store, job_id, pid)
+    complete_application(store, job_id, pid, status="applied")
+    assert store.load_proposal(job_id, pid)["application"]["restage_requested"]
+
+    box = {"oom": True}
+
+    def validate(*args, **kwargs):  # noqa: ANN002, ANN003
+        if box["oom"]:
+            return {
+                "status": "failed",
+                "checks": [
+                    {
+                        "name": "candidate_backtest_valid",
+                        "passed": False,
+                        "error": "backtest child killed (signal 9) — out of memory",
+                    }
+                ],
+            }
+        return validate_candidate_bundle(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.proposals.validate_candidate_bundle", validate
+    )
+
+    first = recover_stalled_applications(store=store)
+
+    assert "mechanical_restage" not in [e.get("action") for e in first["recovered"]]
+    parked = store.load_proposal(job_id, pid)
+    assert parked["status"] == "approved"
+    assert parked["application"]["restage_requested"] is True
+    assert parked["application"]["retry_needed"]["failure_kind"] == "infrastructure"
+    assert parked["application"]["restage_attempts"] == 1
+    types = _journal_types(store, job_id)
+    assert "proposal_apply_retry_needed" in types
+    assert "proposal_rejected" not in types
+    assert launches == []
+
+    box["oom"] = False
+    second = recover_stalled_applications(store=store)
+
+    assert "mechanical_restage" in [e.get("action") for e in second["recovered"]]
+    restaged = store.load_proposal(job_id, pid)
+    assert restaged["status"] == "approved"
+    assert restaged["application"]["status"] == "queued"
+    assert "retry_needed" not in restaged["application"]
+    assert launches == [pid]
+
+
 def test_watchdog_renags_code_change_restage(tmp_path: Path, monkeypatch) -> None:
     """A code-change re-stage the agent has not resolved gets the wake
     re-fired after the nag window — once per window, not every pass."""
