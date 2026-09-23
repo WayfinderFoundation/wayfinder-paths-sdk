@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import time
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -67,6 +71,15 @@ from wayfinder_paths.jobs.features import append_feature, list_features
 from wayfinder_paths.jobs.forward_artifacts import load_forward_view
 from wayfinder_paths.jobs.gating import evaluate_live_gate
 from wayfinder_paths.jobs.halt import clear_halt, request_halt
+from wayfinder_paths.jobs.heavy_lane import (
+    entries as lane_entries,
+)
+from wayfinder_paths.jobs.heavy_lane import (
+    lane_enabled,
+    queue_position,
+    submit_heavy_op,
+    worker_budget,
+)
 from wayfinder_paths.jobs.launch import (
     evaluate_launch_checklist,
     launch_job,
@@ -122,6 +135,111 @@ from wayfinder_paths.jobs.worker import nudge_evolution_session, run_job_worker
 
 def _echo_json(data: Any) -> None:
     click.echo(json.dumps(data, indent=2, default=str))
+
+
+LANE_POLL_S = 5.0
+
+_DETACH_OPTION = click.option(
+    "--detach",
+    is_flag=True,
+    default=False,
+    help="Submit the run and return at once instead of waiting on it; the "
+    "status file under the job's state/background_ops/ tracks it.",
+)
+_FOREGROUND_OPTION = click.option(
+    "--foreground",
+    is_flag=True,
+    default=False,
+    help="Run in this process, bypassing the compute lane. On a hosted box "
+    "this is worker-capped so the live loop keeps a core.",
+)
+
+
+def _read_json_file(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _lane_progress_line(store: JobStore, status: dict[str, Any]) -> str:
+    if status.get("state") == "queued":
+        entry_id = str(status.get("queue_entry") or "")
+        entry = next(
+            (e for e in lane_entries(store.repo_root) if e.get("entry_id") == entry_id),
+            {},
+        )
+        line = f"queued behind the live loop: position {queue_position(store.repo_root, entry_id)}"
+        reason = (entry.get("admission") or {}).get("last_reason")
+        return f"{line} ({reason})" if reason else line
+    try:
+        started = datetime.fromisoformat(str(status.get("started_at")))
+        minutes = int((datetime.now(UTC) - started).total_seconds() // 60)
+    except (TypeError, ValueError):
+        minutes = 0
+    return f"running for {minutes} min (pid {status.get('pid')})"
+
+
+def _wait_for_lane_op(store: JobStore, job_id: str, op: str) -> Any:
+    """Block on a lane-submitted op, narrating the queue on stderr, and hand
+    back its result; anything but `done` exits non-zero."""
+    ops_dir = store.job_dir(job_id) / "state" / "background_ops"
+    status_path = ops_dir / f"{op}.json"
+    last_line: str | None = None
+    while True:
+        status = _read_json_file(status_path)
+        if not isinstance(status, dict):
+            raise click.ClickException(f"{op} for {job_id}: status file vanished")
+        state = status.get("state")
+        if state not in {"queued", "running"}:
+            break
+        line = _lane_progress_line(store, status)
+        if line != last_line:
+            click.echo(line, err=True)
+            last_line = line
+        time.sleep(LANE_POLL_S)
+    if state == "done":
+        return _read_json_file(ops_dir / f"{op}.result.json")
+    _echo_json(
+        {
+            "ok": False,
+            "error": {"code": f"op_{state}", "message": f"{op} ended {state}"},
+            "status": status,
+            "log": str(ops_dir / f"{op}.log"),
+        }
+    )
+    raise click.exceptions.Exit(1)
+
+
+def _run_heavy_op(
+    store: JobStore,
+    job_id: str,
+    op: str,
+    kwargs: dict[str, Any],
+    *,
+    foreground: bool,
+    detach: bool,
+    inline: Callable[[], Any],
+    detached_by_default: bool = False,
+) -> Any:
+    """A hosted box queues heavy work behind the live loop and waits on it
+    (`--detach` returns the submission, `--foreground` bypasses the lane);
+    everywhere else the command runs as it always did."""
+    if foreground:
+        if lane_enabled():
+            # Sharing the box with a live tick: leave it a core.
+            os.environ.setdefault(
+                "WAYFINDER_MAX_BACKTEST_WORKERS", str(worker_budget())
+            )
+        return inline()
+    if lane_enabled():
+        submitted = submit_heavy_op(
+            store.repo_root, job_id, op, kwargs, submitted_by="cli"
+        )
+        return submitted if detach else _wait_for_lane_op(store, job_id, op)
+    if detach or detached_by_default:
+        return spawn_detached_op(store, job_id, op, kwargs)
+    return inline()
 
 
 @click.group(
@@ -563,6 +681,8 @@ def acknowledge_risk_cmd(job_id: str, codes: tuple[str, ...], memo: str | None) 
     "visualization) instead of the compact stats summary. The full result is "
     "always written to results/backtest/ regardless.",
 )
+@_DETACH_OPTION
+@_FOREGROUND_OPTION
 def backtest_cmd(
     job_id: str,
     grid_path: str | None,
@@ -570,21 +690,41 @@ def backtest_cmd(
     parallel: str,
     quick_bars: int | None,
     full: bool,
+    detach: bool,
+    foreground: bool,
 ) -> None:
     store = JobStore()
-    result = backtest_execution_job(
+
+    def inline() -> Any:
+        result = backtest_execution_job(
+            job_id,
+            grid_path=grid_path,
+            workers=workers,
+            parallel=parallel,
+            quick_bars=quick_bars,
+            store=store,
+        )
+        # Default to the ~2 KB summary — the full payload is ~8 MB and lives on
+        # disk (browse it with `job backtest-view`). `--full` restores the dump.
+        return result if full else summarize_backtest_payload(result)
+
+    result = _run_heavy_op(
+        store,
         job_id,
-        grid_path=grid_path,
-        workers=workers,
-        parallel=parallel,
-        quick_bars=quick_bars,
-        store=store,
+        "backtest_job",
+        {
+            "job_id": job_id,
+            "grid_path": grid_path,
+            "workers": workers,
+            "parallel": parallel,
+            "quick_bars": quick_bars,
+            "full": full,
+        },
+        foreground=foreground,
+        detach=detach,
+        inline=inline,
     )
-    # Default to the ~2 KB summary — the full payload is ~8 MB and lives on disk
-    # (browse it with `job backtest-view`). `--full` restores the old dump.
-    _echo_json(
-        {"ok": True, "result": result if full else summarize_backtest_payload(result)}
-    )
+    _echo_json({"ok": True, "result": result})
 
 
 @job_cli.command(
@@ -730,6 +870,8 @@ def tick_cmd(job_id: str, mode: str | None, dry_run: bool) -> None:
         "--optimizer optuna; --rank-by becomes the tie-break."
     ),
 )
+@_DETACH_OPTION
+@_FOREGROUND_OPTION
 def experiments_cmd(
     job_id: str,
     grid_path: str | None,
@@ -747,6 +889,8 @@ def experiments_cmd(
     n_trials: int,
     seed: int,
     objectives: str | None,
+    detach: bool,
+    foreground: bool,
 ) -> None:
     store = JobStore()
     if list_only or not grid_path:
@@ -779,19 +923,27 @@ def experiments_cmd(
     )
     if objectives and optimizer != "optuna":
         raise click.UsageError("--objectives requires --optimizer optuna")
-    result = run_experiment(
+    experiment_kwargs: dict[str, Any] = {
+        "rank_by": rank_by,
+        "workers": workers,
+        "parallel": parallel,
+        "walk_forward": walk_forward,
+        "optimizer": optimizer,
+        "optuna_options": optuna_options,
+        "quick_bars": quick_bars,
+    }
+    result = _run_heavy_op(
+        store,
         job_id,
-        grid_path,
-        rank_by=rank_by,
-        workers=workers,
-        parallel=parallel,
-        walk_forward=walk_forward,
-        optimizer=optimizer,
-        optuna_options=optuna_options,
-        quick_bars=quick_bars,
-        store=store,
+        "experiments",
+        {"job_id": job_id, "grid": grid_path, "full": False, **experiment_kwargs},
+        foreground=foreground,
+        detach=detach,
+        inline=lambda: run_experiment(
+            job_id, grid_path, store=store, **experiment_kwargs
+        ),
     )
-    wf_report = (result.get("backtest") or {}).get("walk_forward")
+    wf_report = ((result or {}).get("backtest") or {}).get("walk_forward")
     if wf_report:
         click.echo(format_fold_table(wf_report), err=True)
     _echo_json({"ok": True, "result": result})
@@ -1039,6 +1191,8 @@ def signal_check_cmd(
     help="Declared recent-window family: scan only the trailing N days. "
     "Survivors cap at PROBATION (forward paper adjudicates).",
 )
+@_DETACH_OPTION
+@_FOREGROUND_OPTION
 def signal_scan_cmd(
     job_id: str,
     symbols: str | None,
@@ -1049,19 +1203,30 @@ def signal_scan_cmd(
     campaign: str | None,
     condition_regime: bool,
     window_days: int | None,
+    detach: bool,
+    foreground: bool,
 ) -> None:
     store = JobStore()
-    result = signal_scan_job(
+    scan_kwargs: dict[str, Any] = {
+        "campaign": campaign,
+        "condition_regime": condition_regime,
+        "window_days": window_days,
+        "symbols": [s.strip() for s in symbols.split(",")] if symbols else None,
+        "horizons": [int(h) for h in horizons.split(",")] if horizons else None,
+        "timeframes": (
+            [t.strip() for t in timeframes.split(",")] if timeframes else None
+        ),
+        "holdout_fraction": holdout_fraction,
+        "include_workspace": not no_workspace_signals,
+    }
+    result = _run_heavy_op(
+        store,
         job_id,
-        campaign=campaign,
-        condition_regime=condition_regime,
-        window_days=window_days,
-        symbols=[s.strip() for s in symbols.split(",")] if symbols else None,
-        horizons=[int(h) for h in horizons.split(",")] if horizons else None,
-        timeframes=[t.strip() for t in timeframes.split(",")] if timeframes else None,
-        holdout_fraction=holdout_fraction,
-        include_workspace=not no_workspace_signals,
-        store=store,
+        "signal_scan",
+        {"job_id": job_id, **scan_kwargs},
+        foreground=foreground,
+        detach=detach,
+        inline=lambda: signal_scan_job(job_id, store=store, **scan_kwargs),
     )
     _echo_json({"ok": True, "result": result})
 
@@ -1209,6 +1374,8 @@ def attribution_cmd(job_id: str) -> None:
     "--timeframe", default=None, help="Resample timeframe (default: base interval)."
 )
 @click.option("--symbols", default=None, help="Comma-separated symbols (default: all).")
+@_DETACH_OPTION
+@_FOREGROUND_OPTION
 def holdout_check_cmd(
     job_id: str,
     signal: str,
@@ -1216,16 +1383,25 @@ def holdout_check_cmd(
     direction: str,
     timeframe: str | None,
     symbols: str | None,
+    detach: bool,
+    foreground: bool,
 ) -> None:
     store = JobStore()
-    result = holdout_check_job(
+    holdout_kwargs: dict[str, Any] = {
+        "signal": signal,
+        "horizon": horizon,
+        "direction": direction,
+        "timeframe": timeframe,
+        "symbols": [s.strip() for s in symbols.split(",")] if symbols else None,
+    }
+    result = _run_heavy_op(
+        store,
         job_id,
-        signal=signal,
-        horizon=horizon,
-        direction=direction,
-        timeframe=timeframe,
-        symbols=[s.strip() for s in symbols.split(",")] if symbols else None,
-        store=store,
+        "holdout_check",
+        {"job_id": job_id, **holdout_kwargs},
+        foreground=foreground,
+        detach=detach,
+        inline=lambda: holdout_check_job(job_id, store=store, **holdout_kwargs),
     )
     _echo_json({"ok": True, "result": result})
 
@@ -1252,13 +1428,24 @@ def strategy_library_cmd() -> None:
 @click.option(
     "--horizons", default=None, help="Comma-separated forward horizons in bars."
 )
-def rank_check_cmd(job_id: str, column: str, horizons: str | None) -> None:
+@_DETACH_OPTION
+@_FOREGROUND_OPTION
+def rank_check_cmd(
+    job_id: str, column: str, horizons: str | None, detach: bool, foreground: bool
+) -> None:
     store = JobStore()
-    result = rank_check_job(
+    rank_kwargs: dict[str, Any] = {
+        "column": column,
+        "horizons": [int(h) for h in horizons.split(",")] if horizons else None,
+    }
+    result = _run_heavy_op(
+        store,
         job_id,
-        column=column,
-        horizons=[int(h) for h in horizons.split(",")] if horizons else None,
-        store=store,
+        "rank_check",
+        {"job_id": job_id, **rank_kwargs},
+        foreground=foreground,
+        detach=detach,
+        inline=lambda: rank_check_job(job_id, store=store, **rank_kwargs),
     )
     _echo_json({"ok": True, "result": result})
 
@@ -1364,37 +1551,33 @@ def fetch_yield_features_cmd(
     default=None,
     help="Optional plan JSON; defaults to validation.robustness_plan.",
 )
-@click.option(
-    "--foreground",
-    is_flag=True,
-    default=False,
-    help="Wait for completion instead of starting the isolated background op.",
-)
+@_DETACH_OPTION
+@_FOREGROUND_OPTION
 def robustness_check_cmd(
     job_id: str,
     candidate_dir: Path | None,
     plan_path: Path | None,
+    detach: bool,
     foreground: bool,
 ) -> None:
     plan = json.loads(plan_path.read_text(encoding="utf-8")) if plan_path else None
-    if foreground:
-        result = robustness_check_job(
-            job_id,
-            candidate_dir=candidate_dir,
-            robustness_plan=plan,
-            store=JobStore(),
-        )
-    else:
-        result = spawn_detached_op(
-            JobStore(),
-            job_id,
-            "robustness_check",
-            {
-                "job_id": job_id,
-                "candidate_dir": str(candidate_dir) if candidate_dir else None,
-                "robustness_plan": plan,
-            },
-        )
+    store = JobStore()
+    result = _run_heavy_op(
+        store,
+        job_id,
+        "robustness_check",
+        {
+            "job_id": job_id,
+            "candidate_dir": str(candidate_dir) if candidate_dir else None,
+            "robustness_plan": plan,
+        },
+        foreground=foreground,
+        detach=detach,
+        inline=lambda: robustness_check_job(
+            job_id, candidate_dir=candidate_dir, robustness_plan=plan, store=store
+        ),
+        detached_by_default=True,
+    )
     _echo_json({"ok": True, "result": result})
 
 
@@ -1585,16 +1768,22 @@ def evolution_finalize_cmd(job_id: str, foreground: bool) -> None:
     help="Refresh owner-scoped live execution calibration and paper priors.",
 )
 @click.argument("job_id")
-@click.option("--foreground", is_flag=True)
-def forward_experience_cmd(job_id: str, foreground: bool) -> None:
-    if foreground:
-        from wayfinder_paths.jobs.forward_experience import build_forward_experience
+@_DETACH_OPTION
+@_FOREGROUND_OPTION
+def forward_experience_cmd(job_id: str, detach: bool, foreground: bool) -> None:
+    from wayfinder_paths.jobs.forward_experience import build_forward_experience
 
-        result = build_forward_experience(JobStore(), job_id)
-    else:
-        result = spawn_detached_op(
-            JobStore(), job_id, "forward_experience", {"job_id": job_id}
-        )
+    store = JobStore()
+    result = _run_heavy_op(
+        store,
+        job_id,
+        "forward_experience",
+        {"job_id": job_id},
+        foreground=foreground,
+        detach=detach,
+        inline=lambda: build_forward_experience(store, job_id),
+        detached_by_default=True,
+    )
     _echo_json({"ok": True, "result": result})
 
 

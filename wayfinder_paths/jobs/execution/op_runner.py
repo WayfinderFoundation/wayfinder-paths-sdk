@@ -23,12 +23,21 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.jobs.execution.op_process import track_evolution_process
+from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.runner.monitor_state import atomic_write_json
+
+# Mirrors wayfinder_paths.jobs.heavy_lane.STATUS_PATH_ENV; spelled out here so
+# the child never imports the lane module (and the agent-host client behind
+# it) just to learn one env var name.
+STATUS_PATH_ENV = "WAYFINDER_OP_STATUS_PATH"
 
 _EVIDENCE_OPS = {
     "backtest_job",
@@ -337,8 +346,29 @@ def _sync_evolution_activity(op: str, kwargs: dict[str, Any]) -> None:
         pass
 
 
+def _cancel_on_sigterm(signum: int, frame: Any) -> None:
+    """`op_cancel` SIGTERMs a lane-dispatched child's process group. The
+    dispatcher only sees an exit code, so the child records the cancellation
+    in its own status file before dying with the conventional 128+15."""
+    status_path = Path(os.environ[STATUS_PATH_ENV])
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    status.update(
+        {"state": "cancelled", "finished_at": utc_now_iso(), "reason": "op_cancel"}
+    )
+    atomic_write_json(status_path, status)
+    os._exit(143)
+
+
+def _install_cancel_handler() -> None:
+    """Only lane-dispatched children (status path in the environment) own
+    their status file; everyone else keeps the default SIGTERM behaviour."""
+    if os.environ.get(STATUS_PATH_ENV):
+        signal.signal(signal.SIGTERM, _cancel_on_sigterm)
+
+
 def main() -> None:
     _lower_priority()
+    _install_cancel_handler()
     request = json.load(sys.stdin)
     op = str(request["op"])
     kwargs = dict(request.get("kwargs") or {})

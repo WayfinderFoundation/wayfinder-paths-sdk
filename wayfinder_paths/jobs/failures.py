@@ -100,6 +100,22 @@ def disk_used_pct(path: str | Path) -> float | None:
         return None
 
 
+# Above this steal share the hypervisor owns the box: heavy work started now
+# crawls, and the live tick it competes with dies at its timeout.
+HEAVY_STEAL_THRESHOLD_PCT = 60.0
+
+
+def mem_available_mb() -> float | None:
+    """MemAvailable from /proc/meminfo in MB; None off-Linux. Never raises."""
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("MemAvailable:"):
+                return float(line.split()[1]) / 1024.0
+    except Exception:  # noqa: BLE001 — non-Linux boxes have no /proc/meminfo
+        return None
+    return None
+
+
 def cpu_steal_pct(sample_seconds: float = 0.2) -> float | None:
     """CPU steal share (%) over a short /proc/stat sample; None off-Linux.
 

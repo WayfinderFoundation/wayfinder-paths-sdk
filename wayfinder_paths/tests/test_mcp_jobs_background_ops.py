@@ -485,3 +485,417 @@ def test_redesign_nudge_retries_while_the_designer_session_is_busy(monkeypatch) 
     monkeypatch.setattr(op_runner.time, "sleep", lambda _seconds: None)
     op_runner._nudge_evolution("evolution_redesign", {"job_id": "majors-5m-lab"})
     assert len(seen) == 3
+
+
+# --- heavy lane: hosted boxes queue heavy ops behind the live loop ----------
+
+
+def _fake_lane_submission(entry: str = "e-ours") -> dict:
+    return {
+        "queued": True,
+        "entry": entry,
+        "class": "owner",
+        "position": 1,
+        "op": "experiments",
+        "job_id": "bg-demo",
+        "state": "queued",
+        "queued_at": "2026-09-22T10:00:00+00:00",
+        "queue_entry": entry,
+        "lane_class": "owner",
+        "submitted_by": "mcp",
+    }
+
+
+@pytest.mark.asyncio
+async def test_experiments_defaults_to_background(tmp_path, monkeypatch) -> None:
+    captured: dict = {}
+
+    async def fake_start(store, job_id, op, kwargs):
+        captured.update({"op": op, "kwargs": kwargs})
+        return {"ok": True, "result": {"started": True}}
+
+    async def fake_sync(op, kwargs):
+        captured["sync_op"] = op
+        return {"ok": True, "result": {}}
+
+    monkeypatch.setattr(jobs_module, "_start_background_op", fake_start)
+    monkeypatch.setattr(jobs_module, "_run_job_op", fake_sync)
+    monkeypatch.setattr(jobs_module, "JobStore", lambda: JobStore(repo_root=tmp_path))
+
+    grid = {"threshold": [1, 2]}
+    result = await core_jobs(action="experiments", job_id="bg-demo", grid=grid)
+    assert result["result"]["started"] is True
+    assert captured["op"] == "experiments"
+    assert captured["kwargs"]["grid"] == grid
+    assert "sync_op" not in captured
+
+    await core_jobs(action="experiments", job_id="bg-demo", grid=grid, background=False)
+    assert captured["sync_op"] == "experiments"
+
+
+@pytest.mark.asyncio
+async def test_lane_op_queues_on_hosted_box_with_runnerd(tmp_path, monkeypatch) -> None:
+    store, job_id = _store(tmp_path)
+    submitted: dict = {}
+
+    def fake_submit(repo_root, job_id, op, kwargs, *, submitted_by, notify=None):
+        submitted.update(
+            {"repo_root": repo_root, "op": op, "kwargs": kwargs, "by": submitted_by}
+        )
+        submitted["notify"] = notify
+        return _fake_lane_submission()
+
+    monkeypatch.setattr(jobs_module, "lane_enabled", lambda: True)
+    monkeypatch.setattr(jobs_module, "_runnerd_reachable", lambda repo_root: True)
+    monkeypatch.setattr(jobs_module, "submit_heavy_op", fake_submit)
+    monkeypatch.setattr(
+        jobs_module,
+        "queued_entries",
+        lambda repo_root: [
+            {
+                "entry_id": "e-other",
+                "job_id": "other",
+                "op": "backtest_job",
+                "class": "owner",
+            },
+            {
+                "entry_id": "e-ours",
+                "job_id": job_id,
+                "op": "experiments",
+                "class": "owner",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        jobs_module, "lane_snapshot", lambda repo_root: {"running": None, "queued": []}
+    )
+    monkeypatch.setattr(
+        jobs_module,
+        "_submitting_session",
+        lambda: {"session_id": "ses_user", "kind": "user", "wake": False},
+    )
+
+    started = await _start_background_op(store, job_id, "experiments", {"grid": {}})
+
+    result = started["result"]
+    assert result["queued"] is True
+    assert result["position"] == 1
+    assert result["entry"] == "e-ours"
+    assert result["ahead"] == [
+        {"job_id": "other", "op": "backtest_job", "class": "owner"}
+    ]
+    assert result["notify"] == {"mode": "prompt", "session_id": "ses_user"}
+    assert "live trading loop" in result["note"] and "op_cancel" in result["note"]
+    assert "op_status" in result["check"]
+    assert submitted["by"] == "mcp"
+    assert submitted["notify"]["kind"] == "user"
+    assert submitted["repo_root"] == store.repo_root
+
+    # A duplicate submission passes the existing slot straight through.
+    monkeypatch.setattr(
+        jobs_module,
+        "submit_heavy_op",
+        lambda *a, **k: {"already_queued": True, "position": 0, "state": "queued"},
+    )
+    again = await _start_background_op(store, job_id, "experiments", {"grid": {}})
+    assert again["result"]["already_queued"] is True
+    assert "op_status" in again["result"]["check"]
+
+
+def _echo_command(op: str) -> list[str]:
+    import sys
+
+    return [sys.executable, "-c", "import sys; sys.stdin.read(); print('{}')"]
+
+
+@pytest.mark.asyncio
+async def test_lane_op_spawns_directly_off_hosted_boxes(tmp_path, monkeypatch) -> None:
+    store, job_id = _store(tmp_path)
+    monkeypatch.setattr(jobs_module, "lane_enabled", lambda: False)
+    monkeypatch.setattr(jobs_module, "op_runner_command", _echo_command)
+
+    def never(*args, **kwargs):
+        raise AssertionError("the lane must not be consulted off a hosted box")
+
+    monkeypatch.setattr(jobs_module, "submit_heavy_op", never)
+    monkeypatch.setattr(jobs_module, "_runnerd_reachable", never)
+
+    started = await _start_background_op(store, job_id, "experiments", {})
+    assert started["result"]["started"] is True
+    assert "lane" not in started["result"]
+
+
+@pytest.mark.asyncio
+async def test_lane_op_bypasses_lane_when_runnerd_unreachable(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _store(tmp_path)
+    monkeypatch.setattr(jobs_module, "lane_enabled", lambda: True)
+    monkeypatch.setattr(jobs_module, "_runnerd_reachable", lambda repo_root: False)
+    monkeypatch.setattr(jobs_module, "op_runner_command", _echo_command)
+
+    def never(*args, **kwargs):
+        raise AssertionError("no daemon means no lane submission")
+
+    monkeypatch.setattr(jobs_module, "submit_heavy_op", never)
+
+    started = await _start_background_op(store, job_id, "backtest_job", {})
+    assert started["result"]["started"] is True
+    assert started["result"]["lane"] == "bypassed"
+
+
+def test_op_status_reports_queued_position(tmp_path, monkeypatch) -> None:
+    store, job_id = _store(tmp_path)
+    ops_dir = _background_ops_dir(store, job_id)
+    ops_dir.mkdir(parents=True, exist_ok=True)
+    (ops_dir / "experiments.json").write_text(
+        json.dumps(
+            {
+                "op": "experiments",
+                "job_id": job_id,
+                "state": "queued",
+                "queued_at": datetime.now(UTC).isoformat(),
+                "queue_entry": "e-ours",
+                "lane_class": "owner",
+            }
+        )
+    )
+    monkeypatch.setattr(jobs_module, "queue_position", lambda repo_root, entry: 2)
+    monkeypatch.setattr(
+        jobs_module,
+        "lane_snapshot",
+        lambda repo_root: {"running": {"job_id": "other"}, "queued": []},
+    )
+
+    status = _background_op_status(store, job_id, "experiments")["result"]
+
+    assert status["state"] == "queued"
+    assert status["position"] == 2
+    assert status["waited_s"] >= 0
+    assert status["lane"]["running"] == {"job_id": "other"}
+    assert "op_status" in status["check"]
+
+    # Running with a lane class reports elapsed time against its ceiling.
+    import os
+
+    (ops_dir / "experiments.json").write_text(
+        json.dumps(
+            {
+                "op": "experiments",
+                "state": "running",
+                "pid": os.getpid(),
+                "started_at": datetime.now(UTC).isoformat(),
+                "lane_class": "research",
+            }
+        )
+    )
+    running = _background_op_status(store, job_id, "experiments")["result"]
+    assert running["state"] == "running"
+    assert running["running_s"] >= 0
+    assert running["max_runtime_s"] == 1800
+
+    # Terminal states carry the completion hook's notification stamps.
+    (ops_dir / "experiments.json").write_text(
+        json.dumps(
+            {
+                "op": "experiments",
+                "state": "done",
+                "notified_at": "2026-09-22T10:05:00+00:00",
+            }
+        )
+    )
+    (ops_dir / "experiments.result.json").write_text(json.dumps({"ranked": []}))
+    done = _background_op_status(store, job_id, "experiments")["result"]
+    assert done["notified_at"] == "2026-09-22T10:05:00+00:00"
+    assert done["result"] == {"ranked": []}
+
+
+@pytest.mark.asyncio
+async def test_op_cancel_dispatches_to_the_lane(tmp_path, monkeypatch) -> None:
+    calls: list = []
+    monkeypatch.setattr(jobs_module, "JobStore", lambda: JobStore(repo_root=tmp_path))
+    monkeypatch.setattr(
+        jobs_module,
+        "cancel_heavy_op",
+        lambda repo_root, job_id, op: (
+            calls.append((repo_root, job_id, op))
+            or {"cancelled": True, "was": "queued", "op": op, "job_id": job_id}
+        ),
+    )
+
+    cancelled = await core_jobs(action="op_cancel", job_id="bg-demo", op="experiments")
+    assert cancelled["result"]["cancelled"] is True
+    assert calls == [(tmp_path.resolve(), "bg-demo", "experiments")]
+
+    monkeypatch.setattr(
+        jobs_module,
+        "cancel_heavy_op",
+        lambda repo_root, job_id, op: {"cancelled": False, "error": "not_found"},
+    )
+    failed = await core_jobs(action="op_cancel", job_id="bg-demo", op="experiments")
+    assert failed["error"]["code"] == "op_cancel_failed"
+    assert "not_found" in failed["error"]["message"]
+
+    missing = await core_jobs(action="op_cancel", job_id="bg-demo")
+    assert missing["error"]["code"] == "invalid_request"
+
+
+def _capture_subprocess(monkeypatch) -> dict:
+    captured: dict = {}
+    real_exec = asyncio.create_subprocess_exec
+
+    async def capturing_exec(*args, **kwargs):
+        proc = await real_exec(*args, **kwargs)
+        captured["proc"] = proc
+        captured["env"] = kwargs.get("env")
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capturing_exec)
+    return captured
+
+
+def _process_group_gone(pid: int) -> bool:
+    import os
+
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
+@pytest.mark.asyncio
+async def test_run_job_op_cancellation_kills_the_child(monkeypatch) -> None:
+    monkeypatch.setattr(jobs_module, "op_runner_command", lambda op: ["sleep", "30"])
+    captured = _capture_subprocess(monkeypatch)
+
+    task = asyncio.create_task(jobs_module._run_job_op("experiments", {}))
+    for _ in range(50):
+        if "proc" in captured:
+            break
+        await asyncio.sleep(0.02)
+    proc = captured["proc"]
+    assert proc.returncode is None
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert proc.returncode is not None and proc.returncode < 0
+    assert _process_group_gone(proc.pid)
+    # A lane-class op forced synchronous shares the box with the live tick.
+    assert captured["env"]["WAYFINDER_MAX_BACKTEST_WORKERS"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_run_job_op_timeout_kills_the_child(monkeypatch) -> None:
+    monkeypatch.setattr(jobs_module, "op_runner_command", lambda op: ["sleep", "30"])
+    monkeypatch.setattr(jobs_module, "SYNC_OP_TIMEOUT_S", 0.2)
+    captured = _capture_subprocess(monkeypatch)
+
+    result = await jobs_module._run_job_op("attribution", {})
+
+    assert result["error"]["code"] == "job_op_timeout"
+    assert "background=True" in result["error"]["message"]
+    proc = captured["proc"]
+    assert proc.returncode is not None and proc.returncode < 0
+    assert _process_group_gone(proc.pid)
+    assert captured["env"] is None
+
+
+def test_cli_heavy_op_queues_and_waits_on_hosted_box(tmp_path, monkeypatch) -> None:
+    from click.testing import CliRunner
+
+    from wayfinder_paths.jobs import cli as cli_module
+
+    store, job_id = _store(tmp_path)
+    ops_dir = _background_ops_dir(store, job_id)
+    ops_dir.mkdir(parents=True, exist_ok=True)
+    submissions: list = []
+
+    def fake_submit(repo_root, job_id, op, kwargs, *, submitted_by, notify=None):
+        submissions.append((op, kwargs, submitted_by))
+        # The daemon already ran it: the wait loop reads the finished status.
+        (ops_dir / f"{op}.json").write_text(json.dumps({"op": op, "state": "done"}))
+        (ops_dir / f"{op}.result.json").write_text(json.dumps({"ranked": [1]}))
+        return {"queued": True, "entry": "e1", "position": 0}
+
+    monkeypatch.setattr(cli_module, "JobStore", lambda: store)
+    monkeypatch.setattr(cli_module, "lane_enabled", lambda: True)
+    monkeypatch.setattr(cli_module, "submit_heavy_op", fake_submit)
+    monkeypatch.setattr(cli_module, "LANE_POLL_S", 0.0)
+    monkeypatch.setattr(cli_module, "run_experiment", lambda *a, **k: {"inline": True})
+    runner = CliRunner()
+
+    waited = runner.invoke(
+        cli_module.job_cli, ["experiments", job_id, "--grid", "grid.json"]
+    )
+    assert waited.exit_code == 0, waited.output
+    assert json.loads(waited.output)["result"] == {"ranked": [1]}
+    assert submissions[-1][0] == "experiments"
+    assert submissions[-1][1]["grid"] == "grid.json"
+    assert submissions[-1][2] == "cli"
+
+    detached = runner.invoke(
+        cli_module.job_cli, ["experiments", job_id, "--grid", "grid.json", "--detach"]
+    )
+    assert detached.exit_code == 0, detached.output
+    assert json.loads(detached.output)["result"]["queued"] is True
+
+    foreground = runner.invoke(
+        cli_module.job_cli,
+        ["experiments", job_id, "--grid", "grid.json", "--foreground"],
+    )
+    assert foreground.exit_code == 0, foreground.output
+    assert json.loads(foreground.output)["result"] == {"inline": True}
+    assert len(submissions) == 2
+
+    # A failed lane run exits non-zero and says why.
+    def failing_submit(repo_root, job_id, op, kwargs, *, submitted_by, notify=None):
+        (ops_dir / f"{op}.json").write_text(json.dumps({"op": op, "state": "killed"}))
+        return {"queued": True, "entry": "e2", "position": 0}
+
+    monkeypatch.setattr(cli_module, "submit_heavy_op", failing_submit)
+    killed = runner.invoke(
+        cli_module.job_cli, ["experiments", job_id, "--grid", "grid.json"]
+    )
+    assert killed.exit_code == 1
+    assert "op_killed" in killed.output
+
+
+def test_cli_heavy_op_runs_as_before_off_hosted_boxes(tmp_path, monkeypatch) -> None:
+    from click.testing import CliRunner
+
+    from wayfinder_paths.jobs import cli as cli_module
+
+    store, job_id = _store(tmp_path)
+    monkeypatch.setattr(cli_module, "JobStore", lambda: store)
+    monkeypatch.setattr(cli_module, "lane_enabled", lambda: False)
+    spawned: list = []
+    monkeypatch.setattr(
+        cli_module,
+        "spawn_detached_op",
+        lambda store, job_id, op, kwargs: spawned.append(op) or {"started": True},
+    )
+    monkeypatch.setattr(
+        cli_module, "robustness_check_job", lambda *a, **k: {"inline": True}
+    )
+    monkeypatch.setattr(cli_module, "run_experiment", lambda *a, **k: {"inline": True})
+    runner = CliRunner()
+
+    # robustness-check keeps its detached default; --foreground stays inline.
+    outcome = runner.invoke(cli_module.job_cli, ["robustness-check", job_id])
+    assert outcome.exit_code == 0, outcome.output
+    assert spawned == ["robustness_check"]
+    outcome = runner.invoke(
+        cli_module.job_cli, ["robustness-check", job_id, "--foreground"]
+    )
+    assert json.loads(outcome.output)["result"] == {"inline": True}
+
+    # experiments keeps its synchronous default.
+    outcome = runner.invoke(
+        cli_module.job_cli, ["experiments", job_id, "--grid", "grid.json"]
+    )
+    assert outcome.exit_code == 0, outcome.output
+    assert json.loads(outcome.output)["result"] == {"inline": True}
+    assert spawned == ["robustness_check"]

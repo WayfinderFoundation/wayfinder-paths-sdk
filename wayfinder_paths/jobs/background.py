@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from wayfinder_paths.jobs import heavy_lane
 from wayfinder_paths.jobs.compute_lock import job_state_lock
 from wayfinder_paths.jobs.execution.op_process import (
     op_runner_command,
@@ -43,7 +44,7 @@ def op_running(job_dir: Path, op: str) -> bool:
 
 def op_status_summary(job_dir: Path, op: str) -> dict[str, Any] | None:
     """Compact snapshot view of a detached op: status collapsed to
-    running/done/failed plus timestamps. None when no run is recorded.
+    queued/running/done/failed plus timestamps. None when no run is recorded.
 
     Read-only (safe from the fork-per-request view server). A `running`
     status whose pid is dead is resolved the way op_status does — a
@@ -57,6 +58,8 @@ def op_status_summary(job_dir: Path, op: str) -> dict[str, Any] | None:
     if not isinstance(status, dict):
         return None
     state = status.get("state")
+    if state == heavy_lane.QUEUED:
+        return {"status": heavy_lane.QUEUED, "queued_at": status.get("queued_at")}
     stale_running = state == "running" and not recorded_process_alive(status)
     reconciled_failure = state == "failed" and status.get("error") == (
         "detached operation exited without a result"
@@ -86,6 +89,12 @@ def op_status_summary(job_dir: Path, op: str) -> dict[str, Any] | None:
 def spawn_detached_op(
     store: JobStore, job_id: str, op: str, kwargs: dict[str, Any]
 ) -> dict[str, Any]:
+    """Start `op` detached — or, where the heavy lane runs, hand a heavy op
+    to it (`submit_heavy_op` takes the same per-op lock itself)."""
+    if op in heavy_lane.HEAVY_LANE_OPS and heavy_lane.lane_enabled():
+        return heavy_lane.submit_heavy_op(
+            store.repo_root, job_id, op, kwargs, submitted_by="cli"
+        )
     with job_state_lock(store.repo_root, job_id, name=f"background_{op}"):
         return _spawn_detached_op(store, job_id, op, kwargs)
 

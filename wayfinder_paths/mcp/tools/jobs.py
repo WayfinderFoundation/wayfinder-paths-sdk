@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import signal
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -31,6 +34,16 @@ from wayfinder_paths.jobs.execution.spec_defaults import (
 from wayfinder_paths.jobs.execution.token_bars import resolve_token_symbols
 from wayfinder_paths.jobs.freestyle.create import create_freestyle_job
 from wayfinder_paths.jobs.halt import clear_halt, request_halt
+from wayfinder_paths.jobs.heavy_lane import (
+    HEAVY_LANE_OPS,
+    MAX_RUNTIME_S,
+    cancel_heavy_op,
+    lane_enabled,
+    lane_snapshot,
+    queue_position,
+    queued_entries,
+    submit_heavy_op,
+)
 from wayfinder_paths.jobs.launch import (
     evaluate_launch_checklist,
     hold_job,
@@ -67,6 +80,7 @@ from wayfinder_paths.jobs.sync import (
 from wayfinder_paths.jobs.validation import REQUIRED_INTENT_FIELDS
 from wayfinder_paths.jobs.worker import run_job_worker
 from wayfinder_paths.mcp.utils import catch_errors, err, ok
+from wayfinder_paths.runner.lifecycle import try_status
 from wayfinder_paths.runner.monitor_state import atomic_write_json
 
 JobAction = Literal[
@@ -107,6 +121,7 @@ JobAction = Literal[
     "strategy_library",
     "backtest_job",
     "op_status",
+    "op_cancel",
     "backtest_diagnose",
     "experiments",
     "robustness_check",
@@ -141,6 +156,30 @@ JobAction = Literal[
 ]
 
 
+# Under the 300 s client window the module cites: a synchronous op that
+# outlives it used to keep grinding as an orphan beside the live tick.
+SYNC_OP_TIMEOUT_S = 240
+
+
+async def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
+    """The child is a session leader (start_new_session), so its pid is its
+    process group: pool workers die with it."""
+    if proc.returncode is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5)
+    except TimeoutError:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        await proc.wait()
+
+
 async def _run_job_op(op: str, kwargs: dict[str, Any]) -> dict[str, Any]:
     """Run a heavy jobs operation in an isolated child process.
 
@@ -150,17 +189,42 @@ async def _run_job_op(op: str, kwargs: dict[str, Any]) -> dict[str, Any]:
     drops every wayfinder tool for the session (opencode never reconnects).
     A child process keeps the server responsive and turns a killed run into a
     clean tool error. See op_runner for the protocol.
+
+    The child never outlives the request: a client timeout or a cancelled
+    request kills its whole process group, and a lane-class op forced to run
+    synchronously gets a single worker so it cannot starve the live tick.
     """
+    env = (
+        {**os.environ, "WAYFINDER_MAX_BACKTEST_WORKERS": "1"}
+        if op in HEAVY_LANE_OPS
+        else None
+    )
     proc = await asyncio.create_subprocess_exec(
         *op_runner_command(op),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
+        env=env,
     )
-    stdout, stderr = await proc.communicate(
-        json.dumps({"op": op, "kwargs": kwargs}).encode()
-    )
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(json.dumps({"op": op, "kwargs": kwargs}).encode()),
+            timeout=SYNC_OP_TIMEOUT_S,
+        )
+    except TimeoutError:
+        await _kill_process_group(proc)
+        return err(
+            "job_op_timeout",
+            f"{op} exceeded {SYNC_OP_TIMEOUT_S}s in the request window; submit "
+            "it with background=True — it queues behind the live loop and pings "
+            "you back",
+        )
+    except asyncio.CancelledError:
+        await _kill_process_group(proc)
+        raise
+    finally:
+        await _kill_process_group(proc)
     if proc.returncode != 0:
         lines = (stderr or b"").decode(errors="replace").strip().splitlines()
         tail = " | ".join(lines[-3:]) if lines else None
@@ -187,9 +251,17 @@ def _background_ops_dir(store: JobStore, job_id: str) -> Path:
 def _op_status_hint(job_id: str, op: str) -> str:
     return (
         f"core_jobs(action='op_status', job_id='{job_id}', op='{op}') — "
-        "poll every ~60s (bash sleep between checks); the run survives this "
-        "request ending."
+        "poll no faster than every 60s; the run survives this request ending; "
+        "you will be prompted when it finishes."
     )
+
+
+def _seconds_since(stamp: Any) -> float | None:
+    try:
+        then = datetime.fromisoformat(str(stamp))
+    except (TypeError, ValueError):
+        return None
+    return round((datetime.now(UTC) - then).total_seconds(), 1)
 
 
 def _load_json_file(path: Path) -> dict[str, Any] | None:
@@ -200,7 +272,75 @@ def _load_json_file(path: Path) -> dict[str, Any] | None:
     return loaded if isinstance(loaded, dict) else None
 
 
+def _runnerd_reachable(repo_root: Path) -> bool:
+    """The lane protects the daemon's live ticks; with no daemon answering
+    there is nothing to queue behind."""
+    started, _status, _error = try_status(RunnerBridge(repo_root=repo_root).client)
+    return started
+
+
+LANE_QUEUED_NOTE = (
+    "queued behind the live trading loop; you will be prompted in this session "
+    "when it finishes; do not poll faster than every 60s; op_cancel withdraws it"
+)
+
+
+def _submit_to_lane(
+    store: JobStore, job_id: str, op: str, kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    notify = _submitting_session()
+    submitted = submit_heavy_op(
+        store.repo_root, job_id, op, kwargs, submitted_by="mcp", notify=notify
+    )
+    if not submitted.get("queued"):
+        # already_queued / already_running: the existing slot is the answer.
+        return ok({**submitted, "check": _op_status_hint(job_id, op)})
+    entry_id = submitted["entry"]
+    ahead: list[dict[str, Any]] = []
+    for entry in queued_entries(store.repo_root):
+        if entry.get("entry_id") == entry_id:
+            break
+        ahead.append({k: entry.get(k) for k in ("job_id", "op", "class")})
+    session_id, kind = notify["session_id"], notify["kind"]
+    if kind == "user" and session_id:
+        mode = "prompt"
+    elif kind == "worker":
+        mode = "wake"
+    else:
+        mode = "none"
+    return ok(
+        {
+            "queued": True,
+            "op": op,
+            "job_id": job_id,
+            "entry": entry_id,
+            "class": submitted["class"],
+            "position": submitted["position"],
+            "ahead": ahead,
+            "lane": lane_snapshot(store.repo_root),
+            "notify": {"mode": mode, "session_id": session_id},
+            "note": LANE_QUEUED_NOTE,
+            "check": _op_status_hint(job_id, op),
+        }
+    )
+
+
 async def _start_background_op(
+    store: JobStore, job_id: str, op: str, kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    """Hand a heavy op to the machine-wide lane on a hosted box (it queues
+    behind the live tick and the daemon dispatches it); everywhere else, and
+    for ops the lane does not own, spawn the detached child directly."""
+    if op in HEAVY_LANE_OPS and lane_enabled():
+        if _runnerd_reachable(store.repo_root):
+            return _submit_to_lane(store, job_id, op, kwargs)
+        spawned = await _spawn_background_op(store, job_id, op, kwargs)
+        spawned["result"]["lane"] = "bypassed"
+        return spawned
+    return await _spawn_background_op(store, job_id, op, kwargs)
+
+
+async def _spawn_background_op(
     store: JobStore, job_id: str, op: str, kwargs: dict[str, Any]
 ) -> dict[str, Any]:
     """Detached variant of _run_job_op: spawn the same op_runner child but
@@ -298,6 +438,18 @@ def _background_op_status(store: JobStore, job_id: str, op: str) -> dict[str, An
     status = _load_json_file(ops_dir / f"{op}.json")
     if not status:
         return err("not_found", f"no background {op} run recorded for {job_id}")
+    if status.get("state") == "queued":
+        return ok(
+            {
+                **status,
+                "position": queue_position(
+                    store.repo_root, str(status.get("queue_entry") or "")
+                ),
+                "waited_s": _seconds_since(status.get("queued_at")),
+                "lane": lane_snapshot(store.repo_root),
+                "check": _op_status_hint(job_id, op),
+            }
+        )
     if status.get("state") == "running" and not recorded_process_alive(status):
         # The reaper lived in an MCP server that restarted mid-run. The child
         # was detached (own session), so a parseable result file means it
@@ -312,6 +464,10 @@ def _background_op_status(store: JobStore, job_id: str, op: str) -> dict[str, An
             status.setdefault("finished_at", utc_now_iso())
         atomic_write_json(ops_dir / f"{op}.json", status)
     payload = dict(status)
+    if payload.get("state") == "running":
+        payload["running_s"] = _seconds_since(payload.get("started_at"))
+        if payload.get("lane_class"):
+            payload["max_runtime_s"] = MAX_RUNTIME_S[payload["lane_class"]]
     log_path = ops_dir / f"{op}.log"
     if log_path.exists():
         lines = (
@@ -326,6 +482,11 @@ def _background_op_status(store: JobStore, job_id: str, op: str) -> dict[str, An
         payload["hint"] = (
             "see log_tail; killed/lost usually means OOM — retry with "
             "quick_bars or a smaller grid"
+        )
+    elif payload.get("state") == "timeout":
+        payload["hint"] = (
+            "the lane killed it at max_runtime_s — retry with quick_bars or a "
+            "smaller grid"
         )
     return ok(payload)
 
@@ -353,6 +514,25 @@ def _infer_initializer_session() -> str | None:
     }
     user_busy = [sid for sid in busy if not titles.get(sid, "").startswith("job/")]
     return user_busy[0] if len(user_busy) == 1 else None
+
+
+def _submitting_session() -> dict[str, Any]:
+    """Who the lane pings when the op finishes: the session making this call,
+    and whether it is a wake worker (title `job/...`, re-woken) or a person
+    (prompted). Best-effort — an unresolved session just means nobody is
+    pinged, never a failed submission."""
+    try:
+        session_id = _infer_initializer_session()
+        if not session_id:
+            return {"session_id": None, "kind": None, "wake": False}
+        titles = {
+            session.get("id"): str(session.get("title") or "")
+            for session in OPENCODE_CLIENT.list_sessions()
+        }
+        kind = "worker" if titles.get(session_id, "").startswith("job/") else "user"
+    except Exception:  # noqa: BLE001 — advisory lookup against the agent host
+        return {"session_id": None, "kind": None, "wake": False}
+    return {"session_id": session_id, "kind": kind, "wake": kind == "worker"}
 
 
 @catch_errors
@@ -581,13 +761,26 @@ async def core_jobs(
         `status` lists what a job declares under `features`; both feeds
         refresh hourly from the wake and as-of merge into backtest and live
         alike), `backtest_job` (runs DETACHED by
-        default — it returns immediately; poll `op_status` until done, or
-        pass `background=False` only for quick_bars-sized runs),
-        `backtest_diagnose` (ranked next steps), `experiments` (param grid via
-        `grid` inline or `grid_path`; pass `wf_test_bars`/`wf_folds` for
-        walk-forward out-of-sample validation), `robustness_check` (detached
+        default — it returns immediately; pass `background=False` only for
+        quick_bars-sized runs), `backtest_diagnose` (ranked next steps),
+        `experiments` (param grid via `grid` inline or `grid_path`; pass
+        `wf_test_bars`/`wf_folds` for walk-forward out-of-sample validation;
+        detached by default like `backtest_job`), `robustness_check` (detached
         advisory neighbor/phase/leverage/walk-forward/scenario evidence), then `promote_params`
         (`grid_id`/`run_id`) once it survives OOS.
+
+        Heavy ops (`backtest_job`, `experiments`, `robustness_check`,
+        `signal_scan`, `holdout_check`, `rank_check`, `forward_experience`)
+        queue behind the live trading loop on a hosted box: the call returns
+        `queued` with the queue position, what is ahead, and the lane
+        snapshot; one heavy op runs on the box at a time and you are prompted
+        in this session when yours finishes. Do not wrap a run in a timeout
+        and do not poll `op_status` faster than every 60s; `op_status`
+        reports `queued` (position, waited_s) / `running` (running_s,
+        max_runtime_s) / a terminal state with the result. `op_cancel`
+        (`job_id` + `op`) withdraws a queued op or stops a running one. A
+        heavy op forced synchronous (`background=False`) runs single-worker
+        and is cut off after 240s.
 
         Funding: `venue_deposit` / `venue_withdraw` (amount, and destination
         for withdraw) are the ONLY sanctioned way to move a live job's
@@ -1102,19 +1295,21 @@ async def core_jobs(
         )
 
     if action == "signal_scan":
-        return await _run_job_op(
-            "signal_scan",
-            {
-                "job_id": job_id,
-                "symbols": symbols,
-                "horizons": horizons,
-                "timeframes": timeframes,
-                "holdout_fraction": holdout_fraction,
-                "campaign": campaign,
-                "condition_regime": condition_regime,
-                "window_days": window_days,
-            },
-        )
+        scan_kwargs = {
+            "job_id": job_id,
+            "symbols": symbols,
+            "horizons": horizons,
+            "timeframes": timeframes,
+            "holdout_fraction": holdout_fraction,
+            "campaign": campaign,
+            "condition_regime": condition_regime,
+            "window_days": window_days,
+        }
+        if background:
+            if not job_id:
+                return err("invalid_request", "signal_scan requires job_id")
+            return await _start_background_op(store, job_id, "signal_scan", scan_kwargs)
+        return await _run_job_op("signal_scan", scan_kwargs)
 
     if action == "derive_features":
         return await _run_job_op("derive_features", {"job_id": job_id})
@@ -1156,18 +1351,22 @@ async def core_jobs(
                 "holdout_check requires signal, horizon, and direction "
                 "long|short (a frozen candidate is directional)",
             )
-        return await _run_job_op(
-            "holdout_check",
-            {
-                "job_id": job_id,
-                "signal": signal,
-                "horizon": horizon,
-                "direction": direction,
-                "timeframe": bar_interval,
-                "symbols": symbols,
-                "holdout_fraction": holdout_fraction,
-            },
-        )
+        holdout_kwargs = {
+            "job_id": job_id,
+            "signal": signal,
+            "horizon": horizon,
+            "direction": direction,
+            "timeframe": bar_interval,
+            "symbols": symbols,
+            "holdout_fraction": holdout_fraction,
+        }
+        if background:
+            if not job_id:
+                return err("invalid_request", "holdout_check requires job_id")
+            return await _start_background_op(
+                store, job_id, "holdout_check", holdout_kwargs
+            )
+        return await _run_job_op("holdout_check", holdout_kwargs)
 
     if action == "strategy_library":
         return ok(library_catalog())
@@ -1175,10 +1374,12 @@ async def core_jobs(
     if action == "rank_check":
         if not column:
             return err("invalid_request", "rank_check requires column")
-        return await _run_job_op(
-            "rank_check",
-            {"job_id": job_id, "column": column, "horizons": horizons},
-        )
+        rank_kwargs = {"job_id": job_id, "column": column, "horizons": horizons}
+        if background:
+            if not job_id:
+                return err("invalid_request", "rank_check requires job_id")
+            return await _start_background_op(store, job_id, "rank_check", rank_kwargs)
+        return await _run_job_op("rank_check", rank_kwargs)
 
     if action == "experiments":
         chosen_grid = grid if grid is not None else grid_path
@@ -1204,9 +1405,9 @@ async def core_jobs(
             "quick_bars": quick_bars,
             "full": full,
         }
-        # Grid sweeps dwarf single backtests — same detached escape hatch,
-        # opt-in here (inline quick grids stay synchronous by default).
-        if background:
+        # Grid sweeps dwarf single backtests: detached (through the lane on a
+        # hosted box) unless the caller forces a synchronous quick grid.
+        if background is not False:
             if not job_id:
                 return err("invalid_request", "experiments requires job_id")
             return await _start_background_op(
@@ -1414,6 +1615,18 @@ async def core_jobs(
         if not job_id:
             return err("invalid_request", "op_status requires job_id")
         return _background_op_status(store, job_id, op or "backtest_job")
+
+    if action == "op_cancel":
+        if not job_id or not op:
+            return err("invalid_request", "op_cancel requires job_id and op")
+        cancelled = cancel_heavy_op(store.repo_root, job_id, op)
+        if cancelled.get("cancelled"):
+            return ok(cancelled)
+        return err(
+            "op_cancel_failed",
+            f"{op} for {job_id} was not cancelled: {cancelled.get('error')}",
+            cancelled,
+        )
 
     if action == "backtest_diagnose":
         return ok(diagnose_backtest(job_id, proposal_id=proposal_id, store=store))
