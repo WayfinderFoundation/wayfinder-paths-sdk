@@ -22,6 +22,7 @@ from wayfinder_paths.jobs.notify_policy import (
 )
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.triggers import fire_triggers
+from wayfinder_paths.tests.test_jobs_risk_limits import _write_governance
 
 SCRIPT = (
     "from wayfinder_paths.jobs.freestyle import FreestyleSpec\n"
@@ -151,12 +152,13 @@ def test_kill_switches_write_limits_and_relaunch_a_launched_paper_job(
         store.load(job.id).versioning["active_revision"]
         == result["relaunch"]["revision"]
     )
-    assert (
-        watchdog_view(store.load(job.id), store.job_dir(job.id))["kill_switches"][
-            "max_drawdown"
-        ]
-        == -0.1
-    )
+    view = watchdog_view(store.load(job.id), store.job_dir(job.id))
+    assert view["kill_switches"] == {"max_daily_loss_usd": 25.0, "max_drawdown": -0.1}
+    assert view["kill_switch_sources"] == {
+        "max_daily_loss_usd": "job",
+        "max_drawdown": "job",
+    }
+    assert view["leverage_ceiling"] is None
 
 
 def test_quiet_hours_and_event_filter_decide_delivery(tmp_path: Path) -> None:
@@ -287,3 +289,45 @@ def test_alerts_only_edit_keeps_the_revision_and_never_relaunches(
     view = watchdog_view(store.load(job.id), root)
     assert view["notifications"]["quiet_hours"]["tz"] == "America/New_York"
     assert "runner_loop_gap" in view["triggers"]
+
+
+def test_owner_ceilings_show_as_kill_switches_with_their_source(
+    tmp_path: Path,
+) -> None:
+    store, job = _freestyle(tmp_path)
+    root = store.job_dir(job.id)
+    _write_governance(
+        tmp_path,
+        job.id,
+        {
+            "max_drawdown": 0.15,
+            "max_drawdown_pct": 0.15,
+            "max_tail_loss": 0.1,
+            "max_leverage": 3.0,
+        },
+    )
+    view = watchdog_view(store.load(job.id), root)
+    assert view["kill_switches"] == {"max_drawdown": -0.15}
+    assert view["kill_switch_sources"] == {"max_drawdown": "owner"}
+    assert view["leverage_ceiling"] == {"value": 3.0, "source": "owner"}
+
+    # A stricter job file binds and is the job's; a looser one is clamped.
+    (root / "workspace" / "risk_limits.json").write_text(
+        json.dumps({"max_drawdown": -0.05, "max_gross_exposure_usd": 1000}),
+        encoding="utf-8",
+    )
+    view = watchdog_view(store.load(job.id), root)
+    assert view["kill_switches"] == {
+        "max_drawdown": -0.05,
+        "max_gross_exposure_usd": 1000,
+    }
+    assert view["kill_switch_sources"] == {
+        "max_drawdown": "job",
+        "max_gross_exposure_usd": "job",
+    }
+    (root / "workspace" / "risk_limits.json").write_text(
+        json.dumps({"max_drawdown": -0.4}), encoding="utf-8"
+    )
+    view = watchdog_view(store.load(job.id), root)
+    assert view["kill_switches"] == {"max_drawdown": -0.15}
+    assert view["kill_switch_sources"] == {"max_drawdown": "owner"}

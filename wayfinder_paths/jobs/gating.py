@@ -11,6 +11,7 @@ from typing import Any
 
 import yaml
 
+from wayfinder_paths.core.strategies.risk_limits import RiskLimits
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.multiple_testing import expected_max_sharpe
 from wayfinder_paths.jobs.store import JobStore
@@ -40,6 +41,65 @@ def governance_hard_constraints(root: Path) -> dict[str, Any]:
 
     hard = load_constitution(Path(root)).get("hard_constraints")
     return dict(hard) if isinstance(hard, Mapping) else {}
+
+
+def effective_risk_limits(root: Path) -> tuple[RiskLimits | None, dict[str, str]]:
+    """The account-level limits the driver's risk halt enforces, with who set
+    each one: the agent-writable workspace/risk_limits.json clamped by the
+    owner's governance ceilings. The source map names every set limit
+    ``"owner"`` when a governance ceiling is the binding value, ``"job"``
+    otherwise. Panels read this so they show exactly what halts the job."""
+    root = Path(root)
+    return apply_governance_caps(
+        RiskLimits.load_optional(root / "workspace"),
+        governance_hard_constraints(root),
+    )
+
+
+def apply_governance_caps(
+    limits: RiskLimits | None, hard_constraints: Mapping[str, Any]
+) -> tuple[RiskLimits | None, dict[str, str]]:
+    """Owner-owned ceilings (governance hard_constraints.yaml) clamp the
+    agent-writable workspace/risk_limits.json: the agent file may be STRICTER
+    than governance, never looser. ``max_drawdown`` follows the RiskLimits
+    convention (negative decimal; either sign is tolerated and normalized),
+    ``max_gross_exposure_usd`` is a plain USD cap. A governance ceiling with
+    no agent file still enforces — deleting risk_limits.json must not lift
+    the owner's ceiling. No ceilings set -> limits returned unchanged.
+    ``max_drawdown_pct`` / ``max_tail_loss`` feed evolution gates only and are
+    deliberately not applied here."""
+    gov_drawdown = _optional_float(hard_constraints.get("max_drawdown"))
+    gov_exposure = _optional_float(
+        hard_constraints.get("max_gross_exposure_usd")
+        if hard_constraints.get("max_gross_exposure_usd") is not None
+        else hard_constraints.get("max_gross_exposure")
+    )
+    sources = {
+        key: "job"
+        for key, value in (vars(limits).items() if limits is not None else ())
+        if value is not None
+    }
+    if gov_drawdown is None and gov_exposure is None:
+        return limits, sources
+    if limits is None:
+        limits = RiskLimits()
+    if gov_drawdown is not None:
+        gov_drawdown = -abs(gov_drawdown)
+        if limits.max_drawdown is None or limits.max_drawdown < gov_drawdown:
+            limits.max_drawdown = gov_drawdown
+            sources["max_drawdown"] = "owner"
+    if gov_exposure is not None and gov_exposure > 0:
+        if (
+            limits.max_gross_exposure_usd is None
+            or limits.max_gross_exposure_usd > gov_exposure
+        ):
+            limits.max_gross_exposure_usd = gov_exposure
+            sources["max_gross_exposure_usd"] = "owner"
+    return limits, sources
+
+
+def _optional_float(value: Any) -> float | None:
+    return float(value) if value is not None else None
 
 
 def clamp_leverage(

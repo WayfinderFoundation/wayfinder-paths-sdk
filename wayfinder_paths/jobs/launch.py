@@ -13,13 +13,19 @@ risk flag acknowledged.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from wayfinder_paths.core.strategies.risk_limits import RiskLimits
 from wayfinder_paths.jobs.application import pause_job_loops, resume_job_loops
 from wayfinder_paths.jobs.compiler import JobCompiler
-from wayfinder_paths.jobs.gating import compute_workspace_revision, evaluate_live_gate
+from wayfinder_paths.jobs.gating import (
+    clamp_leverage,
+    compute_workspace_revision,
+    effective_risk_limits,
+    evaluate_live_gate,
+    governance_hard_constraints,
+)
 from wayfinder_paths.jobs.models import (
     LIFECYCLE_CONTRACTS,
     default_wake_seconds,
@@ -51,7 +57,11 @@ def evaluate_launch_checklist(
     *,
     store: JobStore | None = None,
     target: str = "paper",
+    live_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """``live_gate`` is an ``evaluate_live_gate`` result the caller already
+    computed for this job (sync ships one per snapshot); the jobs_v1 live
+    target reuses it instead of re-hashing the workspace a second time."""
     if target not in {"paper", "live"}:
         raise ValueError("target must be 'paper' or 'live'")
     store = store or JobStore()
@@ -149,7 +159,7 @@ def evaluate_launch_checklist(
 
     if target == "live":
         if contract == "jobs_v1":
-            gate = evaluate_live_gate(job_id, store=store)
+            gate = live_gate or evaluate_live_gate(job_id, store=store)
             identity.update(
                 {
                     "backtest": (gate.get("backtest") or {}).get("revision"),
@@ -170,14 +180,14 @@ def evaluate_launch_checklist(
                 if wallet
                 else "execution_params.wallet_label is not set",
             )
-            limits = RiskLimits.load_optional(root / "workspace")
+            limits, _sources = effective_risk_limits(root)
             has_limits = limits is not None and (
                 limits.max_daily_loss_usd is not None or limits.max_drawdown is not None
             )
             item(
                 "risk_limits_file",
                 "pass" if has_limits else "fail",
-                "risk limits declare a daily loss or drawdown cap"
+                "risk limits (job file or owner ceilings) declare a daily loss or drawdown cap"
                 if has_limits
                 else "live needs a daily loss or drawdown cap: set_watchdog(kill_switches={…}) writes workspace/risk_limits.json and relaunches",
             )
@@ -214,6 +224,42 @@ def evaluate_launch_checklist(
         "ready_live": ready if target == "live" else None,
         "reasons": reasons,
         "checked_at": utc_now_iso(),
+    }
+
+
+def launch_status(
+    launch_state: Mapping[str, Any] | None,
+    heartbeat_loops: Mapping[str, Any],
+    runtime_mode: str | None,
+) -> dict[str, Any]:
+    """Is the job launched, and how do we know? ``state/launch.json`` means it
+    went through the launch checklist (``source: "launch"``); a script loop
+    the runner is actively ticking means it is running anyway — an owner mode
+    switch never writes launch.json (``source: "running"``, mode = the mode
+    the runner executes)."""
+    if launch_state:
+        return {
+            "launched": True,
+            "source": "launch",
+            "mode": launch_state.get("mode"),
+            "launched_at": launch_state.get("launched_at"),
+            "by": launch_state.get("by"),
+        }
+    script = heartbeat_loops.get("script") or {}
+    if script.get("enabled") and script.get("runner_status") == "ACTIVE":
+        return {
+            "launched": True,
+            "source": "running",
+            "mode": runtime_mode,
+            "launched_at": None,
+            "by": None,
+        }
+    return {
+        "launched": False,
+        "source": None,
+        "mode": None,
+        "launched_at": None,
+        "by": None,
     }
 
 
@@ -429,8 +475,18 @@ RISK_LIMITS_PATH = "workspace/risk_limits.json"
 
 def watchdog_view(job: Any, root: Path) -> dict[str, Any]:
     """The long watchdog as one object: watch level, cadence, triggers,
-    notification policy and kill switches."""
-    limits = store_read_json(root / RISK_LIMITS_PATH) or {}
+    notification policy and kill switches. Kill switches are the limits the
+    risk halt enforces (job file clamped by owner ceilings), with who set
+    each one; the leverage ceiling is the one ``clamp_leverage`` applies."""
+    limits, sources = effective_risk_limits(root)
+    kill_switches = {
+        key: value
+        for key in sorted(KILL_SWITCH_KEYS)
+        if limits is not None and (value := getattr(limits, key)) is not None
+    }
+    _effective, leverage_ceiling = clamp_leverage(
+        float("inf"), governance_hard_constraints(root)
+    )
     loop = job.agent_loop
     return {
         "watch_level": str(loop.mode),
@@ -442,7 +498,13 @@ def watchdog_view(job: Any, root: Path) -> dict[str, Any]:
         "always_wake": sorted(ALWAYS_WAKE_EVENTS),
         "trigger_debounce_seconds": loop.trigger_debounce_seconds,
         "notifications": notifications_for(job),
-        "kill_switches": {k: v for k, v in limits.items() if k in KILL_SWITCH_KEYS},
+        "kill_switches": kill_switches,
+        "kill_switch_sources": {key: sources[key] for key in kill_switches},
+        "leverage_ceiling": (
+            {"value": leverage_ceiling, "source": "owner"}
+            if leverage_ceiling is not None
+            else None
+        ),
     }
 
 
@@ -695,6 +757,7 @@ __all__ = [
     "evaluate_launch_checklist",
     "hold_job",
     "launch_job",
+    "launch_status",
     "repin_launch",
     "set_watchdog",
     "watchdog_view",

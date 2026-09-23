@@ -20,6 +20,7 @@ from typing import Any
 
 from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
 from wayfinder_paths.jobs.halt import RISK_LATCH_SOURCES
+from wayfinder_paths.jobs.launch import launch_status
 from wayfinder_paths.jobs.models import LIFECYCLE_CONTRACTS
 from wayfinder_paths.jobs.store import JobStore
 
@@ -57,6 +58,29 @@ ISSUE_CODES: tuple[str, ...] = (
     "not_launched",
 )
 SEVERITY_RANK = {"block": 0, "warn": 1, "info": 2}
+# Within a severity, missing account caps come first: they bound every loss,
+# where strategy and schedule flags bound one path to it.
+RISK_FLAG_PRIORITY: tuple[str, ...] = (
+    "no_max_drawdown",
+    "no_max_daily_loss",
+    "unbounded_notional",
+    "no_stop_loss",
+    "no_native_stop",
+    "no_timeout",
+)
+RISK_FLAG_GAPS: dict[str, str] = {
+    "leverage_above_governance": "leverage within the owner ceiling",
+    "no_max_drawdown": "a drawdown cap",
+    "no_max_daily_loss": "a daily-loss cap",
+    "unbounded_notional": "a gross-exposure cap",
+    "no_stop_loss": "a stop-loss",
+    "no_native_stop": "a venue-side stop",
+    "no_timeout": "a tick timeout",
+    "no_kill_switch": "a halt condition",
+    "no_per_tick_notional_cap": "a per-tick notional cap",
+    "custom_actions": "paper coverage of custom actions",
+    "no_dry_run": "a dry run",
+}
 
 
 def sdk_version() -> str | None:
@@ -143,6 +167,16 @@ def _last_tick(
     }
 
 
+def _risk_flag_rank(flag: dict[str, Any]) -> tuple[int, int]:
+    code = str(flag.get("code"))
+    return (
+        SEVERITY_RANK.get(str(flag.get("severity")), 9),
+        RISK_FLAG_PRIORITY.index(code)
+        if code in RISK_FLAG_PRIORITY
+        else len(RISK_FLAG_PRIORITY),
+    )
+
+
 def build_heartbeat(
     store: JobStore,
     job_id: str,
@@ -153,6 +187,7 @@ def build_heartbeat(
     launch: dict[str, Any] | None,
     halt: dict[str, Any] | None,
     workspace_revision: str | None,
+    runtime_mode: str | None = None,
 ) -> dict[str, Any]:
     script = job.script_loop
     agent = job.agent_loop
@@ -191,6 +226,9 @@ def build_heartbeat(
             active_revision is None or active_revision == launch_revision
         )
     halt = halt if isinstance(halt, dict) else None
+    status = launch_status(
+        launch, {"script": script_block, "agent": agent_block}, runtime_mode
+    )
     return {
         "sdk_version": sdk_version(),
         "runner_reachable": bool(states) if loops_enabled else None,
@@ -202,12 +240,9 @@ def build_heartbeat(
             "last_tick_at": ticks.get("last_tick_at") or runs.get("last_run_at"),
         },
         "launch": {
-            "launched": bool(launch),
+            **status,
             "revision": launch_revision,
-            "mode": launch.get("mode") if launch else None,
-            "launched_at": launch.get("launched_at") if launch else None,
             "relaunched_at": launch.get("relaunched_at") if launch else None,
-            "by": launch.get("by") if launch else None,
             "active_revision": active_revision,
             "workspace_revision": workspace_revision,
             "identity_ok": identity_ok,
@@ -517,36 +552,59 @@ def build_issues(
             )
 
     def risk() -> None:
-        pending = [
-            flag
-            for flag in risk_flags or []
-            if flag.get("severity") in {"block", "warn"}
-            and not flag.get("acknowledged")
-        ]
+        pending = sorted(
+            (
+                flag
+                for flag in risk_flags or []
+                if flag.get("severity") in {"block", "warn"}
+                and not flag.get("acknowledged")
+            ),
+            key=_risk_flag_rank,
+        )
         if not pending:
             return
         blocking = any(flag.get("severity") == "block" for flag in pending)
-        codes = ", ".join(str(flag.get("code")) for flag in pending)
+        top_fix = str(
+            pending[0].get("fix")
+            or "acknowledge each warn flag with a memo before going live"
+        )
+        if scorecard.get("mode") == "live":
+            gaps = ", ".join(
+                RISK_FLAG_GAPS.get(str(flag.get("code")), str(flag.get("code")))
+                for flag in pending
+            )
+            message = f"running live without: {gaps}"
+            fix = f"{top_fix}. Or acknowledge the risk on the Launch tab."
+        else:
+            codes = ", ".join(str(flag.get("code")) for flag in pending)
+            message = f"unacknowledged risk flags: {codes}"
+            fix = top_fix
         add(
             "risk_flags_unacknowledged",
             "block" if blocking else "warn",
-            f"unacknowledged risk flags: {codes}",
+            message,
             scope="risk",
-            fix=str(
-                pending[0].get("fix")
-                or "acknowledge each warn flag with a memo before going live"
-            ),
+            fix=fix,
         )
 
     def checklist() -> None:
+        # Only hard failures: acknowledgements already surface through the
+        # risk-flag issue, and a job running without a launch record has no
+        # checklist run to acknowledge them in.
         if not launch.get("launched") or not isinstance(launch_checklist, dict):
             return
-        if launch_checklist.get("ok") is False:
-            reasons = launch_checklist.get("reasons") or []
+        failures = [
+            item
+            for item in launch_checklist.get("items") or []
+            if item.get("status") == "fail"
+        ]
+        if failures:
             add(
                 "launch_checklist_failing",
                 "warn",
-                str(reasons[0]) if reasons else "the launch checklist no longer passes",
+                str(
+                    failures[0].get("detail") or "the launch checklist no longer passes"
+                ),
                 since=launch_checklist.get("checked_at"),
                 scope="launch",
                 fix="re-run validate and launch",
@@ -662,6 +720,7 @@ def health_payload(
             launch=launch,
             halt=halt,
             workspace_revision=workspace_revision,
+            runtime_mode=(scorecard or {}).get("mode"),
         )
     except Exception:  # noqa: BLE001
         heartbeat = None
