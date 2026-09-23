@@ -12,14 +12,65 @@ from wayfinder_paths.jobs import sync as sync_mod
 from wayfinder_paths.jobs.freestyle.validate import validate_freestyle_job
 from wayfinder_paths.jobs.halt import request_halt
 from wayfinder_paths.jobs.launch import launch_job, repin_launch
+from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.risk_flags import acknowledge_risk_flags
-from wayfinder_paths.jobs.sync import snapshot_job
+from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.sync import apply_script_mode, snapshot_job
 from wayfinder_paths.tests.test_jobs_launch import _freestyle, _patch
+from wayfinder_paths.tests.test_jobs_risk_limits import _write_governance
 from wayfinder_paths.tests.test_jobs_runtime_status import (
     _FakeBridge,
     _job,
     _script_state,
 )
+from wayfinder_paths.tests.test_jobs_script_mode import _patch_bridges
+
+# majors-5m-lab's owner ceilings: only max_drawdown and max_leverage are
+# enforced at runtime; the other two feed evolution gates.
+MAJORS_HARD_CONSTRAINTS = {
+    "max_drawdown": 0.15,
+    "max_drawdown_pct": 0.15,
+    "max_tail_loss": 0.1,
+    "max_leverage": 3.0,
+}
+
+
+def _jobs_v1(tmp_path: Path) -> tuple[JobStore, WayfinderJob]:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "majors",
+        script="workspace/src/strategy.py",
+        interval_seconds=300,
+        timeout_seconds=120,
+        execution_contract="jobs_v1",
+        agent_mode="intervene",
+    )
+    job.execution_params["wallet_label"] = "majors"
+    store.create_job(job)
+    return store, store.load(job.id)
+
+
+def _owner_switched_live(tmp_path: Path, monkeypatch) -> tuple[JobStore, WayfinderJob]:
+    """The majors-5m-lab shape: the owner flipped script mode to live through
+    apply_script_mode (no launch checklist, so no state/launch.json) and the
+    runner ticks the script loop live."""
+    store, job = _jobs_v1(tmp_path)
+    _write_governance(tmp_path, job.id, MAJORS_HARD_CONSTRAINTS)
+    _patch_bridges(monkeypatch)
+    monkeypatch.setattr(sync_mod.WAYFINDER_JOBS_CLIENT, "sync", lambda snapshots: None)
+    monkeypatch.setattr(
+        sync_mod,
+        "evaluate_live_gate",
+        lambda *a, **k: {"live_ready": True, "reasons": []},
+    )
+    apply_script_mode(job.id, "live", store=store, set_by="owner")
+    job = store.load(job.id)
+    monkeypatch.setattr(
+        sync_mod,
+        "RunnerBridge",
+        _FakeBridge({job.script_loop.runner_job_name: _script_state()}),
+    )
+    return store, job
 
 
 def test_runner_down_is_reported_not_raised(tmp_path: Path, monkeypatch) -> None:
@@ -278,3 +329,117 @@ def test_unqueued_wake_is_flagged_without_masking_the_last_check(
         proposals=[],
     )
     assert "agent_wake_failed" not in [i["code"] for i in issues]
+
+
+def test_owner_switched_live_job_reads_as_launched_and_live(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store, job = _owner_switched_live(tmp_path, monkeypatch)
+    assert not (store.job_dir(job.id) / "state" / "launch.json").exists()
+
+    snapshot = snapshot_job(job.id, store=store)
+    launch = snapshot["heartbeat"]["launch"]
+    assert launch["launched"] is True
+    assert launch["source"] == "running" and launch["mode"] == "live"
+    issues = {issue["code"]: issue for issue in snapshot["issues"]}
+    assert "not_launched" not in issues
+
+    checklist = snapshot["launch_checklist"]
+    assert checklist["target"] == "live"
+    assert "mode_is_paper" not in {item["id"] for item in checklist["items"]}
+    # The real live gate fails here (no validation report): that is a true
+    # issue and must name the gate, never "leave live".
+    failing = issues["launch_checklist_failing"]
+    assert "leave live" not in failing["message"]
+    assert "validation" in failing["message"]
+
+    risk = issues["risk_flags_unacknowledged"]
+    assert risk["severity"] == "warn"
+    assert risk["message"].startswith(
+        "running live without: a daily-loss cap, a gross-exposure cap"
+    )
+    assert "drawdown" not in risk["message"]
+    assert "venue-side stop" not in risk["message"]
+    assert risk["fix"].startswith('set_watchdog(kill_switches={"max_daily_loss_usd"')
+    assert risk["fix"].endswith(". Or acknowledge the risk on the Launch tab.")
+
+    watchdog = snapshot["watchdog"]
+    assert watchdog["kill_switches"] == {"max_drawdown": -0.15}
+    assert watchdog["kill_switch_sources"] == {"max_drawdown": "owner"}
+    assert watchdog["leverage_ceiling"] == {"value": 3.0, "source": "owner"}
+
+
+def test_never_started_jobs_v1_job_is_still_not_launched(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store, job = _jobs_v1(tmp_path)
+    monkeypatch.setattr(sync_mod, "RunnerBridge", _FakeBridge({}))
+    snapshot = snapshot_job(job.id, store=store)
+    launch = snapshot["heartbeat"]["launch"]
+    assert launch["launched"] is False and launch["source"] is None
+    assert "not_launched" in {issue["code"] for issue in snapshot["issues"]}
+    assert snapshot["launch_checklist"]["target"] == "paper"
+
+
+def _flag(code: str, severity: str = "warn") -> dict:
+    return {
+        "code": code,
+        "severity": severity,
+        "message": code,
+        "fix": f"fix {code}",
+        "scope": "risk_limits",
+        "acknowledged": False,
+    }
+
+
+def test_risk_issue_orders_caps_first_and_speaks_the_phase(tmp_path: Path) -> None:
+    store, job = _job(tmp_path)
+    catalogue_order = [
+        _flag("no_timeout"),
+        _flag("no_stop_loss"),
+        _flag("no_native_stop"),
+        _flag("no_max_drawdown"),
+        _flag("no_max_daily_loss"),
+        _flag("no_position_cap", "info"),
+        _flag("unbounded_notional"),
+        {**_flag("no_consecutive_loss_pause"), "acknowledged": True},
+    ]
+
+    def risk_issue(mode: str) -> dict:
+        issues = health.build_issues(
+            store,
+            job.id,
+            job,
+            heartbeat=None,
+            scorecard={"mode": mode},
+            features=None,
+            risk_flags=catalogue_order,
+            launch_checklist=None,
+            proposals=None,
+        )
+        return next(i for i in issues if i["code"] == "risk_flags_unacknowledged")
+
+    paper = risk_issue("paper")
+    assert paper["severity"] == "warn"
+    assert paper["message"] == (
+        "unacknowledged risk flags: no_max_drawdown, no_max_daily_loss, "
+        "unbounded_notional, no_stop_loss, no_native_stop, no_timeout"
+    )
+    assert paper["fix"] == "fix no_max_drawdown"
+
+    live = risk_issue("live")
+    assert live["severity"] == "warn"
+    assert live["message"] == (
+        "running live without: a drawdown cap, a daily-loss cap, "
+        "a gross-exposure cap, a stop-loss, a venue-side stop, a tick timeout"
+    )
+    assert live["fix"] == (
+        "fix no_max_drawdown. Or acknowledge the risk on the Launch tab."
+    )
+
+    catalogue_order.append(_flag("leverage_above_governance", "block"))
+    blocked = risk_issue("live")
+    assert blocked["severity"] == "block"
+    assert blocked["message"].startswith(
+        "running live without: leverage within the owner ceiling, a drawdown cap"
+    )

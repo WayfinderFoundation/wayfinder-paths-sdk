@@ -16,6 +16,7 @@ from wayfinder_paths.jobs.launch import (
     LAUNCH_STATE_PATH,
     evaluate_launch_checklist,
     launch_job,
+    launch_status,
 )
 from wayfinder_paths.jobs.models import (
     LIFECYCLE_CONTRACTS,
@@ -228,7 +229,7 @@ def test_block_flags_cannot_be_acknowledged(tmp_path: Path) -> None:
     )
 
 
-def test_jobs_v1_native_stop_flag_is_a_warning_until_pinned(tmp_path: Path) -> None:
+def test_jobs_v1_native_stop_flag_follows_the_engine_policy(tmp_path: Path) -> None:
     store = JobStore(repo_root=tmp_path)
     job = WayfinderJob.new(
         "carry",
@@ -239,9 +240,18 @@ def test_jobs_v1_native_stop_flag_is_a_warning_until_pinned(tmp_path: Path) -> N
     store.save(job)
     root = store.job_dir(job.id)
 
+    # Unset on hyperliquid: the engine places a venue stop by default.
+    flags = {f["code"]: f for f in risk_flags(store.load(job.id), root)}
+    assert "no_native_stop" not in flags
+    # The job-level flag cannot conjure a stop price: a strategy that never
+    # emits one is still flagged.
+    assert flags["no_stop_loss"]["severity"] == "warn"
+
+    job.execution_params["native_stop_required"] = False
+    store.save(job)
     flags = {f["code"]: f for f in risk_flags(store.load(job.id), root)}
     assert flags["no_native_stop"]["severity"] == "warn"
-    assert "by default" in flags["no_native_stop"]["message"]
+    assert "native_stop_required: false" in flags["no_native_stop"]["message"]
     checklist = evaluate_launch_checklist(job.id, store=store, target="live")
     assert any(
         i["id"] == "risk:no_native_stop" and i["status"] == "ack_required"
@@ -252,9 +262,77 @@ def test_jobs_v1_native_stop_flag_is_a_warning_until_pinned(tmp_path: Path) -> N
     store.save(job)
     flags = {f["code"]: f for f in risk_flags(store.load(job.id), root)}
     assert "no_native_stop" not in flags
-    # The job-level flag cannot conjure a stop price: a strategy that never
-    # emits one is still flagged.
-    assert flags["no_stop_loss"]["severity"] == "warn"
+
+    del job.execution_params["native_stop_required"]
+    job.execution_spec = {"venues": ["hyperliquid_spot"]}
+    store.save(job)
+    flags = {f["code"]: f for f in risk_flags(store.load(job.id), root)}
+    assert flags["no_native_stop"]["severity"] == "info"
+    assert "once per tick" in flags["no_native_stop"]["message"]
+
+
+def test_launch_status_truth_table() -> None:
+    active = {"script": {"enabled": True, "runner_status": "ACTIVE"}}
+    pinned = {
+        "mode": "paper",
+        "launched_at": "2026-08-01T00:00:00+00:00",
+        "by": "owner",
+    }
+
+    via_launch = launch_status(pinned, active, "live")
+    assert via_launch == {
+        "launched": True,
+        "source": "launch",
+        "mode": "paper",
+        "launched_at": "2026-08-01T00:00:00+00:00",
+        "by": "owner",
+    }
+    running = launch_status(None, active, "live")
+    assert running["launched"] is True
+    assert running["source"] == "running" and running["mode"] == "live"
+    assert running["launched_at"] is None and running["by"] is None
+
+    not_launched = {
+        "launched": False,
+        "source": None,
+        "mode": None,
+        "launched_at": None,
+        "by": None,
+    }
+    for loops in (
+        {"script": {"enabled": True, "runner_status": "PAUSED"}},
+        {"script": {"enabled": True, "runner_status": None}},
+        {"script": {"enabled": False, "runner_status": "ACTIVE"}},
+        {},
+    ):
+        assert launch_status(None, loops, "live") == not_launched
+
+
+def test_live_target_checklist_never_asks_to_go_paper(tmp_path: Path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "carry",
+        script="workspace/src/carry.py",
+        interval_seconds=60,
+        execution_contract="jobs_v1",
+    )
+    job.script_loop.mode = "live"
+    store.save(job)
+
+    paper = evaluate_launch_checklist(job.id, store=store, target="paper")
+    assert any(
+        i["id"] == "mode_is_paper" and i["status"] == "fail" for i in paper["items"]
+    )
+    gate = {
+        "live_ready": False,
+        "reasons": ["validation report is for revision a, workspace is b"],
+    }
+    live = evaluate_launch_checklist(job.id, store=store, target="live", live_gate=gate)
+    ids = {i["id"] for i in live["items"]}
+    assert "mode_is_paper" not in ids
+    live_gate_item = next(i for i in live["items"] if i["id"] == "live_gate")
+    assert live_gate_item["status"] == "fail"
+    assert live_gate_item["detail"] == gate["reasons"][0]
 
 
 def test_jobs_v1_readiness_still_is_the_live_gate(tmp_path: Path) -> None:
@@ -272,3 +350,20 @@ def test_jobs_v1_readiness_still_is_the_live_gate(tmp_path: Path) -> None:
     checklist = evaluate_launch_checklist(job.id, store=store)
     assert checklist["kind"] == "jobs_v1"
     assert any(i["id"] == "risk:no_stop_loss" for i in checklist["items"])
+
+
+def test_owner_drawdown_ceiling_satisfies_the_live_risk_limits_item(
+    tmp_path: Path,
+) -> None:
+    store, job = _freestyle(tmp_path)
+    root = store.job_dir(job.id)
+
+    def risk_limits_item() -> dict:
+        checklist = evaluate_launch_checklist(job.id, store=store, target="live")
+        return next(i for i in checklist["items"] if i["id"] == "risk_limits_file")
+
+    assert risk_limits_item()["status"] == "fail"
+    (root / "constitution.yaml").write_text(
+        "hard_constraints:\n  max_drawdown: 0.15\n", encoding="utf-8"
+    )
+    assert risk_limits_item()["status"] == "pass"

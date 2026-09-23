@@ -15,7 +15,18 @@ from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.core.strategies.risk_limits import RiskLimits
-from wayfinder_paths.jobs.gating import clamp_leverage, governance_hard_constraints
+from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
+from wayfinder_paths.jobs.execution.venues import (
+    NativeStopPolicy,
+    native_stop_policy,
+    venue_capabilities,
+)
+from wayfinder_paths.jobs.gating import (
+    clamp_leverage,
+    effective_risk_limits,
+    governance_hard_constraints,
+)
 from wayfinder_paths.jobs.models import WayfinderJob, utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
@@ -39,7 +50,9 @@ class RiskFlag:
 def risk_flags(job: WayfinderJob, root: Path) -> list[dict[str, Any]]:
     root = Path(root)
     params = dict(job.execution_params or {})
-    limits = RiskLimits.load_optional(root / "workspace")
+    # The limits the risk halt enforces (job file clamped by owner ceilings),
+    # so a flag never names a gap the owner already closed.
+    limits, _sources = effective_risk_limits(root)
     hard = governance_hard_constraints(root)
     flags: list[RiskFlag] = []
 
@@ -71,9 +84,7 @@ def risk_flags(job: WayfinderJob, root: Path) -> list[dict[str, Any]]:
     else:
         flags.extend(_freestyle_flags(job, root, limits))
 
-    if (limits is None or limits.max_drawdown is None) and hard.get(
-        "max_drawdown"
-    ) is None:
+    if limits is None or limits.max_drawdown is None:
         flags.append(
             RiskFlag(
                 "no_max_drawdown",
@@ -103,9 +114,7 @@ def risk_flags(job: WayfinderJob, root: Path) -> list[dict[str, Any]]:
                 "risk_limits",
             )
         )
-    if (limits is None or limits.max_gross_exposure_usd is None) and not (
-        hard.get("max_gross_exposure_usd") or hard.get("max_gross_exposure")
-    ):
+    if limits is None or limits.max_gross_exposure_usd is None:
         flags.append(
             RiskFlag(
                 "unbounded_notional",
@@ -146,17 +155,46 @@ def _jobs_v1_flags(
                 "strategy",
             )
         )
-    if not params.get("native_stop_required"):
+    policy = _job_native_stop_policy(job, root, params)
+    if policy == "opted_out":
         flags.append(
             RiskFlag(
                 "no_native_stop",
                 "warn",
-                "venue-side stop not pinned: a live perp entry still gets one by default (unless execution_params.native_stop_required is false); an engine-side stop is checked once per tick and dies with the runner",
-                "set execution_params.native_stop_required: true on venues that support it — an entry whose venue stop cannot be confirmed is then unwound",
+                "venue-side stop disabled by execution_params.native_stop_required: false",
+                "remove execution_params.native_stop_required (or set it true) so live entries carry a venue-side stop",
+                "strategy",
+            )
+        )
+    elif policy == "unsupported":
+        flags.append(
+            RiskFlag(
+                "no_native_stop",
+                "info",
+                "this venue has no venue-side stop; stops are checked once per tick",
+                "size stops for the tick interval, or trade on a venue with venue-side stops",
                 "strategy",
             )
         )
     return flags
+
+
+def _job_native_stop_policy(
+    job: WayfinderJob, root: Path, params: dict[str, Any]
+) -> NativeStopPolicy | None:
+    """The engine's job-level native-stop answer for the venues the driver
+    will actually build (the spec's venues, hyperliquid when none)."""
+    spec_data, _ = resolve_execution_spec(root, job.to_dict())
+    venues = ExecutionSpec.from_dict(spec_data).venues or ["hyperliquid"]
+    policies = {
+        native_stop_policy(params, venue_capabilities(venue).supports_brackets)
+        for venue in venues
+    }
+    if "opted_out" in policies:
+        return "opted_out"
+    if "unsupported" in policies:
+        return "unsupported"
+    return None
 
 
 def _freestyle_flags(

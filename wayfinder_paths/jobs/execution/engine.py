@@ -42,6 +42,7 @@ from wayfinder_paths.jobs.execution.venues import (
     Broker,
     MarketEvent,
     NativeProtectionBroker,
+    native_stop_policy,
 )
 from wayfinder_paths.jobs.regime import (
     current_portfolio_regime,
@@ -1150,12 +1151,14 @@ def native_protection_skip_reason(
     """
     if bracket.get("native_required") is not None:
         return None if bracket["native_required"] else "opted_out"
-    pinned = params.get("native_stop_required")
-    if pinned is not None and not pinned:
+    policy = native_stop_policy(
+        params, supports_native=isinstance(broker, NativeProtectionBroker)
+    )
+    if policy == "opted_out":
         return "opted_out"
     if _float_or_none(bracket.get("stop_loss")) is None:
         return "no_stop_loss"
-    if pinned is None and not isinstance(broker, NativeProtectionBroker):
+    if policy == "unsupported":
         return "unsupported_broker"
     return None
 

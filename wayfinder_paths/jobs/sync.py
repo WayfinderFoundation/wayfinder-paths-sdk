@@ -286,6 +286,7 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
     }
     proposals = store.proposals(job_id)
     halt = read_halt(store.job_dir(job_id))
+    gate = _gate_with_restamp(job_id, store)
     return {
         "job": job.to_dict(),
         "scorecard": scorecard,
@@ -316,7 +317,7 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
             if validation
             else {}
         ),
-        "gate": _gate_with_restamp(job_id, store),
+        "gate": gate,
         # Manual kill-switch detail (contract C4): scorecard already reports
         # live_execution_status="halted" while set; this carries reason/ts.
         "halt": halt,
@@ -339,6 +340,7 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
             features=features,
             halt=halt,
             proposals=proposals,
+            live_gate=gate,
         ),
     }
 
@@ -354,6 +356,7 @@ def _launch_payload(
     features: list[dict[str, Any]] | None = None,
     halt: dict[str, Any] | None = None,
     proposals: list[dict[str, Any]] | None = None,
+    live_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from wayfinder_paths.jobs.health import health_payload
     from wayfinder_paths.jobs.launch import LAUNCH_STATE_PATH, evaluate_launch_checklist
@@ -419,10 +422,17 @@ def _launch_payload(
     except Exception:  # noqa: BLE001
         pass
     if str(job.execution_contract or "legacy") in LIFECYCLE_CONTRACTS:
+        # The checklist in the job's real phase: a job the runner executes
+        # live is checked against the live rule, never told to go paper.
+        target = "live" if (scorecard or {}).get("mode") == "live" else "paper"
         try:
-            payload["launch_checklist"] = evaluate_launch_checklist(
-                job_id, store=store, target="paper"
-            )
+            if target == "live" and live_gate and live_gate.get("checklist"):
+                # Freestyle/path readiness already ran the live checklist.
+                payload["launch_checklist"] = live_gate["checklist"]
+            else:
+                payload["launch_checklist"] = evaluate_launch_checklist(
+                    job_id, store=store, target=target, live_gate=live_gate
+                )
         except Exception:  # noqa: BLE001
             pass
     checklist = payload["launch_checklist"]

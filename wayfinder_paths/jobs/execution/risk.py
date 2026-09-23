@@ -28,14 +28,12 @@ from typing import Any
 
 import pandas as pd
 
-from wayfinder_paths.core.strategies.risk_limits import RiskLimits
 from wayfinder_paths.jobs.execution.engine import EngineState
 from wayfinder_paths.jobs.execution.primitives import (
     DEFAULT_INITIAL_CAPITAL,
     CompletedBarsView,
-    _float_or_none,
 )
-from wayfinder_paths.jobs.gating import governance_hard_constraints
+from wayfinder_paths.jobs.gating import effective_risk_limits
 
 RISK_STATE_PATH = "state/risk_state.json"
 FORWARD_SUMMARY_PATH = "results/forward/summary.json"
@@ -53,10 +51,7 @@ def check_risk_halt(
 ) -> tuple[str | None, dict[str, Any]]:
     """Returns (halt_reason | None, snapshot_used). Persists peak equity to
     state/risk_state.json so drawdown is deterministic per tick."""
-    limits = _apply_governance_caps(
-        RiskLimits.load_optional(Path(root) / "workspace"),
-        governance_hard_constraints(root),
-    )
+    limits, _sources = effective_risk_limits(root)
     if limits is None:
         return None, {}
     snapshot = build_risk_snapshot(
@@ -91,39 +86,6 @@ def check_risk_halt(
         encoding="utf-8",
     )
     return reason, snapshot
-
-
-def _apply_governance_caps(
-    limits: RiskLimits | None, hard_constraints: Mapping[str, Any]
-) -> RiskLimits | None:
-    """Owner-owned ceilings (governance hard_constraints.yaml) clamp the
-    agent-writable workspace/risk_limits.json: the agent file may be STRICTER
-    than governance, never looser. ``max_drawdown`` follows the RiskLimits
-    convention (negative decimal; either sign is tolerated and normalized),
-    ``max_gross_exposure_usd`` is a plain USD cap. A governance ceiling with
-    no agent file still enforces — deleting risk_limits.json must not lift
-    the owner's ceiling. No ceilings set -> limits returned unchanged."""
-    gov_drawdown = _float_or_none(hard_constraints.get("max_drawdown"))
-    gov_exposure = _float_or_none(
-        hard_constraints.get("max_gross_exposure_usd")
-        if hard_constraints.get("max_gross_exposure_usd") is not None
-        else hard_constraints.get("max_gross_exposure")
-    )
-    if gov_drawdown is None and gov_exposure is None:
-        return limits
-    if limits is None:
-        limits = RiskLimits()
-    if gov_drawdown is not None:
-        gov_drawdown = -abs(gov_drawdown)
-        if limits.max_drawdown is None or limits.max_drawdown < gov_drawdown:
-            limits.max_drawdown = gov_drawdown
-    if gov_exposure is not None and gov_exposure > 0:
-        if (
-            limits.max_gross_exposure_usd is None
-            or limits.max_gross_exposure_usd > gov_exposure
-        ):
-            limits.max_gross_exposure_usd = gov_exposure
-    return limits
 
 
 def build_risk_snapshot(

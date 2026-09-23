@@ -165,6 +165,25 @@ class NativeProtectionBroker(Protocol):
     ) -> NativeProtectionResult: ...
 
 
+NativeStopPolicy = Literal["opted_out", "unsupported"]
+
+
+def native_stop_policy(
+    params: Mapping[str, Any], supports_native: bool
+) -> NativeStopPolicy | None:
+    """The job-level answer to "does a live entry get a venue-side stop?":
+    None when it does (the default wherever the venue can place one, or when
+    ``execution_params.native_stop_required`` pins it), ``"opted_out"`` when
+    the job sets it to False, ``"unsupported"`` when the venue cannot place
+    one and nothing pins it. The engine and the risk flags both ask this."""
+    pinned = params.get("native_stop_required")
+    if pinned is not None and not pinned:
+        return "opted_out"
+    if pinned is None and not supports_native:
+        return "unsupported"
+    return None
+
+
 @runtime_checkable
 class RestingOrderCancelBroker(Protocol):
     """Optional live-broker extension with the context needed to cancel.
