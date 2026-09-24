@@ -13,6 +13,56 @@ from wayfinder_paths.adapters.boros_adapter import BorosAdapter
 adapter = BorosAdapter(config={})
 ```
 
+By default the client uses the current Boros Open API mount:
+
+- Open API: `https://api-boros.pendle.finance/apis/v1/...`
+- Legacy `/open-api/*` and `/core/*` mounts are deprecated by Pendle.
+- A custom `boros_adapter.base_url` and `boros_adapter.endpoints` can still be
+  supplied for tests or emergency compatibility.
+
+The public docs still reference some legacy `/open-api/v2/*` route names
+(`GET /v2/markets/order-books`, `/v2/accounts/limit-orders`,
+`/v2/accounts/all-limit-orders`, transfer logs, and gas history). On the
+redesigned mount, the same active SDK coverage uses:
+
+- `GET /v1/markets/order-book`
+- `GET /v1/accounts/orders`
+- `GET /v1/accounts/orders-by-placed-time`
+- `GET /v1/accounts/transfer-logs`
+- `GET /v1/accounts/gas-consumption-history`
+
+Do not add new default reads against the deprecated legacy mount unless the code
+documents a specific compatibility fallback. Latest settlements, account
+settings writes, stop orders, and direct funding-rate history wrappers are not
+wrapped by this adapter yet; use raw client overrides only with an explicit
+follow-up note.
+
+## Signing Boundaries
+
+The default Wayfinder product path for Boros is wallet-signed execution.
+
+- Wallet-signed user calldata: deposits, withdrawal requests, agent approval,
+  and agent revocation. These are signed by the root wallet and submitted
+  directly on-chain. Adapter deposit/withdraw helpers can broadcast these when
+  `sign_callback` and `wallet_address` are configured.
+- Agent-key-only calldata: current Boros place/cancel order, cash transfer,
+  enter/exit market, gas top-up, and AMM liquidity endpoints return `calls` or
+  `executeParams` for an approved Boros agent key. These are advanced/non-default
+  for Wayfinder. The adapter reports `agent_execution_not_default` instead of
+  broadcasting them with the root signer or returning raw agent payloads as the
+  happy path.
+
+The low-level client keeps Boros Send Txs helpers for protocol coverage, but
+they require pre-signed agent payloads and should not be treated as the normal
+agent execution path.
+
+Stop orders (TP/SL) are managed by the separate Stop Order service and are not
+wrapped by this adapter yet.
+
+Current simulation helpers are available for place-order, deposit, withdrawal,
+cash-transfer, add-liquidity, and remove-liquidity previews. Use them before any
+flow that would move funds or change positions.
+
 ## Query Markets
 
 ### get_all_markets
@@ -113,8 +163,13 @@ is_open = adapter.is_vault_open_for_deposit(
 
 Boros vault deposits are a two-step flow:
 
-1. Deposit collateral into the correct Boros margin bucket.
+1. Deposit collateral into the correct Boros margin bucket with the wallet.
 2. Convert that collateral amount into Boros scaled cash and add it to the vault.
+
+The adapter does not automatically perform isolated-to-cross cash transfer after
+deposit because the current Boros cash-transfer endpoint is agent-key-only.
+Treat cash transfer as an advanced/non-default operation unless a product flow
+explicitly supports approved agent signing.
 
 ### Cross-margin vault deposit
 
@@ -180,3 +235,6 @@ All methods return `(success: bool, data: Any)` tuples.
 ```bash
 poetry run pytest wayfinder_paths/adapters/boros_adapter/ -q
 ```
+
+Gorlami-backed simulation tests are skipped unless the environment provides the
+required Boros/Gorlami API configuration.

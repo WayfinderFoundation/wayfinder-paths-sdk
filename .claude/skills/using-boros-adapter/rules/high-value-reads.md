@@ -47,17 +47,26 @@ The adapter normalizes API responses to snake_case. Always use snake_case field 
 
 - Adapter: `wayfinder_paths/adapters/boros_adapter/adapter.py`
 - Boros is deployed on **Arbitrum (chain_id = 42161)** in this repo’s default configuration.
+- Current Boros Open API mount: `https://api-boros.pendle.finance/apis/v1/...`
+- Legacy `https://api.boros.finance/open-api/*` and `/core/*` mounts are deprecated. Do not add new reads against them unless the code documents a specific compatibility fallback.
+- Some Boros docs still name legacy `/open-api/v2/*` routes. On the redesigned
+  mount, use the adapter-backed current routes instead: `/v1/markets/order-book`,
+  `/v1/accounts/orders`, `/v1/accounts/orders-by-placed-time`,
+  `/v1/accounts/transfer-logs`, and `/v1/accounts/gas-consumption-history`.
+  Latest settlements, account settings writes, stop orders, and direct
+  funding-rate history wrappers are not exposed as adapter helpers yet.
 
 ## High-value reads
 
 ### List markets (discovery)
 
-- Call: `success, markets = await adapter.list_markets(is_whitelisted=True, skip=0, limit=100)`
-- Preferred (auto-paginates): `success, markets = await adapter.list_markets_all(is_whitelisted=True, page_size=100)`
+- Call: `success, markets = await adapter.list_markets(is_whitelisted=True, skip=0, limit=200)`
+- Preferred (auto-paginates): `success, markets = await adapter.list_markets_all(is_whitelisted=True, page_size=200)`
 - Output: `(bool, list[dict])` — market dicts (API-native schema). Use these dicts as the `market` input to `quote_market(...)`.
 
 Notes:
-- Boros enforces `limit <= 100`.
+- Current Boros `/v1/markets` uses cursor pagination (`resumeToken`). The adapter preserves the older `skip`/`limit` public shape by walking pages, but new code should prefer `list_markets_all(page_size=200)`.
+- Boros enforces `limit <= 200`.
 - The underlying asset is typically `metadata.assetSymbol` (don’t guess field names).
 - `platform` field is a **dict** (`{"name": "Hyperliquid", "platformId": "Hyperliquid", ...}`), NOT a plain string. Use `m.get("platform", {}).get("name", "")` to extract the name.
 
@@ -65,6 +74,9 @@ Notes:
 
 - Call: `success, book = await adapter.get_orderbook(market_id, tick_size=0.001)`
 - Output: `(bool, dict)` — orderbook with `long`/`short` sides and tick arrays (schema-flexible).
+- Source route: current redesigned Open API `GET /v1/markets/order-book`. The
+  deprecated legacy docs also expose `GET /v2/markets/order-books`; do not switch
+  default adapter calls to the legacy mount without a compatibility reason.
 
 ### Quote a single market (APR summary)
 
@@ -123,7 +135,7 @@ annualized_carry_long = (daily_floating - daily_fixed) * 365
 - Recommended params:
   - `platform="hyperliquid"` (optional filter)
   - `prefer_market_data=True` (fast: uses `/markets` embedded bid/ask/mid when available)
-  - `page_size=100` (scan all markets; Boros enforces `<=100`)
+  - `page_size=200` (scan all markets; Boros enforces `<=200`)
 - Use to build a curve across maturities and pick the best risk-adjusted tenor.
 
 ### Fast market+rate snapshot (no orderbooks)
@@ -310,6 +322,8 @@ All return `(bool, result)`:
 - `success, balances = await adapter.get_account_balances(token_id=3)` — collateral summary (isolated/cross/total)
 - `success, collaterals = await adapter.get_collaterals()` — full raw collateral data
 - `success, orders = await adapter.get_open_limit_orders()` — pending limit orders
+- `success, gas = await adapter.get_gas_balance()` — current Boros gas balance
+- `success, gas_history = await adapter.get_gas_consumption_history(limit=100)` — gas consumption history
 - `success, status = await adapter.get_withdrawal_status()` — withdrawal state
 - `success, amount = await adapter.get_pending_withdrawal_amount()` — locked withdrawal amount
 
