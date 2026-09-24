@@ -17,6 +17,21 @@ from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import apply_initial_capital, apply_wallet_label
 
 
+def _fake_state(*, equity: float, free: float | None = None):
+    async def fake_state(*, label):
+        return {
+            "ok": True,
+            "result": {
+                "summary": {
+                    "unified_usdc_equity": equity,
+                    "unified_usdc_margin_available": equity if free is None else free,
+                }
+            },
+        }
+
+    return fake_state
+
+
 def _job(tmp_path) -> tuple[JobStore, str]:
     store = JobStore(repo_root=tmp_path)
     job = WayfinderJob.new("fund-demo", agent_mode="intervene")
@@ -200,11 +215,12 @@ def test_venue_withdraw_shrinks_capital_floored_at_zero(tmp_path, monkeypatch) -
     monkeypatch.setattr(sync_module, "sync_all_jobs", lambda **kwargs: None)
 
     async def fake_withdraw(*, wallet_label, amount_usdc, destination=None):
-        return {"ok": True, "result": {"status": "confirmed"}}
+        return {"ok": True, "result": {"status": "submitted"}}
 
     import wayfinder_paths.mcp.tools.hyperliquid as hl
 
-    monkeypatch.setattr(hl, "hyperliquid_withdraw_usdc", fake_withdraw)
+    monkeypatch.setattr(hl, "submit_usdc_withdrawal", fake_withdraw)
+    monkeypatch.setattr(hl, "hyperliquid_get_state", _fake_state(equity=90.0))
 
     result = asyncio.run(sync_module.venue_withdraw(job_id, 80.0, store=store))
     assert result["initial_capital"] == 0.0
@@ -240,12 +256,13 @@ def test_venue_ops_shift_equity_recon_baseline(tmp_path, monkeypatch) -> None:
         return {"ok": True, "result": {"status": "confirmed"}}
 
     async def fake_withdraw(*, wallet_label, amount_usdc, destination=None):
-        return {"ok": True, "result": {"status": "confirmed"}}
+        return {"ok": True, "result": {"status": "submitted"}}
 
     import wayfinder_paths.mcp.tools.hyperliquid as hl
 
     monkeypatch.setattr(hl, "hyperliquid_deposit_usdc", fake_deposit)
-    monkeypatch.setattr(hl, "hyperliquid_withdraw_usdc", fake_withdraw)
+    monkeypatch.setattr(hl, "submit_usdc_withdrawal", fake_withdraw)
+    monkeypatch.setattr(hl, "hyperliquid_get_state", _fake_state(equity=125.0))
 
     asyncio.run(sync_module.venue_deposit(job_id, 25.0, store=store))
     recon = store.read_json(job_id, "state/equity_recon.json")

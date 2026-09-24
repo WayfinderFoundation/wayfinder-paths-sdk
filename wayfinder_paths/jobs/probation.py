@@ -20,6 +20,7 @@ import pandas as pd
 
 from wayfinder_paths.jobs.archive import find_candidate, record_candidate
 from wayfinder_paths.jobs.bundles import copy_job_bundle
+from wayfinder_paths.jobs.capital import capital_at
 from wayfinder_paths.jobs.compute_lock import job_state_lock
 from wayfinder_paths.jobs.constitution import load_constitution
 from wayfinder_paths.jobs.economics import block_bootstrap_lcb
@@ -1698,7 +1699,13 @@ def _hard_constraint_metrics(
     from wayfinder_paths.jobs.constitution import load_constitution
     from wayfinder_paths.jobs.paper_experiment import _max_drawdown
 
-    drawdown = _max_drawdown(daily, _probation_capital(store, job_id))
+    # Capital when the measured stream starts: the drawdown walks forward
+    # from that book.
+    first_day = min(daily) if daily else None
+    drawdown = _max_drawdown(
+        daily,
+        _probation_capital(store, job_id, at=_parse(first_day) if first_day else None),
+    )
     max_drawdown = float(
         load_constitution(store.job_dir(job_id))["hard_constraints"]["max_drawdown_pct"]
     )
@@ -1979,11 +1986,15 @@ def _safe_component(value: str, label: str) -> str:
     return raw
 
 
-def _probation_capital(store: JobStore, job_id: str) -> float:
-    """The book the paired utility is measured against. Hard-coding 10,000
+def _probation_capital(
+    store: JobStore, job_id: str, *, at: datetime | None = None
+) -> float:
+    """The book the paired utility is measured against: funded capital at
+    ``at`` (default now) from the owner capital ledger, so an owner
+    deposit/withdrawal does not rescale a trial's past. Hard-coding 10,000
     understated every effect on a 100-dollar paper book a hundredfold."""
-    job = store.load(job_id)
-    return float((job.execution_params or {}).get("initial_capital") or 10_000.0)
+    capital = capital_at(store, job_id, at or datetime.now(UTC))
+    return capital if capital > 0 else 10_000.0
 
 
 def _probation_bar_interval_seconds(store: JobStore, job_id: str) -> int:

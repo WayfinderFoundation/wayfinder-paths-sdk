@@ -1251,6 +1251,45 @@ async def hyperliquid_withdraw_usdc(
         amount_usdc: USDC debited from the unified balance (must be >= 2).
             Net delivered to Arbitrum = `amount_usdc - 1`.
     """
+    return ok(
+        await _withdraw_usdc(
+            wallet_label=wallet_label,
+            amount_usdc=amount_usdc,
+            destination=destination,
+            wait_for_arrival=True,
+        )
+    )
+
+
+@catch_errors
+async def submit_usdc_withdrawal(
+    *,
+    wallet_label: str,
+    amount_usdc: float,
+    destination: str | None = None,
+) -> dict[str, Any]:
+    """Job capital path (not an MCP tool): Hyperliquid debits the balance
+    when withdraw3 is accepted, so the job records the flow right then —
+    waiting up to 30 minutes for the Arbitrum arrival would leave the debit
+    reading as a drawdown in the meantime and outlive a live tick. Status is
+    `submitted` or `failed`."""
+    return ok(
+        await _withdraw_usdc(
+            wallet_label=wallet_label,
+            amount_usdc=amount_usdc,
+            destination=destination,
+            wait_for_arrival=False,
+        )
+    )
+
+
+async def _withdraw_usdc(
+    *,
+    wallet_label: str,
+    amount_usdc: float,
+    destination: str | None,
+    wait_for_arrival: bool,
+) -> dict[str, Any]:
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     amt = throw_if_not_number("amount_usdc must be a number", amount_usdc)
     if amt < MIN_WITHDRAW_USD:
@@ -1273,7 +1312,7 @@ async def hyperliquid_withdraw_usdc(
     ok_wd, res = await adapter.withdraw(amount=amt, address=destination or sender)
     effects.append({"type": "hl", "label": "withdraw", "ok": ok_wd, "result": res})
 
-    if ok_wd:
+    if ok_wd and wait_for_arrival:
         ok_landed, withdrawals = await adapter.wait_for_withdrawal(sender)
         effects.append(
             {
@@ -1285,11 +1324,13 @@ async def hyperliquid_withdraw_usdc(
         )
 
     # ensure_unified is advisory — status reflects only the withdraw itself.
-    status = (
-        "confirmed"
-        if all(e["ok"] for e in effects if e["label"] != "ensure_unified")
-        else "failed"
-    )
+    succeeded = all(e["ok"] for e in effects if e["label"] != "ensure_unified")
+    if not succeeded:
+        status = "failed"
+    elif wait_for_arrival:
+        status = "confirmed"
+    else:
+        status = "submitted"
     _annotate_hl_profile(
         address=sender,
         label=wallet_label,
@@ -1297,15 +1338,13 @@ async def hyperliquid_withdraw_usdc(
         status=status,
         details={"amount_usdc": amt},
     )
-    return ok(
-        {
-            "status": status,
-            "wallet_label": wallet_label,
-            "address": sender,
-            "amount_usdc": amt,
-            "effects": effects,
-        }
-    )
+    return {
+        "status": status,
+        "wallet_label": wallet_label,
+        "address": sender,
+        "amount_usdc": amt,
+        "effects": effects,
+    }
 
 
 @catch_errors

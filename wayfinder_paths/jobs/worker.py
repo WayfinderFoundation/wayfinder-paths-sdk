@@ -302,6 +302,20 @@ def _operator_block(store: JobStore, job_id: str) -> dict[str, Any]:
     }
 
 
+def _capital_block(snapshot: dict[str, Any]) -> dict[str, Any]:
+    capital = snapshot.get("capital") or {}
+    if not capital:
+        return {}
+    return {
+        **capital,
+        "_basis": (
+            "Owner capital flows (deposits/withdrawals) and any queued "
+            "withdrawal. Context only: the job applies them mechanically; "
+            "they are not PnL and never a reason to act."
+        ),
+    }
+
+
 def _counterfactual_block(store: JobStore, job_id: str) -> dict[str, Any]:
     """Mechanical post-apply three-book: pre-apply shadow (A) and promoted
     shadow (B) replayed over the forward bars since apply, diffed against
@@ -1277,6 +1291,7 @@ def _build_worker_prompt_sections(
         "backtest": backtest_block,
         "gate": snapshot.get("gate") or {},
         "operator": _operator_block(store, job_id),
+        "capital": _capital_block(snapshot),
         "ledgers": {
             "candidates": tail_ledger(store, job_id, "candidates", limit=20),
             "decisions": tail_ledger(store, job_id, "decisions", limit=20),
@@ -1360,14 +1375,14 @@ def _build_worker_prompt_sections(
         "mode change with NO operator record is the split-brain incident "
         "case — reconcile that via recompile and say so in the report.\n"
         "- execution_params.initial_capital and wallet_label are OPERATOR-"
-        "OWNED too: the owner's Fund/Withdraw buttons move venue money and "
-        "write capital in lockstep (journal: operator_initial_capital_set). "
-        "NEVER edit initial_capital yourself — equity_recon drift equal to a "
-        "recent deposit/withdrawal is the EXPECTED signature of owner "
-        "funding, not a mismatch to fix. If you must move job bankroll, the "
-        "only sanctioned path is core_jobs venue_deposit / venue_withdraw "
-        "(same lockstep the buttons use); raw hyperliquid deposit/withdraw "
-        "tools against the job's bound wallet de-sync sizing.\n"
+        "OWNED too. NEVER edit initial_capital yourself.\n"
+        "- Deposits and withdrawals are owner actions the job handles "
+        "mechanically (sizing, risk peak, chart) — the `capital` block lists "
+        "recent flows and any pending withdrawal. Do not treat them as PnL, "
+        "do not propose changes because of them, never move funds. Equity or "
+        "equity_recon moves matching a recent flow are that flow, not a "
+        "mismatch to fix; a pending withdrawal shrinks live sizing by design "
+        "until it completes.\n"
         "- Use structured forward results first (summary, runs, trades, orders, fills); "
         "raw runner logs are fallback/debug only.\n"
         "- Wallet/venue errors: the live wallet is `execution_params.wallet_label` in "

@@ -36,10 +36,12 @@ import json
 import math
 import statistics
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
+from wayfinder_paths.jobs.capital import CAPITAL_FLOWS_PATH, capital_timeline
+from wayfinder_paths.jobs.execution.primitives import DEFAULT_INITIAL_CAPITAL
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.regime_contract import (
@@ -145,7 +147,7 @@ def regime_health_job(
         forward_forensics,
         baseline_rows,
         now=now,
-        initial_capital=_initial_capital(job),
+        capital_at=_capital_at(store, job),
     )
     risk_state = _read_json(root / "state" / "risk_state.json") or {}
     signals = _health_signals(
@@ -361,7 +363,7 @@ def _performance_windows(
     baseline: Sequence[Mapping[str, Any]],
     *,
     now: dt.datetime,
-    initial_capital: float,
+    capital_at: Callable[[dt.datetime], float],
 ) -> dict[str, Any]:
     baseline_bps = [
         value
@@ -380,6 +382,15 @@ def _performance_windows(
         pnls = [
             value for row in recent_trades if (value := _trade_pnl(row)) is not None
         ]
+        # Each close as a fraction of the capital funded when it closed, so
+        # an owner deposit/withdrawal mid-window changes the denominator
+        # from that trade on instead of rescaling the whole window.
+        returns = [
+            value / capital_at(_timestamp(row))
+            for row in recent_trades
+            if (value := _trade_pnl(row)) is not None
+        ]
+        drawdown_pct = _max_drawdown(returns)
         bps = [
             value
             for row in recent_forensics
@@ -415,9 +426,9 @@ def _performance_windows(
             "forensics_trades": len(bps),
             "net_pnl": round(sum(pnls), 6),
             "max_drawdown_usd": round(drawdown, 6),
-            "max_drawdown_pct": round(drawdown / initial_capital, 6),
+            "max_drawdown_pct": round(drawdown_pct, 6),
             "drawdown_velocity_pct_per_day": round(
-                drawdown / initial_capital / observation_span_days, 8
+                drawdown_pct / observation_span_days, 8
             ),
             "largest_loss_share": round(max(negative) / loss_total, 4)
             if negative
@@ -441,11 +452,12 @@ def _performance_windows(
             "edge_rolling_percentile": edge_percentile,
         }
     return {
-        "initial_capital_basis": initial_capital,
+        "initial_capital_basis": capital_at(now),
         "baseline_forensics_trades": len(baseline_bps),
         "windows": result,
         "_basis": (
-            "Closed-trade PnL drawdown is normalized by configured initial_capital; "
+            "Closed-trade PnL drawdown is normalized by the funded capital at each "
+            "close (initial_capital net of later owner deposits/withdrawals); "
             "the venue-marked risk_state drawdown is evaluated separately. Edge "
             "percentile compares the recent mean realized bps with all same-length "
             "contiguous samples in the backtest forensics population."
@@ -800,6 +812,7 @@ def _input_fingerprint(root: Path) -> dict[str, Any]:
         root / "results" / "backtest" / "trade_forensics.json",
         root / MARKET_STATE_PATH,
         root / "state" / "risk_state.json",
+        root / CAPITAL_FLOWS_PATH,
     )
     return {
         str(path.relative_to(root)): {
@@ -936,8 +949,6 @@ def _trade_pnl(row: Mapping[str, Any]) -> float | None:
 
 
 def _initial_capital(job: WayfinderJob) -> float:
-    from wayfinder_paths.jobs.execution.primitives import DEFAULT_INITIAL_CAPITAL
-
     try:
         value = float(
             job.execution_params.get("initial_capital") or DEFAULT_INITIAL_CAPITAL
@@ -945,6 +956,19 @@ def _initial_capital(job: WayfinderJob) -> float:
     except (TypeError, ValueError):
         value = DEFAULT_INITIAL_CAPITAL
     return value if math.isfinite(value) and value > 0 else DEFAULT_INITIAL_CAPITAL
+
+
+def _capital_at(store: JobStore, job: WayfinderJob) -> Callable[[dt.datetime], float]:
+    """Funded capital at a moment from the owner capital ledger; the
+    configured capital (or the default) where the ledger yields none."""
+    fallback = _initial_capital(job)
+    timeline = capital_timeline(store, job.id, default=fallback)
+
+    def capital_at(moment: dt.datetime) -> float:
+        value = timeline.at(moment)
+        return value if math.isfinite(value) and value > 0 else fallback
+
+    return capital_at
 
 
 def _max_drawdown(values: Sequence[float]) -> float:

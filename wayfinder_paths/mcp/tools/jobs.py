@@ -77,6 +77,7 @@ from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.strategies import library_catalog
 from wayfinder_paths.jobs.sync import (
     apply_script_mode,
+    cancel_venue_withdrawal,
     snapshot_job,
     sync_all_jobs,
     venue_deposit,
@@ -101,6 +102,7 @@ JobAction = Literal[
     "set_script_mode",
     "venue_deposit",
     "venue_withdraw",
+    "cancel_withdrawal",
     "review_now",
     "validate_job",
     "create_freestyle",
@@ -799,13 +801,15 @@ async def core_jobs(
         heavy op forced synchronous (`background=False`) runs single-worker
         and is cut off after 240s.
 
-        Funding: `venue_deposit` / `venue_withdraw` (amount, and destination
-        for withdraw) are the ONLY sanctioned way to move a live job's
-        bankroll — they bridge USDC via the job's bound wallet AND keep
-        `execution_params.initial_capital` in lockstep, exactly like the
-        owner's Fund/Withdraw buttons. Raw hyperliquid_deposit_usdc /
-        hyperliquid_withdraw_usdc against a job-bound wallet moves money
-        without the capital bookkeeping and de-syncs live sizing.
+        Funding is OWNER-ONLY: `venue_deposit` / `venue_withdraw` (amount,
+        destination for withdraw) / `cancel_withdrawal` move real money and
+        run ONLY when the owner asks for that transfer in this conversation
+        and approves it — never on your own initiative, never from a job
+        wake. They bridge USDC via the job's bound wallet and record the flow
+        in the job's capital ledger (the same path as the owner's
+        Fund/Withdraw buttons); the job then adjusts sizing, risk peak and
+        chart mechanically. A withdrawal above free margin is queued
+        (`pending: true`) and completes once the live job frees margin.
       - `remove` deletes the loops and archives the job to
         `.wayfinder/jobs_archived/` (undo with the CLI `wayfinder job
         restore`); refused while live or funded — the owner goes paper and
@@ -1190,37 +1194,42 @@ async def core_jobs(
             # them as an actionable error rather than a generic failure.
             return err("script_mode_blocked", str(exc))
 
-    if action in {"venue_deposit", "venue_withdraw"} and not job_id:
+    if (
+        action in {"venue_deposit", "venue_withdraw", "cancel_withdrawal"}
+        and not job_id
+    ):
         return err("invalid_request", f"{action} requires job_id")
 
+    # Owner-requested transfers only (see the docstring): recorded as
+    # by="chat" in the capital ledger, next to the UI relay's "owner".
     if action == "venue_deposit":
-        # THE canonical way to fund a live job — the same code path the
-        # owner's Fund button runs: bridges USDC from the job's bound wallet
-        # into the venue AND records initial_capital in lockstep (first fund
-        # replaces the paper default, later funds add). Never fund a
-        # job-bound wallet with raw hyperliquid_deposit_usdc: money would
-        # move without the capital/marker writes and sizing drifts.
         if amount is None or amount <= 0:
             return err("invalid_argument", "venue_deposit requires amount > 0")
         try:
-            return ok(await venue_deposit(job_id, float(amount), store=store))
+            return ok(
+                await venue_deposit(job_id, float(amount), by="chat", store=store)
+            )
         except ValueError as exc:
             return err("venue_deposit_failed", str(exc))
 
     if action == "venue_withdraw":
-        # Counterpart of venue_deposit: withdraws from the venue (to
-        # `destination`, default the bound wallet) and shrinks
-        # initial_capital by the gross amount, floored at zero.
         if amount is None or amount <= 0:
             return err("invalid_argument", "venue_withdraw requires amount > 0")
         try:
             return ok(
                 await venue_withdraw(
-                    job_id, float(amount), destination=destination, store=store
+                    job_id,
+                    float(amount),
+                    destination=destination,
+                    by="chat",
+                    store=store,
                 )
             )
         except ValueError as exc:
             return err("venue_withdraw_failed", str(exc))
+
+    if action == "cancel_withdrawal":
+        return ok(cancel_venue_withdrawal(job_id, by="chat", store=store))
 
     if action == "review_now":
         mode = normalize_agent_mode(agent_mode or "monitor")
