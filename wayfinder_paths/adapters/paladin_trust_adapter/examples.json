@@ -1,0 +1,14 @@
+{
+  "trust_check_before_swap": {
+    "description": "Gate a swap on a full token trust check (paid x402 call). recommendation is allow/warn/block.",
+    "code": "from wayfinder_paths.adapters.paladin_trust_adapter.adapter import PaladinTrustAdapter\n\n# A signer is required for the paid full-composition check. Pass an eth-account\n# LocalAccount via config['signer'], or a hex key via config['private_key'].\nadapter = PaladinTrustAdapter({\"private_key\": \"0x...\"})\n\n# Before routing a swap into `to_token`, check it.\nsuccess, result = await adapter.check_token(\n    \"0x940181a94A35A4569E4529A3CDfB74e38FD98631\",  # AERO\n    chain_id=8453,\n)\nif success:\n    trust = result[\"trust\"]\n    if trust[\"recommendation\"] == \"block\":\n        raise RuntimeError(f\"trust gate blocked token: {trust['factors']}\")\n    if trust[\"recommendation\"] == \"warn\":\n        print(f\"proceed with caution: {trust['factors']}\")\nelse:\n    print(f\"trust check failed: {result}\")"
+  },
+  "free_ofac_screen": {
+    "description": "Free OFAC SDN screen for a wallet or contract address. No signer, no payment.",
+    "code": "from wayfinder_paths.adapters.paladin_trust_adapter.adapter import PaladinTrustAdapter\n\n# No config needed for the free OFAC-only screen.\nadapter = PaladinTrustAdapter()\n\nsuccess, result = await adapter.screen_wallet_ofac(\n    \"0xeA8C33d018760D034384e92D1B2a7cf0338834b4\",\n    chain_id=8453,\n)\nif success:\n    print(f\"OFAC recommendation: {result['trust']['recommendation']}\")\nelse:\n    print(f\"OFAC screen failed: {result}\")"
+  },
+  "screen_swap_recipient": {
+    "description": "Screen the recipient/taker wallet for sanctions before executing a swap (free).",
+    "code": "from wayfinder_paths.adapters.paladin_trust_adapter.adapter import PaladinTrustAdapter\n\nadapter = PaladinTrustAdapter()\n\nsuccess, result = await adapter.screen_wallet_ofac(recipient_address, chain_id=8453)\nif success and result[\"trust\"][\"recommendation\"] == \"block\":\n    raise RuntimeError(\"recipient is OFAC-sanctioned; aborting swap\")"
+  }
+}
