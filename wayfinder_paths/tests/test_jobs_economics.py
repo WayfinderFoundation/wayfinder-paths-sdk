@@ -100,6 +100,7 @@ def _ok_report(**overrides) -> dict:
                 "max_drawdown_pct": 0.05,
                 "tail_loss": 0.02,
                 "trade_count": 20,
+                "net_log_growth": 0.03,
             },
         },
         "positive_folds": 3,
@@ -133,6 +134,12 @@ def test_readiness_passes_and_each_reason_blocks() -> None:
         evaluate_economic_readiness(negative, constitution, probation=True)["ready"]
         is False
     )
+
+    # Beating a losing incumbent is not enough: the candidate must make money.
+    losing = _ok_report()
+    losing["objective"]["candidate"]["net_log_growth"] = -0.01
+    result = evaluate_economic_readiness(losing, constitution, probation=True)
+    assert result["ready"] is False and "must make money" in result["reasons"][0]
 
     breach = _ok_report()
     breach["objective"]["candidate"]["max_drawdown_pct"] = 0.60

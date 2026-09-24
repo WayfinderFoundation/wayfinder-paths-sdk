@@ -1266,6 +1266,7 @@ def _adjudicate_forward(
     lcb_positive = metrics["lcb"] is not None and metrics["lcb"] > 0
     ucb_negative = metrics["ucb"] is not None and metrics["ucb"] < 0
     trades_short = int(metrics["candidate_trade_count"]) < trade_floor
+    profitable = float(metrics["candidate_net_pnl"]) > 0
     checkpoint = None
     if paired_days >= max_days and last_decision < max_days:
         checkpoint = max_days
@@ -1285,7 +1286,11 @@ def _adjudicate_forward(
             current=current,
         )
     elif (
-        checkpoint is not None and lcb_positive and effect >= band and not trades_short
+        checkpoint is not None
+        and lcb_positive
+        and effect >= band
+        and not trades_short
+        and profitable
     ):
         _close_trial(
             trial, "graduated", reason="paired utility LCB > 0", current=current
@@ -1317,6 +1322,13 @@ def _adjudicate_forward(
             trial,
             "inconclusive",
             reason="paired effect inside the indifference band",
+            current=current,
+        )
+    elif checkpoint == max_days and lcb_positive and effect >= band and not profitable:
+        _close_trial(
+            trial,
+            "inconclusive",
+            reason="beat the incumbent but lost money over the trial",
             current=current,
         )
     elif checkpoint == max_days and lcb_positive:

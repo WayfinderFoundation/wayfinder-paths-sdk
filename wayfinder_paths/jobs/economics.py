@@ -580,6 +580,13 @@ def evaluate_economic_readiness(
             f"OOS tail loss {candidate['tail_loss']:.3f} exceeds ceiling "
             f"{hard['max_tail_loss']}"
         )
+    # Beating the incumbent is not enough: losing less than a losing book is
+    # still losing, so the candidate must also make money on its own.
+    if float(candidate.get("net_log_growth") or 0.0) <= 0:
+        reasons.append(
+            f"OOS net log growth {float(candidate.get('net_log_growth') or 0.0):.4f} "
+            "not > 0: the candidate must make money, not only beat the incumbent"
+        )
     # Participation is a whole-strategy requirement.  A transition strategy
     # may enter before its target cell and realize marked gains after the flip;
     # requiring the entry itself to occur in-target selects inert gate stacks.
