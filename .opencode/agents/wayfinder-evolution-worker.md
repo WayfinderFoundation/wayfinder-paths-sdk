@@ -67,7 +67,12 @@ For each candidate:
 - Implement the assigned campaign-design hypothesis; do not rename it or
   replace it with a generic family. Grounded slots carry exact measured-failure
   references; wildcard slots are explicitly labelled.
-- Edit only its named bundle and optional `search_space.json`.
+- Edit only its named bundle and optional `search_space.json`. A
+  parameterless change (a stand-aside gate, a boolean branch) has no tunables:
+  omit the file or leave it `{}`. A parameter candidate needs at least one
+  typed dimension.
+- If the prompt says your last submission was rejected before simulation, fix
+  exactly that error before anything else and resubmit.
 - Prefer existing research helpers and starter cases over new indicator code.
 - Declare `execution_params.warmup_bars` for the longest lookback plus buffer.
 - `ctx.bar_index` is the length of the bounded view and is constant once warm:

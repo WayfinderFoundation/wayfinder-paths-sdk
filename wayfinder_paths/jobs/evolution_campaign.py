@@ -253,6 +253,7 @@ _TARGET_EXECUTION_PARAM_KEYS = {
 }
 CAMPAIGN_DRAIN = timedelta(minutes=30)
 _MAX_SEARCH_DIMENSIONS = 3
+_MAX_REPEATED_SUBMISSION_REJECTIONS = 3
 _OPTUNA_SEED = 42
 _PARAMETER_SEARCH_GUIDANCE = (
     "create search_space.json with at most three bounded typed Optuna dimensions, "
@@ -266,8 +267,9 @@ _PARAMETER_SEARCH_GUIDANCE = (
 _STRUCTURAL_SEARCH_GUIDANCE = (
     "Make the named causal code change. If it introduces meaningful numeric "
     "behavior knobs, also create search_space.json with at most three bounded "
-    "typed dimensions covering only those new knobs. Otherwise omit it; do not "
-    "invent tuning axes for a boolean or parameterless change. Any age, "
+    "typed dimensions covering only those new knobs. Otherwise omit it or "
+    "leave it {}; do not invent tuning axes for a boolean or parameterless "
+    "change. Any age, "
     "cooldown or expiry must be measured with ctx.bar_ordinal / "
     "ctx.bars_since(stamp) or timestamps, never ctx.bar_index (the bounded "
     "view length, constant once warm; such a candidate is rejected before "
@@ -4440,15 +4442,39 @@ def evaluate_candidate(
         if candidate.get("evaluation_claim_id") != claim_id:
             return candidate
         if outcome.get("status") == "rejected_submission":
+            error = str((outcome.get("evidence") or {}).get("error") or "")
+            previous = candidate.get("submission_rejection") or {}
+            count = (
+                int(previous.get("count") or 1) + 1
+                if previous.get("error") == error
+                else 1
+            )
             candidate["status"] = status_before_claim
             candidate["submission_rejection"] = {
-                "error": str((outcome.get("evidence") or {}).get("error") or ""),
+                "error": error,
                 "at": utc_now_iso(),
                 "attempt_charged": False,
+                "count": count,
             }
             candidate.pop("evaluation_claim_id", None)
             candidate.pop("evaluation_claimed_at", None)
+            abandoned = count >= _MAX_REPEATED_SUBMISSION_REJECTIONS
+            if abandoned:
+                _abandon_rejected_submission(
+                    store, job_id, state=state, candidate=candidate, error=error
+                )
             _save_campaign(store, job_id, state)
+            if abandoned:
+                store.append_journal(
+                    job_id,
+                    {
+                        "type": "evolution_candidate_submission_abandoned",
+                        "campaign_id": campaign_id,
+                        "candidate_id": candidate_id,
+                        "error": error,
+                        "count": count,
+                    },
+                )
             return dict(candidate)
         candidate.pop("submission_rejection", None)
         if str(state.get("schema_version") or "") != SCHEMA_VERSION:
@@ -4468,6 +4494,37 @@ def evaluate_candidate(
         _save_campaign(store, job_id, state)
     _archive_campaign_candidate(store, job_id, candidate)
     return candidate
+
+
+def _abandon_rejected_submission(
+    store: JobStore,
+    job_id: str,
+    *,
+    state: dict[str, Any],
+    candidate: dict[str, Any],
+    error: str,
+) -> None:
+    """Close a candidate whose worker keeps resubmitting the same rejected
+    bundle: every retry re-authors the same mistake, and while it holds the
+    top of the service order no other repair gets a turn."""
+    reason = f"repeated_rejected_submission: {error}"
+    if candidate.get("attempts"):
+        _close_designed_candidate(store, job_id, state=state, candidate=candidate)
+    else:
+        candidate["status"] = "low_fidelity_rejected"
+        counts = state.setdefault("counts", {})
+        counts["quick_evaluated"] = int(counts.get("quick_evaluated") or 0) + 1
+    evidence = candidate.get("evidence")
+    candidate["evidence"] = {
+        **(evidence if isinstance(evidence, dict) else {}),
+        "abandon_reason": reason,
+    }
+    candidate["abandon_reason"] = reason
+    candidate_root = resolve_candidate_bundle(
+        store, job_id, candidate, campaign_id=str(state["campaign_id"])
+    )
+    atomic_write_json(candidate_root / "candidate.json", candidate)
+    _stamp_focus(state, _campaign_policy(store, job_id, str(state["campaign_id"])))
 
 
 def _rejected_submission(error: str) -> dict[str, Any]:
@@ -7240,8 +7297,10 @@ def campaign_prompt_block(
     editable_paths: list[str] = []
     candidate_id: str | None = None
     postmortem_path: str | None = None
+    rejection_notice: str | None = None
     if awaiting_evaluation:
         candidate = awaiting_evaluation[0]
+        rejection_notice = _submission_rejection_notice(candidate)
         candidate_root = resolve_candidate_bundle(
             store,
             job_id,
@@ -7352,6 +7411,7 @@ def campaign_prompt_block(
         "editable_paths": editable_paths,
         "postmortem_path": postmortem_path,
         "repair_work_order": repair_work_order if awaiting_evaluation else None,
+        "submission_rejection_notice": rejection_notice,
         "focus": state.get("focus"),
         "candidate_outcomes": [_candidate_handoff(item) for item in candidates],
         "historical_lessons": manifest.get("historical_lessons") or {},
@@ -7374,6 +7434,20 @@ def campaign_prompt_block(
         },
         "deadline_elapsed": deadline_elapsed,
     }
+
+
+def _submission_rejection_notice(candidate: Mapping[str, Any]) -> str | None:
+    rejection = candidate.get("submission_rejection")
+    if not isinstance(rejection, Mapping):
+        return None
+    count = int(rejection.get("count") or 1)
+    return (
+        f"Your last submission for {candidate.get('candidate_id')} was rejected "
+        f"before any simulation ({count} time{'s' if count > 1 else ''}): "
+        f"{rejection.get('error')}. Fix exactly that and resubmit; no attempt "
+        f"was charged, but after {_MAX_REPEATED_SUBMISSION_REJECTIONS} identical "
+        "rejections the candidate is abandoned."
+    )
 
 
 def _awaiting_evaluation(
@@ -7802,21 +7876,27 @@ def _load_candidate_search_space(
     candidate_root: Path, *, required: bool
 ) -> dict[str, Any] | None:
     search_path = candidate_root / "search_space.json"
-    if not search_path.exists():
-        if required:
+    payload: Any = {}
+    if search_path.exists():
+        try:
+            payload = json.loads(search_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
             raise ValueError(
-                "parameter candidate requires search_space.json with typed "
-                "Optuna dimensions"
-            )
-        return None
-    try:
-        payload = json.loads(search_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(
-            f"candidate search space is unreadable: {search_path}"
-        ) from exc
+                f"candidate search space is unreadable: {search_path}"
+            ) from exc
     if isinstance(payload, dict):
         payload = normalize_search_space(payload)
+    # A parameterless structural change has no tunables: an absent file and
+    # an empty `{}` both mean exactly that.
+    if payload == {}:
+        if required:
+            raise ValueError(
+                "parameter candidate requires search_space.json with at least one "
+                'typed Optuna dimension, e.g. {"threshold": {"type": "float", '
+                '"low": 0.1, "high": 0.5}}; a parameterless change is a '
+                "structural candidate"
+            )
+        return None
     if not isinstance(payload, dict) or not is_search_space(payload):
         offending = untyped_search_keys(payload) if isinstance(payload, dict) else []
         raise ValueError(

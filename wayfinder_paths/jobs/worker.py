@@ -2613,6 +2613,7 @@ def build_evolution_stage_prompt(
         _canonical_json(prior_handoff, max_chars=1_500) if prior_handoff else "null"
     )
     repair_work_order = campaign_payload.pop("repair_work_order", None)
+    rejection_notice = campaign_payload.pop("submission_rejection_notice", None)
     campaign_payload.pop("focus", None)
     work_order_text = (
         "Repair work order (deterministic, authoritative):\n"
@@ -2720,7 +2721,13 @@ def build_evolution_stage_prompt(
         for key in control_keys
         if campaign_payload.get(key) is not None
     }
+    # A rejected submission is the one thing the stage must fix; buried in the
+    # handoff it read as generic advice and the worker resubmitted it verbatim.
+    rejection_text = (
+        f"REJECTED SUBMISSION: {rejection_notice}\n\n" if rejection_notice else ""
+    )
     prompt = (
+        f"{rejection_text}"
         f"Run PAPER-ONLY evolution stage `{session_stage}`. Use the persisted "
         "candidate outcomes and prior-stage handoff; do not reload the retired "
         "session or its raw tool results.\n\n"
