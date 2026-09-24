@@ -5,12 +5,21 @@ import hashlib
 import json
 import os
 from collections.abc import Mapping
+from contextlib import nullcontext
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 from loguru import logger
 
+from wayfinder_paths.jobs.capital import (
+    apply_flows_to_risk_peak,
+    capital_risk_step,
+    capital_transfer_status,
+    pending_withdrawal,
+)
+from wayfinder_paths.jobs.capital_transfers import settle_pending_withdrawal
 from wayfinder_paths.jobs.defense import (
     add_defense_features,
     defense_feature_warmup_bars,
@@ -407,6 +416,12 @@ async def tick_job(
         events.extend(await adapter.feed.get_events(symbols))
 
     venue_states: dict[str, VenueState] = {}
+    # Wall clock, not the injectable `now`: owner flows are stamped in wall
+    # time and only those recorded before this fetch are in its equity. The
+    # transfer status read here lets the risk step see an owner transfer that
+    # overlapped the fetch.
+    equity_observed_at = datetime.now(UTC)
+    transfer_observed = capital_transfer_status(store, job.id)
     snapshot, reconcile_notes = await _reconcile(
         mode=mode,
         state=state,
@@ -415,6 +430,12 @@ async def tick_job(
         state_file_existed=state_file_existed,
         venue_state_sink=venue_states,
     )
+    live_account_value = (snapshot.data or {}).get("account_value")
+    if mode == "live" and live_account_value is not None:
+        pending = pending_withdrawal(store, job.id)
+        if pending is not None:
+            # Rides the snapshot like account_value so replays size the same.
+            snapshot.data["pending_withdrawal_usd"] = float(pending["amount"])
 
     protection_recovery_notes: list[dict[str, Any]] = []
     if mode == "live" and snapshot.status == "valid":
@@ -498,16 +519,43 @@ async def tick_job(
 
     # Account-level circuit breakers (workspace/risk_limits.json, optional).
     # Downgrades only a valid snapshot: an already-ambiguous state is a
-    # stronger signal and must not be masked by a risk halt.
-    halt_reason, risk_snapshot = check_risk_halt(
-        root,
-        state=state,
-        view=view,
-        params=params,
-        now=now,
-        account_equity=(snapshot.data or {}).get("account_value"),
-    )
+    # stronger signal and must not be masked by a risk halt. On live ticks
+    # the step runs under the capital guard: equity observed while an owner
+    # deposit/withdrawal was moving money would lift or cut the peak before
+    # its flow exists, so that tick skips the peak update and the check.
+    with (
+        capital_risk_step(store, job.id, observed=transfer_observed)
+        if mode == "live"
+        else nullcontext(None)
+    ) as deferring_transfer:
+        if deferring_transfer is None:
+            if mode == "live" and live_account_value is not None:
+                # Before the check: a deposit or withdrawal must move the
+                # peak with it, or a withdrawal reads as drawdown and halts.
+                apply_flows_to_risk_peak(
+                    store,
+                    job.id,
+                    equity_now=float(live_account_value),
+                    observed_at=equity_observed_at,
+                )
+            halt_reason, risk_snapshot = check_risk_halt(
+                root,
+                state=state,
+                view=view,
+                params=params,
+                now=now,
+                account_equity=(snapshot.data or {}).get("account_value"),
+            )
+        else:
+            halt_reason, risk_snapshot = None, {}
     risk_notes: list[dict[str, Any]] = []
+    if deferring_transfer is not None:
+        risk_notes.append(
+            {
+                "kind": "risk_check_deferred_capital_transfer",
+                "transfer": deferring_transfer,
+            }
+        )
     if halt_reason:
         risk_notes.append(
             {"kind": "risk_halt", "reason": halt_reason, "snapshot": risk_snapshot}
@@ -708,6 +756,13 @@ async def tick_job(
         mode=mode,
         native_stops=native_stops_by_cloid,
     )
+    withdrawal_settlement = (
+        await settle_pending_withdrawal(
+            store, job.id, wallet_label=params.get("wallet_label")
+        )
+        if mode == "live"
+        else None
+    )
     # Evolution probation is a true parallel A/B lane: same incoming bars,
     # separate state/telemetry, PaperBroker only. It is deliberately
     # best-effort so candidate computation cannot delay or fail the incumbent.
@@ -771,6 +826,7 @@ async def tick_job(
         "guard_events": tick.guard_events,
         "positions": tick.ledger_snapshot.get("positions", {}),
         "gates": tick.gates,
+        "withdrawal_settlement": withdrawal_settlement,
     }
 
 

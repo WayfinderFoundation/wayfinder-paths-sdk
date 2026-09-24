@@ -129,6 +129,7 @@ from wayfinder_paths.jobs.sync import (
     apply_initial_capital,
     apply_script_mode,
     apply_wallet_label,
+    cancel_venue_withdrawal,
     snapshot_job,
     sync_all_jobs,
     venue_deposit,
@@ -2196,9 +2197,10 @@ def set_initial_capital_cmd(job_id: str, amount: float) -> None:
 
 @job_cli.command(
     name="venue-deposit",
-    help="Bridge USDC (>= 5) from the job's bound wallet into Hyperliquid "
-    "and grow initial_capital by the same amount. Waits for the credit; "
-    "an unconfirmed credit still counts (the deposit is en route).",
+    help="Owner funding: bridge USDC (>= 5) from the job's bound wallet into "
+    "Hyperliquid, record the flow in the capital ledger and grow "
+    "initial_capital by the same amount. Waits for the credit; an unconfirmed "
+    "credit still counts (the deposit is en route).",
 )
 @click.argument("job_id")
 @click.argument("amount", type=float)
@@ -2212,18 +2214,27 @@ def venue_deposit_cmd(job_id: str, amount: float) -> None:
 
 @job_cli.command(
     name="venue-withdraw",
-    help="Withdraw USDC (>= 2 gross; Bridge2 nets $1 off) from Hyperliquid "
-    "to the job's bound wallet and shrink initial_capital by the gross "
-    "amount, floored at zero.",
+    help="Owner withdrawal: USDC (>= 2 gross; Bridge2 nets $1 off) from "
+    "Hyperliquid to the job's bound wallet. Runs now when free margin covers "
+    "it; otherwise it is queued (result pending=true) and the live job sizes "
+    "down and completes it once margin frees. --cancel drops a queued one.",
 )
 @click.argument("job_id")
-@click.argument("amount", type=float)
+@click.argument("amount", type=float, required=False)
 @click.option(
     "--destination",
     default=None,
     help="Arbitrum address receiving the USDC (defaults to the job's wallet).",
 )
-def venue_withdraw_cmd(job_id: str, amount: float, destination: str | None) -> None:
+@click.option("--cancel", is_flag=True, help="Cancel the queued withdrawal.")
+def venue_withdraw_cmd(
+    job_id: str, amount: float | None, destination: str | None, cancel: bool
+) -> None:
+    if cancel:
+        _echo_json({"ok": True, "result": cancel_venue_withdrawal(job_id)})
+        return
+    if amount is None:
+        raise click.ClickException("AMOUNT is required unless --cancel is given")
     try:
         result = asyncio.run(venue_withdraw(job_id, amount, destination=destination))
     except ValueError as exc:

@@ -17,6 +17,26 @@ from wayfinder_paths.core.config import (
 from wayfinder_paths.jobs import heavy_lane
 from wayfinder_paths.jobs.background import op_status_summary
 from wayfinder_paths.jobs.backtest_artifacts import summarize_backtest_artifacts
+from wayfinder_paths.jobs.capital import (
+    FUNDING_MARKER_PATH,
+    cancel_pending_withdrawal,
+    capital_summary,
+    capital_transfer,
+    funded_capital,
+    has_capital_history,
+    pending_withdrawal,
+    record_capital_flow,
+    set_funded_capital,
+    set_pending_withdrawal,
+)
+from wayfinder_paths.jobs.capital_transfers import (
+    deposit_to_venue,
+    deposit_tx_hash,
+    execute_withdrawal,
+    shift_equity_recon_baseline,
+    venue_balance,
+    venue_equity_or_none,
+)
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.execution.features import summarize_features
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
@@ -304,6 +324,10 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
         "proposal_queue": store.proposal_queue(job_id),
         "reports": reports,
         "execution_contract": job.execution_contract,
+        # Owner Fund/Withdraw context; wallet_label binds the UI buttons to the
+        # wallet the job actually trades from (not always the job id).
+        "capital": capital_summary(store, job_id),
+        "wallet_label": job.execution_params.get("wallet_label"),
         "validation": (
             {
                 "status": validation.get("status"),
@@ -691,9 +715,12 @@ def apply_initial_capital(
     job_id: str, amount: float, *, store: JobStore | None = None
 ) -> dict[str, Any]:
     """Operator accounting knob: ``execution_params.initial_capital`` — the
-    equity base live sizing compounds from. Set it to what the strategy
-    wallet actually holds; a mismatch makes the engine size against money
-    that isn't there. Excluded from the revision hash; applies next tick.
+    funded capital the job's derived views (forward equity curve, regime
+    health, probation) measure returns against. Live sizing does not read it:
+    it sizes from the venue's marked account value each tick. Venue
+    deposits/withdrawals keep it in lockstep and record the change in the
+    capital ledger; setting it by hand rebases all of history. Excluded from
+    the revision hash; applies next tick.
 
     Zero is allowed deliberately: withdrawing the full bankroll should read
     as "unfunded", which fails validation's initial_capital_declared check
@@ -702,15 +729,7 @@ def apply_initial_capital(
     if value < 0:
         raise ValueError(f"initial capital cannot be negative, got {value:g}")
     store = store or JobStore()
-    job = store.load(job_id)
-    previous = job.execution_params.get("initial_capital")
-    job.execution_params["initial_capital"] = value
-    job.touch()
-    store.save(job)
-    store.append_journal(
-        job_id,
-        {"type": "operator_initial_capital_set", "from": previous, "to": value},
-    )
+    previous = set_funded_capital(store, job_id, value)
     sync_all_jobs(store=store)
     return {"job_id": job_id, "initial_capital": value, "previous": previous}
 
@@ -725,53 +744,56 @@ def _funded_wallet_label(job) -> str:
     return label
 
 
-def _shift_equity_recon_baseline(store: JobStore, job_id: str, delta: float) -> None:
-    """Fold an operator deposit/withdrawal into the drift baseline. The
-    equity reconciler treats venue-vs-expected drift as its signal; without
-    this, every funding action reads as permanent drift the agent has to
-    re-explain each wake. Missing seed = pre-first-tick, nothing to shift."""
-    recon = store.read_json(job_id, "state/equity_recon.json", default=None)
-    if not recon or "venue_equity_start" not in recon:
-        return
-    recon["venue_equity_start"] = float(recon["venue_equity_start"]) + delta
-    store.write_json(job_id, "state/equity_recon.json", recon)
-
-
 async def venue_deposit(
-    job_id: str, amount: float, *, store: JobStore | None = None
+    job_id: str, amount: float, *, by: str = "owner", store: JobStore | None = None
 ) -> dict[str, Any]:
-    """Fund the strategy where it trades: bridge USDC from the job's bound
-    wallet into Hyperliquid, then record ``initial_capital`` in lockstep. The
-    FIRST venue deposit REPLACES the declared capital — the paper-mode
-    default (e.g. $10k) must not leak into live sizing over a $50 bankroll —
-    and later deposits add. The marker lives in state/ (not hashed, wiped
-    with engine state, survives capital edits). An ``unconfirmed`` bridge
-    credit still counts (the deposit is en route); only a failed send aborts
-    before the capital write."""
-    from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_deposit_usdc
-
+    """Owner funding: bridge USDC from the job's bound wallet into
+    Hyperliquid, record the flow in the capital ledger, and grow
+    ``initial_capital`` by the amount. A job that has never held real money
+    (no venue funding, no live equity seed, no flows) carries a paper
+    placeholder (e.g. $10k) that must not leak into live accounting, so its
+    first deposit REPLACES the capital; every other deposit adds. The live
+    tick rescales the risk peak for the flow; sizing follows the venue
+    account value on its own. The capital lock is held from before the
+    transfer until the flow is recorded (see ``capital_transfer``). An
+    unconfirmed credit is recorded ``confirmed: false`` and only moves the
+    risk peak once it shows in venue equity."""
     store = store or JobStore()
     job = store.load(job_id)
     label = _funded_wallet_label(job)
-    envelope = await hyperliquid_deposit_usdc(wallet_label=label, amount_usdc=amount)
-    if not envelope["ok"]:
-        raise ValueError(f"venue deposit failed: {envelope}")
-    outcome = envelope["result"]
-    if outcome["status"] == "failed":
-        raise ValueError(f"venue deposit failed: {outcome}")
-    funding = store.read_json(job_id, "state/funding.json", default=None) or {}
-    base = (
-        float(job.execution_params.get("initial_capital") or 0.0)
-        if funding.get("venue_funded")
-        else 0.0
-    )
-    capital = apply_initial_capital(job_id, base + float(amount), store=store)
-    store.write_json(job_id, "state/funding.json", {"venue_funded": True})
-    _shift_equity_recon_baseline(store, job_id, float(amount))
+    with capital_transfer(store, job_id, "deposit"):
+        equity_before = await venue_equity_or_none(label)
+        outcome = await deposit_to_venue(label, float(amount))
+        current = funded_capital(store, job_id)
+        capital = (
+            current + float(amount)
+            if has_capital_history(store, job_id)
+            else float(amount)
+        )
+        flow = record_capital_flow(
+            store,
+            job_id,
+            "deposit",
+            amount,
+            capital_delta=capital - current,
+            by=by,
+            tx=deposit_tx_hash(outcome),
+            equity_before=equity_before,
+            confirmed=outcome["status"] == "confirmed",
+        )
+        store.write_json(job_id, FUNDING_MARKER_PATH, {"venue_funded": True})
+        shift_equity_recon_baseline(store, job_id, float(amount))
+        set_funded_capital(store, job_id, capital)
+        store.append_journal(
+            job_id,
+            {"type": "deposit_executed", "flow": flow, "status": outcome["status"]},
+        )
+    sync_all_jobs(store=store)
     return {
         "job_id": job_id,
         "deposit_status": outcome["status"],
-        "initial_capital": capital["initial_capital"],
+        "initial_capital": capital,
+        "flow": flow,
     }
 
 
@@ -780,35 +802,78 @@ async def venue_withdraw(
     amount: float,
     *,
     destination: str | None = None,
+    by: str = "owner",
     store: JobStore | None = None,
 ) -> dict[str, Any]:
-    """Pull bankroll off the venue: withdraw USDC from Hyperliquid (Bridge2
-    nets $1 off the amount) to ``destination`` — the job's bound wallet when
-    omitted — and shrink ``initial_capital`` by the gross amount, floored at
-    zero; a full withdrawal honestly reads as unfunded and turns the gate
-    red."""
-    from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_withdraw_usdc
-
+    """Owner withdrawal from the venue (Bridge2 nets $1 off the gross amount)
+    to ``destination`` — the job's bound wallet when omitted. When free
+    margin covers it the transfer runs now and the flow is recorded; when
+    open positions hold the margin it is QUEUED: live sizing immediately
+    treats the amount as gone, and the live tick runs the transfer once
+    enough margin frees up. One pending withdrawal at a time."""
     store = store or JobStore()
     job = store.load(job_id)
     label = _funded_wallet_label(job)
-    envelope = await hyperliquid_withdraw_usdc(
-        wallet_label=label, amount_usdc=amount, destination=destination
-    )
-    if not envelope["ok"]:
-        raise ValueError(f"venue withdraw failed: {envelope}")
-    outcome = envelope["result"]
-    if outcome["status"] == "failed":
-        raise ValueError(f"venue withdraw failed: {outcome}")
-    current = float(job.execution_params.get("initial_capital") or 0.0)
-    capital = apply_initial_capital(
-        job_id, max(current - float(amount), 0.0), store=store
-    )
-    _shift_equity_recon_baseline(store, job_id, -float(amount))
+    with capital_transfer(store, job_id, "withdrawal"):
+        if pending_withdrawal(store, job_id) is not None:
+            raise ValueError(
+                "a withdrawal is already pending for this job — cancel it first"
+            )
+        balance = await venue_balance(label)
+        if float(amount) > balance.equity_usd:
+            raise ValueError(
+                f"withdrawal ${float(amount):g} exceeds venue equity "
+                f"${balance.equity_usd:.2f}"
+            )
+        if balance.withdrawable_usd < float(amount):
+            if job.script_loop.mode != "live":
+                raise ValueError(
+                    f"only ${balance.withdrawable_usd:.2f} is withdrawable and "
+                    "the job is not live to free margin — close the venue "
+                    "positions first"
+                )
+            pending = set_pending_withdrawal(
+                store,
+                job_id,
+                float(amount),
+                destination=destination,
+                by=by,
+                withdrawable_now=balance.withdrawable_usd,
+            )
+            result: dict[str, Any] = {
+                "job_id": job_id,
+                "pending": True,
+                "amount": float(amount),
+                "withdrawable_now": balance.withdrawable_usd,
+                "pending_withdrawal": pending,
+            }
+        else:
+            executed = await execute_withdrawal(
+                store,
+                job_id,
+                float(amount),
+                wallet_label=label,
+                destination=destination,
+                by=by,
+                equity_before=balance.equity_usd,
+            )
+            result = {"job_id": job_id, "pending": False, **executed}
+    sync_all_jobs(store=store)
+    return result
+
+
+def cancel_venue_withdrawal(
+    job_id: str, *, by: str = "owner", store: JobStore | None = None
+) -> dict[str, Any]:
+    """Drop a queued withdrawal; sizing returns to the full account value on
+    the next tick."""
+    store = store or JobStore()
+    cancelled = cancel_pending_withdrawal(store, job_id, by=by)
+    sync_all_jobs(store=store)
     return {
         "job_id": job_id,
-        "withdraw_status": outcome["status"],
-        "initial_capital": capital["initial_capital"],
+        "cancelled": cancelled is not None,
+        "pending_withdrawal": cancelled,
     }
 
 

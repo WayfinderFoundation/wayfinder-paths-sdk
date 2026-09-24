@@ -96,14 +96,39 @@ Rules: quote first and show the user output/fee; check each step's success
 tuple before the next (a bridge takes minutes — poll the destination balance,
 don't fire the deposit blind); a receipt with `status=0` is a FAILURE.
 
-## 2b. Sizing capital: live is reconciled from the venue
+## 2b. Adding and withdrawing funds on a running job (owner only)
 
-Live order sizing now uses the venue's marked account value automatically
-(reconciled every tick — the engine puts it on the tick snapshot). You still
-SET `execution_params.initial_capital` to the actual deposit because it
-feeds (a) paper-mode parity (paper has no venue account) and (b) the risk
-circuit breaker's drawdown math. Just know a stale value can no longer
-mis-size live orders.
+Moving money in or out of a live job is an **owner action** — the Fund /
+Withdraw buttons on the job page, or the owner asking in chat and approving
+the transfer. A job's agent never moves funds. Every path runs the same code
+(`wayfinder job venue-deposit|venue-withdraw`, or `core_jobs` actions
+`venue_deposit` / `venue_withdraw` / `cancel_withdrawal` when the owner
+asks), bridging USDC between the job's bound wallet
+(`execution_params.wallet_label`) and Hyperliquid, and recording the flow in
+`state/capital_flows.jsonl`. The job then handles it mechanically, with no
+agent wake and no strategy edit:
+
+- **Sizing** follows the venue: live `mark_to_market_equity(ctx)` returns
+  the reconciled account value each tick, so a deposit sizes up on the next
+  tick.
+- **Capital**: `initial_capital` grows or shrinks with each flow (a job's
+  very first deposit replaces a paper placeholder; later ones add). Derived
+  views (forward equity curve, regime health, probation) read capital *at
+  each point in time* from the ledger, so a flow is a step, not a rebase of
+  history. Don't set `initial_capital` by hand on a funded job — that
+  rebases all of history.
+- **Risk peak**: on the next live tick the drawdown peak is rescaled by the
+  flow (withdrawing half the account halves the peak), so a withdrawal never
+  reads as a drawdown or trips `max_drawdown` (journal `risk_peak_rebased`).
+- **Withdrawal above free margin** (positions open): it is queued in
+  `state/pending_withdrawal.json` (result `pending: true`). From the next
+  tick the strategy sizes to the account value minus the pending amount, and
+  the tick runs the transfer once enough margin is free (journal
+  `withdrawal_executed`; a failed transfer stays queued and journals
+  `withdrawal_failed` — never a halt). `venue-withdraw <job> --cancel` drops
+  it. One queued withdrawal at a time.
+
+Minimums: deposit ≥ $5, withdrawal ≥ $2 gross (Bridge2 nets $1 off).
 
 ## 3. Sizing minimums (do this math out loud)
 
@@ -121,7 +146,7 @@ never a runner env patch. Pick by how hard a stop the user wants:
   `core_jobs(action="set_script_mode", job_id=…, script_mode="paper")`. Same
   compiler-safe path as go-live; no gate needed to step down. The loop keeps
   ticking in paper. Open positions are NOT closed — this only stops NEW live
-  orders; to flatten, withdraw (below).
+  orders; to flatten, halt with `flatten=True` (below).
 - **Pause the whole job (stop the schedule entirely)**:
   `core_jobs(action="pause", job_id=…)` pauses both the script and agent loops;
   `core_jobs(action="resume", job_id=…)` restarts them. A paused live job keeps
@@ -130,13 +155,11 @@ never a runner env patch. Pick by how hard a stop the user wants:
   reason="…")`, or `flatten=True` to also request position flattening. It
   blocks execution until `core_jobs(action="resume_from_halt", job_id=…)`. Use
   this when something is wrong and you want a hard stop that survives restarts.
-- **Withdraw the funds (close positions → cash → home wallet)**: two ordered
-  steps on the strategy itself — `core_run_strategy(strategy=…, action=
-  "withdraw")` first (liquidates all positions to stablecoin, funds stay in the
-  strategy wallet), then `core_run_strategy(strategy=…, action="exit")` (moves
-  the cash from the strategy wallet back to main). "Withdraw everything" = both,
-  in that order; "transfer remaining funds" (already flat) = `exit` alone. These
-  move real funds — confirm with the user first.
+- **Withdraw the funds**: an owner action (§2b) — the job page's Withdraw
+  button, or `core_jobs(action="venue_withdraw", job_id=…, amount=…)` only
+  when the owner asks and approves. Partial withdrawals keep the job running;
+  to take everything out, halt with `flatten=True` first so positions
+  close, then withdraw the full balance.
 
 ## 5. Troubleshooting
 

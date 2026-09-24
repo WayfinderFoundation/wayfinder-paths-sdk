@@ -17,6 +17,7 @@ from wayfinder_paths.jobs.backtest_artifacts import (
     _parse_ts,
     order_series_for_display,
 )
+from wayfinder_paths.jobs.capital import capital_timeline
 from wayfinder_paths.jobs.forward import (
     default_forward_summary,
     read_jsonl,
@@ -466,14 +467,16 @@ def _closed_trades(
 def _pnl_series(
     job_id: str, ticks: list[dict[str, Any]], *, store: JobStore
 ) -> dict[str, Any]:
-    """Equity curve from the tick ledger: initial_capital + realized_pnl.
+    """Equity curve from the tick ledger: funded capital at the tick +
+    realized_pnl.
 
     Uses each tick's POST-tick ledger (the top-level `ledger` field), so a
     close's PnL lands on the bar it happened, and carries the tick's mode so
-    the FE could shade paper vs live segments later.
+    the FE could shade paper vs live segments later. Capital comes from the
+    owner capital ledger at each tick's time, so a deposit or withdrawal is a
+    step on the curve rather than a rebase of its whole history.
     """
-    job = store.load(job_id)
-    initial_capital = float(job.execution_params.get("initial_capital") or 10_000)
+    capital = capital_timeline(store, job_id)
     points = []
     for tick in ticks:
         timestamp = tick.get("bar_ts") or tick.get("ts")
@@ -484,7 +487,11 @@ def _pnl_series(
         # A freestyle tick marks its book to market and records the equity;
         # the harnessed driver records realized PnL only.
         equity = tick.get("equity")
-        value = float(equity) if equity is not None else initial_capital + realized
+        value = (
+            float(equity)
+            if equity is not None
+            else capital.at(str(timestamp)) + realized
+        )
         points.append(
             {
                 "timestamp": str(timestamp),

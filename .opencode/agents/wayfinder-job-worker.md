@@ -59,12 +59,6 @@ permission:
     "/wf/user_vault/audit/**": deny
 
   bash:
-    # Provenance guard: the worker cleared a live-mode audit flag by running
-    # set-script-mode --by owner — claiming owner identity to satisfy the
-    # very check that flags unattributed mode changes. Owner attestation is
-    # NEVER the agent's to assert, on any command.
-    "*--by owner*": deny
-    "*--by=owner*": deny
     "*": allow
     "mkdir -p .wayfinder/jobs/**": allow
     "cp .wayfinder_runs/** .wayfinder/jobs/**": allow
@@ -80,6 +74,18 @@ permission:
     "poetry run wayfinder job backtest-view *": allow
     "python -m py_compile .wayfinder/jobs/**": allow
     "python3 -m py_compile .wayfinder/jobs/**": allow
+    # Denies go LAST: bash rules are last-match-wins too, so a deny listed
+    # before "*": allow is dead.
+    # Provenance guard: the worker cleared a live-mode audit flag by running
+    # set-script-mode --by owner — claiming owner identity to satisfy the
+    # very check that flags unattributed mode changes. Owner attestation is
+    # NEVER the agent's to assert, on any command.
+    "*--by owner*": deny
+    "*--by=owner*": deny
+    # Moving job funds is an owner action (UI Fund/Withdraw or an approved
+    # chat request); the job's agent never moves money.
+    "*venue-deposit*": deny
+    "*venue-withdraw*": deny
 
   # ORDER IS LOAD-BEARING: the broad MCP deny must precede the narrow allows
   # (last-match-wins); with the deny last, core_jobs resolved to deny and the

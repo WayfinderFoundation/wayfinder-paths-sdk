@@ -888,10 +888,15 @@ def mark_to_market_equity(ctx: ExecutionContext) -> float:
     config capital nearly fired ~$8k orders on a $29.50 account. Backtests
     never populate snapshot data, so they keep the config-capital arithmetic:
     initial capital + realized PnL + unrealized mark-to-market at the latest
-    completed close. Pure (ctx data only — purity-sandbox safe)."""
-    live_account_value = (ctx.state_snapshot.data or {}).get("account_value")
+    completed close. A queued owner withdrawal (`pending_withdrawal_usd`)
+    is already spent: live sizing sees the post-withdrawal bankroll so open
+    risk shrinks until the transfer can run. Pure (ctx data only —
+    purity-sandbox safe)."""
+    data = ctx.state_snapshot.data or {}
+    live_account_value = data.get("account_value")
     if live_account_value is not None and float(live_account_value) > 0:
-        return float(live_account_value)
+        pending = float(data.get("pending_withdrawal_usd") or 0.0)
+        return max(float(live_account_value) - pending, 0.0)
     equity = (
         float(ctx.params.get("initial_capital") or DEFAULT_INITIAL_CAPITAL)
         + ctx.ledger.realized_pnl

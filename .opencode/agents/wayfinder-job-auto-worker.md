@@ -57,6 +57,10 @@ permission:
     "poetry run wayfinder job ledger append *": allow
     "poetry run wayfinder job ledger tail *": allow
     "poetry run wayfinder job halt *": allow
+    # Last (last-match-wins): moving job funds is an owner action; the job's
+    # agent never moves money, not even on an approval prompt.
+    "*venue-deposit*": deny
+    "*venue-withdraw*": deny
 
   wayfinder_*: deny
   # core_jobs is safe to allow: MCP approve has NO ungated override, and the
