@@ -108,11 +108,12 @@ from wayfinder_paths.jobs.execution.simulator import (
 )
 from wayfinder_paths.jobs.execution.validation import (
     BOUNDED_WINDOW_HINT,
-    candidate_validation_passed,
+    candidate_validation_failures,
     parameter_behavior_probe,
     resolve_execution_spec,
     sequence_preview,
     validate_execution_job,
+    validation_failure_text,
     window_invariance_probe,
 )
 from wayfinder_paths.jobs.execution.walk_forward import _slice, _test_window_stats
@@ -3960,8 +3961,12 @@ def submit_research_seed(
             "research seed base revision is stale; rebase it on the current job"
         )
     validation = validate_execution_job(job_id, candidate_dir=source, store=store)
-    if not candidate_validation_passed(validation):
-        raise ValueError("research seed does not satisfy the executable job contract")
+    failures = candidate_validation_failures(validation)
+    if failures:
+        raise ValueError(
+            "research seed does not satisfy the executable job contract: "
+            + validation_failure_text(failures)
+        )
     revision = compute_workspace_revision(source)
     if revision == current_revision:
         raise ValueError("research seed is byte-identical to the incumbent")
@@ -4576,8 +4581,14 @@ def _evaluate_candidate(
         return _rejected_submission(
             str(contract.get("hint") or contract.get("error") or contract.get("name"))
         )
-    if not candidate_validation_passed(report):
-        return {"status": "invalid", "evidence": {"validation": report}}
+    failures = candidate_validation_failures(report)
+    if failures:
+        # The error text is what the repair worker sees; the full report is
+        # truncated to nothing useful in the attempt evidence.
+        return {
+            "status": "invalid",
+            "evidence": {"error": validation_failure_text(failures)[:500]},
+        }
     revision = compute_workspace_revision(candidate_root)
     manifest = (
         store.read_json(

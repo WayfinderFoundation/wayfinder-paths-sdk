@@ -15,8 +15,10 @@ from wayfinder_paths.jobs.execution.simulator import (
     simulate_execution,
 )
 from wayfinder_paths.jobs.execution.validation import (
+    candidate_validation_failures,
     validate_execution_job,
     validate_execution_trace,
+    validation_failure_text,
 )
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
@@ -899,6 +901,18 @@ def test_leveraged_stop_warns_with_the_equity_at_risk(tmp_path: Path) -> None:
     assert "3% price stop at 3x leverage is a 9% equity stop" in check["hint"]
     # Advice, even under strict validation.
     assert check in report["warnings"]
+
+
+def test_stop_equity_warning_does_not_disqualify_an_evolution_candidate() -> None:
+    warning = {"name": "stop_equity_at_risk", "passed": False, "severity": "warn"}
+    broken = {"name": "strategy_module_loads", "passed": False, "error": "no module"}
+    preflight = {"name": "preflight_report_present", "passed": False}
+    report = {"checks": [warning, preflight]}
+    assert candidate_validation_failures(report) == []
+    report["checks"].append(broken)
+    failures = candidate_validation_failures(report)
+    assert failures == [broken]
+    assert validation_failure_text(failures) == "strategy_module_loads: no module"
 
 
 def test_unleveraged_stop_is_within_the_equity_budget(tmp_path: Path) -> None:

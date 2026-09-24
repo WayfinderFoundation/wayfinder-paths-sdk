@@ -1801,17 +1801,29 @@ def report_from_checks(checks: list[dict[str, Any]], *, strict: bool) -> dict[st
     return _report(checks, strict=strict)
 
 
-def candidate_validation_passed(report: dict[str, Any]) -> bool:
-    """Ignore only deployment artifacts that an isolated bundle cannot own."""
+def candidate_validation_failures(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """Failed checks that disqualify an isolated candidate bundle. Ignores
+    deployment artifacts the bundle cannot own and severity "warn" advice
+    (advice in every mode, as in `_report`)."""
     research_only = {
         "declared_features_available",
         "preflight_report_present",
         "preflight_passed",
         "wallet_label_declared",
     }
-    return not any(
-        not check.get("passed") and check.get("name") not in research_only
+    return [
+        check
         for check in report.get("checks") or []
+        if not check.get("passed")
+        and check.get("severity") != "warn"
+        and check.get("name") not in research_only
+    ]
+
+
+def validation_failure_text(checks: list[dict[str, Any]]) -> str:
+    return "; ".join(
+        f"{check.get('name')}: {check.get('error') or check.get('hint') or 'failed'}"
+        for check in checks
     )
 
 

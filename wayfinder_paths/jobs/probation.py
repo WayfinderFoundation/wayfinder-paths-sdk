@@ -27,8 +27,9 @@ from wayfinder_paths.jobs.economics import block_bootstrap_lcb
 from wayfinder_paths.jobs.execution.job import _load_job_yaml
 from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
 from wayfinder_paths.jobs.execution.validation import (
-    candidate_validation_passed,
+    candidate_validation_failures,
     validate_execution_job,
+    validation_failure_text,
 )
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.improver.spec import ImproverSpec, revision_stamp
@@ -824,11 +825,13 @@ def stage_probation_trial(
     safe_revision = _safe_component(revision, "candidate revision")
     if compute_workspace_revision(source_root) != safe_revision:
         raise ValueError("probation candidate revision does not match its bundle")
-    if not candidate_validation_passed(
+    failures = candidate_validation_failures(
         validate_execution_job(job_id, candidate_dir=source_root, store=store)
-    ):
+    )
+    if failures:
         raise ValueError(
-            "probation candidate does not satisfy the executable job contract"
+            "probation candidate does not satisfy the executable job contract: "
+            + validation_failure_text(failures)
         )
     if safe_revision == compute_workspace_revision(root):
         raise ValueError("probation candidate is byte-identical to the incumbent")
