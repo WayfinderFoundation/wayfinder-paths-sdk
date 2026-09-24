@@ -67,6 +67,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _select_parent_plan,
     _select_validated_rows,
     _slice_route,
+    _source_baseline_revision,
     _starter_compatibility,
     _verified_protected_dataset_root,
     _write_timeseries_prefix,
@@ -4403,6 +4404,17 @@ def test_parameter_candidate_with_empty_search_space_names_the_fix(tmp_path) -> 
         "at least one typed Optuna dimension"
         in (result["submission_rejection"]["error"])
     )
+
+
+def test_unedited_kernel_and_starter_seeds_are_real_mutations() -> None:
+    manifest = {"source_bundle": {"revision": "incumbent"}}
+    kernel = {"seed_revision": "kernel", "evidence_reset": True}
+    tweak = {"seed_revision": "incumbent-seed", "evidence_reset": False}
+    # An unedited policy-kernel/starter seed differs from the incumbent, so it
+    # is a candidate; only matching the incumbent means "no mutation".
+    assert _source_baseline_revision(manifest, kernel) == "incumbent"
+    assert _source_baseline_revision(manifest, tweak) == "incumbent-seed"
+    assert _source_baseline_revision({"source_revision": "legacy"}) == "legacy"
 
 
 def test_repeated_identical_rejections_abandon_the_candidate(tmp_path) -> None:
