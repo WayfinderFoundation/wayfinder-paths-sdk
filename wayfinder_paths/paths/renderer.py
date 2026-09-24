@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from wayfinder_paths.paths.invocation import build_path_invocation_guidance
 from wayfinder_paths.paths.manifest import (
     PathAgentConfig,
     PathManifest,
@@ -1349,6 +1350,7 @@ def _export_manifest(
     opencode_model_override: str | None = None,
 ) -> dict[str, Any]:
     mode = str(runtime_manifest.get("mode") or "thin")
+    invocation = build_path_invocation_guidance(manifest, host=host)
     payload = {
         "host": host,
         "slug": manifest.slug,
@@ -1356,6 +1358,7 @@ def _export_manifest(
         "skill_name": skill.name,
         "mode": mode,
         "filename": f"skill-{host}-{mode}.zip",
+        "invocation": invocation,
     }
     dependencies = [
         {
@@ -1391,6 +1394,7 @@ def _export_manifest(
             ],
             "restart_required": True,
             "scopes": ["project", "user"],
+            "invocation": invocation,
         }
         if explicit_model:
             payload["install"]["model"] = explicit_model
