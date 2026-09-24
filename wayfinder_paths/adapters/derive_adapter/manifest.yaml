@@ -1,0 +1,17 @@
+schema_version: "0.1"
+entrypoint: "adapters.derive_adapter.adapter.DeriveAdapter"
+capabilities:
+  - "market.read"
+  - "market.meta"
+  - "market.orderbook"
+  - "market.quote"
+  - "account.read"
+  - "account.create"
+  - "position.read"
+  - "margin.read"
+  - "collateral.deposit"
+  - "collateral.withdraw"
+  - "collateral.transfer"
+  - "order.execute"
+  - "order.cancel"
+dependencies: []
