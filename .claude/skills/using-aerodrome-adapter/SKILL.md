@@ -14,6 +14,9 @@ Use this skill when you are:
 - Inspecting wallet LP balances, staked LP balances, veAERO NFTs, or vote claimables
 - Managing veAERO locks, lock extensions, permanent locks, votes, and reward claims
 
+Use the Slipstream skill instead when the pool is a concentrated-liquidity pool,
+has a `CL...` symbol, requires a tick spacing, or involves an NFPM token id.
+
 ## How to use
 
 - [rules/high-value-reads.md](rules/high-value-reads.md) - Market discovery, Sugar analytics, wallet reads, and shared veAERO read helpers
