@@ -4323,17 +4323,21 @@ def _prepare_candidate(
 def _source_baseline_revision(
     manifest: dict[str, Any], candidate: dict[str, Any] | None = None
 ) -> str:
-    """Revision an unedited candidate seed carries.
+    """Revision a candidate must differ from to count as a mutation.
 
-    New campaigns stamp the actual incumbent/QD/starter/de-novo seed; legacy
-    campaigns fall back to their frozen incumbent source revision.
+    Starter, research and policy-kernel seeds (evidence_reset) are new
+    strategies in their own right, so an unedited one is a real candidate and
+    only the incumbent counts as "no mutation". Other seeds must be edited.
+    Legacy campaigns without a stamped seed fall back to the incumbent.
     """
-    return str(
-        (candidate or {}).get("seed_revision")
-        or (manifest.get("source_bundle") or {}).get("revision")
+    incumbent = str(
+        (manifest.get("source_bundle") or {}).get("revision")
         or manifest.get("source_revision")
         or ""
     )
+    if (candidate or {}).get("evidence_reset"):
+        return incumbent
+    return str((candidate or {}).get("seed_revision") or incumbent)
 
 
 def _seed_bundle_window(store: JobStore, job_id: str, bundle_root: Path) -> int:
