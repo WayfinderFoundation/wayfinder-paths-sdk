@@ -11,7 +11,6 @@ Usage:
 
 import sys
 
-from wayfinder_paths.jobs.cli import job_cli
 from wayfinder_paths.mcp.cli_builder import build_cli
 from wayfinder_paths.mcp.server import mcp
 from wayfinder_paths.paths.cli import path_cli
@@ -27,7 +26,14 @@ def main():
         maybe_heartbeat_installed_paths(trigger="mcp-cli")
 
     cli = build_cli(mcp)
-    cli.add_command(job_cli)
+    # `job_cli` pulls in the heavy jobs package (pandas + ~71 modules); import it
+    # lazily so non-job subcommands don't pay that cost. `--help` still needs the
+    # subcommand registered to list it, so include it when no concrete subcommand
+    # was given.
+    if first_command in {"job", None} or (first_command or "").startswith("-"):
+        from wayfinder_paths.jobs.cli import job_cli
+
+        cli.add_command(job_cli)
     cli.add_command(runner_cli)
     cli.add_command(path_cli)
     cli(standalone_mode=True)
