@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 import yaml
 
+from wayfinder_paths.jobs import probation
 from wayfinder_paths.jobs.archive import record_candidate
 from wayfinder_paths.jobs.defense import (
     OOD_ACTIVE_COLUMN,
@@ -546,3 +547,45 @@ def test_full_dev_verdict_applies_the_trial_haircut() -> None:
     )
     # Too short a window to say anything does not block.
     assert _full_dev_verdict(**base, haircut_cleared=None)["passed"] is True
+
+
+def test_probation_graduates_only_when_the_candidate_also_makes_money(
+    monkeypatch,
+) -> None:
+    def trial() -> dict:
+        return {
+            "trial_id": "t1",
+            "candidate": {"error_count": 0},
+            "forward": {"min_paired_days": 7, "max_paired_days": 14},
+        }
+
+    def metrics(candidate_net_pnl: float) -> dict:
+        return {
+            "paired_days": 14,
+            "overall_estimate": 0.05,
+            "lcb": 0.01,
+            "ucb": 0.09,
+            "candidate_trade_count": 10,
+            "candidate_net_pnl": candidate_net_pnl,
+            "hard_constraint_breach": False,
+        }
+
+    current = datetime(2026, 9, 24, tzinfo=UTC)
+    # The incumbent lost more, so the paired edge is clearly positive, but the
+    # candidate itself lost money: not a graduate.
+    monkeypatch.setattr(
+        probation, "_paired_forward_metrics", lambda *a, **k: metrics(-2.0)
+    )
+    losing = trial()
+    probation._adjudicate_forward(None, "job", losing, current=current)
+    assert losing["status"] == "inconclusive"
+    assert (
+        losing["verdict_reason"] == "beat the incumbent but lost money over the trial"
+    )
+
+    monkeypatch.setattr(
+        probation, "_paired_forward_metrics", lambda *a, **k: metrics(3.0)
+    )
+    winning = trial()
+    probation._adjudicate_forward(None, "job", winning, current=current)
+    assert winning["status"] == "graduated"
