@@ -29,6 +29,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _archive_campaign_candidate,
     _attempt_cap,
     _candidate_handoff,
+    _candidate_has_typed_search_space,
     _certification_fold_bounds,
     _claim_full_dev,
     _commit_designed_attempt,
@@ -54,6 +55,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _pooled_fold_stats,
     _protected_fold_verdict,
     _prune_risky_trials,
+    _rejected_submission,
     _research_context_instruction,
     _risk_ceiling_scale,
     _same_family_nonwins,
@@ -112,6 +114,7 @@ from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.synthetic.strategies import CHURNER
 from wayfinder_paths.jobs.worker import (
     _queue_evolution_worker,
+    build_evolution_stage_prompt,
     nudge_evolution_session,
     prepare_job_worker_prompt,
     recover_evolution_stage_session,
@@ -4342,6 +4345,159 @@ def test_evaluate_rejects_oversized_candidate_search_space(tmp_path) -> None:
 
     assert result["status"] == "prepared"
     assert "three-dimension evolution budget" in result["submission_rejection"]["error"]
+
+
+def test_empty_search_space_means_no_tunables(tmp_path) -> None:
+    root = tmp_path / "candidate"
+    root.mkdir()
+    (root / "search_space.json").write_text("{}", encoding="utf-8")
+
+    assert _load_candidate_search_space(root, required=False) is None
+    with pytest.raises(ValueError, match="at least one typed Optuna dimension"):
+        _load_candidate_search_space(root, required=True)
+    (root / "search_space.json").unlink()
+    with pytest.raises(ValueError, match="at least one typed Optuna dimension"):
+        _load_candidate_search_space(root, required=True)
+
+
+def test_structural_candidate_with_empty_search_space_is_evaluated_and_developed(
+    tmp_path,
+) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    structural = _prepare_campaign_candidates(store, job_id, started)[0]
+    assert structural["mutation_kind"] == "structural"
+    bundle = store.job_dir(job_id) / structural["bundle"]
+    (bundle / "search_space.json").write_text("{}", encoding="utf-8")
+    script = bundle / "workspace" / "src" / "strategy.py"
+    script.write_text(
+        script.read_text(encoding="utf-8") + "\nSTAND_ASIDE_IN_BEAR = True\n",
+        encoding="utf-8",
+    )
+
+    result = evaluate_candidate(store, job_id, structural["candidate_id"])
+
+    assert "submission_rejection" not in result
+    assert result["status"] in {"quick_complete", "low_fidelity_rejected"}
+    assert int(campaign_status(store, job_id)["counts"]["quick_evaluated"]) == 1
+    campaign_id = str(campaign_status(store, job_id)["campaign_id"])
+    assert not _candidate_has_typed_search_space(store, job_id, campaign_id, result)
+    outcome = _isolated_full_dev(store, job_id, result, tune=True)
+    assert outcome["status"] in {"dev_frontier", "low_fidelity_rejected"}
+    assert outcome.get("tuning") is None
+
+
+def test_parameter_candidate_with_empty_search_space_names_the_fix(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    parameter = _prepare_campaign_candidates(store, job_id, started)[-1]
+    bundle = store.job_dir(job_id) / parameter["bundle"]
+    (bundle / "search_space.json").write_text("{}", encoding="utf-8")
+
+    result = evaluate_candidate(store, job_id, parameter["candidate_id"])
+
+    assert result["status"] == "prepared"
+    assert (
+        "at least one typed Optuna dimension"
+        in (result["submission_rejection"]["error"])
+    )
+
+
+def test_repeated_identical_rejections_abandon_the_candidate(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    parameter = _prepare_campaign_candidates(store, job_id, started)[-1]
+    candidate_id = parameter["candidate_id"]
+    bundle = store.job_dir(job_id) / parameter["bundle"]
+
+    first = evaluate_candidate(store, job_id, candidate_id)
+    assert first["submission_rejection"]["count"] == 1
+    # A different mistake is a new rejection, not a repeat.
+    (bundle / "search_space.json").write_text(
+        json.dumps(
+            {
+                f"knob_{index}": {"type": "int", "low": 1, "high": 9}
+                for index in range(4)
+            }
+        ),
+        encoding="utf-8",
+    )
+    oversized = evaluate_candidate(store, job_id, candidate_id)
+    assert oversized["status"] == "prepared"
+    assert oversized["submission_rejection"]["count"] == 1
+    assert (
+        evaluate_candidate(store, job_id, candidate_id)["submission_rejection"]["count"]
+        == 2
+    )
+
+    abandoned = evaluate_candidate(store, job_id, candidate_id)
+
+    error = abandoned["submission_rejection"]["error"]
+    assert "three-dimension evolution budget" in error
+    assert abandoned["status"] == "low_fidelity_rejected"
+    assert abandoned["abandon_reason"] == f"repeated_rejected_submission: {error}"
+    assert abandoned["evidence"]["abandon_reason"] == abandoned["abandon_reason"]
+    assert not campaign_status(store, job_id)["counts"].get("quick_attempts")
+    rows = [
+        row
+        for row in store.read_jsonl(job_id, "journal.jsonl")
+        if row.get("type") == "evolution_candidate_submission_abandoned"
+    ]
+    assert len(rows) == 1
+    assert rows[0]["candidate_id"] == candidate_id
+    assert rows[0]["error"] == error and rows[0]["count"] == 3
+    # Closed candidates are not re-evaluated.
+    assert evaluate_candidate(store, job_id, candidate_id)["status"] == (
+        "low_fidelity_rejected"
+    )
+
+
+def test_abandoned_repair_frees_the_focus_for_the_next_candidate(
+    tmp_path, monkeypatch
+) -> None:
+    import wayfinder_paths.jobs.evolution_campaign as campaign_module
+
+    store, job_id, started, _ = _screened_campaign(tmp_path, checkpoint=False)
+    block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=20))
+    assert block and block["artifact_key"] == "candidate-03-attempt-02"
+    stuck = str(block["candidate_id"])
+    assert block["submission_rejection_notice"] is None
+    error = 'candidate search space is not typed: each dimension must be {"type": ...}'
+    monkeypatch.setattr(
+        campaign_module,
+        "_evaluate_candidate",
+        lambda *args, **kwargs: _rejected_submission(error),
+    )
+
+    evaluate_candidate(store, job_id, stuck)
+    evaluate_candidate(store, job_id, stuck)
+    block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=21))
+    assert block and block["candidate_id"] == stuck
+    notice = (
+        f"Your last submission for {stuck} was rejected before any simulation "
+        f"(2 times): {error}. Fix exactly that and resubmit; no attempt was "
+        "charged, but after 3 identical rejections the candidate is abandoned."
+    )
+    assert block["submission_rejection_notice"] == notice
+    rendered = build_evolution_stage_prompt(job_id, block)
+    assert rendered["prompt"].startswith(f"REJECTED SUBMISSION: {notice}\n\n")
+
+    closed = evaluate_candidate(store, job_id, stuck)
+
+    assert closed["status"] == "low_fidelity_rejected"
+    assert closed["attempt_count"] == 1
+    state = campaign_status(store, job_id)
+    assert stuck not in state["focus"]["candidate_ids"]
+    block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=22))
+    assert block and block["candidate_id"] != stuck
+    assert block["candidate_id"] in state["focus"]["candidate_ids"]
+    assert block["submission_rejection_notice"] is None
+    assert not build_evolution_stage_prompt(job_id, block)["prompt"].startswith(
+        "REJECTED"
+    )
 
 
 def test_evaluate_rejects_sizing_dimensions_without_charging(tmp_path) -> None:
