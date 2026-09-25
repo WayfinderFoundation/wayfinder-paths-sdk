@@ -30,7 +30,9 @@ command leases billed compute and prints its ID, waits for a terminal result,
 then extracts artifacts into a new directory. `--submit-only` returns after
 submission. Resume retrieval with `--collect LEASE_ID --output NEW_DIRECTORY`
 (retain `--backend` and `--app-name`). Owner auth works after worker-token expiry.
-The Python client exposes `submit`, `status`, `wait`, `cancel`, and `collect`.
+The Python client exposes `submit`, `submit_archive`, `status`, `wait`, `cancel`,
+and `collect`. `submit_archive` leases a worker for an archive you already built
+(`pack_job` or `pack_inputs`); `submit` packs a job and calls it.
 Use it as a context manager to close its HTTP connections. When supplying an
 existing `httpx.Client`, the caller retains responsibility for closing that client.
 
@@ -84,6 +86,10 @@ an empty SDK config; authentication-dependent fetches should run on the Shell
 before packaging. Prepared datasets from any supported SDK source travel through
 Django's private bucket. Direct worker-side backend exports currently cover
 Hyperliquid candles/funding for the separate inline-script contract.
+
+A compute phase (see [BACKTEST_RUNNERS.md](BACKTEST_RUNNERS.md#compute-phases))
+ships only the inputs it names and returns only its `outputs/` directory, so a
+dataset it reads never travels back.
 
 The mailbox returns a compact summary, logs and runtime provenance. The artifact
 bundle contains `operation-result.json`, the complete job tree, traces, trades,

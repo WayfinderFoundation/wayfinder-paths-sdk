@@ -14,28 +14,74 @@ import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Iterator, Mapping
-from contextlib import contextmanager
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import FrameType
-from typing import Any, Self
+from typing import Any, Self, TypedDict
 from urllib.parse import urlsplit
 
+import httpx
+
+from wayfinder_paths.jobs.compute_phase import phase_name, resolve_phase
 from wayfinder_paths.jobs.execution.op_process import (
     process_identity_fields,
     recorded_process_alive,
 )
 from wayfinder_paths.jobs.sprite_bundle import (
     OPERATIONS,
+    SpriteWorkspace,
     apply_job_outputs,
     extract_archive,
+    pack_inputs,
     pack_job,
+    safe_relative,
     sha256,
 )
 from wayfinder_paths.jobs.sprite_client import TERMINAL_STATUSES, SpriteBacktestsClient
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.runner.monitor_state import atomic_write_json
+
+# A remote provider refusing a worker: no subscription or credit (402/403),
+# active/pool limits (409), daily cap (429), or disabled/unavailable (503).
+CAPACITY_STATUSES = frozenset({402, 403, 409, 429, 503})
+FALLBACKS = frozenset({"local", "none"})
+STATUS_ATTEMPTS = 5
+
+
+class ComputeUnavailable(RuntimeError):
+    """The provider cannot take this run now; nothing was started remotely."""
+
+
+class PhaseFailed(RuntimeError):
+    """A phase run ended without a result.
+
+    ``stage`` is ``"execute"`` when the phase function itself raised
+    ``error_type``; ``"prepare"`` when the runtime could not start it; and
+    ``None`` when the run ended (timeout, cancellation, lost worker) without a
+    phase record. ``outputs_path`` holds partial outputs when collected.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        run: dict[str, Any],
+        error: str,
+        error_type: str | None,
+        stage: str | None,
+        outputs_path: str | None,
+    ):
+        super().__init__(message)
+        self.run, self.error, self.error_type = run, error, error_type
+        self.stage, self.outputs_path = stage, outputs_path
+
+
+class PhaseOutcome(TypedDict):
+    result: Any
+    outputs_path: str
+    run: dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +89,8 @@ class RunnerConfig:
     provider: str
     runs_dir: Path
     configured: bool = False
+    # "local" runs locally when a remote provider refuses capacity.
+    fallback: str = "local"
     # None matches in-place execution, which has no wall-clock limit.
     timeout_seconds: int | None = None
     retain_runs: int = 10
@@ -78,6 +126,7 @@ def load_runner_config(
         raise ValueError("backtest_runner must be an object")
     allowed = {
         "provider",
+        "fallback",
         "runs_dir",
         "timeout_seconds",
         "retain_runs",
@@ -115,8 +164,16 @@ def load_runner_config(
         env.get("WAYFINDER_BACKTEST_RUNNER", section.get("provider", "local")),
         "provider",
     )
-    if provider not in {"local", "sprites"}:
-        raise ValueError("backtest_runner.provider must be local or sprites")
+    if provider not in RUNNERS:
+        raise ValueError(
+            f"backtest_runner.provider must be one of: {', '.join(sorted(RUNNERS))}"
+        )
+    fallback = string(
+        env.get("WAYFINDER_BACKTEST_FALLBACK", section.get("fallback", "local")),
+        "fallback",
+    )
+    if fallback not in FALLBACKS:
+        raise ValueError("backtest_runner.fallback must be local or none")
     directory = Path(
         string(
             env.get(
@@ -179,6 +236,7 @@ def load_runner_config(
         provider=provider,
         runs_dir=directory.resolve(),
         configured="backtest_runner" in config or "WAYFINDER_BACKTEST_RUNNER" in env,
+        fallback=fallback,
         timeout_seconds=timeout,
         retain_runs=retain,
         extra_paths=tuple(extra),
@@ -209,7 +267,6 @@ class BacktestRunner(ABC):
         """Release client resources, without cancelling submitted computations."""
         return None
 
-    @abstractmethod
     def submit(
         self,
         store: JobStore,
@@ -218,7 +275,29 @@ class BacktestRunner(ABC):
         op: str = "backtest_job",
         options: dict[str, Any] | None = None,
         extra_paths: list[str] | None = None,
-    ) -> dict[str, Any]: ...
+    ) -> dict[str, Any]:
+        if self.config.runs_dir.is_relative_to(store.job_dir(job_id).resolve()):
+            raise ValueError("runs_dir must be outside the job being packaged")
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "workspace.tar.gz"
+            pack_job(
+                store,
+                job_id,
+                archive,
+                op=op,
+                options=options,
+                extra_paths=[*self.config.extra_paths, *(extra_paths or [])],
+                expected_sdk_commit=self.config.sdk_commit,
+            )
+            return self.submit_archive(archive)
+
+    @abstractmethod
+    def submit_archive(self, archive: Path) -> dict[str, Any]:
+        """Start a prebuilt job workspace or phase archive; the caller keeps it.
+
+        Raise ComputeUnavailable when the provider refuses capacity before
+        anything started, so a configured fallback can run it elsewhere.
+        """
 
     @abstractmethod
     def status(self, run_id: str) -> dict[str, Any]: ...
@@ -239,6 +318,20 @@ class BacktestRunner(ABC):
             time.sleep(poll_interval)
 
 
+RUNNERS: dict[str, type[BacktestRunner]] = {}
+
+
+def register_runner[R: type[BacktestRunner]](name: str) -> Callable[[R], R]:
+    """Make a provider selectable as ``backtest_runner.provider``."""
+
+    def register(runner: R) -> R:
+        RUNNERS[name] = runner
+        return runner
+
+    return register
+
+
+@register_runner("sprites")
 class SpritesRunner(BacktestRunner):
     def __init__(
         self,
@@ -253,30 +346,44 @@ class SpritesRunner(BacktestRunner):
         )
         self._owns_client = client is None
 
-    def submit(
-        self,
-        store: JobStore,
-        job_id: str,
-        *,
-        op: str = "backtest_job",
-        options: dict[str, Any] | None = None,
-        extra_paths: list[str] | None = None,
-    ) -> dict[str, Any]:
-        return {
-            **self.client.submit(
-                store,
-                job_id,
-                op=op,
-                options=options,
-                extra_paths=[*self.config.extra_paths, *(extra_paths or [])],
+    def submit_archive(self, archive: Path) -> dict[str, Any]:
+        try:
+            submitted = self.client.submit_archive(
+                archive,
                 preset=self.config.preset,
                 expected_sdk_commit=self.config.sdk_commit,
-            ),
-            "provider": "sprites",
-        }
+            )
+        except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+            # Only a refused or unreachable lease request means no worker exists;
+            # a failure after leasing already cancelled that lease and re-raises.
+            if exc.request.method != "POST" or (
+                exc.request.url.path != self.client.routes.instance
+            ):
+                raise
+            if isinstance(exc, httpx.TransportError):
+                raise ComputeUnavailable(f"Sprites backend unreachable: {exc}") from exc
+            if exc.response.status_code not in CAPACITY_STATUSES:
+                raise
+            raise ComputeUnavailable(
+                f"Sprites refused a worker (HTTP {exc.response.status_code}): "
+                f"{_detail(exc.response)}"
+            ) from exc
+        return {**submitted, "provider": "sprites"}
 
     def status(self, run_id: str) -> dict[str, Any]:
-        return {**self.client.status(run_id), "provider": "sprites"}
+        # A long remote run outlives brief network or backend interruptions.
+        for attempt in range(STATUS_ATTEMPTS):
+            try:
+                return {**self.client.status(run_id), "provider": "sprites"}
+            except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                client_error = (
+                    isinstance(exc, httpx.HTTPStatusError)
+                    and exc.response.status_code < 500
+                )
+                if client_error or attempt == STATUS_ATTEMPTS - 1:
+                    raise
+                time.sleep(attempt + 1)
+        raise AssertionError("Status retry loop must return or raise")
 
     def cancel(self, run_id: str) -> None:
         self.client.cancel(run_id)
@@ -289,10 +396,17 @@ class SpritesRunner(BacktestRunner):
             self.client.close()
 
 
+@register_runner("local")
 class LocalRunner(BacktestRunner):
     def _directory(self, run_id: str) -> Path:
         # Local IDs are UUIDs, never user-supplied filesystem paths.
         return self.config.runs_dir / str(uuid.UUID(run_id))
+
+    def owns(self, run_id: str) -> bool:
+        try:
+            return self._directory(run_id).is_dir()
+        except ValueError:
+            return False
 
     def _prune_runs(self) -> None:
         if not self.config.runs_dir.exists():
@@ -309,31 +423,15 @@ class LocalRunner(BacktestRunner):
                 )
         _prune(finished, self.config.retain_runs)
 
-    def submit(
-        self,
-        store: JobStore,
-        job_id: str,
-        *,
-        op: str = "backtest_job",
-        options: dict[str, Any] | None = None,
-        extra_paths: list[str] | None = None,
+    def submit_archive(
+        self, archive: Path, *, extra: Mapping[str, Any] | None = None
     ) -> dict[str, Any]:
-        if self.config.runs_dir.is_relative_to(store.job_dir(job_id).resolve()):
-            raise ValueError("runs_dir must be outside the job being packaged")
         self._prune_runs()
         run_id = str(uuid.uuid4())
         directory = self._directory(run_id)
         directory.mkdir(parents=True, mode=0o700)
         try:
-            pack_job(
-                store,
-                job_id,
-                directory / "workspace.tar.gz",
-                op=op,
-                options=options,
-                extra_paths=[*self.config.extra_paths, *(extra_paths or [])],
-                expected_sdk_commit=self.config.sdk_commit,
-            )
+            shutil.copyfile(archive, directory / "workspace.tar.gz")
             record: dict[str, Any] = {
                 "id": run_id,
                 "provider": "local",
@@ -346,6 +444,7 @@ class LocalRunner(BacktestRunner):
                     "capabilities": ["sdk-workspace-v1"],
                     "python": sys.executable,
                 },
+                **(extra or {}),
             }
             if self.owner_pid is not None:
                 record["owner"] = {
@@ -450,6 +549,41 @@ class LocalRunner(BacktestRunner):
         return record
 
 
+class FallbackRunner(BacktestRunner):
+    """Run on the configured provider; when it refuses capacity, run locally.
+
+    Run ids route back to whichever runner started them, so status, cancel and
+    collection work the same after a fallback.
+    """
+
+    def __init__(self, primary: BacktestRunner, local: LocalRunner):
+        super().__init__(primary.config, owner_pid=primary.owner_pid)
+        self.primary, self.local = primary, local
+
+    def submit_archive(self, archive: Path) -> dict[str, Any]:
+        try:
+            return self.primary.submit_archive(archive)
+        except ComputeUnavailable as exc:
+            fallback = {"fallback": {"from": self.config.provider, "reason": str(exc)}}
+            return self.local.submit_archive(archive, extra=fallback)
+
+    def _runner(self, run_id: str) -> BacktestRunner:
+        return self.local if self.local.owns(run_id) else self.primary
+
+    def status(self, run_id: str) -> dict[str, Any]:
+        return self._runner(run_id).status(run_id)
+
+    def cancel(self, run_id: str) -> None:
+        self._runner(run_id).cancel(run_id)
+
+    def collect(self, run_id: str, destination: Path) -> dict[str, Any]:
+        return self._runner(run_id).collect(run_id, destination)
+
+    def close(self) -> None:
+        self.primary.close()
+        self.local.close()
+
+
 def create_runner(
     *,
     repo_root: Path | None = None,
@@ -457,12 +591,15 @@ def create_runner(
     owner_pid: int | None = None,
 ) -> BacktestRunner:
     settings = config or load_runner_config(repo_root=repo_root)
-    providers = {"local": LocalRunner, "sprites": SpritesRunner}
     try:
-        implementation = providers[settings.provider]
+        implementation = RUNNERS[settings.provider]
     except KeyError as exc:
         raise ValueError(f"Unknown backtest runner: {settings.provider}") from exc
-    return implementation(settings, owner_pid=owner_pid)
+    runner = implementation(settings, owner_pid=owner_pid)
+    if settings.provider == "local" or settings.fallback != "local":
+        return runner
+    local = LocalRunner(replace(settings, provider="local"), owner_pid=owner_pid)
+    return FallbackRunner(runner, local)
 
 
 def run_configured_operation(
@@ -478,21 +615,15 @@ def run_configured_operation(
     options = dict(kwargs)
     job_id = options.pop("job_id")
     store = JobStore()
-    owner = {"pid": os.getpid(), **process_identity_fields(os.getpid())}
+    owner = _owner()
     with (
         _exit_on_termination(),
         create_runner(config=config, owner_pid=os.getpid()) as runner,
     ):
         submitted = runner.submit(store, job_id, op=op, options=options)
         run_id = submitted["id"]
-        receipt_dir = config.runs_dir / "receipts" / str(uuid.uuid4())
-        receipt_dir.mkdir(parents=True, mode=0o700)
-        atomic_write_json(receipt_dir / "run.json", {**submitted, "owner": owner})
-        try:
-            result = runner.wait(run_id)
-        except (KeyboardInterrupt, SystemExit):
-            runner.cancel(run_id)
-            raise
+        receipt_dir = _receipt(config, submitted, owner)
+        result = _wait_or_cancel(runner, run_id)
         if result.get("artifacts"):
             destination = receipt_dir / "artifacts"
             runner.collect(run_id, destination)
@@ -511,11 +642,119 @@ def run_configured_operation(
         return result
 
 
+def run_phase(
+    phase: Callable[..., Any],
+    root: Path,
+    paths: Sequence[str],
+    args: Mapping[str, Any] | None = None,
+    *,
+    config: RunnerConfig | None = None,
+) -> PhaseOutcome:
+    """Run a registered pure phase on the configured runner.
+
+    Only the named inputs travel and only the phase's ``outputs/`` returns.
+    Nothing is applied to any job; the caller owns the result. Collected
+    outputs live in a run receipt that retention eventually prunes.
+    """
+    name = phase_name(phase)
+    resolve_phase(name)
+    root = root.resolve()
+    settings = config or load_runner_config(repo_root=root)
+    if any(
+        settings.runs_dir.is_relative_to((root / safe_relative(path)).resolve())
+        for path in paths
+    ):
+        raise ValueError("runs_dir must be outside the phase inputs")
+    owner = _owner()
+    with (
+        _exit_on_termination(),
+        create_runner(config=settings, owner_pid=os.getpid()) as runner,
+    ):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "inputs.tar.gz"
+            pack_inputs(
+                root,
+                paths,
+                {"phase": name, "args": dict(args or {})},
+                archive,
+                expected_sdk_commit=settings.sdk_commit,
+            )
+            submitted = runner.submit_archive(archive)
+        run_id = submitted["id"]
+        receipt_dir = _receipt(settings, submitted, owner)
+        result = _wait_or_cancel(runner, run_id)
+        collected = SpriteWorkspace(receipt_dir / "collected")
+        if result.get("artifacts"):
+            runner.collect(run_id, collected.root)
+        atomic_write_json(receipt_dir / "run.json", {**result, "owner": owner})
+        _prune_receipts(settings.runs_dir, settings.retain_runs)
+        if result["status"] != "succeeded":
+            record = (
+                json.loads(collected.phase_error_file.read_text())
+                if collected.phase_error_file.exists()
+                else {}
+            )
+            error = str(record.get("error") or result.get("error", ""))
+            raise PhaseFailed(
+                f"{name} {result['status']}: {error}; run record: {receipt_dir / 'run.json'}",
+                run=result,
+                error=error,
+                error_type=record.get("error_type"),
+                stage=record.get("stage"),
+                outputs_path=(
+                    str(collected.outputs_dir)
+                    if collected.outputs_dir.is_dir()
+                    else None
+                ),
+            )
+        return {
+            "result": json.loads(collected.phase_result_file.read_text()),
+            "outputs_path": str(collected.outputs_dir),
+            "run": result,
+        }
+
+
+def _owner() -> dict[str, Any]:
+    return {"pid": os.getpid(), **process_identity_fields(os.getpid())}
+
+
+def _receipt(
+    config: RunnerConfig, submitted: Mapping[str, Any], owner: Mapping[str, Any]
+) -> Path:
+    receipt_dir = config.runs_dir / "receipts" / str(uuid.uuid4())
+    receipt_dir.mkdir(parents=True, mode=0o700)
+    atomic_write_json(receipt_dir / "run.json", {**submitted, "owner": owner})
+    return receipt_dir
+
+
+def _wait_or_cancel(runner: BacktestRunner, run_id: str) -> dict[str, Any]:
+    try:
+        return runner.wait(run_id)
+    except BaseException:
+        # A caller that stops waiting must not leave a billed or busy run behind.
+        with suppress(Exception):
+            runner.cancel(run_id)
+        raise
+
+
+def _detail(response: httpx.Response) -> str:
+    try:
+        return str(response.json().get("detail", ""))[:500]
+    except (ValueError, AttributeError):
+        return ""
+
+
 @contextmanager
 def _exit_on_termination() -> Iterator[None]:
-    """SIGTERM/SIGHUP unwind the caller like Ctrl-C, so it cancels its run."""
+    """SIGTERM/SIGHUP unwind the caller like Ctrl-C, so it cancels its run.
+
+    A handler the process already had still runs once the run is cancelled:
+    a heavy-lane op child must record its own cancellation (see op_runner).
+    """
+    received: list[int] = []
 
     def stop(signum: int, frame: FrameType | None) -> None:
+        received.append(signum)
         raise SystemExit(128 + signum)
 
     previous = {
@@ -526,6 +765,9 @@ def _exit_on_termination() -> Iterator[None]:
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
+        handler = previous[signal.Signals(received[0])] if received else None
+        if callable(handler):
+            handler(received[0], None)
 
 
 def _kill_orphaned_group(child: Any) -> None:

@@ -157,7 +157,7 @@ class SpriteBacktestsClient:
     ) -> dict[str, Any]:
         with tempfile.TemporaryDirectory() as directory:
             archive = Path(directory) / "workspace.tar.gz"
-            packed = pack_job(
+            pack_job(
                 store,
                 job_id,
                 archive,
@@ -166,48 +166,60 @@ class SpriteBacktestsClient:
                 extra_paths=extra_paths,
                 expected_sdk_commit=expected_sdk_commit,
             )
+            return self.submit_archive(
+                archive, preset=preset, expected_sdk_commit=expected_sdk_commit
+            )
+
+    def submit_archive(
+        self,
+        archive: Path,
+        *,
+        preset: str = "jobs-v1",
+        expected_sdk_commit: str | None = None,
+    ) -> dict[str, Any]:
+        """Lease a worker and run a prebuilt job workspace or phase archive."""
+        packed: ArchiveMetadata = {
+            "sha256": sha256(archive),
+            "size": archive.stat().st_size,
+        }
+        response = self.http.post(
+            self.routes.instance,
+            headers=self.owner_headers,
+            json={"preset_key": preset},
+        )
+        response.raise_for_status()
+        lease = response.json()
+        try:
+            if "sdk-workspace-v1" not in lease.get("runtime", {}).get(
+                "capabilities", []
+            ):
+                raise ValueError(
+                    "Preset needs a checkpoint with sdk-workspace-v1 support"
+                )
+            if (
+                expected_sdk_commit
+                and lease["runtime"].get("sdk_commit") != expected_sdk_commit
+            ):
+                raise ValueError("Preset SDK commit does not match requested version")
+            headers = {"Authorization": "Bearer " + lease["auth_token"]}
+            self._upload(self.routes.workspace(lease["id"]), headers, archive, packed)
             response = self.http.post(
-                self.routes.instance,
-                headers=self.owner_headers,
-                json={"preset_key": preset},
+                self.routes.jobs(lease["id"]),
+                headers=headers,
+                json={"kind": "sdk_job", "workspace_sha256": packed["sha256"]},
             )
             response.raise_for_status()
-            lease = response.json()
-            try:
-                if "sdk-workspace-v1" not in lease.get("runtime", {}).get(
-                    "capabilities", []
-                ):
-                    raise ValueError(
-                        "Preset needs a checkpoint with sdk-workspace-v1 support"
-                    )
-                if (
-                    expected_sdk_commit
-                    and lease["runtime"].get("sdk_commit") != expected_sdk_commit
-                ):
-                    raise ValueError(
-                        "Preset SDK commit does not match requested version"
-                    )
-                headers = {"Authorization": "Bearer " + lease["auth_token"]}
-                self._upload(
-                    self.routes.workspace(lease["id"]), headers, archive, packed
-                )
-                response = self.http.post(
-                    self.routes.jobs(lease["id"]),
-                    headers=headers,
-                    json={"kind": "sdk_job", "workspace_sha256": packed["sha256"]},
-                )
-                response.raise_for_status()
-                return {
-                    key: value
-                    for key, value in lease.items()
-                    if key not in {"auth_token", "auth_header"}
-                }
-            except BaseException:
-                # Owner cancellation survives agent capability expiry, and a
-                # terminated submitter must not leave a billed lease running.
-                with suppress(httpx.HTTPError):
-                    self.cancel(lease["id"])
-                raise
+            return {
+                key: value
+                for key, value in lease.items()
+                if key not in {"auth_token", "auth_header"}
+            }
+        except BaseException:
+            # Owner cancellation survives agent capability expiry, and a
+            # terminated submitter must not leave a billed lease running.
+            with suppress(httpx.HTTPError):
+                self.cancel(lease["id"])
+            raise
 
     def status(self, lease_id: str) -> dict[str, Any]:
         response = self.http.get(

@@ -1,4 +1,4 @@
-"""Execute an SDK compute workspace in a dedicated Sprite child process."""
+"""Execute an SDK compute workspace or pure phase in a dedicated child process."""
 
 from __future__ import annotations
 
@@ -14,11 +14,15 @@ from typing import Any
 
 import yaml
 
+from wayfinder_paths.jobs.compute_phase import resolve_phase
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import safe_job_id
 from wayfinder_paths.jobs.sprite_bundle import (
     OPERATIONS,
+    PHASE_OP,
+    PHASE_PROTOCOL,
     PROTOCOL,
+    PhaseRequest,
     SpriteWorkspace,
     WorkspaceRequest,
     extract_archive,
@@ -125,9 +129,41 @@ def prepare(source: Path, root: Path) -> WorkspaceRequest:
     """Extract, verify and rebase the request into an isolated workspace."""
     workspace = SpriteWorkspace(root)
     extract_archive(source, workspace.root)
-    request: WorkspaceRequest = json.loads(
-        workspace.request_file.read_text(encoding="utf-8")
+    return _prepare_job(
+        json.loads(workspace.request_file.read_text(encoding="utf-8")), workspace
     )
+
+
+def _verify_inputs(
+    request: WorkspaceRequest | PhaseRequest, workspace: SpriteWorkspace
+) -> None:
+    expected = request.get("expected_sdk_commit")
+    if expected and installed_sdk_commit() != expected:
+        raise ValueError("Sprite SDK commit differs from the requested SDK commit")
+    for name, digest in request["files"].items():
+        file = workspace.file(name)
+        if sha256(file) != digest:
+            raise ValueError(f"Workspace checksum mismatch: {name}")
+
+
+def _prepare_phase(request: PhaseRequest, workspace: SpriteWorkspace) -> PhaseRequest:
+    if request.get("op") != PHASE_OP or not isinstance(request.get("args"), dict):
+        raise ValueError("Unsupported compute phase request")
+    _verify_inputs(request, workspace)
+    workspace.outputs_dir.mkdir()
+    # A JobStore() inside the phase must discover this copy, never a source
+    # repository above a local runner's run directory.
+    marker = workspace.file("pyproject.toml")
+    if not marker.exists():
+        marker.write_text(
+            '[project]\nname = "sprite-phase"\nversion = "0.0.0"\n', encoding="utf-8"
+        )
+    return request
+
+
+def _prepare_job(
+    request: WorkspaceRequest, workspace: SpriteWorkspace
+) -> WorkspaceRequest:
     if request.get("protocol") != PROTOCOL or request.get("op") not in OPERATIONS:
         raise ValueError("Unsupported SDK workspace protocol or operation")
     source_root = request["source_root"]
@@ -137,13 +173,7 @@ def prepare(source: Path, root: Path) -> WorkspaceRequest:
         or source_root == "/"
     ):
         raise ValueError("Invalid source repository root")
-    expected = request.get("expected_sdk_commit")
-    if expected and installed_sdk_commit() != expected:
-        raise ValueError("Sprite SDK commit differs from the requested SDK commit")
-    for name, digest in request["files"].items():
-        file = workspace.file(name)
-        if sha256(file) != digest:
-            raise ValueError(f"Workspace checksum mismatch: {name}")
+    _verify_inputs(request, workspace)
     # JobStore discovers this isolated root rather than the SDK's installation.
     workspace.file("pyproject.toml").write_text(
         '[project]\nname = "sprite-workspace"\nversion = "0.0.0"\n',
@@ -249,34 +279,61 @@ def run(
     *,
     executor: OperationExecutor | None = None,
 ) -> int:
-    """Run one operation and preserve full artifacts on success or failure."""
+    """Run one operation or phase and preserve its artifacts on success or failure."""
     workspace = SpriteWorkspace(root)
-    execute = executor if executor is not None else execute_operation
     result: dict[str, Any] = {}
     code = 1
+    phase = False
+    stage = "prepare"
     try:
-        request = prepare(source, workspace.root)
-        with _execution_context(workspace.root):
-            payload = execute(request, workspace.root)
-        workspace.result_file.write_text(
-            json.dumps(payload, default=str), encoding="utf-8"
-        )
+        extract_archive(source, workspace.root)
+        request = json.loads(workspace.request_file.read_text(encoding="utf-8"))
+        phase = request.get("protocol") == PHASE_PROTOCOL
+        if phase:
+            request = _prepare_phase(request, workspace)
+            function = resolve_phase(request["phase"])
+            stage = "execute"
+            with _execution_context(workspace.root):
+                payload = function(
+                    workspace.root, workspace.outputs_dir, dict(request["args"])
+                )
+            result_file = workspace.phase_result_file
+        else:
+            request = _prepare_job(request, workspace)
+            execute = executor if executor is not None else execute_operation
+            with _execution_context(workspace.root):
+                payload = execute(request, workspace.root)
+            result_file = workspace.result_file
+        result_file.write_text(json.dumps(payload, default=str), encoding="utf-8")
+        full_result = result_file.relative_to(workspace.root).as_posix()
         result = {
             "operation": request["op"],
-            "job_id": request["job_id"],
-            "source_revision": request["source_revision"],
-            "summary": _summarize(request["op"], payload, workspace.result_file.name),
-            "full_result": workspace.result_file.name,
+            **(
+                {"phase": request["phase"]}
+                if phase
+                else {
+                    "job_id": request["job_id"],
+                    "source_revision": request["source_revision"],
+                }
+            ),
+            "summary": _summarize(request["op"], payload, full_result),
+            "full_result": full_result,
         }
         code = 0
     except Exception as exc:
         traceback.print_exc()
         result = {"error": str(exc), "error_type": type(exc).__name__}
-        workspace.root.mkdir(parents=True, exist_ok=True)
-        workspace.error_file.write_text(json.dumps(result), encoding="utf-8")
-    # Upload the whole isolated workspace, including model binaries, charts,
-    # traces, folds, ledgers, source inputs and partial diagnostics on failure.
-    workspace.archive(artifacts)
+        if phase:
+            # A phase's own exception can be evidence; a runtime that could
+            # not start it is infrastructure.
+            result["stage"] = stage
+        error_file = workspace.phase_error_file if phase else workspace.error_file
+        error_file.parent.mkdir(parents=True, exist_ok=True)
+        error_file.write_text(json.dumps(result), encoding="utf-8")
+    # A job uploads its whole isolated workspace, including model binaries,
+    # charts, traces, folds, ledgers, source inputs and partial diagnostics on
+    # failure. A phase returns only outputs/: its inputs never travel back.
+    workspace.collect(artifacts)
     output.write_text(
         json.dumps(result, default=str, allow_nan=False), encoding="utf-8"
     )
@@ -292,7 +349,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--collect-only", action="store_true")
     args = parser.parse_args(argv)
     if args.collect_only:
-        SpriteWorkspace(args.root).archive(args.artifacts.resolve())
+        SpriteWorkspace(args.root).collect(args.artifacts.resolve())
         return
     raise SystemExit(
         run(
