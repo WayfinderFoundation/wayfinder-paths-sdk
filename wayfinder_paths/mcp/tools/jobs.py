@@ -422,8 +422,8 @@ async def _spawn_background_op(
             "op": op,
             "pid": proc.pid,
             "note": (
-                "running detached — this request is done; results land in the "
-                "job dir as usual when the run finishes"
+                "running detached — use op_status for results and any "
+                "collected artifact directory"
             ),
             "check": _op_status_hint(job_id, op),
         }

@@ -51,7 +51,7 @@ _EVIDENCE_OPS = {
 }
 
 
-def _run(op: str, kwargs: dict[str, Any]) -> Any:
+def _record_evidence_access(op: str, kwargs: dict[str, Any]) -> None:
     if op in _EVIDENCE_OPS and kwargs.get("job_id"):
         # Every validation query is on the protected record (audit/<job_id>/)
         # — the review's evidence-access ledger. Best-effort, never blocks.
@@ -68,6 +68,10 @@ def _run(op: str, kwargs: dict[str, Any]) -> Any:
             )
         except Exception:  # noqa: BLE001
             pass
+
+
+def _run(op: str, kwargs: dict[str, Any]) -> Any:
+    _record_evidence_access(op, kwargs)
     return _run_op(op, kwargs)
 
 
@@ -367,6 +371,25 @@ def _install_cancel_handler() -> None:
         signal.signal(signal.SIGTERM, _cancel_on_sigterm)
 
 
+def _run_entrypoint(op: str, kwargs: dict[str, Any]) -> Any:
+    """Use configured compute backends at the boundary, never inside a worker."""
+    from wayfinder_paths.jobs.sprite_bundle import OPERATIONS
+
+    if op in OPERATIONS:
+        from wayfinder_paths.jobs.backtest_runner import (
+            load_runner_config,
+            run_configured_operation,
+        )
+
+        config = load_runner_config()
+        if config.configured:
+            # The run's own ledger stays in its isolated copy; the protected
+            # record belongs to the source repository.
+            _record_evidence_access(op, kwargs)
+            return run_configured_operation(op, kwargs, config=config)
+    return _run(op, kwargs)
+
+
 def main() -> None:
     _lower_priority()
     _install_cancel_handler()
@@ -374,7 +397,7 @@ def main() -> None:
     op = str(request["op"])
     kwargs = dict(request.get("kwargs") or {})
     with track_evolution_process(op, kwargs):
-        result = _run(op, dict(kwargs))
+        result = _run_entrypoint(op, dict(kwargs))
     json.dump(result, sys.stdout, default=str)
     # Flush before nudging: the re-prompted session's campaign block must see
     # the completed op's result file, not a half-written one.
