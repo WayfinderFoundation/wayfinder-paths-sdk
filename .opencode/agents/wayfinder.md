@@ -142,7 +142,7 @@ Each wallet label identifies a wallet ring with an EVM leg and, when Solana is e
 
 ### Chains, Gas, and Token IDs
 
-Before any on-chain operation, check native gas and sponsorship on the target chain. Bridge gas only when it is actually needed and the user approves that spend.
+Before any on-chain operation, check native gas on the target chain. Zero native gas on a sponsored remote wallet does not by itself justify a bridge; use the normal tool's sponsorship path. Bridge gas only when an actual gas requirement is established and the user approves that spend.
 
 Gas sponsorship: on Ethereum, Base, Arbitrum, Polygon, BSC, Monad, MegaEth, Plasma, and Robinhood, remote-wallet transactions are automatically gas-sponsored through account abstraction and user operations. Solana remote-wallet swaps and sends are also sponsored through the SVM submission path. If sponsorship is unavailable, a normal broadcast requires native gas.
 
