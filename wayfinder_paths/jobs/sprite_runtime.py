@@ -14,6 +14,7 @@ from typing import Any
 
 import yaml
 
+from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import safe_job_id
 from wayfinder_paths.jobs.sprite_bundle import (
     OPERATIONS,
@@ -149,6 +150,17 @@ def prepare(source: Path, root: Path) -> WorkspaceRequest:
         encoding="utf-8",
     )
     _rebase_workspace(request, workspace)
+    # Lets apply_job_outputs map rebased paths and stamps back to the source.
+    job_root = workspace.file(f".wayfinder/jobs/{safe_job_id(request['job_id'])}")
+    workspace.runtime_file.write_text(
+        json.dumps(
+            {
+                "workspace_root": str(workspace.root),
+                "workspace_revision": compute_workspace_revision(job_root),
+            }
+        ),
+        encoding="utf-8",
+    )
     return request
 
 
