@@ -1,7 +1,7 @@
 import asyncio
 import math
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 import httpx
@@ -45,6 +45,7 @@ def _wallet_client():
 
 
 _DEFAULT_CONFIRMATIONS = 3
+_RPC_READ_TIMEOUT = 30
 
 
 def _is_gorlami_fork_chain(chain_id: int) -> bool:
@@ -57,6 +58,19 @@ def _is_gorlami_fork_chain(chain_id: int) -> bool:
 
 class SponsorshipUnavailableError(RuntimeError):
     """Sponsored submission was rejected before anything reached the chain."""
+
+
+class TransactionConfirmationError(RuntimeError):
+    """Broadcast succeeded, but its on-chain outcome could not be verified."""
+
+    def __init__(self, txn_hash: str, chain_id: int) -> None:
+        self.txn_hash = txn_hash
+        self.chain_id = chain_id
+        super().__init__(
+            f"Transaction submitted: {txn_hash} on chain {chain_id}, but confirmation "
+            "is unavailable. It may already have executed. Check this transaction "
+            "before retrying; do not submit a replacement blindly."
+        )
 
 
 class TransactionRevertedError(RuntimeError):
@@ -103,26 +117,50 @@ def _get_transaction_from_address(transaction: dict) -> str:
     return AsyncWeb3.to_checksum_address(transaction["from"])
 
 
-async def nonce_transaction(transaction: dict):
+async def _rpc_read_results(
+    web3s: list[AsyncWeb3],
+    read: Callable[[AsyncWeb3], Awaitable[int]],
+    operation: str,
+) -> list[int]:
+    """Keep every healthy node's view without letting an outage poison the pool."""
+    results = await asyncio.gather(
+        *(asyncio.wait_for(read(web3), timeout=_RPC_READ_TIMEOUT) for web3 in web3s),
+        return_exceptions=True,
+    )
+    values: list[int] = []
+    for index, result in enumerate(results):
+        if isinstance(result, BaseException):
+            if not isinstance(result, Exception):
+                raise result
+            # URLs and exception messages can contain provider credentials.
+            logger.warning(
+                "RPC index {} failed {}: {}", index, operation, type(result).__name__
+            )
+        else:
+            values.append(result)
+    if not values:
+        raise RuntimeError(f"All RPCs failed {operation}; no usable response")
+    return values
+
+
+async def nonce_transaction(transaction: dict[str, Any]) -> dict[str, Any]:
     transaction = transaction.copy()
 
     from_address = _get_transaction_from_address(transaction)
 
-    async def _get_nonce(web3: AsyncWeb3, from_address: str) -> int:
+    async def _get_nonce(web3: AsyncWeb3) -> int:
         return await web3.eth.get_transaction_count(
             from_address, block_identifier="pending"
         )
 
     async with web3s_from_chain_id(get_transaction_chain_id(transaction)) as web3s:
-        nonces = await asyncio.gather(
-            *[_get_nonce(web3, from_address) for web3 in web3s]
-        )
+        nonces = await _rpc_read_results(web3s, _get_nonce, "pending nonce read")
         transaction["nonce"] = max(nonces)
 
     return transaction
 
 
-async def gas_price_transaction(transaction: dict):
+async def gas_price_transaction(transaction: dict[str, Any]) -> dict[str, Any]:
     transaction = transaction.copy()
 
     async def _get_gas_price(web3: AsyncWeb3) -> int:
@@ -149,7 +187,9 @@ async def gas_price_transaction(transaction: dict):
             transaction.pop("maxFeePerGas", None)
             transaction.pop("maxPriorityFeePerGas", None)
 
-            gas_prices = await asyncio.gather(*[_get_gas_price(web3) for web3 in web3s])
+            gas_prices = await _rpc_read_results(
+                web3s, _get_gas_price, "gas price read"
+            )
             gas_price = max(gas_prices)
 
             transaction["gasPrice"] = int(gas_price * SUGGESTED_GAS_PRICE_MULTIPLIER)
@@ -158,9 +198,9 @@ async def gas_price_transaction(transaction: dict):
             # dynamic-fee (EIP-1559) transaction.
             transaction.pop("gasPrice", None)
 
-            base_fees = await asyncio.gather(*[_get_base_fee(web3) for web3 in web3s])
-            priority_fees = await asyncio.gather(
-                *[_get_priority_fee(web3) for web3 in web3s]
+            base_fees = await _rpc_read_results(web3s, _get_base_fee, "base fee read")
+            priority_fees = await _rpc_read_results(
+                web3s, _get_priority_fee, "priority fee read"
             )
 
             base_fee = max(base_fees)
@@ -179,7 +219,7 @@ async def gas_price_transaction(transaction: dict):
     return transaction
 
 
-async def gas_limit_transaction(transaction: dict):
+async def gas_limit_transaction(transaction: dict[str, Any]) -> dict[str, Any]:
     transaction = transaction.copy()
 
     # prevents RPCs from taking this as a serious limit
@@ -206,7 +246,10 @@ async def gas_limit_transaction(transaction: dict):
 
     async def _estimate_gas(web3: AsyncWeb3, transaction: dict) -> int:
         try:
-            return await web3.eth.estimate_gas(transaction, block_identifier="latest")
+            return await asyncio.wait_for(
+                web3.eth.estimate_gas(transaction, block_identifier="latest"),
+                timeout=_RPC_READ_TIMEOUT,
+            )
         except Exception as e:
             rpc_errors.append(f"{web3.provider.endpoint_uri}: {e}")
             logger.info(
@@ -339,40 +382,51 @@ async def wait_for_transaction_receipt(
     chain_id: int,
     txn_hash: str,
     poll_interval: float = 0.1,
-    timeout: int = 300,
+    timeout: float = 300,
     confirmations: int = 3,
 ) -> dict[str, Any]:
     if isinstance(txn_hash, str) and not txn_hash.startswith("0x"):
         txn_hash = f"0x{txn_hash}"
 
     async def _wait_for_receipt(web3: AsyncWeb3, tx_hash: str) -> dict[str, Any]:
-        receipt = await web3.eth.wait_for_transaction_receipt(
+        raw_receipt = await web3.eth.wait_for_transaction_receipt(
             tx_hash, poll_latency=poll_interval, timeout=timeout
         )
-        return cast(dict[str, Any], receipt)
-
-    async def _get_block_number(web3: AsyncWeb3) -> int:
-        return await web3.eth.block_number
+        receipt = cast(dict[str, Any], raw_receipt)
+        if receipt.get("status") == 0:
+            raise TransactionRevertedError(tx_hash, receipt)
+        if receipt.get("status") != 1:
+            raise ValueError("Receipt has no valid execution status")
+        # Inclusion already satisfies zero/one confirmations. In particular, do
+        # not perform another RPC read that can invalidate a successful receipt.
+        if confirmations > 1:
+            target_block = receipt["blockNumber"] + confirmations - 1
+            while await web3.eth.block_number < target_block:
+                await asyncio.sleep(poll_interval)
+        return receipt
 
     async with web3s_from_chain_id(chain_id) as web3s:
         tasks = [
             asyncio.create_task(_wait_for_receipt(web3, txn_hash)) for web3 in web3s
         ]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-        receipt = done.pop().result()
-
-        if receipt.get("status") == 0:
-            raise TransactionRevertedError(txn_hash, receipt)
-
-        target_block = receipt["blockNumber"] + confirmations - 1
-        while (
-            max(await asyncio.gather(*[_get_block_number(w) for w in web3s]))
-            < target_block
-        ):
-            await asyncio.sleep(poll_interval)
-        return receipt
+        try:
+            # Race successful confirmations, not the first response (which may
+            # be a fast 403). Bound receipt AND block-height polling together.
+            async with asyncio.timeout(timeout):
+                for completed in asyncio.as_completed(tasks):
+                    try:
+                        return await completed
+                    except TransactionRevertedError:
+                        raise
+                    except Exception as exc:
+                        logger.warning(
+                            "RPC confirmation failed: {}", type(exc).__name__
+                        )
+                raise RuntimeError("All RPCs failed transaction confirmation")
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def send_transaction(
@@ -381,6 +435,10 @@ async def send_transaction(
     wait_for_receipt: bool = True,
     confirmations: int | None = None,
 ) -> str:
+    """Submit once; preserve the hash in TransactionConfirmationError if the
+    subsequent receipt wait cannot establish the outcome. Such an error is
+    not permission to retry the send: reconcile the existing hash first.
+    """
     if sign_callback is None:
         raise ValueError("sign_callback must be provided to send transaction")
 
@@ -426,6 +484,10 @@ async def send_transaction(
             )
         except TransactionRevertedError as exc:
             _raise_revert_error(txn_hash, exc.receipt, transaction, cause=exc)
+        except Exception as exc:
+            # Never turn a post-broadcast read failure into an apparent failed
+            # send or fall back to another submission. The hash is recoverable.
+            raise TransactionConfirmationError(txn_hash, chain_id) from exc
 
         status = receipt.get("status")
         if status is not None and int(status) == 0:
