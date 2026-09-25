@@ -1,9 +1,10 @@
 # Configure local or Sprite backtest execution
 
-`BacktestRunner` is the shared interface for `submit`, `status`, `wait`, `cancel`,
-and `collect`. `create_runner()` chooses `LocalRunner` or `SpritesRunner` from SDK
-configuration and environment overrides. Callers submit the same job ID, operation,
-options, and extra workspace paths for either provider.
+`BacktestRunner` is the shared interface for `submit`, `submit_archive`, `status`,
+`wait`, `cancel`, and `collect`. `create_runner()` chooses the registered provider
+named by SDK configuration and environment overrides (`local` and `sprites` ship
+today). Callers submit the same job ID, operation, options, and extra workspace
+paths, or a registered compute phase, whichever provider runs it.
 
 ## Configuration
 
@@ -14,6 +15,7 @@ Add this section to the SDK configuration selected by `WAYFINDER_CONFIG_PATH` /
 {
   "backtest_runner": {
     "provider": "local",
+    "fallback": "local",
     "runs_dir": ".wayfinder/backtest_runs",
     "retain_runs": 10,
     "extra_paths": [],
@@ -36,7 +38,8 @@ export WAYFINDER_BACKTEST_RUNNER=sprites
 
 | Environment variable | Configuration field |
 | --- | --- |
-| `WAYFINDER_BACKTEST_RUNNER` | `backtest_runner.provider` (`local` or `sprites`) |
+| `WAYFINDER_BACKTEST_RUNNER` | `backtest_runner.provider` (a registered provider: `local` or `sprites`) |
+| `WAYFINDER_BACKTEST_FALLBACK` | `backtest_runner.fallback` (`local`, the default, or `none`) |
 | `WAYFINDER_BACKTEST_RUNS_DIR` | `backtest_runner.runs_dir` |
 | `WAYFINDER_BACKTEST_TIMEOUT_SECONDS` | `backtest_runner.timeout_seconds` (optional local execution limit) |
 | `WAYFINDER_BACKTEST_RETAIN_RUNS` | `backtest_runner.retain_runs` (finished runs and receipts kept; default 10) |
@@ -47,9 +50,22 @@ export WAYFINDER_BACKTEST_RUNNER=sprites
 | `WAYFINDER_API_KEY` | Existing `system.api_key`; required for Sprites only |
 
 Environment values take precedence. Relative paths resolve against the job's
-repository root. Invalid configuration fails explicitly; a Sprite failure does
-not cause a local retry or duplicate computation. Sprite execution time/resource
-limits are controlled by the selected Django preset. Local runs have no time
+repository root. Invalid configuration fails explicitly and never runs locally
+instead. Sprite execution time/resource limits are controlled by the selected
+Django preset.
+
+### Falling back to local compute
+
+With `fallback: "local"` (the default), a remote provider that refuses to start a
+worker runs the computation locally instead: no subscription or credit (HTTP 402
+or 403), the active or pool worker limit (409), the daily cap (429), a disabled or
+unavailable backend (503), or a backend that cannot be reached. Nothing started
+remotely in these cases, so nothing runs twice. The run's record carries
+`"provider": "local"` and `"fallback": {"from": "sprites", "reason": "..."}`, and
+later `status`, `cancel` and `collect` calls reach whichever runner started it.
+Authentication, not-found and request errors (400, 401, 404) are configuration
+problems and always raise. A failure after a remote run started never retries
+locally. Set `fallback: "none"` to raise `ComputeUnavailable` instead. Local runs have no time
 limit by default, matching in-place execution; `timeout_seconds` sets one of
 1–21,600 seconds, with up to 60 seconds for partial artifact recovery after
 interruption.
@@ -99,6 +115,94 @@ Both providers return `id`, `provider`, `status`, `result`, `artifacts`, and
 complete archive's `sha256` and `size`. Successful completion requires the full
 artifact bundle. Failed or interrupted computations may also have partial artifacts.
 Collection verifies the archive and only writes into a fresh directory.
+
+## Compute phases
+
+`run_phase()` offloads one pure function over explicit inputs, without a job:
+
+```python
+from pathlib import Path
+from wayfinder_paths.jobs.backtest_runner import run_phase
+from wayfinder_paths.jobs.compute_phase import compute_phase
+
+@compute_phase
+def score_candidates(inputs: Path, outputs: Path, args: dict) -> dict:
+    data = (inputs / args["dataset"]).read_bytes()
+    (outputs / "scores.parquet").write_bytes(...)
+    return {"best": ...}
+
+outcome = run_phase(
+    score_candidates, repo_root, ["datasets/eth-1h.parquet"],
+    {"dataset": "datasets/eth-1h.parquet"},
+)
+outcome["result"]        # the function's JSON result, in full
+outcome["outputs_path"]  # the collected outputs/ directory
+outcome["run"]           # provider, status, logs, and any fallback
+```
+
+`pack_inputs(root, paths, request, destination)` archives only the named
+repository-relative inputs (credentials, symlinks and `outputs/` are rejected)
+with an `evolution_phase` request under the `wayfinder-sprite-phase-v1` protocol.
+The runtime verifies every input checksum and the optional SDK pin, then calls
+the registered function with the inputs directory, an empty `outputs/` directory
+and the JSON arguments. Only `outputs/` comes back, including
+`outputs/phase-result.json` or `outputs/phase-error.json`; the inputs, such as a
+dataset, never make the return trip. A failed phase raises with its error and
+keeps partial outputs in the run receipt.
+
+`run_phase()` never applies anything to a job; the caller decides what to do
+with the result. Collected outputs live under `runs_dir/receipts/`, which
+retention prunes, so copy anything you keep. Phases must be registered with
+`@compute_phase` at module level inside `wayfinder_paths`; the runtime refuses
+anything else. A remote checkpoint only knows the phases in its SDK commit, so
+pin `sdk_commit` when a phase is new. Existing backtest operations keep their
+job-workspace behavior unchanged.
+
+### Evolution finalize phases
+
+Campaign finalization runs its two heavy phases, full development and the
+final economic gate, as registered phases (`full_dev_phase`,
+`economic_gate_phase`) whenever a remote provider is configured. Each ships
+only what it reads: the one candidate bundle, the campaign manifest, dataset,
+baseline `source/`, campaign state, the governing constitution, and the
+protected certification snapshot when protected folds are on. Other candidates,
+the job journal and the evidence ledger stay home. The phase runs the same code
+over the shipped copy and returns the result plus its writes: rows it appended
+to the journal or the evidence-access ledger (with copy paths mapped back to
+the repository) and a re-tuned candidate `job.yaml`. The protected snapshot is
+never written back, so it still verifies.
+
+With no runner configured, or `provider: local`, finalization is unchanged: the
+supervised in-process child that the heavy lane can pause and whose memory it
+bounds. The same child runs when the remote refuses capacity, cannot be
+reached, cannot start the phase (for example a checkpoint on another SDK commit),
+loses the run, or when a candidate's entrypoint points outside its bundle; each
+such case journals `evolution_phase_ran_locally` with the reason. A successful
+remote run journals `evolution_phase_offloaded` with its provider and run id,
+and leaves no local resource telemetry. A failure raised by the phase's own code
+is classified exactly as the local child does: a contract failure is candidate
+evidence, while memory, lock and other infrastructure failures release the claim
+for a later retry. Choose a preset whose timeout covers full development
+(`WAYFINDER_EVOLUTION_FULL_DEV_TIMEOUT_S`, 5,400 seconds by default), and pin
+`sdk_commit` so remote results come from the same code as local ones.
+
+## Adding a provider
+
+A provider implements `submit_archive(archive)`, `status`, `cancel` and
+`collect`, raises `ComputeUnavailable` when it refuses capacity before starting
+anything, and registers itself:
+
+```python
+@register_runner("hetzner")
+class HetznerRunner(BacktestRunner):
+    ...
+```
+
+`submit()` for jobs, `run_phase()`, `wait()`, the local fallback, receipts and
+the agent entry point then work unchanged. The worker executes the same
+`sprite_runtime` entry point on a Python environment with the SDK installed.
+Provider settings live in their own `backtest_runner` subsection, parsed in
+`load_runner_config`.
 
 ## Existing agent operations
 
@@ -150,7 +254,10 @@ in [SPRITE_BACKTESTS.md](SPRITE_BACKTESTS.md).
 Local workers run on the current host under `runs_dir/<run_id>/`, with durable
 status files, bounded logs, process-group timeout/cancellation, and partial artifact
 recovery. An agent operation owns its run: SIGTERM, SIGHUP or Ctrl-C cancels it,
-and a local run cancels itself if its owner is killed outright. If a worker itself
+and a local run cancels itself if its owner is killed outright. In a heavy-lane
+op child, `op_cancel`'s SIGTERM first cancels the local or remote run, then runs
+the lane's own handler, which records the cancellation in the op's status file
+and exits with status 143. If a worker itself
 dies, the next status check reports the run as failed and kills its computation. Machine config and credential environment variables are not passed to
 the compute child. A local process still has the host user's filesystem/network
 permissions; it is not a VM security boundary. When a run finishes, its input
@@ -167,11 +274,16 @@ input/output paths and lifecycle calls stay the same for callers.
 
 ```bash
 poetry run pytest wayfinder_paths/tests/test_backtest_runner.py \
-  wayfinder_paths/tests/test_sprite_*.py -o addopts='' -q
+  wayfinder_paths/tests/test_sprite_*.py \
+  wayfinder_paths/tests/test_evolution_phase_offload.py -o addopts='' -q
 ```
 
 Runner tests execute real local computations, process grids, client-exit recovery,
 timeouts/cancellation, partial artifacts, checksum failures, configuration selection,
-and the existing agent entry point. The provider parity test uses the real Sprite
-HTTP client and portable runtime with an in-memory HTTP transport; it does not
-create billed Sprites or establish live provider capacity.
+the existing agent entry point, heavy-lane cancellation, compute phases, the local
+fallback for every refusal status, and a third provider registered only in the test.
+The evolution offload tests run full development and the economic gate in a
+separate interpreter over exactly the shipped inputs and require the same result
+as the local supervised phase, including protected certification.
+The Sprite tests use the real HTTP client and portable runtime with an in-memory
+HTTP transport; they do not create billed Sprites or establish live provider capacity.

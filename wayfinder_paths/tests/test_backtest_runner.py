@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
@@ -15,18 +16,28 @@ import httpx
 import pytest
 import yaml
 
+from wayfinder_paths.jobs import backtest_runner
 from wayfinder_paths.jobs.backtest_runner import (
+    RUNNERS,
+    BacktestRunner,
+    ComputeUnavailable,
+    FallbackRunner,
     LocalRunner,
+    PhaseFailed,
     RunnerConfig,
     SpritesRunner,
+    _exit_on_termination,
     _prune_receipts,
     create_runner,
     load_runner_config,
+    run_phase,
 )
+from wayfinder_paths.jobs.compute_phase import phase_name
 from wayfinder_paths.jobs.execution.op_process import (
     process_identity_fields,
     recorded_process_alive,
 )
+from wayfinder_paths.jobs.execution.op_runner import STATUS_PATH_ENV
 from wayfinder_paths.jobs.gating import compute_workspace_revision, evaluate_live_gate
 from wayfinder_paths.jobs.sprite_bundle import (
     apply_job_outputs,
@@ -35,13 +46,15 @@ from wayfinder_paths.jobs.sprite_bundle import (
     sha256,
 )
 from wayfinder_paths.jobs.sprite_client import SpriteBacktestsClient
+from wayfinder_paths.jobs.sprite_runtime import run as run_runtime
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.tests import compute_phase_fixtures as phases
 from wayfinder_paths.tests.test_jobs_preflight import _make_job
 
 
 def test_configuration_defaults_environment_precedence_and_no_secret_repr(tmp_path):
     default = load_runner_config(repo_root=tmp_path, config={}, environ={})
-    assert default.provider == "local"
+    assert default.provider == "local" and default.fallback == "local"
     # Unlimited like in-place execution; bounded disk via retention.
     assert default.timeout_seconds is None and default.retain_runs == 10
     document = {
@@ -70,6 +83,18 @@ def test_configuration_defaults_environment_precedence_and_no_secret_repr(tmp_pa
     )
     assert local.provider == "local" and local.timeout_seconds == 20
     assert isinstance(create_runner(config=local), LocalRunner)
+    # A remote provider falls back to local unless the configuration opts out.
+    assert isinstance(create_runner(config=config), FallbackRunner)
+    document["backtest_runner"]["fallback"] = "none"
+    strict = load_runner_config(repo_root=tmp_path, config=document, environ={})
+    assert strict.fallback == "none"
+    assert isinstance(create_runner(config=strict), SpritesRunner)
+    overridden = load_runner_config(
+        repo_root=tmp_path,
+        config=document,
+        environ={"WAYFINDER_BACKTEST_FALLBACK": "local"},
+    )
+    assert overridden.fallback == "local"
 
 
 @pytest.mark.parametrize(
@@ -86,6 +111,7 @@ def test_configuration_defaults_environment_precedence_and_no_secret_repr(tmp_pa
         {"retain_runs": 0},
         {"extra_paths": "wrong"},
         {"sdk_commit": "branch"},
+        {"fallback": "remote"},
     ],
 )
 def test_invalid_configuration_does_not_fall_back_to_local(tmp_path, section):
@@ -618,8 +644,6 @@ def test_retention_prunes_finished_runs_and_receipts(tmp_path):
 
 
 def test_lost_local_worker_is_reported_instead_of_polling_forever(tmp_path):
-    import uuid
-
     runner = LocalRunner(RunnerConfig(provider="local", runs_dir=tmp_path))
     run_id = str(uuid.uuid4())
     directory = tmp_path / run_id
@@ -630,3 +654,447 @@ def test_lost_local_worker_is_reported_instead_of_polling_forever(tmp_path):
     (directory / "supervisor.json").write_text(json.dumps({"pid": 2**22 - 1}))
     result = runner.wait(run_id, poll_interval=0.05)
     assert result["status"] == "failed" and "without a completion" in result["error"]
+
+
+class InlineRunner(BacktestRunner):
+    """A complete third provider: only the lifecycle primitives are needed."""
+
+    def __init__(self, config: RunnerConfig, *, owner_pid: int | None = None):
+        super().__init__(config, owner_pid=owner_pid)
+        self.records: dict[str, dict] = {}
+
+    def _directory(self, run_id: str) -> Path:
+        return self.config.runs_dir / "inline" / run_id
+
+    def submit_archive(self, archive: Path) -> dict:
+        run_id = f"inline-{uuid.uuid4()}"
+        directory = self._directory(run_id)
+        directory.mkdir(parents=True)
+        summary, artifacts = directory / "summary.json", directory / "artifacts.tgz"
+        code = run_runtime(archive, directory / "workspace", summary, artifacts)
+        self.records[run_id] = {
+            "id": run_id,
+            "provider": "inline",
+            "status": "succeeded" if code == 0 else "failed",
+            "error": "" if code == 0 else "inline computation failed",
+            "result": {"output": json.loads(summary.read_text())},
+            "artifacts": {
+                "sha256": sha256(artifacts),
+                "size": artifacts.stat().st_size,
+            },
+        }
+        return self.records[run_id]
+
+    def status(self, run_id: str) -> dict:
+        return self.records[run_id]
+
+    def cancel(self, run_id: str) -> None:
+        self.records[run_id]["status"] = "cancelled"
+
+    def collect(self, run_id: str, destination: Path) -> dict:
+        extract_archive(self._directory(run_id) / "artifacts.tgz", destination)
+        return self.records[run_id]
+
+
+def _phase_inputs(tmp_path: Path) -> Path:
+    root = tmp_path / "source"
+    (root / "data").mkdir(parents=True)
+    (root / "data/prices.txt").write_text("1 2 3")
+    (root / "data/large-dataset.bin").write_bytes(b"d" * 100000)
+    return root
+
+
+def _collected_files(outputs: str) -> list[str]:
+    root = Path(outputs).parent
+    return sorted(
+        path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()
+    )
+
+
+def test_a_registered_provider_is_selected_by_configuration(tmp_path, monkeypatch):
+    monkeypatch.setitem(RUNNERS, "inline", InlineRunner)
+    config = load_runner_config(
+        repo_root=tmp_path,
+        config={
+            "backtest_runner": {
+                "provider": "inline",
+                "runs_dir": str(tmp_path / "runs"),
+            }
+        },
+        environ={},
+    )
+    outcome = run_phase(
+        phases.score_prices,
+        _phase_inputs(tmp_path),
+        ["data/prices.txt"],
+        {"prices": "data/prices.txt", "scale": 2},
+        config=config,
+    )
+    assert outcome["run"]["provider"] == "inline"
+    assert outcome["result"]["count"] == 3 and outcome["result"]["total"] == 12.0
+    # The inherited submit() packs a job for the same provider.
+    store, job_id, options = make_script(tmp_path, "print('inline')\n")
+    with create_runner(config=replace(config, fallback="none")) as runner:
+        assert isinstance(runner, InlineRunner)
+        record = runner.submit(store, job_id, op="script", options=options)
+    assert record["status"] == "succeeded", record
+
+
+def test_local_phase_returns_json_and_outputs_without_applying_anything(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        backtest_runner, "apply_job_outputs", Mock(side_effect=AssertionError)
+    )
+    outcome = run_phase(
+        phases.score_prices,
+        _phase_inputs(tmp_path),
+        ["data"],
+        {"prices": "data/prices.txt", "scale": 2},
+        config=RunnerConfig(provider="local", runs_dir=tmp_path / "runs"),
+    )
+    result = outcome["result"]
+    assert result["count"] == 3 and result["total"] == 12.0
+    assert result["undefined"] != result["undefined"]  # NaN survives in full
+    assert outcome["run"]["provider"] == "local"
+    assert outcome["run"]["status"] == "succeeded"
+    assert _collected_files(outcome["outputs_path"]) == [
+        "outputs/phase-result.json",
+        "outputs/scaled.txt",
+    ]
+    assert Path(outcome["outputs_path"], "scaled.txt").read_text() == "2.0\n4.0\n6.0"
+
+
+def test_failed_phase_raises_with_its_error_and_keeps_partial_outputs(tmp_path):
+    runs = tmp_path / "runs"
+    with pytest.raises(PhaseFailed, match="candidate violates its contract") as failed:
+        run_phase(
+            phases.rejected_candidate,
+            _phase_inputs(tmp_path),
+            ["data"],
+            config=RunnerConfig(provider="local", runs_dir=runs),
+        )
+    assert failed.value.stage == "execute" and failed.value.error_type == "ValueError"
+    assert failed.value.error == "candidate violates its contract"
+    assert failed.value.run["status"] == "failed"
+    diagnostics = Path(failed.value.outputs_path, "diagnostics.txt")
+    assert diagnostics.read_text() == "partial evidence"
+
+
+def test_phase_is_validated_before_anything_is_submitted(tmp_path):
+    root = _phase_inputs(tmp_path)
+    config = RunnerConfig(provider="local", runs_dir=tmp_path / "runs")
+    with pytest.raises(ValueError, match="Unregistered compute phase"):
+        run_phase(phases.unregistered, root, ["data"], config=config)
+    with pytest.raises(ValueError, match="outside the phase inputs"):
+        run_phase(
+            phases.score_prices,
+            root,
+            ["data"],
+            config=replace(config, runs_dir=root / "data" / "runs"),
+        )
+    assert not (tmp_path / "runs").exists()
+
+
+def _fake_sprites(
+    tmp_path: Path, *, refuse: int | None = None
+) -> SpriteBacktestsClient:
+    """Django/Sprites control plane in memory, running the real runtime."""
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    workspace, archive = remote / "input.tar.gz", remote / "artifacts.tar.gz"
+    summary = remote / "summary.json"
+    state = {
+        "id": "remote-run",
+        "status": "ready",
+        "result": {},
+        "artifacts": {},
+        "error": "",
+    }
+    parts: list[bytes] = []
+
+    def api(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/sprite-backtests/"):
+            if refuse is not None:
+                return httpx.Response(refuse, json={"detail": "worker limit reached"})
+            return httpx.Response(
+                201,
+                json={
+                    **state,
+                    "auth_token": "scoped",
+                    "runtime": {"capabilities": ["sdk-workspace-v1"]},
+                },
+            )
+        if request.method == "PUT":
+            parts.append(request.content)
+            workspace.write_bytes(b"".join(parts))
+            return httpx.Response(
+                200,
+                json={"sha256": sha256(workspace), "size": workspace.stat().st_size},
+            )
+        if request.url.path.endswith("/jobs/"):
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "wayfinder_paths.jobs.sprite_runtime",
+                    "--bundle",
+                    str(workspace),
+                    "--root",
+                    str(remote / "workspace"),
+                    "--output",
+                    str(summary),
+                    "--artifacts",
+                    str(archive),
+                ],
+                capture_output=True,
+                timeout=60,
+            )
+            state.update(
+                status="succeeded" if proc.returncode == 0 else "failed",
+                result={"output": json.loads(summary.read_text())},
+                artifacts={"sha256": sha256(archive), "size": archive.stat().st_size},
+            )
+            return httpx.Response(202, json={"status": "queued"})
+        if request.method == "DELETE":
+            return httpx.Response(200, json=state)
+        if request.url.path.endswith("/artifacts/"):
+            return httpx.Response(200, content=archive.read_bytes())
+        return httpx.Response(200, json=state)
+
+    http = httpx.Client(
+        transport=httpx.MockTransport(api), base_url="https://backend.example"
+    )
+    return SpriteBacktestsClient(
+        "https://backend.example", "shell", "owner-key", client=http
+    )
+
+
+def _sprites_config(tmp_path: Path, **overrides) -> RunnerConfig:
+    return RunnerConfig(
+        provider="sprites",
+        runs_dir=tmp_path / "runs",
+        timeout_seconds=60,
+        backend="https://backend.example",
+        app_name="shell",
+        api_key="owner-key",
+        **overrides,
+    )
+
+
+def test_sprites_phase_ships_inputs_and_returns_only_outputs(tmp_path, monkeypatch):
+    client = _fake_sprites(tmp_path)
+    monkeypatch.setattr(
+        backtest_runner, "SpriteBacktestsClient", lambda *args, **kwargs: client
+    )
+    outcome = run_phase(
+        phases.score_prices,
+        _phase_inputs(tmp_path),
+        ["data"],
+        {"prices": "data/prices.txt", "scale": 3},
+        config=_sprites_config(tmp_path),
+    )
+    assert outcome["run"]["provider"] == "sprites" and "fallback" not in outcome["run"]
+    assert outcome["result"]["total"] == 18.0
+    assert _collected_files(outcome["outputs_path"]) == [
+        "outputs/phase-result.json",
+        "outputs/scaled.txt",
+    ]
+    summary = outcome["run"]["result"]["output"]
+    assert summary["phase"] == phase_name(phases.score_prices)
+    client.http.close()
+
+
+@pytest.mark.parametrize("status", sorted(backtest_runner.CAPACITY_STATUSES))
+def test_refused_remote_capacity_falls_back_to_local(tmp_path, monkeypatch, status):
+    client = _fake_sprites(tmp_path, refuse=status)
+    monkeypatch.setattr(
+        backtest_runner, "SpriteBacktestsClient", lambda *args, **kwargs: client
+    )
+    outcome = run_phase(
+        phases.score_prices,
+        _phase_inputs(tmp_path),
+        ["data"],
+        {"prices": "data/prices.txt", "scale": 1},
+        config=_sprites_config(tmp_path),
+    )
+    run = outcome["run"]
+    assert run["provider"] == "local" and run["status"] == "succeeded"
+    assert run["fallback"]["from"] == "sprites"
+    assert f"HTTP {status}" in run["fallback"]["reason"]
+    assert "worker limit reached" in run["fallback"]["reason"]
+    assert outcome["result"]["total"] == 6.0
+    client.http.close()
+
+
+def test_fallback_routes_later_calls_to_the_runner_that_started_the_run(tmp_path):
+    client = _fake_sprites(tmp_path, refuse=429)
+    config = _sprites_config(tmp_path)
+    store, job_id, options = make_script(tmp_path, "print('fallback')\n")
+    runner = FallbackRunner(
+        SpritesRunner(config, client=client),
+        LocalRunner(replace(config, provider="local")),
+    )
+    with runner:
+        submitted = runner.submit(store, job_id, op="script", options=options)
+        assert submitted["provider"] == "local" and submitted["fallback"]
+        result = runner.wait(submitted["id"], poll_interval=0.05)
+        assert result["status"] == "succeeded"
+        assert result["fallback"]["from"] == "sprites"
+        runner.collect(submitted["id"], tmp_path / "collected")
+        assert (tmp_path / "collected/operation-result.json").exists()
+        # Remote ids still reach the remote provider.
+        assert runner.status("remote-run")["id"] == "remote-run"
+    client.http.close()
+
+
+@pytest.mark.parametrize("status", [400, 401, 404])
+def test_configuration_and_request_errors_never_fall_back(tmp_path, status):
+    client = _fake_sprites(tmp_path, refuse=status)
+    config = _sprites_config(tmp_path)
+    runner = FallbackRunner(
+        SpritesRunner(config, client=client),
+        LocalRunner(replace(config, provider="local")),
+    )
+    archive = tmp_path / "inputs.tgz"
+    archive.write_bytes(b"archive")
+    with pytest.raises(httpx.HTTPStatusError):
+        runner.submit_archive(archive)
+    assert not (tmp_path / "runs").exists()
+    client.http.close()
+
+
+def test_unreachable_backend_falls_back_but_strict_config_raises(tmp_path):
+    def unreachable(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("backend down", request=request)
+
+    http = httpx.Client(
+        transport=httpx.MockTransport(unreachable), base_url="https://backend.example"
+    )
+    client = SpriteBacktestsClient(
+        "https://backend.example", "shell", "owner-key", client=http
+    )
+    archive = tmp_path / "inputs.tgz"
+    archive.write_bytes(b"archive")
+    strict = SpritesRunner(_sprites_config(tmp_path, fallback="none"), client=client)
+    with pytest.raises(ComputeUnavailable, match="unreachable"):
+        strict.submit_archive(archive)
+    config = _sprites_config(tmp_path)
+    fallback = FallbackRunner(
+        SpritesRunner(config, client=client),
+        LocalRunner(replace(config, provider="local")),
+    )
+    record = fallback.submit_archive(archive)
+    assert record["provider"] == "local"
+    assert "unreachable" in record["fallback"]["reason"]
+    http.close()
+
+
+def test_termination_cancels_the_run_before_the_callers_own_handler():
+    events: list[str] = []
+
+    def lane_handler(signum: int, frame: object) -> None:
+        events.append("lane recorded cancellation")
+        raise SystemExit(143)
+
+    previous = signal.signal(signal.SIGTERM, lane_handler)
+    try:
+        with pytest.raises(SystemExit) as exited:
+            with _exit_on_termination():
+                try:
+                    os.kill(os.getpid(), signal.SIGTERM)
+                    time.sleep(5)
+                except SystemExit:
+                    events.append("run cancelled")
+                    raise
+        assert exited.value.code == 143
+        assert signal.getsignal(signal.SIGTERM) is lane_handler
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    assert events == ["run cancelled", "lane recorded cancellation"]
+
+
+def test_heavy_lane_cancel_records_itself_and_cancels_the_offloaded_run(tmp_path):
+    store, job_id, options = make_script(tmp_path, "import time\ntime.sleep(30)\n")
+    runs = tmp_path / "runs"
+    lane_status = tmp_path / "lane-status.json"
+    lane_status.write_text(json.dumps({"state": "running"}))
+    owner = subprocess.Popen(
+        [sys.executable, "-m", "wayfinder_paths.jobs.execution.op_runner"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd=store.repo_root,
+        env={
+            **_configured_env(store.repo_root, runs),
+            STATUS_PATH_ENV: str(lane_status),
+        },
+        start_new_session=True,
+    )
+    assert owner.stdin is not None
+    owner.stdin.write(
+        json.dumps({"op": "script", "kwargs": {"job_id": job_id, **options}}).encode()
+    )
+    owner.stdin.close()
+    directory = _running_run(runs)
+    # op_cancel SIGTERMs the lane child's process group.
+    os.killpg(owner.pid, signal.SIGTERM)
+    assert owner.wait(timeout=10) == 143
+    status = json.loads(lane_status.read_text())
+    assert status["state"] == "cancelled" and status["reason"] == "op_cancel"
+    runner = LocalRunner(RunnerConfig(provider="local", runs_dir=runs))
+    assert runner.wait(directory.name, poll_interval=0.05)["status"] == "cancelled"
+
+
+def test_sprites_status_rides_out_brief_backend_interruptions(tmp_path, monkeypatch):
+    responses = iter(
+        [
+            httpx.ConnectError("reset"),
+            httpx.Response(502),
+            httpx.Response(200, json={"id": "lease", "status": "running"}),
+            httpx.Response(404, json={"detail": "not found"}),
+        ]
+    )
+
+    def api(request: httpx.Request) -> httpx.Response:
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise httpx.ConnectError("reset", request=request)
+        return response
+
+    monkeypatch.setattr(backtest_runner.time, "sleep", lambda seconds: None)
+    http = httpx.Client(
+        transport=httpx.MockTransport(api), base_url="https://backend.example"
+    )
+    client = SpriteBacktestsClient(
+        "https://backend.example", "shell", "owner-key", client=http
+    )
+    runner = SpritesRunner(_sprites_config(tmp_path), client=client)
+    assert runner.status("lease")["status"] == "running"
+    with pytest.raises(httpx.HTTPStatusError):
+        runner.status("lease")  # A client error is never retried.
+    http.close()
+
+
+def test_a_caller_that_stops_waiting_cancels_its_run(tmp_path, monkeypatch):
+    monkeypatch.setitem(RUNNERS, "inline", InlineRunner)
+    cancelled: list[str] = []
+
+    def broken_status(self, run_id):
+        raise ConnectionError("lost the provider")
+
+    monkeypatch.setattr(InlineRunner, "status", broken_status)
+    monkeypatch.setattr(
+        InlineRunner, "cancel", lambda self, run_id: cancelled.append(run_id)
+    )
+    with pytest.raises(ConnectionError):
+        run_phase(
+            phases.score_prices,
+            _phase_inputs(tmp_path),
+            ["data"],
+            {"prices": "data/prices.txt", "scale": 1},
+            config=RunnerConfig(
+                provider="inline", runs_dir=tmp_path / "runs", fallback="none"
+            ),
+        )
+    assert len(cancelled) == 1 and cancelled[0].startswith("inline-")

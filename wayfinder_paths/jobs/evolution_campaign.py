@@ -21,7 +21,8 @@ import shutil
 import statistics
 import tempfile
 import uuid
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
@@ -29,6 +30,7 @@ from time import perf_counter
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pandas as pd
 import yaml
 
@@ -42,6 +44,12 @@ from wayfinder_paths.jobs.archive import (
     record_candidate,
     set_candidate_status,
 )
+from wayfinder_paths.jobs.backtest_runner import (
+    ComputeUnavailable,
+    PhaseFailed,
+    load_runner_config,
+    run_phase,
+)
 from wayfinder_paths.jobs.bench.leaders import (
     LEADER_CLOSES_RELATIVE,
     load_leader_closes,
@@ -54,7 +62,12 @@ from wayfinder_paths.jobs.compute_lock import (
     job_state_lock,
     machine_state_lock,
 )
-from wayfinder_paths.jobs.constitution import load_constitution
+from wayfinder_paths.jobs.compute_phase import (
+    PhaseFunction,
+    compute_phase,
+    phase_name,
+)
+from wayfinder_paths.jobs.constitution import CONSTITUTION_FILENAME, load_constitution
 from wayfinder_paths.jobs.economics import (
     _chain_fold_equity,
     block_bootstrap_lcb,
@@ -129,7 +142,11 @@ from wayfinder_paths.jobs.gating import (
     compute_workspace_revision,
     evaluate_economic_gate,
 )
-from wayfinder_paths.jobs.governance import record_evidence_access
+from wayfinder_paths.jobs.governance import (
+    AUDIT_DIRNAME,
+    governance_dir,
+    record_evidence_access,
+)
 from wayfinder_paths.jobs.improver.spec import ImproverSpec, revision_stamp
 from wayfinder_paths.jobs.indicators import REGIME_LABELS, wilder_rsi
 from wayfinder_paths.jobs.isolated_phase import run_isolated_phase
@@ -6175,6 +6192,16 @@ def _candidate_has_typed_search_space(
 def _isolated_full_dev(
     store: JobStore, job_id: str, candidate: dict[str, Any], *, tune: bool
 ) -> dict[str, Any]:
+    offloaded = _offloaded_phase(
+        full_dev_phase,
+        store,
+        job_id,
+        candidate,
+        campaign_id=_candidate_campaign_id(candidate),
+        tune=tune,
+    )
+    if offloaded is not None:
+        return offloaded
     return run_isolated_phase(
         _full_dev_child,
         store.repo_root,
@@ -6198,6 +6225,225 @@ def _full_dev_child(
         candidate_id=str(candidate["candidate_id"]),
     ):
         return _full_dev(store, job_id, candidate, tune=tune)
+
+
+@compute_phase
+def full_dev_phase(inputs: Path, outputs: Path, args: dict[str, Any]) -> dict[str, Any]:
+    """Full development over a packed copy of one candidate's campaign inputs."""
+    store = JobStore(repo_root=inputs)
+    with _returned_phase_writes(store, outputs, args):
+        return _full_dev(
+            store, str(args["job_id"]), args["candidate"], tune=bool(args["tune"])
+        )
+
+
+@compute_phase
+def economic_gate_phase(
+    inputs: Path, outputs: Path, args: dict[str, Any]
+) -> dict[str, Any]:
+    """The final economic gate over a packed copy of one candidate's inputs."""
+    store = JobStore(repo_root=inputs)
+    with _returned_phase_writes(store, outputs, args):
+        return _economic_gate(
+            store, str(args["job_id"]), args["candidate"], str(args["campaign_id"])
+        )
+
+
+# The phase's own failure is candidate evidence unless it is one of these.
+_TRANSIENT_PHASE_ERRORS = frozenset(
+    {"ComputeLockBusy", "MemoryError", "TransientInfrastructureError"}
+)
+
+
+def _offloaded_phase(
+    phase: PhaseFunction,
+    store: JobStore,
+    job_id: str,
+    candidate: dict[str, Any],
+    *,
+    campaign_id: str,
+    **args: Any,
+) -> dict[str, Any] | None:
+    """Run a finalize phase on the configured remote runner.
+
+    ``None`` means run it here instead: no remote runner is configured, or the
+    remote could not take or start it. Local execution stays the supervised
+    child the heavy lane can pause and whose memory is bounded. Offloaded
+    phases leave no local resource telemetry.
+    """
+    try:
+        config = load_runner_config(repo_root=store.repo_root)
+    except ValueError as exc:
+        raise TransientInfrastructureError(
+            f"invalid backtest_runner configuration: {exc}"
+        ) from exc
+    if not config.configured or config.provider == "local":
+        return None
+    candidate_root = resolve_candidate_bundle(
+        store, job_id, candidate, campaign_id=campaign_id
+    )
+    name = phase_name(phase)
+
+    def run_locally(reason: str) -> None:
+        store.append_journal(
+            job_id,
+            {
+                "type": "evolution_phase_ran_locally",
+                "phase": name,
+                "candidate_id": str(candidate["candidate_id"]),
+                "provider": config.provider,
+                "reason": reason[:500],
+            },
+        )
+
+    campaign = store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id
+    for root in (candidate_root, campaign / "source"):
+        script = store.resolve_script_entrypoint(
+            job_id, _load_job_yaml(root), candidate_dir=root
+        )
+        if script is not None and not script.resolve().is_relative_to(root):
+            run_locally(f"entrypoint outside its bundle: {script}")
+            return None
+    request = {
+        "job_id": job_id,
+        "candidate": candidate,
+        "campaign_id": campaign_id,
+        "source_root": str(store.repo_root),
+        **args,
+    }
+    try:
+        outcome = run_phase(
+            phase,
+            store.repo_root,
+            _phase_input_paths(store, job_id, candidate_root, campaign_id=campaign_id),
+            request,
+            config=replace(config, fallback="none"),
+        )
+    except PhaseFailed as exc:
+        if exc.outputs_path is not None:
+            _apply_returned_writes(
+                store, job_id, Path(exc.outputs_path), candidate_root
+            )
+        if exc.stage != "execute":
+            run_locally(str(exc))
+            return None
+        transient = exc.error_type in _TRANSIENT_PHASE_ERRORS or (
+            exc.error_type != "ValueError"
+            and classify_failure(exc.error) == "infrastructure"
+        )
+        if transient:
+            raise TransientInfrastructureError(exc.error) from exc
+        raise RuntimeError(exc.error) from exc
+    except (ComputeUnavailable, ValueError, OSError, httpx.HTTPError) as exc:
+        run_locally(str(exc))
+        return None
+    _apply_returned_writes(store, job_id, Path(outcome["outputs_path"]), candidate_root)
+    store.append_journal(
+        job_id,
+        {
+            "type": "evolution_phase_offloaded",
+            "phase": name,
+            "candidate_id": str(candidate["candidate_id"]),
+            "provider": outcome["run"].get("provider"),
+            "run_id": outcome["run"].get("id"),
+        },
+    )
+    return dict(outcome["result"])
+
+
+def _phase_input_paths(
+    store: JobStore, job_id: str, candidate_root: Path, *, campaign_id: str
+) -> list[str]:
+    """Exactly what full development and the economic gate read: this
+    candidate, the campaign's manifest, data and baseline source, its state,
+    the governing constitution, and the protected snapshot when certifying."""
+    job = store.job_dir(job_id)
+    campaign = job / CAMPAIGN_ROOT / campaign_id
+    paths = [
+        candidate_root,
+        campaign / "manifest.json",
+        campaign / CAMPAIGN_DATA_ROOT,
+        campaign / "source",
+        job / CAMPAIGN_STATE_PATH,
+    ]
+    paths.extend(
+        path
+        for path in (
+            campaign / FORWARD_SNAPSHOT,
+            job / CONSTITUTION_FILENAME,
+            governance_dir(store.repo_root, job_id),
+        )
+        if path.exists()
+    )
+    if _protected_fold_policy(_campaign_policy(store, job_id, campaign_id))["enabled"]:
+        paths.append(_protected_campaign_dataset_root(store, job_id, campaign_id))
+    return [path.relative_to(store.repo_root).as_posix() for path in paths]
+
+
+def _phase_ledgers(store: JobStore, job_id: str) -> list[Path]:
+    return [
+        store.job_dir(job_id) / "journal.jsonl",
+        store.repo_root / AUDIT_DIRNAME / job_id / "evidence_access.jsonl",
+    ]
+
+
+@contextmanager
+def _returned_phase_writes(
+    store: JobStore, outputs: Path, args: Mapping[str, Any]
+) -> Iterator[None]:
+    """Hand the phase's writes back to the source repository: rows appended to
+    the journal or the evidence-access ledger, and a re-tuned candidate
+    definition. Caches and other scratch writes stay in the copy."""
+    job_id = str(args["job_id"])
+    definition = (
+        resolve_candidate_bundle(
+            store, job_id, args["candidate"], campaign_id=str(args["campaign_id"])
+        )
+        / "job.yaml"
+    )
+    before = definition.read_bytes()
+    ledgers = _phase_ledgers(store, job_id)
+    offsets = {path: path.stat().st_size if path.exists() else 0 for path in ledgers}
+    try:
+        yield
+    finally:
+        copy_root = f"{store.repo_root}/".encode()
+        source_root = f"{args['source_root']}/".encode()
+        for ledger in ledgers:
+            if ledger.exists() and ledger.stat().st_size > offsets[ledger]:
+                with ledger.open("rb") as stream:
+                    stream.seek(offsets[ledger])
+                    rows = stream.read()
+                target = outputs / "appended" / ledger.relative_to(store.repo_root)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(rows.replace(copy_root, source_root))
+        if definition.read_bytes() != before:
+            target = outputs / "files" / definition.relative_to(store.repo_root)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(definition.read_bytes())
+
+
+def _apply_returned_writes(
+    store: JobStore, job_id: str, outputs: Path, candidate_root: Path
+) -> None:
+    ledgers = set(_phase_ledgers(store, job_id))
+    definition = candidate_root / "job.yaml"
+    for kind in ("appended", "files"):
+        base = outputs / kind
+        for file in sorted(base.rglob("*")) if base.is_dir() else []:
+            if not file.is_file():
+                continue
+            target = store.repo_root / file.relative_to(base)
+            if kind == "files" and target == definition:
+                atomic_write_text(target, file.read_text(encoding="utf-8"))
+            elif kind == "appended" and target in ledgers:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with target.open("ab") as stream:
+                    stream.write(file.read_bytes())
+            else:
+                raise TransientInfrastructureError(
+                    f"offloaded phase returned an unexpected {kind} path: {target}"
+                )
 
 
 def _commit_full_dev(
@@ -6422,6 +6668,11 @@ def _isolated_economic_gate(
     *,
     campaign_id: str,
 ) -> dict[str, Any]:
+    offloaded = _offloaded_phase(
+        economic_gate_phase, store, job_id, candidate, campaign_id=campaign_id
+    )
+    if offloaded is not None:
+        return offloaded
     return run_isolated_phase(
         _economic_gate_child,
         store.repo_root,
@@ -6446,6 +6697,18 @@ def _economic_gate_child(
     campaign_id: str,
 ) -> dict[str, Any]:
     store = JobStore(repo_root=repo_root)
+    with evolution_resource_phase(
+        store,
+        job_id,
+        phase="economic_gate",
+        candidate_id=str(candidate["candidate_id"]),
+    ):
+        return _economic_gate(store, job_id, candidate, campaign_id)
+
+
+def _economic_gate(
+    store: JobStore, job_id: str, candidate: dict[str, Any], campaign_id: str
+) -> dict[str, Any]:
     candidate_root = resolve_candidate_bundle(
         store, job_id, candidate, campaign_id=campaign_id
     )
@@ -6455,27 +6718,19 @@ def _economic_gate_child(
         if _protected_fold_policy(policy)["enabled"]
         else (store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id / CAMPAIGN_DATA_ROOT)
     )
-    with evolution_resource_phase(
-        store,
+    return evaluate_economic_gate(
         job_id,
-        phase="economic_gate",
-        candidate_id=str(candidate["candidate_id"]),
-    ):
-        return evaluate_economic_gate(
-            job_id,
-            candidate_dir=candidate_root,
-            baseline_dir=(
-                store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id / "source"
-            ),
-            probation=True,
-            store=store,
-            trials=(
-                _certification_trials(store, job_id)
-                if _protected_fold_policy(policy)["enabled"]
-                else _campaign_trials(store, job_id)
-            ),
-            dataset_root=dataset_root,
-        )
+        candidate_dir=candidate_root,
+        baseline_dir=(store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id / "source"),
+        probation=True,
+        store=store,
+        trials=(
+            _certification_trials(store, job_id)
+            if _protected_fold_policy(policy)["enabled"]
+            else _campaign_trials(store, job_id)
+        ),
+        dataset_root=dataset_root,
+    )
 
 
 def _release_finalize_claim(
@@ -7929,13 +8184,17 @@ def _load_candidate_search_space(
     return payload
 
 
-def _full_dev(
-    store: JobStore, job_id: str, candidate: dict[str, Any], *, tune: bool
-) -> dict[str, Any]:
-    campaign_id = str(
+def _candidate_campaign_id(candidate: Mapping[str, Any]) -> str:
+    return str(
         candidate.get("campaign_id")
         or str(candidate["candidate_id"]).rsplit("-c", 1)[0]
     )
+
+
+def _full_dev(
+    store: JobStore, job_id: str, candidate: dict[str, Any], *, tune: bool
+) -> dict[str, Any]:
+    campaign_id = _candidate_campaign_id(candidate)
     root = resolve_candidate_bundle(store, job_id, candidate, campaign_id=campaign_id)
     subject = _load_subject(store, job_id, root, campaign_id=campaign_id)
     policy = _campaign_policy(store, job_id, campaign_id)

@@ -228,3 +228,79 @@ def test_cli_rejects_non_object_options(
         )
     assert exc.value.code == 2
     assert "--options must contain a JSON object" in capsys.readouterr().err
+
+
+def test_submit_archive_uploads_a_prebuilt_archive_unchanged(tmp_path: Path) -> None:
+    archive = tmp_path / "inputs.tar.gz"
+    archive.write_bytes(b"prebuilt phase archive")
+    uploaded: list[bytes] = []
+    calls: list[tuple[str, str]] = []
+
+    def api(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        if request.url.path.endswith("/sprite-backtests/"):
+            assert request.headers["X-API-Key"] == "owner-key"
+            return httpx.Response(
+                201,
+                json={
+                    "id": "lease",
+                    "auth_token": "agent-token",
+                    "runtime": {"capabilities": ["sdk-workspace-v1"]},
+                },
+            )
+        if request.method == "PUT":
+            uploaded.append(request.content)
+            return httpx.Response(
+                200, json={"sha256": sha256(archive), "size": archive.stat().st_size}
+            )
+        assert request.headers["Authorization"] == "Bearer agent-token"
+        assert request.read() == (
+            b'{"kind":"sdk_job","workspace_sha256":"' + sha256(archive).encode() + b'"}'
+        )
+        return httpx.Response(202, json={"status": "queued"})
+
+    with httpx.Client(
+        transport=httpx.MockTransport(api), base_url="https://backend.example"
+    ) as http:
+        client = SpriteBacktestsClient(
+            "https://backend.example", "shell", "owner-key", client=http
+        )
+        lease = client.submit_archive(archive, preset="phases")
+    assert lease == {"id": "lease", "runtime": {"capabilities": ["sdk-workspace-v1"]}}
+    assert b"".join(uploaded) == archive.read_bytes()
+    assert calls == [
+        ("POST", "/api/v1/opencode/instances/shell/sprite-backtests/"),
+        ("PUT", "/api/v1/opencode/sprite-backtests/lease/workspace/"),
+        ("POST", "/api/v1/opencode/sprite-backtests/lease/jobs/"),
+    ]
+
+
+def test_submit_archive_cancels_its_lease_when_upload_fails(tmp_path: Path) -> None:
+    archive = tmp_path / "inputs.tar.gz"
+    archive.write_bytes(b"prebuilt")
+    deleted: list[str] = []
+
+    def api(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(
+                201,
+                json={
+                    "id": "lease",
+                    "auth_token": "agent-token",
+                    "runtime": {"capabilities": ["sdk-workspace-v1"]},
+                },
+            )
+        if request.method == "DELETE":
+            deleted.append(request.url.path)
+            return httpx.Response(204)
+        return httpx.Response(400, json={"detail": "bad chunk"})
+
+    with httpx.Client(
+        transport=httpx.MockTransport(api), base_url="https://backend.example"
+    ) as http:
+        client = SpriteBacktestsClient(
+            "https://backend.example", "shell", "owner-key", client=http
+        )
+        with pytest.raises(httpx.HTTPStatusError):
+            client.submit_archive(archive)
+    assert deleted == ["/api/v1/opencode/instances/shell/sprite-backtests/lease/"]

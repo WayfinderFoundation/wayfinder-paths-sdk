@@ -9,6 +9,7 @@ import re
 import shutil
 import tarfile
 import tempfile
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, TypedDict
@@ -24,6 +25,10 @@ MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 MAX_EXPANDED_BYTES = 2 * 1024 * 1024 * 1024
 MAX_FILES = 20000
 PROTOCOL = "wayfinder-sprite-job-v1"
+# A registered pure function over explicit inputs; see compute_phase.py.
+PHASE_PROTOCOL = "wayfinder-sprite-phase-v1"
+PHASE_OP = "evolution_phase"
+OUTPUTS_DIR = "outputs"
 OPERATIONS = frozenset(
     {
         "backtest_job",
@@ -75,6 +80,24 @@ class PackedJob(ArchiveInfo):
     request: WorkspaceRequest
 
 
+class PhaseCall(TypedDict):
+    phase: str
+    args: dict[str, Any]
+
+
+class PhaseRequest(TypedDict):
+    protocol: str
+    op: str
+    phase: str
+    args: dict[str, Any]
+    expected_sdk_commit: str | None
+    files: dict[str, str]
+
+
+class PackedInputs(ArchiveInfo):
+    request: PhaseRequest
+
+
 class AppliedOutputs(TypedDict):
     updated: list[str]
     appended: list[str]
@@ -112,9 +135,37 @@ class SpriteWorkspace:
     def runtime_file(self) -> Path:
         return self.root / "sprite-runtime.json"
 
+    @property
+    def outputs_dir(self) -> Path:
+        return self.root / OUTPUTS_DIR
+
+    @property
+    def phase_result_file(self) -> Path:
+        return self.outputs_dir / "phase-result.json"
+
+    @property
+    def phase_error_file(self) -> Path:
+        return self.outputs_dir / "phase-error.json"
+
     def archive(self, destination: Path) -> ArchiveInfo:
         return write_archive(
             self.root, workspace_files(self.root, [self.root]), destination
+        )
+
+    def collect(self, destination: Path) -> ArchiveInfo:
+        """Archive what a run returns: the whole job workspace, or only a
+        phase's outputs directory so its inputs never travel back."""
+        try:
+            protocol = json.loads(self.request_file.read_text(encoding="utf-8"))[
+                "protocol"
+            ]
+        except (OSError, ValueError, KeyError, TypeError):
+            protocol = None
+        if protocol != PHASE_PROTOCOL:
+            return self.archive(destination)
+        self.outputs_dir.mkdir(parents=True, exist_ok=True)
+        return write_archive(
+            self.root, workspace_files(self.root, [self.outputs_dir]), destination
         )
 
 
@@ -264,6 +315,36 @@ def pack_job(
         "expected_sdk_commit": expected_sdk_commit,
         "files": {file.relative_to(root).as_posix(): sha256(file) for file in files},
     }
+    return {**_stage(root, files, request, destination), "request": request}
+
+
+def pack_inputs(
+    root: Path,
+    paths: Sequence[str],
+    request: PhaseCall,
+    destination: Path,
+    *,
+    expected_sdk_commit: str | None = None,
+) -> PackedInputs:
+    """Snapshot only the named inputs for one registered compute phase."""
+    relative = [safe_relative(value) for value in paths]
+    if any(path.parts[0] == OUTPUTS_DIR for path in relative):
+        raise ValueError("Phase inputs cannot come from the outputs directory")
+    files = workspace_files(root, [root / path for path in relative])
+    phase_request: PhaseRequest = {
+        "protocol": PHASE_PROTOCOL,
+        "op": PHASE_OP,
+        "phase": request["phase"],
+        "args": request["args"],
+        "expected_sdk_commit": expected_sdk_commit,
+        "files": {file.relative_to(root).as_posix(): sha256(file) for file in files},
+    }
+    return {**_stage(root, files, phase_request, destination), "request": phase_request}
+
+
+def _stage(
+    root: Path, files: list[Path], request: Mapping[str, Any], destination: Path
+) -> ArchiveInfo:
     # Archive metadata is added without modifying the user's job or repository.
     with tempfile.TemporaryDirectory() as temporary:
         staged = SpriteWorkspace(Path(temporary))
@@ -279,8 +360,7 @@ def pack_job(
         staged.request_file.write_text(
             json.dumps(request, allow_nan=False), encoding="utf-8"
         )
-        result = staged.archive(destination)
-    return {**result, "request": request}
+        return staged.archive(destination)
 
 
 def apply_job_outputs(store: JobStore, artifacts: Path) -> AppliedOutputs:

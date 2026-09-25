@@ -7,9 +7,13 @@ from pathlib import Path
 import pytest
 
 from wayfinder_paths.jobs.sprite_bundle import (
+    PHASE_OP,
+    PHASE_PROTOCOL,
     SpriteWorkspace,
     extract_archive,
+    pack_inputs,
     pack_job,
+    sha256,
 )
 from wayfinder_paths.tests.test_jobs_preflight import _make_job
 
@@ -75,3 +79,80 @@ def test_overlapping_inputs_are_packaged_once(tmp_path: Path) -> None:
         names = bundle.getnames()
     assert len(names) == len(set(names)) == packed["files"]
     assert len(packed["request"]["files"]) == packed["files"] - 1
+
+
+def _phase_root(tmp_path: Path) -> Path:
+    root = tmp_path / "source"
+    (root / "data").mkdir(parents=True)
+    (root / "data/prices.txt").write_text("1 2 3")
+    (root / "data/unrelated.bin").write_bytes(b"x" * 1000)
+    (root / "config.json").write_text('{"api_key":"private"}')
+    return root
+
+
+def test_pack_inputs_ships_only_named_inputs_and_the_phase_request(
+    tmp_path: Path,
+) -> None:
+    root = _phase_root(tmp_path)
+    archive = tmp_path / "inputs.tar.gz"
+    packed = pack_inputs(
+        root,
+        ["data/prices.txt"],
+        {"phase": "wayfinder_paths.example:phase", "args": {"scale": 2}},
+        archive,
+        expected_sdk_commit="a" * 40,
+    )
+    assert packed["request"] == {
+        "protocol": PHASE_PROTOCOL,
+        "op": PHASE_OP,
+        "phase": "wayfinder_paths.example:phase",
+        "args": {"scale": 2},
+        "expected_sdk_commit": "a" * 40,
+        "files": {"data/prices.txt": sha256(root / "data/prices.txt")},
+    }
+    assert packed["sha256"] == sha256(archive) and packed["files"] == 2
+    extract_archive(archive, tmp_path / "out")
+    assert sorted(
+        path.relative_to(tmp_path / "out").as_posix()
+        for path in (tmp_path / "out").rglob("*")
+        if path.is_file()
+    ) == ["data/prices.txt", "sprite-request.json"]
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [["../outside"], ["/etc/passwd"], ["outputs/previous.json"], ["config.json"]],
+)
+def test_pack_inputs_rejects_unsafe_or_output_inputs(
+    tmp_path: Path, paths: list[str]
+) -> None:
+    root = _phase_root(tmp_path)
+    (root / "outputs").mkdir()
+    (root / "outputs/previous.json").write_text("{}")
+    with pytest.raises(ValueError):
+        pack_inputs(root, paths, {"phase": "p", "args": {}}, tmp_path / "a.tgz")
+
+
+def test_pack_inputs_requires_finite_json_arguments(tmp_path: Path) -> None:
+    root = _phase_root(tmp_path)
+    with pytest.raises(ValueError):
+        pack_inputs(
+            root,
+            ["data/prices.txt"],
+            {"phase": "p", "args": {"x": float("nan")}},
+            tmp_path / "a.tgz",
+        )
+
+
+def test_phase_workspace_collects_only_its_outputs(tmp_path: Path) -> None:
+    root = _phase_root(tmp_path)
+    pack_inputs(root, ["data"], {"phase": "p", "args": {}}, tmp_path / "in.tgz")
+    workspace = SpriteWorkspace(tmp_path / "remote")
+    extract_archive(tmp_path / "in.tgz", workspace.root)
+    workspace.outputs_dir.mkdir()
+    (workspace.outputs_dir / "model.bin").write_bytes(b"weights")
+    info = workspace.collect(tmp_path / "artifacts.tgz")
+    extract_archive(tmp_path / "artifacts.tgz", tmp_path / "collected")
+    assert info["files"] == 1
+    assert (tmp_path / "collected/outputs/model.bin").read_bytes() == b"weights"
+    assert not (tmp_path / "collected/data").exists()
