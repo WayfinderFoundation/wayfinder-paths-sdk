@@ -117,30 +117,30 @@ def _get_transaction_from_address(transaction: dict) -> str:
     return AsyncWeb3.to_checksum_address(transaction["from"])
 
 
-async def _rpc_read_results(
+async def _max_rpc_read(
     web3s: list[AsyncWeb3],
     read: Callable[[AsyncWeb3], Awaitable[int]],
     operation: str,
-) -> list[int]:
-    """Keep every healthy node's view without letting an outage poison the pool."""
+) -> int:
+    """Take the maximum healthy response; never guess when every RPC fails."""
     results = await asyncio.gather(
         *(asyncio.wait_for(read(web3), timeout=_RPC_READ_TIMEOUT) for web3 in web3s),
         return_exceptions=True,
     )
     values: list[int] = []
     for index, result in enumerate(results):
-        if isinstance(result, BaseException):
-            if not isinstance(result, Exception):
-                raise result
+        if isinstance(result, Exception):
             # URLs and exception messages can contain provider credentials.
             logger.warning(
                 "RPC index {} failed {}: {}", index, operation, type(result).__name__
             )
+        elif isinstance(result, BaseException):
+            raise result
         else:
             values.append(result)
     if not values:
         raise RuntimeError(f"All RPCs failed {operation}; no usable response")
-    return values
+    return max(values)
 
 
 async def nonce_transaction(transaction: dict[str, Any]) -> dict[str, Any]:
@@ -154,8 +154,9 @@ async def nonce_transaction(transaction: dict[str, Any]) -> dict[str, Any]:
         )
 
     async with web3s_from_chain_id(get_transaction_chain_id(transaction)) as web3s:
-        nonces = await _rpc_read_results(web3s, _get_nonce, "pending nonce read")
-        transaction["nonce"] = max(nonces)
+        transaction["nonce"] = await _max_rpc_read(
+            web3s, _get_nonce, "pending nonce read"
+        )
 
     return transaction
 
@@ -187,10 +188,7 @@ async def gas_price_transaction(transaction: dict[str, Any]) -> dict[str, Any]:
             transaction.pop("maxFeePerGas", None)
             transaction.pop("maxPriorityFeePerGas", None)
 
-            gas_prices = await _rpc_read_results(
-                web3s, _get_gas_price, "gas price read"
-            )
-            gas_price = max(gas_prices)
+            gas_price = await _max_rpc_read(web3s, _get_gas_price, "gas price read")
 
             transaction["gasPrice"] = int(gas_price * SUGGESTED_GAS_PRICE_MULTIPLIER)
         else:
@@ -198,15 +196,14 @@ async def gas_price_transaction(transaction: dict[str, Any]) -> dict[str, Any]:
             # dynamic-fee (EIP-1559) transaction.
             transaction.pop("gasPrice", None)
 
-            base_fees = await _rpc_read_results(web3s, _get_base_fee, "base fee read")
-            priority_fees = await _rpc_read_results(
+            base_fee = await _max_rpc_read(web3s, _get_base_fee, "base fee read")
+            priority_fee = await _max_rpc_read(
                 web3s, _get_priority_fee, "priority fee read"
             )
 
-            base_fee = max(base_fees)
             priority_fee = int(
                 max(
-                    max(priority_fees) * SUGGESTED_PRIORITY_FEE_MULTIPLIER,
+                    priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER,
                     MIN_PRIORITY_FEE_BY_CHAIN_ID.get(chain_id, 0),
                 )
             )
