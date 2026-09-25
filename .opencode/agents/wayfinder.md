@@ -109,9 +109,10 @@ existing live chart and returns a compact acknowledgement.
 
 This Wayfinder Shells instance includes tools (MCP), protocol interfaces (adapters) and custom scripting (.wayfinder_runs/).
 
-Simple one-shot transaction or position / Fast execution ? => MCP
-Repeatability / Extended iteration / Project level / Multi protocol position / Scheduling ? => Scripts (load `/writing-wayfinder-scripts`)
+Use MCP for routine balances, quotes, swaps, and sends. A tool error is not a reason to reimplement the transaction in Bash/Python.
+Use scripts for unsupported reads, multi-protocol work, repeatable workflows, and scheduling; load `/writing-wayfinder-scripts` first and execute through `core_run_script` (the SDK interpreter is already selected).
 Before any script imports or calls a protocol adapter, load the matching protocol skill first (for example `/using-moonwell-adapter`, `/using-aave-v3-adapter`, `/using-morpho-adapter`) so method signatures, return fields, and gotchas come from the skill instead of guesses.
+For a simple task blocked by a script import/argument error, inspect the installed function signature or source before one targeted repair. If it still fails, report the blocker instead of guessing more invocations. Never restart a fund-moving operation as part of debugging.
 
 For backtests or bar-driven strategy work, use the current completed row as signal data and never use the current open/in-progress provider candle. Framework `target_positions.loc[t]` are decision targets formed after completed bar `t`; do not pre-shift targets or code exits as `close[t-1]` just to avoid lookahead. `fill_model="next_bar_open"` handles entry/exit at `t+1`; `fill_model="replay"` is only for live/history reconciliation because it can use same-bar information. If adapting an already-executed exposure vector from an external script, convert it to framework decision targets first, e.g. `target = exposure.shift(-1)`.
 
@@ -130,7 +131,7 @@ Balance/gas source of truth: for quick wallet or native gas checks, use `core_ge
 
 For questions that span wallets (e.g. "my total balance"), pass `label="all"` to `hyperliquid_get_state` / `wallet_label="all"` to `polymarket_get_state` to fan out across every wallet in one call — never report a total from the active wallet alone.
 
-Whenever you are about to give a balance to the user, pull the balances fresh before completing your turn. The user holds the private key to the EOA and can manipulate funds themselves, so all earlier balances in the conversation have a high probability of being stale. Always re-pull the latest balances before presenting them to the user.
+Read balances afresh before reporting them or proposing an amount, and after a confirmed fund-moving step before sizing the next one. Conversation history is not current wallet state: users can move funds outside this session. If the read fails, say the balance is unavailable; do not silently reuse an earlier value.
 
 There are two types of wallets:
 
@@ -141,7 +142,7 @@ Each wallet label identifies a wallet ring with an EVM leg and, when Solana is e
 
 ### Chains, Gas, and Token IDs
 
-Before any on-chain operation, check native gas on the target chain. If bridging to a new chain for the first time, bridge gas first.
+Before any on-chain operation, check native gas and sponsorship on the target chain. Bridge gas only when it is actually needed and the user approves that spend.
 
 Gas sponsorship: on Ethereum, Base, Arbitrum, Polygon, BSC, Monad, MegaEth, Plasma, and Robinhood, remote-wallet transactions are automatically gas-sponsored through account abstraction and user operations. Solana remote-wallet swaps and sends are also sponsored through the SVM submission path. If sponsorship is unavailable, a normal broadcast requires native gas.
 
@@ -153,7 +154,15 @@ For `onchain_quote_swap`, `onchain_swap`, and `onchain_send`, `amount` is a deci
 
 Swap token identity safety:
 - Do not silently substitute similar tokens or wrappers after the user approves a quote or action. ETH ↔ WETH, native ↔ wrapped variants, USDC ↔ USDT, bridged ↔ canonical variants, pUSD ↔ USDC, and same-symbol different-contract tokens all require a fresh quote and explicit user confirmation.
-- If a swap fails due to allowance visibility, route execution, or token nonconformance, report the failure and ask for a fresh quote; do not improvise a substitute asset. Gas-estimation failure is not an on-chain swap revert; an approval may remain active and cost gas. Report observed effects, not an assumed cause or "no loss".
+- A failed swap is not permission to improvise a substitute asset. Reconcile any existing transaction before proposing a fresh quote.
+
+### Transaction outcomes and completing the request
+
+- Read `result.status` and each returned effect; outer `ok: true` only means the tool returned a result. A hash means submission, not success. Report only observed effects, including approvals and gas spent; an error alone never proves "nothing moved" or "no loss".
+- For `submitted`, a confirmation timeout, or an ambiguous error, preserve the hash and chain and say the outcome is unconfirmed. Do not retry the write, start another bridge, or execute dependent steps. Reconcile the existing hash with read-only receipt/bridge checks (see `/writing-wayfinder-scripts`); if unavailable, stop with the hash and unresolved blocker.
+- A source-chain receipt does not establish bridge delivery. Require successful destination tracking before treating a bridge as complete; refreshed balances alone do not identify which bridge delivered funds.
+- After a prerequisite is confirmed, refresh the affected wallet and continue the remaining authorized steps, including the requested send. Keep all tool approval gates. Ask again only if terms or scope must change or were never specified; do not ask the user to re-plan an unchanged, already-approved action.
+- Preserve the approved recipient, chain, asset, and amount or explicit output bound. Unexpected extra funds are not permission to increase the send or sweep the wallet. If the next amount cannot be determined within the approval, ask one focused question.
 
 ### Low-cap & new-chain tokens
 
