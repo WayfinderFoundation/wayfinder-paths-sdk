@@ -93,11 +93,14 @@ metrics become `null` in the small HTTP summary; full native SDK JSON remains in
 Uploads use checksum-verified, retryable 8 MiB chunks. Both ends validate the full
 archive, and successful completion requires stored artifacts.
 
-Collection never overwrites your original job or automatically applies remote
-approval/evidence stamps to it. Artifacts retain the runtime's paths and audit
-files; use them for inspection/results and copy changes deliberately. Agent operations use the configured backend when `backtest_runner` is enabled;
-without that opt-in they retain their original local behavior. See
-[BACKTEST_RUNNERS.md](BACKTEST_RUNNERS.md) for the shared result envelope.
+Collection itself never overwrites your original job. Agent operations (and
+`backtest_cli --apply`) then apply the run's outputs back to the job with a
+three-way check against the packed checksums; see
+[BACKTEST_RUNNERS.md](BACKTEST_RUNNERS.md#existing-agent-operations). The runtime
+records its workspace root and revision in `sprite-runtime.json` so rebased paths
+and stamps map back to the job; checkpoints built before that file existed still
+apply outputs, without the mapping. Without the `backtest_runner` opt-in, agent
+operations retain their original local behavior.
 
 Limits: 512 MiB compressed, 2 GiB expanded and 20,000 files per bundle; default
 execution 15 minutes, configurable in the backend preset up to six hours. Large

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 import shutil
 import tarfile
 import tempfile
@@ -11,6 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, TypedDict
 
+import yaml
+
+from wayfinder_paths.jobs.compute_lock import job_state_lock
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import safe_job_id
 from wayfinder_paths.jobs.store import JobStore
@@ -40,6 +45,10 @@ OPERATIONS = frozenset(
 )
 _SKIP = {"__pycache__", ".git", ".venv", "background_ops", "running_ops"}
 _FORBIDDEN = {".env", "config.json", "wallets.json", "credentials.json"}
+# The strategy definition (what compute_workspace_revision hashes) and its
+# version history are inputs to a run, never outputs applied back to the job.
+_STRATEGY_PATHS = {"job.yaml", "workspace", "versions"}
+_TEXT_SUFFIXES = {".json", ".jsonl", ".yaml", ".yml"}
 
 
 class ArchiveMetadata(TypedDict):
@@ -64,6 +73,12 @@ class WorkspaceRequest(TypedDict):
 
 class PackedJob(ArchiveInfo):
     request: WorkspaceRequest
+
+
+class AppliedOutputs(TypedDict):
+    updated: list[str]
+    appended: list[str]
+    skipped: list[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +107,10 @@ class SpriteWorkspace:
     @property
     def error_file(self) -> Path:
         return self.root / "operation-error.json"
+
+    @property
+    def runtime_file(self) -> Path:
+        return self.root / "sprite-runtime.json"
 
     def archive(self, destination: Path) -> ArchiveInfo:
         return write_archive(
@@ -262,3 +281,139 @@ def pack_job(
         )
         result = staged.archive(destination)
     return {**result, "request": request}
+
+
+def apply_job_outputs(store: JobStore, artifacts: Path) -> AppliedOutputs:
+    """Three-way apply against the packed checksums: a file the job changed
+    during the run keeps the job's version, except append-only ``.jsonl``
+    ledgers, which receive only the run's new rows."""
+    workspace = SpriteWorkspace(artifacts)
+    request: WorkspaceRequest = json.loads(
+        workspace.request_file.read_text(encoding="utf-8")
+    )
+    if request.get("protocol") != PROTOCOL or request.get("source_root") != str(
+        store.repo_root
+    ):
+        raise ValueError("Artifacts were not packed from this repository")
+    job_id = safe_job_id(request["job_id"])
+    prefix = f".wayfinder/jobs/{job_id}"
+    copied, source = workspace.file(prefix), store.job_dir(job_id)
+    restorations = _restorations(workspace, request)
+    report: AppliedOutputs = {"updated": [], "appended": [], "skipped": []}
+    with job_state_lock(store.repo_root, job_id, name="runner_outputs"):
+        for file in sorted(copied.rglob("*")):
+            relative = file.relative_to(copied)
+            if (
+                file.is_symlink()
+                or not file.is_file()
+                or relative.parts[0] in _STRATEGY_PATHS
+            ):
+                continue
+            name = f"{prefix}/{relative.as_posix()}"
+            base = request["files"].get(name)
+            if base == sha256(file):
+                continue
+            produced = file.read_bytes()
+            target = source / relative
+            current = target.read_bytes() if target.exists() else None
+            if file.suffix == ".jsonl":
+                start = _prefix_length(produced, base)
+                job_still_extends_base = (
+                    base is None
+                    if current is None
+                    else _prefix_length(current, base) is not None
+                )
+                if start is not None and job_still_extends_base:
+                    rows = _restore(produced[start:], restorations)
+                    if current and not current.endswith(b"\n"):
+                        rows = b"\n" + rows
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with target.open("ab") as stream:
+                        stream.write(rows)
+                    report["appended"].append(name)
+                    continue
+            if file.suffix in _TEXT_SUFFIXES:
+                produced = _restore(produced, restorations)
+            if current is not None and _equivalent(current, produced, file.suffix):
+                continue
+            unchanged_since_packing = (
+                base is None
+                if current is None
+                else hashlib.sha256(current).hexdigest() == base
+            )
+            if not unchanged_since_packing:
+                report["skipped"].append(name)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                dir=target.parent, prefix=f".{target.name}.", delete=False
+            ) as staged:
+                staged.write(produced)
+            os.replace(staged.name, target)
+            report["updated"].append(name)
+    return report
+
+
+def _restorations(
+    workspace: SpriteWorkspace, request: WorkspaceRequest
+) -> list[tuple[bytes, bytes]]:
+    try:
+        runtime = json.loads(workspace.runtime_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []  # Runtimes before sprite-runtime.json did not record them.
+    pairs: list[tuple[bytes, bytes]] = []
+    root, revision = runtime.get("workspace_root"), runtime.get("workspace_revision")
+    if (
+        isinstance(root, str)
+        and Path(root).is_absolute()
+        and root not in {"/", request["source_root"]}
+    ):
+        pairs.append(((root + "/").encode(), (request["source_root"] + "/").encode()))
+    # Rebasing absolute paths in job.yaml changes the copy's revision hash;
+    # stamps must name the revision the job was packed at. Only the quoted
+    # JSON value is mapped: a short hex id could also occur inside other hashes.
+    if (
+        isinstance(revision, str)
+        and re.fullmatch(r"[0-9a-f]{12,}", revision)
+        and revision != request["source_revision"]
+    ):
+        pairs.append(
+            (f'"{revision}"'.encode(), f'"{request["source_revision"]}"'.encode())
+        )
+    return pairs
+
+
+def _restore(data: bytes, restorations: list[tuple[bytes, bytes]]) -> bytes:
+    for old, new in restorations:
+        data = data.replace(old, new)
+    return data
+
+
+def _prefix_length(data: bytes, digest: str | None) -> int | None:
+    # Line-aligned, so an append-only ledger's packed rows are found exactly.
+    hasher = hashlib.sha256()
+    if digest is None or hasher.hexdigest() == digest:
+        return 0
+    start = 0
+    while (end := data.find(b"\n", start)) != -1:
+        hasher.update(data[start : end + 1])
+        start = end + 1
+        if hasher.hexdigest() == digest:
+            return start
+    hasher.update(data[start:])
+    return len(data) if hasher.hexdigest() == digest else None
+
+
+def _equivalent(current: bytes, produced: bytes, suffix: str) -> bool:
+    # The runtime re-serializes JSON/YAML inputs it rebases; same content is
+    # not an output.
+    if current == produced:
+        return True
+    try:
+        if suffix == ".json":
+            return json.loads(current) == json.loads(produced)
+        if suffix in {".yaml", ".yml"}:
+            return yaml.safe_load(current) == yaml.safe_load(produced)
+    except (ValueError, yaml.YAMLError):
+        pass
+    return False

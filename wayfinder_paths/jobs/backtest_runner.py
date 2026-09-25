@@ -5,21 +5,30 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import FrameType
 from typing import Any, Self
 from urllib.parse import urlsplit
 
-from wayfinder_paths.jobs.execution.op_process import recorded_process_alive
+from wayfinder_paths.jobs.execution.op_process import (
+    process_identity_fields,
+    recorded_process_alive,
+)
 from wayfinder_paths.jobs.sprite_bundle import (
     OPERATIONS,
+    apply_job_outputs,
     extract_archive,
     pack_job,
     sha256,
@@ -34,7 +43,9 @@ class RunnerConfig:
     provider: str
     runs_dir: Path
     configured: bool = False
-    timeout_seconds: int = 900
+    # None matches in-place execution, which has no wall-clock limit.
+    timeout_seconds: int | None = None
+    retain_runs: int = 10
     extra_paths: tuple[str, ...] = ()
     sdk_commit: str | None = None
     backend: str = ""
@@ -69,6 +80,7 @@ def load_runner_config(
         "provider",
         "runs_dir",
         "timeout_seconds",
+        "retain_runs",
         "extra_paths",
         "sdk_commit",
         "sprites",
@@ -88,6 +100,17 @@ def load_runner_config(
             raise ValueError(f"{label} must be a nonempty string")
         return value.strip()
 
+    def integer(value: Any, label: str, maximum: int) -> int:
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            raise ValueError(f"{label} must be an integer")
+        try:
+            number = int(value)
+        except ValueError as exc:
+            raise ValueError(f"{label} must be an integer") from exc
+        if not 1 <= number <= maximum:
+            raise ValueError(f"{label} must be between 1 and {maximum}")
+        return number
+
     provider = string(
         env.get("WAYFINDER_BACKTEST_RUNNER", section.get("provider", "local")),
         "provider",
@@ -105,16 +128,15 @@ def load_runner_config(
     ).expanduser()
     directory = directory if directory.is_absolute() else root / directory
     timeout = env.get(
-        "WAYFINDER_BACKTEST_TIMEOUT_SECONDS", section.get("timeout_seconds", 900)
+        "WAYFINDER_BACKTEST_TIMEOUT_SECONDS", section.get("timeout_seconds")
     )
-    if isinstance(timeout, bool) or not isinstance(timeout, (int, str)):
-        raise ValueError("timeout_seconds must be an integer")
-    try:
-        timeout = int(timeout)
-    except ValueError as exc:
-        raise ValueError("timeout_seconds must be an integer") from exc
-    if not 1 <= timeout <= 21600:
-        raise ValueError("timeout_seconds must be between 1 and 21600")
+    if timeout is not None:
+        timeout = integer(timeout, "timeout_seconds", 21600)
+    retain = integer(
+        env.get("WAYFINDER_BACKTEST_RETAIN_RUNS", section.get("retain_runs", 10)),
+        "retain_runs",
+        10000,
+    )
     extra = section.get("extra_paths", [])
     if not isinstance(extra, list) or not all(isinstance(item, str) for item in extra):
         raise ValueError("extra_paths must be a list of repository-relative paths")
@@ -158,6 +180,7 @@ def load_runner_config(
         runs_dir=directory.resolve(),
         configured="backtest_runner" in config or "WAYFINDER_BACKTEST_RUNNER" in env,
         timeout_seconds=timeout,
+        retain_runs=retain,
         extra_paths=tuple(extra),
         sdk_commit=commit,
         backend=backend,
@@ -170,8 +193,11 @@ def load_runner_config(
 class BacktestRunner(ABC):
     """One operation per run; collection always targets a fresh directory."""
 
-    def __init__(self, config: RunnerConfig):
+    def __init__(self, config: RunnerConfig, *, owner_pid: int | None = None):
+        # A local run submitted with an owner cancels itself when that process
+        # exits, however it was killed. Remote runs cannot observe the owner.
         self.config = config
+        self.owner_pid = owner_pid
 
     def __enter__(self) -> Self:
         return self
@@ -215,9 +241,13 @@ class BacktestRunner(ABC):
 
 class SpritesRunner(BacktestRunner):
     def __init__(
-        self, config: RunnerConfig, *, client: SpriteBacktestsClient | None = None
+        self,
+        config: RunnerConfig,
+        *,
+        client: SpriteBacktestsClient | None = None,
+        owner_pid: int | None = None,
     ):
-        super().__init__(config)
+        super().__init__(config, owner_pid=owner_pid)
         self.client = client or SpriteBacktestsClient(
             config.backend, config.app_name, config.api_key
         )
@@ -264,6 +294,21 @@ class LocalRunner(BacktestRunner):
         # Local IDs are UUIDs, never user-supplied filesystem paths.
         return self.config.runs_dir / str(uuid.UUID(run_id))
 
+    def _prune_runs(self) -> None:
+        if not self.config.runs_dir.exists():
+            return
+        finished: list[tuple[float, Path]] = []
+        for directory in self.config.runs_dir.iterdir():
+            try:
+                record = self.status(directory.name)
+            except (OSError, ValueError):
+                continue  # receipts/, or a run another process just pruned
+            if record["status"] in TERMINAL_STATUSES:
+                finished.append(
+                    ((directory / "status.json").stat().st_mtime, directory)
+                )
+        _prune(finished, self.config.retain_runs)
+
     def submit(
         self,
         store: JobStore,
@@ -275,6 +320,7 @@ class LocalRunner(BacktestRunner):
     ) -> dict[str, Any]:
         if self.config.runs_dir.is_relative_to(store.job_dir(job_id).resolve()):
             raise ValueError("runs_dir must be outside the job being packaged")
+        self._prune_runs()
         run_id = str(uuid.uuid4())
         directory = self._directory(run_id)
         directory.mkdir(parents=True, mode=0o700)
@@ -288,7 +334,7 @@ class LocalRunner(BacktestRunner):
                 extra_paths=[*self.config.extra_paths, *(extra_paths or [])],
                 expected_sdk_commit=self.config.sdk_commit,
             )
-            record = {
+            record: dict[str, Any] = {
                 "id": run_id,
                 "provider": "local",
                 "status": "queued",
@@ -301,6 +347,11 @@ class LocalRunner(BacktestRunner):
                     "python": sys.executable,
                 },
             }
+            if self.owner_pid is not None:
+                record["owner"] = {
+                    "pid": self.owner_pid,
+                    **process_identity_fields(self.owner_pid),
+                }
             atomic_write_json(directory / "status.json", record)
             # Mirror the credential-free checkpoint config, without changing the
             # parent process's environment or using its live execution settings.
@@ -341,15 +392,11 @@ class LocalRunner(BacktestRunner):
                     stderr=log,
                     start_new_session=True,
                 )
-            # Reap children while this client remains alive; detached processes
+            # Reap children while this client remains alive; unowned runs
             # continue normally after a submitting CLI or MCP process exits.
-            import threading
-
             threading.Thread(target=proc.wait, daemon=True).start()
             return record
         except Exception:
-            import shutil
-
             shutil.rmtree(directory)
             raise
 
@@ -365,6 +412,7 @@ class LocalRunner(BacktestRunner):
                     # atomically before leaving, which may race the first read.
                     record = json.loads((directory / "status.json").read_text())
                     if record["status"] not in TERMINAL_STATUSES:
+                        _kill_orphaned_group(identity.get("child"))
                         record.update(
                             status="failed",
                             error="Local worker exited without a completion record",
@@ -403,7 +451,10 @@ class LocalRunner(BacktestRunner):
 
 
 def create_runner(
-    *, repo_root: Path | None = None, config: RunnerConfig | None = None
+    *,
+    repo_root: Path | None = None,
+    config: RunnerConfig | None = None,
+    owner_pid: int | None = None,
 ) -> BacktestRunner:
     settings = config or load_runner_config(repo_root=repo_root)
     providers = {"local": LocalRunner, "sprites": SpritesRunner}
@@ -411,35 +462,96 @@ def create_runner(
         implementation = providers[settings.provider]
     except KeyError as exc:
         raise ValueError(f"Unknown backtest runner: {settings.provider}") from exc
-    return implementation(settings)
+    return implementation(settings, owner_pid=owner_pid)
 
 
 def run_configured_operation(
     op: str, kwargs: dict[str, Any], *, config: RunnerConfig
 ) -> dict[str, Any]:
-    """Bridge existing agent operations to the configured lifecycle contract."""
+    """Bridge existing agent operations to the configured lifecycle contract.
+
+    The run's outputs are applied back to the job, as in-place execution
+    would have left them, and a terminated caller cancels its run.
+    """
     if op not in OPERATIONS:
         raise ValueError(f"Unsupported portable computation: {op}")
     options = dict(kwargs)
     job_id = options.pop("job_id")
-    with create_runner(config=config) as runner:
-        submitted = runner.submit(JobStore(), job_id, op=op, options=options)
+    store = JobStore()
+    owner = {"pid": os.getpid(), **process_identity_fields(os.getpid())}
+    with (
+        _exit_on_termination(),
+        create_runner(config=config, owner_pid=os.getpid()) as runner,
+    ):
+        submitted = runner.submit(store, job_id, op=op, options=options)
         run_id = submitted["id"]
         receipt_dir = config.runs_dir / "receipts" / str(uuid.uuid4())
         receipt_dir.mkdir(parents=True, mode=0o700)
-        atomic_write_json(receipt_dir / "run.json", submitted)
+        atomic_write_json(receipt_dir / "run.json", {**submitted, "owner": owner})
         try:
             result = runner.wait(run_id)
-            if result.get("artifacts"):
-                destination = receipt_dir / "artifacts"
-                runner.collect(run_id, destination)
-                result = {**result, "artifacts_path": str(destination)}
-            atomic_write_json(receipt_dir / "run.json", result)
-            if result["status"] != "succeeded":
-                raise RuntimeError(
-                    f"{op} {result['status']}: {result.get('error', '')}; run record: {receipt_dir / 'run.json'}"
-                )
-            return result
         except (KeyboardInterrupt, SystemExit):
             runner.cancel(run_id)
             raise
+        if result.get("artifacts"):
+            destination = receipt_dir / "artifacts"
+            runner.collect(run_id, destination)
+            # Failed runs apply too: in place, their partial ledgers persist.
+            result = {
+                **result,
+                "artifacts_path": str(destination),
+                "applied": apply_job_outputs(store, destination),
+            }
+        atomic_write_json(receipt_dir / "run.json", {**result, "owner": owner})
+        _prune_receipts(config.runs_dir, config.retain_runs)
+        if result["status"] != "succeeded":
+            raise RuntimeError(
+                f"{op} {result['status']}: {result.get('error', '')}; run record: {receipt_dir / 'run.json'}"
+            )
+        return result
+
+
+@contextmanager
+def _exit_on_termination() -> Iterator[None]:
+    """SIGTERM/SIGHUP unwind the caller like Ctrl-C, so it cancels its run."""
+
+    def stop(signum: int, frame: FrameType | None) -> None:
+        raise SystemExit(128 + signum)
+
+    previous = {
+        sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGHUP)
+    }
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def _kill_orphaned_group(child: Any) -> None:
+    # The worker starts its compute child in a new session: pgid == pid.
+    if isinstance(child, dict) and recorded_process_alive(child):
+        try:
+            os.killpg(child["pid"], signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass  # macOS reports EPERM for a group of only unreaped zombies.
+
+
+def _prune_receipts(runs_dir: Path, keep: int) -> None:
+    finished: list[tuple[float, Path]] = []
+    for receipt in (runs_dir / "receipts").glob("*/run.json"):
+        try:
+            record = json.loads(receipt.read_text())
+            modified = receipt.stat().st_mtime
+        except (OSError, ValueError):
+            continue  # Pruned or being written by a concurrent operation.
+        if record.get("status") in TERMINAL_STATUSES or not recorded_process_alive(
+            record.get("owner") or {}
+        ):
+            finished.append((modified, receipt.parent))
+    _prune(finished, keep)
+
+
+def _prune(entries: Iterable[tuple[float, Path]], keep: int) -> None:
+    for _, directory in sorted(entries, reverse=True)[keep:]:
+        shutil.rmtree(directory, ignore_errors=True)

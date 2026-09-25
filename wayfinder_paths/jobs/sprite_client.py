@@ -202,8 +202,9 @@ class SpriteBacktestsClient:
                     for key, value in lease.items()
                     if key not in {"auth_token", "auth_header"}
                 }
-            except Exception:
-                # Owner cancellation survives agent capability expiry.
+            except BaseException:
+                # Owner cancellation survives agent capability expiry, and a
+                # terminated submitter must not leave a billed lease running.
                 with suppress(httpx.HTTPError):
                     self.cancel(lease["id"])
                 raise

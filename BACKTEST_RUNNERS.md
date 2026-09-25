@@ -15,7 +15,7 @@ Add this section to the SDK configuration selected by `WAYFINDER_CONFIG_PATH` /
   "backtest_runner": {
     "provider": "local",
     "runs_dir": ".wayfinder/backtest_runs",
-    "timeout_seconds": 900,
+    "retain_runs": 10,
     "extra_paths": [],
     "sprites": {
       "backend": "https://your-development-backend.example",
@@ -38,7 +38,8 @@ export WAYFINDER_BACKTEST_RUNNER=sprites
 | --- | --- |
 | `WAYFINDER_BACKTEST_RUNNER` | `backtest_runner.provider` (`local` or `sprites`) |
 | `WAYFINDER_BACKTEST_RUNS_DIR` | `backtest_runner.runs_dir` |
-| `WAYFINDER_BACKTEST_TIMEOUT_SECONDS` | `backtest_runner.timeout_seconds` (local execution limit) |
+| `WAYFINDER_BACKTEST_TIMEOUT_SECONDS` | `backtest_runner.timeout_seconds` (optional local execution limit) |
+| `WAYFINDER_BACKTEST_RETAIN_RUNS` | `backtest_runner.retain_runs` (finished runs and receipts kept; default 10) |
 | `WAYFINDER_BACKTEST_SDK_COMMIT` | `backtest_runner.sdk_commit` (optional full Git SHA) |
 | `WAYFINDER_SPRITES_BACKEND` | `backtest_runner.sprites.backend` (HTTPS origin; loopback HTTP allowed) |
 | `WAYFINDER_SPRITES_APP_NAME` | `backtest_runner.sprites.app_name` |
@@ -48,9 +49,10 @@ export WAYFINDER_BACKTEST_RUNNER=sprites
 Environment values take precedence. Relative paths resolve against the job's
 repository root. Invalid configuration fails explicitly; a Sprite failure does
 not cause a local retry or duplicate computation. Sprite execution time/resource
-limits are controlled by the selected Django preset. The local timeout defaults
-to 900 seconds and supports 1–21,600 seconds, with up to 60 seconds for partial
-artifact recovery after interruption.
+limits are controlled by the selected Django preset. Local runs have no time
+limit by default, matching in-place execution; `timeout_seconds` sets one of
+1–21,600 seconds, with up to 60 seconds for partial artifact recovery after
+interruption.
 
 An optional SDK commit pin requires a matching checkpoint marker or a clean local
 SDK checkout at that commit. Modified SDK source cannot satisfy an exact pin.
@@ -66,6 +68,8 @@ python -m wayfinder_paths.jobs.backtest_cli \
   --output /absolute/path/to/new-results-directory
 ```
 
+Add `--apply` to write the collected results and stamps back into the job, as
+described under [Existing agent operations](#existing-agent-operations).
 Use `--submit-only` to return a durable run ID immediately. Subsequent invocations
 with the same provider/storage/backend configuration can use `--status RUN_ID`,
 `--collect RUN_ID --output NEW_DIRECTORY`, or `--cancel RUN_ID`. Submitted runs
@@ -106,11 +110,27 @@ returns the shared run envelope, including its provider and collected
 `artifacts_path`; the compact summary is under `result.output` in that envelope.
 Provider run IDs and recovery records live under `runs_dir/receipts/`.
 
-Configured local and Sprite runs both use an isolated copy of the submitted job.
-They preserve the original workspace and return results/evidence in the collected
-artifact directory. Copy changes deliberately; remote or isolated gate stamps are
-not automatically applied to an active job. Existing tools that inspect the source
-job's saved results still inspect that source job, not the collected copy.
+Configured local and Sprite runs both compute in an isolated copy of the job.
+After collection, agent operations apply the run's outputs back to the job
+(`applied` in the envelope lists them), so results, validation/preflight stamps,
+derived features and ledgers land where in-place execution would have left them
+and gates see the new evidence. Each file is compared with its checksum at
+packing time:
+
+- A file the run did not change is ignored.
+- An output replaces the job's file only if the job has not changed it since
+  packing; otherwise the job's newer version is kept and the file is listed under
+  `skipped`.
+- Append-only `.jsonl` ledgers (journals, trials, features) receive only the
+  run's new rows, so rows written concurrently survive.
+- The strategy definition — `job.yaml`, `workspace/` and `versions/` — is never
+  written back.
+
+Rebased absolute paths and the copy's revision hash are mapped back to the job's,
+so stamps name the revision the job was packed at; editing the strategy during a
+run therefore still leaves its stamps stale. Failed runs apply their partial
+outputs too, as in-place execution would. The evidence-access ledger is recorded
+in the source repository when the operation starts.
 
 Without the configuration opt-in, existing agent operations retain their original
 in-place local behavior. The new generic CLI/API defaults to the portable local
@@ -129,10 +149,14 @@ in [SPRITE_BACKTESTS.md](SPRITE_BACKTESTS.md).
 
 Local workers run on the current host under `runs_dir/<run_id>/`, with durable
 status files, bounded logs, process-group timeout/cancellation, and partial artifact
-recovery. Machine config and credential environment variables are not passed to
+recovery. An agent operation owns its run: SIGTERM, SIGHUP or Ctrl-C cancels it,
+and a local run cancels itself if its owner is killed outright. If a worker itself
+dies, the next status check reports the run as failed and kills its computation. Machine config and credential environment variables are not passed to
 the compute child. A local process still has the host user's filesystem/network
-permissions; it is not a VM security boundary. Completed workspaces and archives
-remain until explicitly removed, so collection can be retried.
+permissions; it is not a VM security boundary. When a run finishes, its input
+bundle and extracted workspace are deleted; the artifact archive stays so
+collection can be retried. Starting a run prunes all but the newest `retain_runs`
+finished runs, and each agent operation prunes its receipts the same way.
 
 Sprites use the existing Django mailbox, scoped tokens, private storage, checkpoint
 release, and backend cleanup. A configured and deployed Sprite backend is required;

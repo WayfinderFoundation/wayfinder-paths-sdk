@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from wayfinder_paths.jobs.backtest_runner import create_runner
-from wayfinder_paths.jobs.sprite_bundle import OPERATIONS
+from wayfinder_paths.jobs.sprite_bundle import OPERATIONS, apply_job_outputs
 from wayfinder_paths.jobs.store import JobStore
 
 
@@ -22,6 +22,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     parser.add_argument("--extra-path", action="append", default=[])
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="After collection, apply the run's results and stamps to the job",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--submit-only", action="store_true")
     mode.add_argument("--collect", metavar="RUN_ID")
@@ -32,6 +37,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         parser.error("--job-id is required for submission")
     if not any((args.submit_only, args.status, args.cancel, args.output)):
         parser.error("--output is required for collection")
+    if args.apply and any((args.submit_only, args.status, args.cancel)):
+        parser.error("--apply requires collection")
     options = {}
     if args.options:
         try:
@@ -67,6 +74,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         result = runner.wait(run_id)
         if result.get("artifacts"):
             runner.collect(run_id, args.output)
+            if args.apply:
+                result["applied"] = apply_job_outputs(
+                    JobStore(repo_root=args.repo), args.output
+                )
         print(json.dumps(result, indent=2))
         if result["status"] != "succeeded":
             raise SystemExit(1)

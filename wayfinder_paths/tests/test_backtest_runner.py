@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -12,24 +13,37 @@ from unittest.mock import Mock
 
 import httpx
 import pytest
+import yaml
 
 from wayfinder_paths.jobs.backtest_runner import (
     LocalRunner,
     RunnerConfig,
     SpritesRunner,
+    _prune_receipts,
     create_runner,
     load_runner_config,
 )
-from wayfinder_paths.jobs.sprite_bundle import sha256
+from wayfinder_paths.jobs.execution.op_process import (
+    process_identity_fields,
+    recorded_process_alive,
+)
+from wayfinder_paths.jobs.gating import compute_workspace_revision, evaluate_live_gate
+from wayfinder_paths.jobs.sprite_bundle import (
+    apply_job_outputs,
+    extract_archive,
+    pack_job,
+    sha256,
+)
 from wayfinder_paths.jobs.sprite_client import SpriteBacktestsClient
+from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.tests.test_jobs_preflight import _make_job
 
 
 def test_configuration_defaults_environment_precedence_and_no_secret_repr(tmp_path):
-    assert (
-        load_runner_config(repo_root=tmp_path, config={}, environ={}).provider
-        == "local"
-    )
+    default = load_runner_config(repo_root=tmp_path, config={}, environ={})
+    assert default.provider == "local"
+    # Unlimited like in-place execution; bounded disk via retention.
+    assert default.timeout_seconds is None and default.retain_runs == 10
     document = {
         "backtest_runner": {
             "provider": "sprites",
@@ -69,6 +83,7 @@ def test_configuration_defaults_environment_precedence_and_no_secret_repr(tmp_pa
         {"timeout_seconds": 0},
         {"timeout_seconds": 21601},
         {"timeout_seconds": 1.5},
+        {"retain_runs": 0},
         {"extra_paths": "wrong"},
         {"sdk_commit": "branch"},
     ],
@@ -231,6 +246,9 @@ def test_local_native_process_grid_and_checksum_validation(tmp_path):
     )
     result = runner.wait(submitted["id"], poll_interval=0.05)
     assert result["status"] == "succeeded", result
+    run_dir = runner.config.runs_dir / submitted["id"]
+    assert not (run_dir / "workspace").exists()
+    assert not (run_dir / "workspace.tar.gz").exists()
     runner.collect(submitted["id"], tmp_path / "collected")
     full = json.loads((tmp_path / "collected/operation-result.json").read_text())
     assert len(full["backtest"]["result"]["runs"]) == 2
@@ -331,8 +349,10 @@ def test_agent_entrypoint_selects_runner_only_for_portable_ops(monkeypatch, tmp_
 
     native = Mock(return_value={"native": True})
     configured = Mock(return_value={"provider": "sprites", "status": "succeeded"})
+    ledger = Mock()
     config = RunnerConfig(provider="sprites", runs_dir=tmp_path, configured=True)
     monkeypatch.setattr(op_runner, "_run", native)
+    monkeypatch.setattr(op_runner, "_record_evidence_access", ledger)
     monkeypatch.setattr(backtest_runner, "load_runner_config", lambda: config)
     monkeypatch.setattr(backtest_runner, "run_configured_operation", configured)
     assert (
@@ -340,6 +360,7 @@ def test_agent_entrypoint_selects_runner_only_for_portable_ops(monkeypatch, tmp_
         == "sprites"
     )
     configured.assert_called_once_with("backtest_job", {"job_id": "job"}, config=config)
+    ledger.assert_called_once_with("backtest_job", {"job_id": "job"})
     assert op_runner._run_entrypoint("fetch_dataset", {}) == {"native": True}
     monkeypatch.setattr(
         backtest_runner,
@@ -355,37 +376,245 @@ def test_local_run_ids_cannot_escape_storage(tmp_path):
         runner.status("../../elsewhere")
 
 
-def test_existing_agent_entrypoint_runs_through_configured_local_backend(tmp_path):
-    store, job_id, _ = _make_job(tmp_path / "source")
-    original = (store.job_dir(job_id) / "job.yaml").read_bytes()
-    (store.repo_root / "config.json").write_text(
-        json.dumps(
-            {
-                "backtest_runner": {
-                    "provider": "local",
-                    "runs_dir": str(tmp_path / "runs"),
-                    "timeout_seconds": 30,
-                }
-            }
-        )
+def _configured_env(repo: Path, runs: Path) -> dict[str, str]:
+    (repo / "config.json").write_text(
+        json.dumps({"backtest_runner": {"provider": "local", "runs_dir": str(runs)}})
     )
+    return {**os.environ, "WAYFINDER_CONFIG_PATH": str(repo / "config.json")}
+
+
+def _running_run(runs: Path) -> Path:
+    for _ in range(400):
+        for status in runs.glob("*/status.json"):
+            supervisor = status.parent / "supervisor.json"
+            if (
+                json.loads(status.read_text())["status"] == "running"
+                and supervisor.exists()
+                and "child" in json.loads(supervisor.read_text())
+            ):
+                return status.parent
+        time.sleep(0.05)
+    pytest.fail("Local run never started its computation")
+
+
+def test_existing_agent_entrypoint_applies_configured_local_results(tmp_path):
+    store, job_id, root = _make_job(tmp_path / "source")
+    # An absolute entrypoint is rebased inside the copy, which changes the
+    # copy's revision hash; applied stamps must still name the job's revision.
+    job_yaml = root / "job.yaml"
+    job = yaml.safe_load(job_yaml.read_text())
+    job["script_loop"]["entrypoint"] = str(root / "workspace/src/strategy.py")
+    job_yaml.write_text(yaml.safe_dump(job, sort_keys=False))
+    original = job_yaml.read_bytes()
     proc = subprocess.run(
         [sys.executable, "-m", "wayfinder_paths.jobs.execution.op_runner"],
         input=json.dumps({"op": "backtest_job", "kwargs": {"job_id": job_id}}),
         cwd=store.repo_root,
-        env={
-            **os.environ,
-            "WAYFINDER_CONFIG_PATH": str(store.repo_root / "config.json"),
-        },
+        env=_configured_env(store.repo_root, tmp_path / "runs"),
         capture_output=True,
         text=True,
-        timeout=40,
+        timeout=60,
     )
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout)
     assert result["provider"] == "local" and result["status"] == "succeeded"
-    assert (Path(result["artifacts_path"]) / "operation-result.json").exists()
-    assert (store.job_dir(job_id) / "job.yaml").read_bytes() == original
+    artifacts = Path(result["artifacts_path"])
+    runtime = json.loads((artifacts / "sprite-runtime.json").read_text())
+    assert runtime["workspace_revision"] != compute_workspace_revision(root)
+    assert (
+        f".wayfinder/jobs/{job_id}/results/backtest/latest.json"
+        in result["applied"]["updated"]
+    )
+    for name in result["applied"]["updated"]:
+        assert runtime["workspace_root"] not in (store.repo_root / name).read_text()
+    assert job_yaml.read_bytes() == original
+    stamp = json.loads((root / "results/backtest/latest.json").read_text())
+    assert stamp["revision"] == compute_workspace_revision(root)
+    reasons = evaluate_live_gate(job_id, store=store)["reasons"]
+    assert not [
+        reason
+        for reason in reasons
+        if "revision" in reason or "no backtest" in reason or "no validation" in reason
+    ], reasons
+    assert (store.repo_root / "audit" / job_id / "evidence_access.jsonl").exists()
+
+
+def test_apply_keeps_concurrent_job_changes_and_merges_ledgers(tmp_path):
+    store, job_id, root = _make_job(tmp_path / "source")
+    for relative, content in {
+        "results/backtest/latest.json": '{"run": "before"}',
+        "reports/validation/latest.json": '{"run": "before"}',
+        "state/features.jsonl": '{"row": 1}\n',
+    }.items():
+        (root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (root / relative).write_text(content)
+    pack_job(store, job_id, tmp_path / "bundle.tar.gz")
+    artifacts = tmp_path / "artifacts"
+    extract_archive(tmp_path / "bundle.tar.gz", artifacts)
+    copied = artifacts / ".wayfinder/jobs" / job_id
+    remote = "/remote/workspace"
+    (artifacts / "sprite-runtime.json").write_text(
+        json.dumps({"workspace_root": remote})
+    )
+    # The run's outputs, plus strategy edits that must never be applied.
+    (copied / "results/backtest/latest.json").write_text('{"run": "remote"}')
+    (copied / "reports/validation/latest.json").write_text('{"run": "remote"}')
+    (copied / "reports/preflight").mkdir(parents=True)
+    (copied / "reports/preflight/latest.json").write_text(
+        json.dumps({"trace": f"{remote}/.wayfinder/jobs/{job_id}/trace.json"})
+    )
+    with (copied / "state/features.jsonl").open("a") as stream:
+        stream.write('{"row": "remote"}\n')
+    (copied / "workspace/src/strategy.py").write_text("tampered = True\n")
+    (copied / "job.yaml").write_text("tampered: true\n")
+    # Meanwhile the job itself moved on.
+    (root / "reports/validation/latest.json").write_text('{"run": "newer"}')
+    with (root / "state/features.jsonl").open("a") as stream:
+        stream.write('{"row": "live"}\n')
+    strategy = (root / "workspace/src/strategy.py").read_bytes()
+    definition = (root / "job.yaml").read_bytes()
+
+    applied = apply_job_outputs(store, artifacts)
+
+    prefix = f".wayfinder/jobs/{job_id}/"
+    assert applied == {
+        "updated": [
+            prefix + "reports/preflight/latest.json",
+            prefix + "results/backtest/latest.json",
+        ],
+        "appended": [prefix + "state/features.jsonl"],
+        "skipped": [prefix + "reports/validation/latest.json"],
+    }
+    assert json.loads((root / "results/backtest/latest.json").read_text()) == {
+        "run": "remote"
+    }
+    assert json.loads((root / "reports/validation/latest.json").read_text()) == {
+        "run": "newer"
+    }
+    assert json.loads((root / "reports/preflight/latest.json").read_text()) == {
+        "trace": str(root / "trace.json")
+    }
+    assert (root / "state/features.jsonl").read_text().splitlines() == [
+        '{"row": 1}',
+        '{"row": "live"}',
+        '{"row": "remote"}',
+    ]
+    assert (root / "workspace/src/strategy.py").read_bytes() == strategy
+    assert (root / "job.yaml").read_bytes() == definition
+    with pytest.raises(ValueError, match="not packed from this repository"):
+        apply_job_outputs(JobStore(repo_root=tmp_path / "elsewhere"), artifacts)
+
+
+def test_cli_apply_writes_results_into_the_job(tmp_path):
+    store, job_id, root = _make_job(tmp_path / "source")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "wayfinder_paths.jobs.backtest_cli",
+            "--repo",
+            str(store.repo_root),
+            "--job-id",
+            job_id,
+            "--output",
+            str(tmp_path / "collected"),
+            "--apply",
+        ],
+        env=_configured_env(store.repo_root, tmp_path / "runs"),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout.split("\n", 1)[1])
+    assert (
+        f".wayfinder/jobs/{job_id}/results/backtest/latest.json"
+        in result["applied"]["updated"]
+    )
+    assert (root / "results/backtest/latest.json").exists()
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGKILL])
+def test_terminated_agent_operation_cancels_its_local_run(tmp_path, sig):
+    store, job_id, options = make_script(tmp_path, "import time\ntime.sleep(30)\n")
+    runs = tmp_path / "runs"
+    owner = subprocess.Popen(
+        [sys.executable, "-m", "wayfinder_paths.jobs.execution.op_runner"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd=store.repo_root,
+        env=_configured_env(store.repo_root, runs),
+        start_new_session=True,
+    )
+    assert owner.stdin is not None
+    owner.stdin.write(
+        json.dumps({"op": "script", "kwargs": {"job_id": job_id, **options}}).encode()
+    )
+    owner.stdin.close()
+    directory = _running_run(runs)
+    # SIGKILL of the op's process group is what the watchdog reapers send.
+    os.killpg(owner.pid, sig)
+    owner.wait(timeout=10)
+    runner = LocalRunner(RunnerConfig(provider="local", runs_dir=runs))
+    result = runner.wait(directory.name, poll_interval=0.05)
+    assert result["status"] == "cancelled", result
+    if sig == signal.SIGKILL:
+        assert "Submitting process exited" in result["error"]
+    child = json.loads((directory / "supervisor.json").read_text())["child"]
+    assert not recorded_process_alive(child)
+
+
+def test_dead_worker_does_not_leave_its_computation_running(tmp_path):
+    store, job_id, options = make_script(tmp_path, "import time\ntime.sleep(30)\n")
+    runner = LocalRunner(RunnerConfig(provider="local", runs_dir=tmp_path / "runs"))
+    submitted = runner.submit(store, job_id, op="script", options=options)
+    supervisor = json.loads(
+        (_running_run(runner.config.runs_dir) / "supervisor.json").read_text()
+    )
+    os.kill(supervisor["pid"], signal.SIGKILL)
+    result = runner.wait(submitted["id"], poll_interval=0.05)
+    assert result["status"] == "failed" and "without a completion" in result["error"]
+    for _ in range(100):
+        if not recorded_process_alive(supervisor["child"]):
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("Compute child outlived its supervisor")
+
+
+def test_retention_prunes_finished_runs_and_receipts(tmp_path):
+    store, job_id, options = make_script(tmp_path, "print('done')\n")
+    runner = LocalRunner(
+        RunnerConfig(provider="local", runs_dir=tmp_path / "runs", retain_runs=2)
+    )
+    finished = []
+    for _ in range(3):
+        run = runner.submit(store, job_id, op="script", options=options)
+        assert runner.wait(run["id"], poll_interval=0.05)["status"] == "succeeded"
+        finished.append(run["id"])
+    latest = runner.submit(store, job_id, op="script", options=options)
+    assert {path.name for path in runner.config.runs_dir.iterdir()} == {
+        *finished[1:],
+        latest["id"],
+    }
+    runner.wait(latest["id"], poll_interval=0.05)
+
+    receipts = tmp_path / "runs" / "receipts"
+    live_owner = {"pid": os.getpid(), **process_identity_fields(os.getpid())}
+    for name, status, owner, modified in [
+        ("old", "succeeded", {}, 1000),
+        ("abandoned", "queued", {"pid": 2**22 - 1}, 2000),  # owner was killed
+        ("new", "failed", {}, 3000),
+        ("live", "queued", live_owner, 500),
+    ]:
+        (receipts / name).mkdir(parents=True)
+        (receipts / name / "run.json").write_text(
+            json.dumps({"status": status, "owner": owner})
+        )
+        os.utime(receipts / name / "run.json", (modified, modified))
+    _prune_receipts(tmp_path / "runs", 1)
+    assert {path.name for path in receipts.iterdir()} == {"new", "live"}
 
 
 def test_lost_local_worker_is_reported_instead_of_polling_forever(tmp_path):
