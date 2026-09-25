@@ -1,9 +1,10 @@
 from typing import Any
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
 from wayfinder_paths.core.constants import ZERO_ADDRESS
+from wayfinder_paths.core.utils import transaction as tx
 from wayfinder_paths.core.utils.transaction import TransactionConfirmationError
 from wayfinder_paths.mcp.tools import execute
 
@@ -128,3 +129,54 @@ async def test_pre_broadcast_failure_stays_failed(scenario: dict[str, Any]) -> N
     )
     assert output["result"]["status"] == "failed"
     assert "txn_hash" not in output["result"]["effects"]["send_erc20"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("healthy_peer", [False, True])
+async def test_send_with_real_confirmation_handling(
+    scenario: dict[str, Any], monkeypatch: pytest.MonkeyPatch, healthy_peer: bool
+) -> None:
+    # Keep send -> RPC confirmation -> MCP outcome handling real. Only signing
+    # and network boundaries are replaced; no transaction leaves this test.
+    monkeypatch.setattr(execute, "send_transaction", tx.send_transaction)
+    signer = AsyncMock(return_value=b"signed")
+    signer.wallet_address = None
+    monkeypatch.setattr(
+        execute,
+        "get_wallet_signing_callback_for_chain",
+        AsyncMock(return_value=(signer, OWNER)),
+    )
+    monkeypatch.setattr(tx, "_is_gorlami_fork_chain", lambda _: False)
+    for name in ("gas_limit_transaction", "nonce_transaction", "gas_price_transaction"):
+        monkeypatch.setattr(
+            tx, name, AsyncMock(side_effect=lambda transaction: transaction)
+        )
+    broadcast = AsyncMock(return_value=HASH)
+    monkeypatch.setattr(tx, "broadcast_transaction", broadcast)
+
+    failed, peer = MagicMock(), MagicMock()
+    failed.eth.wait_for_transaction_receipt = AsyncMock(
+        side_effect=RuntimeError("403 quota")
+    )
+    peer.eth.wait_for_transaction_receipt = AsyncMock(
+        return_value={"status": 1, "blockNumber": 100}
+    )
+    context = MagicMock()
+    context.return_value.__aenter__.return_value = (
+        [failed, peer] if healthy_peer else [failed]
+    )
+    monkeypatch.setattr(tx, "web3s_from_chain_id", context)
+
+    output = await execute.onchain_send(
+        wallet_label="main", token="asset", recipient=ROUTER, amount="1.0"
+    )
+    assert output["ok"] is True
+    result = output["result"]
+    effect = result["effects"]["send_erc20"]
+    if healthy_peer:
+        assert result["status"] == "confirmed"
+        assert effect["txn_hash"] == HASH
+    else:
+        assert_submitted(result, effect)
+    signer.assert_awaited_once()
+    broadcast.assert_awaited_once()
