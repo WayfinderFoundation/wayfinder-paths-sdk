@@ -8152,6 +8152,9 @@ def test_near_miss_screen_keeps_profitable_fixable_failures_only() -> None:
         is None
     )
     assert _near_miss_screen(_near_miss_entry("d", 0.1, [])) is None
+    developed = _near_miss_entry("e", 0.2, ["activity_collapse"])
+    developed["metadata"]["dev"] = {"validation": {"stats": {"net_return": -0.08}}}
+    assert _near_miss_screen(developed) is None
 
 
 def test_near_misses_are_frozen_ranked_and_retry_capped(tmp_path, monkeypatch) -> None:

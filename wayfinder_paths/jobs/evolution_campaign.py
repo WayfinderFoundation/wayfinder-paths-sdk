@@ -9715,7 +9715,11 @@ def _freeze_parent_pool(
 def _near_miss_screen(entry: Mapping[str, Any]) -> dict[str, Any] | None:
     """The screen summary of a profitable candidate that broke only fixable
     rules, or None."""
-    postmortem = (entry.get("metadata") or {}).get("latest_postmortem") or {}
+    metadata = entry.get("metadata") or {}
+    # A book that reached full development already had its independent test.
+    if metadata.get("dev"):
+        return None
+    postmortem = metadata.get("latest_postmortem") or {}
     screen = postmortem.get("screen") or {}
     codes = [str(code) for code in postmortem.get("failure_codes") or []]
     combined = screen.get("combined_net_return")
