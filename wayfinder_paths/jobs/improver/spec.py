@@ -216,6 +216,10 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         # at most this many times each.
         "near_miss_parents": 0,
         "near_miss_max_retries": 2,
+        # Full development's trial haircut (validation t against the expected
+        # max t of the campaign's quick attempts) blocks by default; False keeps
+        # it on record while the finalist gate and forward probation certify.
+        "full_dev_haircut_blocking": True,
         "finalist_risk_normalization": True,
         "finalist_risk_margin": 0.9,
         "split": {"train": 0.80, "validation": 0.20},

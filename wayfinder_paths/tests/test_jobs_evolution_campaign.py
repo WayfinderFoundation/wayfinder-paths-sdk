@@ -8252,3 +8252,62 @@ def test_design_must_use_frozen_near_misses(tmp_path) -> None:
         submit_campaign_design(store, job_id, campaign_design=design)
     except ValueError as exc:
         assert "near_miss" not in str(exc)
+
+
+@pytest.mark.parametrize("blocking", [True, False])
+def test_full_dev_haircut_blocks_only_when_policy_says_so(
+    tmp_path, monkeypatch, blocking: bool
+) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    improver = store.job_dir(job_id) / "improver.yaml"
+    spec = (
+        yaml.safe_load(improver.read_text(encoding="utf-8"))
+        if improver.exists()
+        else {}
+    )
+    spec = dict(spec or {})
+    spec["evolution"] = {
+        **dict(spec.get("evolution") or {}),
+        "full_dev_haircut_blocking": blocking,
+    }
+    improver.write_text(yaml.safe_dump(spec), encoding="utf-8")
+    monkeypatch.setattr(
+        evolution_campaign,
+        "haircut",
+        lambda *_args, **_kwargs: {
+            "cleared": False,
+            "t_stat": 0.5,
+            "expected_max_t": 1.8,
+            "trials": 17,
+            "observations": 5,
+        },
+    )
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="breakout",
+        summary="haircut policy probe",
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
+    )
+    script = (
+        store.job_dir(job_id)
+        / candidate["bundle"]
+        / "workspace"
+        / "src"
+        / "strategy.py"
+    )
+    script.write_text(
+        script.read_text(encoding="utf-8") + "\nHAIRCUT_PROBE = True\n",
+        encoding="utf-8",
+    )
+
+    outcome = _isolated_full_dev(store, job_id, candidate, tune=False)
+
+    codes = outcome.get("full_dev_failure_codes") or []
+    assert ("validation_not_significant_after_trials" in codes) is (
+        blocking and outcome["status"] != "dev_frontier"
+    )
+    assert not (not blocking and "validation_not_significant_after_trials" in codes)
+    # The haircut stays on record either way.
+    assert outcome["dev"]["validation"]["haircut"]["cleared"] is False

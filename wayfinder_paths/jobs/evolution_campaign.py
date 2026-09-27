@@ -8216,7 +8216,13 @@ def _full_dev(
         target_days=len(validation_regime.get("target_daily") or []),
         min_target_days=int(regime_config.get("min_target_days") or 10),
         audit_passed=bool(calibration["audit_passed"]),
-        haircut_cleared=validation_haircut.get("cleared"),
+        # Probation-bound finalists are certified by the forward paired trial;
+        # the policy can keep the trial haircut advisory before it.
+        haircut_cleared=(
+            validation_haircut.get("cleared")
+            if policy.get("full_dev_haircut_blocking", True)
+            else None
+        ),
         haircut_text=(
             f"t {validation_haircut['t_stat']} vs {validation_haircut['expected_max_t']} "
             f"expected from {validation_haircut['trials']} trials"
@@ -8431,7 +8437,13 @@ def _protected_fold_full_dev(
         required_positive_folds=int(certification_policy["required_positive_folds"]),
         max_fold_loss_pct=float(certification_policy["max_fold_loss_pct"]),
         audit_passed=bool(calibration["audit_passed"]),
-        haircut_cleared=validation_haircut.get("cleared"),
+        # Probation-bound finalists are certified by the forward paired trial;
+        # the policy can keep the trial haircut advisory before it.
+        haircut_cleared=(
+            validation_haircut.get("cleared")
+            if policy.get("full_dev_haircut_blocking", True)
+            else None
+        ),
         neutral_folds=sum(bool(row.get("neutral")) for row in fold_rows),
         stress_reused=stress_params == params,
     )
