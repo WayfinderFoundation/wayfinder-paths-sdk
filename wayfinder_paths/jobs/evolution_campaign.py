@@ -9813,6 +9813,27 @@ def _near_miss_screen(entry: Mapping[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _inverted_families(archive: list[dict[str, Any]]) -> set[str]:
+    """Families whose full development made money in training and lost on
+    independent validation: a screen win from one of them is not a near miss
+    worth a repair slot, it is the same inversion again."""
+    inverted: set[str] = set()
+    for entry in archive:
+        dev = (entry.get("metadata") or {}).get("dev") or {}
+        train = ((dev.get("train") or {}).get("stats") or {}).get("net_return")
+        validation = ((dev.get("validation") or {}).get("stats") or {}).get(
+            "net_return"
+        )
+        if (
+            train is not None
+            and validation is not None
+            and float(train) > 0
+            and float(validation) < 0
+        ):
+            inverted.add(str(entry.get("family") or "").strip().lower())
+    return inverted
+
+
 def _freeze_near_misses(
     store: JobStore, job_id: str, campaign_root: Path, policy: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
@@ -9829,12 +9850,14 @@ def _freeze_near_misses(
             continue
         for parent_id in entry.get("parent_candidate_ids") or []:
             retries[str(parent_id)] = retries.get(str(parent_id), 0) + 1
+    inverted = _inverted_families(archive)
     ranked: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
     for entry in archive:
         candidate_id = str(entry.get("candidate_id") or "")
         if (
             entry.get("status") not in _NEAR_MISS_ARCHIVE_STATUSES
             or retries.get(candidate_id, 0) >= max_retries
+            or str(entry.get("family") or "").strip().lower() in inverted
         ):
             continue
         screen = _near_miss_screen(entry)
