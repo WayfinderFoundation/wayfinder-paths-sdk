@@ -8173,8 +8173,20 @@ def test_near_miss_screen_keeps_profitable_fixable_failures_only() -> None:
 
 def test_near_misses_are_frozen_ranked_and_retry_capped(tmp_path, monkeypatch) -> None:
     store, job_id = _job(tmp_path, "majors-5m-lab")
+    # A family that already made money in training and lost on validation:
+    # its best screen win is the same inversion again, not a near miss.
+    kernel = _near_miss_entry("kernel", 0.8, ["screen_slice_loss_bound"])
+    kernel["family"] = "Sleeve_Momentum"
+    developed = _near_miss_entry("developed", 0.6, ["screen_slice_loss_bound"])
+    developed["family"] = "sleeve_momentum"
+    developed["metadata"]["dev"] = {
+        "train": {"stats": {"net_return": 0.47}},
+        "validation": {"stats": {"net_return": -0.27}},
+    }
     archive = {
         "candidates": [
+            kernel,
+            developed,
             _near_miss_entry("small", 0.126, ["cost_not_covered"]),
             _near_miss_entry("big", 0.297, ["screen_slice_loss_bound"]),
             _near_miss_entry("stale", 0.9, ["cost_not_covered"], status="invalid"),
