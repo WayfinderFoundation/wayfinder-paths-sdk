@@ -131,6 +131,9 @@ class StarterDefinition:
     # Declared feature feeds (data_contract.features): the wake refresh keeps
     # each one live and the strategy stands down while a feed is stale.
     features: tuple[dict[str, Any], ...] = ()
+    # Retirement affects new canned launches, not existing jobs or research
+    # imports. Historical definitions remain resolvable by their stable ID.
+    selectable: bool = True
 
     def configured_params(self) -> dict[str, Any]:
         if self.family in {"mean_reversion", "maker_mean_reversion"}:
@@ -249,7 +252,11 @@ class StarterDefinition:
                     "bars and is not included in these historical figures."
                 )
             ),
-            "jobs_v1_leverage_sweep": {
+            "jobs_v1_leverage_sweep": copy.deepcopy(
+                self.research_evidence["jobs_v1_leverage_sweep"]
+            )
+            if "jobs_v1_leverage_sweep" in self.research_evidence
+            else {
                 "leverage_semantics": "target_exposure",
                 "liquidation_model": (
                     "close-of-bar cross margin using venue maintenance defaults"
@@ -276,7 +283,7 @@ class StarterDefinition:
                 "strategy_inception_at": self.strategy_inception_at,
                 "execution_contract": "jobs_v1",
                 "default_mode": "paper",
-                "selectable": True,
+                "selectable": self.selectable,
                 "forward_tracking": {
                     "starts": "when_selected",
                     "initial_status": "no_forward_observations",
@@ -1979,10 +1986,15 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
 
 
 def starter_catalog() -> list[dict[str, Any]]:
-    return [definition.to_dict() for definition in STARTER_DEFINITIONS]
+    return [
+        definition.to_dict()
+        for definition in STARTER_DEFINITIONS
+        if definition.selectable
+    ]
 
 
 def get_starter(starter_id: str) -> StarterDefinition:
+    """Resolve a stable ID, including retired definitions for existing jobs/research."""
     normalized = str(starter_id).strip().lower()
     for definition in STARTER_DEFINITIONS:
         if definition.id == normalized:
@@ -2072,15 +2084,31 @@ def create_starter_job(
         selected_leverage, leverage_warning = coerce_starter_leverage(
             existing.execution_params.get("leverage", STARTER_LEVERAGE_DEFAULT)
         )
+        recorded_evidence = store.read_json(
+            existing.id, "results/backtest/starter_evidence.json", default=None
+        )
+        starter_evidence = (
+            recorded_evidence
+            if isinstance(recorded_evidence, dict)
+            and recorded_evidence.get("id") == definition.id
+            else definition.to_dict()
+        )
         return {
             "created": False,
             "job": existing.to_dict(),
             "job_yaml": str(job_path),
             "script_entrypoint": str(entrypoint) if entrypoint is not None else None,
-            "starter": definition.to_dict(),
+            "starter": starter_evidence,
             "selected_leverage": selected_leverage,
             "leverage_warning": leverage_warning,
         }
+
+    if not definition.selectable:
+        raise ValueError(
+            f"Starter {definition.id!r} is retired from new selection because it "
+            "has not qualified under the current catalogue requirements. "
+            "Existing jobs are unchanged; choose a starter from the current catalogue."
+        )
 
     from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
 
