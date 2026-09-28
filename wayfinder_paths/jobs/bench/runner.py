@@ -469,7 +469,16 @@ def run_campaign_phase(
         if result["exit_code"] != 0 or "BENCH_READY" not in result["stdout_tail"]:
             invalid_reason = "model interface smoke failed"
     if invalid_reason is None:
-        start_campaign(store, job_id, now=virtual_now, force=True)
+        # Bench loops run back to back in wall time, so the rolling 12 h
+        # evolution duty budget would starve later loops that production
+        # (campaigns >= 48 h apart) never sees; a config can lift it per run.
+        start_campaign(
+            store,
+            job_id,
+            now=virtual_now,
+            force=True,
+            override_compute_budget=bool(config.get("override_compute_budget")),
+        )
         invalid_reason = _drive_campaign(
             store=store,
             job_id=job_id,
