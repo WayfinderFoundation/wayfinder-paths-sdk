@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
+import signal
 import time
 from pathlib import Path
 
@@ -35,6 +36,11 @@ def _child_crash_worded_like_infrastructure() -> dict[str, int]:
     raise OSError("connection reset while reading bars")
 
 
+def _child_killed_mid_phase() -> dict[str, int]:
+    os.kill(os.getpid(), signal.SIGKILL)
+    return {"unreachable": 1}
+
+
 def _sleeping_child(seconds: float) -> dict[str, bool]:
     time.sleep(seconds)
     return {"complete": True}
@@ -51,6 +57,16 @@ def test_isolated_phase_returns_compact_result_from_disposable_child() -> None:
 def test_isolated_phase_preserves_candidate_failure_as_evidence() -> None:
     with pytest.raises(RuntimeError, match="candidate is invalid"):
         run_isolated_phase(_child_failure, timeout_s=10)
+
+
+@pytest.mark.skipif(
+    "fork" not in multiprocessing.get_all_start_methods(), reason="needs fork"
+)
+def test_child_that_dies_mid_phase_is_infrastructure_not_evidence() -> None:
+    # The closed pipe used to surface as an empty EOFError that finalize
+    # filed as "paper proposal staging failed: " against the candidate.
+    with pytest.raises(TransientInfrastructureError, match="without a result"):
+        run_isolated_phase(_child_killed_mid_phase, timeout_s=10)
 
 
 def test_isolated_phase_preserves_transient_failure_for_retry() -> None:

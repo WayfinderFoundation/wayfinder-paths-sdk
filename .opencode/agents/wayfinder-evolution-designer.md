@@ -64,6 +64,12 @@ the same standing and its falsified families are dead on this panel. A
 `policy_kernel` slot with `policy_ref` set to a survivor's pointer instantiates
 that survivor's kernel with its scanned params as the candidate, with no new
 code; prefer it over asking a worker to reinvent a rotation or a sleeve book.
+When the manifest's `parent_pool.near_misses` is non-empty, earlier
+campaigns left books that made money on the screen but broke one fixable
+rule (a slice loss over the bound, costs not covered by the hurdle, activity
+collapse). Give at least one of them a `near_miss` slot (optionally
+`near_miss_id`): its worker starts from that bundle and repairs only the
+failing rule, which is the cheapest route to a book that clears the screen.
 
 After every initial slot has had its screen attempt you get one redesign
 turn (`wayfinder_core_jobs(action="evolution_redesign", job_id=...,

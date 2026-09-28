@@ -36,6 +36,7 @@ from wayfinder_paths.jobs.bench.runner import (
     _arm_env,
     _assert_bench_root,
     _audit_session_isolation,
+    _install_governance,
     _install_job,
     _require_config_env,
     _resolve_runtime_opencode_config,
@@ -50,6 +51,7 @@ from wayfinder_paths.jobs.benchmarks.agent_adapter import (
     run_agent_wakes,
 )
 from wayfinder_paths.jobs.bundles import resolve_bundle_script_entrypoint
+from wayfinder_paths.jobs.constitution import load_constitution
 from wayfinder_paths.jobs.evolution_campaign import _campaign_now
 from wayfinder_paths.jobs.execution import ExecutionSpec
 from wayfinder_paths.jobs.gating import compute_workspace_revision
@@ -2147,3 +2149,29 @@ def test_bench_mirror_runs_redesign_inline(monkeypatch) -> None:
     assert seen["action"] == "evolution_redesign"
     assert seen["redesign"] == decision
     assert seen["background"] is False
+
+
+def test_bench_mirrors_production_governance(tmp_path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    store = JobStore(repo_root=tmp_path)
+    job_id = "majors-5m-lab"
+    store.job_dir(job_id).mkdir(parents=True)
+    _install_governance(store, job_id, {})
+    assert (
+        load_constitution(store.job_dir(job_id))["hard_constraints"]["max_drawdown_pct"]
+        == 0.25
+    )
+    _install_governance(
+        store,
+        job_id,
+        {
+            "hard_constraints.yaml": {"max_drawdown_pct": 0.15, "max_tail_loss": 0.1},
+            "audit_policy.yaml": {"promotion": {"min_oos_trades": 12}},
+        },
+    )
+    constitution = load_constitution(store.job_dir(job_id))
+    assert constitution["source"] == "governance"
+    assert constitution["hard_constraints"]["max_tail_loss"] == 0.1
+    assert constitution["promotion"]["min_oos_trades"] == 12
+    with pytest.raises(ValueError, match="unknown governance files"):
+        _install_governance(store, job_id, {"secrets.yaml": {}})

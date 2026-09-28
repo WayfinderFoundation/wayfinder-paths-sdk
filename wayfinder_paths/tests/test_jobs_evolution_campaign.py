@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 import yaml
 
+from wayfinder_paths.jobs import evolution_campaign
 from wayfinder_paths.jobs.archive import (
     behavior_cell,
     evolution_lessons_block,
@@ -35,16 +36,19 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _commit_designed_attempt,
     _commit_full_dev,
     _complexity_budget,
+    _diversified_full_dev_order,
     _economic_gate_child,
     _failure_mode_summary,
     _fleet_campaign_turn,
     _focus_rank,
+    _freeze_near_misses,
     _freeze_research_context,
     _gate_summary,
     _isolated_full_dev,
     _load_candidate_search_space,
     _materialize_candidate_seed,
     _min_fills_per_day,
+    _near_miss_screen,
     _neighborhood_dimension,
     _numeric_tunables,
     _objective,
@@ -996,6 +1000,19 @@ def test_starter_seeds_are_stamped_with_universe_compatibility(tmp_path) -> None
             plan={"source": "starter_seed", "starter": sleeves},
         )
     assert not (tmp_path / "never-created").exists()
+    # A qd/crossover slot with no parents falls back to a starter, and that
+    # fallback must skip starters the universe cannot host too.
+    fallback = _select_parent_plan(
+        {
+            **manifest,
+            "parent_pool": {"candidates": []},
+            "starter_seeds": [sleeves, starters[compatible_ids[0]]],
+        },
+        requested_source="qd_elite",
+        slot=1,
+        candidates=[],
+    )
+    assert fallback["starter"]["starter_id"] == compatible_ids[0]
 
 
 def test_design_prompt_offers_validated_signals_when_seeding_is_on(tmp_path) -> None:
@@ -8093,3 +8110,284 @@ def test_protected_pack_is_clipped_to_discovery(tmp_path) -> None:
     assert baseline["window"]["source"] == "discovery_window"
     assert baseline["window"]["bars"] == plan["discovery"]["bars"]
     assert baseline["source"]["path"] == "discovery snapshot simulation"
+
+
+def _near_miss_entry(
+    candidate_id: str,
+    combined: float,
+    codes: list[str],
+    *,
+    status: str = "low_fidelity_rejected",
+    parent_source: str = "de_novo",
+    parents: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    return {
+        "candidate_id": candidate_id,
+        "status": status,
+        "family": f"family-{candidate_id}",
+        "summary": f"summary {candidate_id}",
+        "revision": f"rev-{candidate_id}",
+        "parent_candidate_ids": list(parents),
+        "metadata": {
+            "parent_source": parent_source,
+            "latest_postmortem": {
+                "primary_failure": codes[0] if codes else None,
+                "failure_codes": codes,
+                "screen": {
+                    "combined_net_return": combined,
+                    "slices": {
+                        "earlier": {"net_return": -0.036},
+                        "recent": {"net_return": combined + 0.036},
+                    },
+                    "cost_coverage": 1.2,
+                    "cost_hurdle": 1.5,
+                    "max_slice_loss": 0.02,
+                },
+                "repair_work_order": {"diagnosis": "earlier slice lost 3.6%"},
+            },
+        },
+    }
+
+
+def test_near_miss_screen_keeps_profitable_fixable_failures_only() -> None:
+    kept = _near_miss_screen(
+        _near_miss_entry("a", 0.297, ["screen_slice_loss_bound", "activity_collapse"])
+    )
+    assert kept is not None
+    assert kept["combined_net_return"] == 0.297
+    assert kept["slice_net_returns"]["earlier"] == -0.036
+    assert kept["diagnosis"] == "earlier slice lost 3.6%"
+    # Losing books and unfixable failures are not near misses.
+    assert _near_miss_screen(_near_miss_entry("b", -0.02, ["cost_not_covered"])) is None
+    assert (
+        _near_miss_screen(
+            _near_miss_entry("c", 0.1, ["cost_not_covered", "negative_after_costs"])
+        )
+        is None
+    )
+    assert _near_miss_screen(_near_miss_entry("d", 0.1, [])) is None
+    developed = _near_miss_entry("e", 0.2, ["activity_collapse"])
+    developed["metadata"]["dev"] = {"validation": {"stats": {"net_return": -0.08}}}
+    assert _near_miss_screen(developed) is None
+
+
+def test_near_misses_are_frozen_ranked_and_retry_capped(tmp_path, monkeypatch) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    archive = {
+        "candidates": [
+            _near_miss_entry("small", 0.126, ["cost_not_covered"]),
+            _near_miss_entry("big", 0.297, ["screen_slice_loss_bound"]),
+            _near_miss_entry("stale", 0.9, ["cost_not_covered"], status="invalid"),
+            _near_miss_entry("retried", 0.5, ["activity_collapse"]),
+            _near_miss_entry(
+                "retry-1",
+                -0.01,
+                ["negative_after_costs"],
+                parent_source="near_miss",
+                parents=("retried",),
+            ),
+        ]
+    }
+    monkeypatch.setattr(evolution_campaign, "load_archive", lambda *_: archive)
+    monkeypatch.setattr(
+        evolution_campaign,
+        "_ensure_executable_parent",
+        lambda _store, _job_id, _entry: store.job_dir(job_id),
+    )
+    campaign_root = tmp_path / "campaign"
+    frozen = _freeze_near_misses(
+        store,
+        job_id,
+        campaign_root,
+        {"near_miss_parents": 2, "near_miss_max_retries": 1},
+    )
+    assert [item["candidate_id"] for item in frozen] == ["big", "small"]
+    assert frozen[0]["bundle"] == "parents/big"
+    assert (campaign_root / "parents" / "big" / "job.yaml").exists()
+    assert frozen[0]["screen"]["failure_codes"] == ["screen_slice_loss_bound"]
+    # Off by default.
+    assert _freeze_near_misses(store, job_id, campaign_root, {}) == []
+
+
+def test_near_miss_slot_selects_a_frozen_parent() -> None:
+    manifest = {
+        "parent_pool": {
+            "candidates": [],
+            "near_misses": [
+                {"candidate_id": "nm1", "bundle": "parents/nm1"},
+                {"candidate_id": "nm2", "bundle": "parents/nm2"},
+            ],
+        }
+    }
+    plan = _select_parent_plan(
+        manifest, requested_source="near_miss", slot=1, candidates=[]
+    )
+    assert plan["source"] == "near_miss" and plan["primary"]["candidate_id"] == "nm1"
+    named = _select_parent_plan(
+        manifest,
+        requested_source="near_miss",
+        requested_near_miss_id="nm2",
+        slot=1,
+        candidates=[],
+    )
+    assert named["primary"]["candidate_id"] == "nm2"
+    used = _select_parent_plan(
+        manifest,
+        requested_source="near_miss",
+        slot=2,
+        candidates=[{"parent_source": "near_miss", "parent_candidate_ids": ["nm1"]}],
+    )
+    assert used["primary"]["candidate_id"] == "nm2"
+    empty = _select_parent_plan(
+        {"parent_pool": {"candidates": []}},
+        requested_source="near_miss",
+        slot=1,
+        candidates=[],
+    )
+    assert empty == {"source": "de_novo", "parents": [], "fallback_from": "near_miss"}
+
+
+def test_design_must_use_frozen_near_misses(tmp_path) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    state = start_campaign(store, job_id, now=datetime(2099, 8, 25, 12, tzinfo=UTC))
+    manifest_path = str(state["manifest"])
+    manifest = store.read_json(job_id, manifest_path)
+    manifest["parent_pool"]["near_misses"] = [
+        {"candidate_id": "nm1", "family": "trend", "bundle": "parents/nm1"}
+    ]
+    store.write_json(job_id, manifest_path, manifest)
+
+    design = _campaign_design()
+    with pytest.raises(ValueError, match="requires a near_miss slot"):
+        submit_campaign_design(store, job_id, campaign_design=design)
+    design["slots"][5]["parent_source"] = "near_miss"
+    design["slots"][5]["near_miss_id"] = "missing"
+    with pytest.raises(ValueError, match="unavailable near_miss_id"):
+        submit_campaign_design(store, job_id, campaign_design=design)
+    design["slots"][5]["near_miss_id"] = "nm1"
+    try:
+        submit_campaign_design(store, job_id, campaign_design=design)
+    except ValueError as exc:
+        assert "near_miss" not in str(exc)
+
+
+@pytest.mark.parametrize("blocking", [True, False])
+def test_full_dev_haircut_blocks_only_when_policy_says_so(
+    tmp_path, monkeypatch, blocking: bool
+) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    improver = store.job_dir(job_id) / "improver.yaml"
+    spec = (
+        yaml.safe_load(improver.read_text(encoding="utf-8"))
+        if improver.exists()
+        else {}
+    )
+    spec = dict(spec or {})
+    spec["evolution"] = {
+        **dict(spec.get("evolution") or {}),
+        "full_dev_haircut_blocking": blocking,
+    }
+    improver.write_text(yaml.safe_dump(spec), encoding="utf-8")
+    monkeypatch.setattr(
+        evolution_campaign,
+        "haircut",
+        lambda *_args, **_kwargs: {
+            "cleared": False,
+            "t_stat": 0.5,
+            "expected_max_t": 1.8,
+            "trials": 17,
+            "observations": 5,
+        },
+    )
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="breakout",
+        summary="haircut policy probe",
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
+    )
+    script = (
+        store.job_dir(job_id)
+        / candidate["bundle"]
+        / "workspace"
+        / "src"
+        / "strategy.py"
+    )
+    script.write_text(
+        script.read_text(encoding="utf-8") + "\nHAIRCUT_PROBE = True\n",
+        encoding="utf-8",
+    )
+
+    outcome = _isolated_full_dev(store, job_id, candidate, tune=False)
+
+    codes = outcome.get("full_dev_failure_codes") or []
+    assert ("validation_not_significant_after_trials" in codes) is (
+        blocking and outcome["status"] != "dev_frontier"
+    )
+    assert not (not blocking and "validation_not_significant_after_trials" in codes)
+    # The haircut stays on record either way.
+    assert outcome["dev"]["validation"]["haircut"]["cleared"] is False
+
+
+def test_full_dev_order_spends_slots_across_families() -> None:
+    kernel = {"family": "cross_sectional_momentum"}
+    eligible = [
+        {"candidate_id": "k2", **kernel, "status": "quick_complete"},
+        {"candidate_id": "k3", **kernel, "status": "quick_complete"},
+        {
+            "candidate_id": "m1",
+            "family": "Maker_Mean_Reversion",
+            "status": "quick_complete",
+        },
+        {"candidate_id": "retry", **kernel, "status": "full_dev_running"},
+    ]
+    developed = [
+        # A different survivor of the same kernel family counts as the family.
+        {
+            "candidate_id": "k1",
+            "family": "Cross_Sectional_Momentum",
+            "policy_id": "other-survivor",
+            "dev": {"validation": {}},
+        },
+        {"candidate_id": "x1", "family": "other", "full_dev_failure_codes": []},
+    ]
+    order = _diversified_full_dev_order(eligible, developed + eligible)
+    # The running retry keeps its slot; the untried family jumps the kernel
+    # repeats, which stay available behind it.
+    assert [item["candidate_id"] for item in order] == ["retry", "m1", "k2", "k3"]
+    untried = _diversified_full_dev_order(eligible, eligible)
+    assert [item["candidate_id"] for item in untried] == ["retry", "k2", "k3", "m1"]
+
+
+def test_unbuildable_seed_falls_back_to_de_novo_instead_of_wedging(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    state = start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    unbuildable = {
+        **manifest["starter_seeds"][0],
+        "compatible": False,
+        "incompatibility_reason": "requires symbols ['ZZZ'] not in the job dataset",
+    }
+    monkeypatch.setattr(
+        evolution_campaign,
+        "_select_parent_plan",
+        lambda *_args, **_kwargs: {
+            "source": "starter_seed",
+            "parents": [],
+            "starter": unbuildable,
+        },
+    )
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="rotation",
+        summary="seed the dataset cannot host",
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
+    )
+    assert candidate["parent_source"] == "de_novo"
+    assert candidate["seed_fallback"]["from"] == "starter_seed"
+    assert "not in the job dataset" in candidate["seed_fallback"]["reason"]
+    assert (store.job_dir(job_id) / candidate["bundle"] / "job.yaml").exists()

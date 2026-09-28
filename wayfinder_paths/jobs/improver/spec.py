@@ -211,6 +211,17 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "inner_optuna_train_bars": 10_000,
         "inner_optuna_timeout_seconds": 1_800,
         "proposal_finalists": 1,
+        # Profitable screen failures that broke one fixable rule are frozen
+        # into the next campaign as repairable parents (0 = off) and retried
+        # at most this many times each.
+        "near_miss_parents": 0,
+        "near_miss_max_retries": 2,
+        # Full development's trial haircut (validation t against the expected
+        # max t of the campaign's quick attempts) blocks by default; False keeps
+        # it on record while the finalist gate and forward probation certify.
+        "full_dev_haircut_blocking": True,
+        # Spend full-development slots across families before repeating one.
+        "full_dev_family_diversity": False,
         "finalist_risk_normalization": True,
         "finalist_risk_margin": 0.9,
         "split": {"train": 0.80, "validation": 0.20},

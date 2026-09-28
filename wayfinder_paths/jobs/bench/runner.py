@@ -60,6 +60,11 @@ from wayfinder_paths.jobs.evolution_campaign import (
 )
 from wayfinder_paths.jobs.evolution_funnel import summarize_evolution_funnel
 from wayfinder_paths.jobs.execution.op_process import terminate_campaign_ops
+from wayfinder_paths.jobs.governance import (
+    GOVERNANCE_FILES,
+    commit_epoch,
+    governance_dir,
+)
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.probation import load_probation, resolve_probation_bundle
 from wayfinder_paths.jobs.store import JobStore
@@ -378,6 +383,7 @@ def prepare_sandbox(
         policy={**dict(config.get("campaign") or {}), **arm_campaign},
         job_id_override=job_id,
     )
+    _install_governance(store, installed_job_id, dict(config.get("governance") or {}))
     return {
         "run_id": run_id,
         "run_root": run_root,
@@ -390,6 +396,25 @@ def prepare_sandbox(
         "sdk_root": sdk_root,
         "arm_campaign": arm_campaign,
     }
+
+
+def _install_governance(
+    store: JobStore, job_id: str, documents: dict[str, Any]
+) -> None:
+    """Mirror a production job's governance files (gate thresholds) into the
+    sandbox and commit an epoch; without them the sandbox gates on defaults."""
+    if not documents:
+        return
+    unknown = set(documents) - set(GOVERNANCE_FILES)
+    if unknown:
+        raise ValueError(f"unknown governance files: {sorted(unknown)}")
+    target = governance_dir(store.repo_root, job_id)
+    target.mkdir(parents=True, exist_ok=True)
+    for name, document in documents.items():
+        (target / name).write_text(
+            yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+        )
+    commit_epoch(target, note="bench mirror of production governance")
 
 
 @contextmanager

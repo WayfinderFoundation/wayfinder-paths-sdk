@@ -213,7 +213,16 @@ CAMPAIGN_REDESIGN = "campaign_redesign.json"
 # screen reference is the incumbent, never the seed itself (paired against
 # itself an unchanged winner scores a zero delta every day and cannot pass).
 _INCUMBENT_REFERENCE_SOURCES = frozenset(
-    {"starter_seed", "research_seed", "policy_kernel"}
+    {"starter_seed", "research_seed", "policy_kernel", "near_miss"}
+)
+# Screen failures a bounded repair can fix without replacing the mechanism: a
+# book that made money on the screen but broke one of these is carried into
+# the next campaign as a near-miss parent instead of being forgotten.
+_NEAR_MISS_FAILURES = frozenset(
+    {"screen_slice_loss_bound", "cost_not_covered", "activity_collapse"}
+)
+_NEAR_MISS_ARCHIVE_STATUSES = frozenset(
+    {"generated", "quick_complete", "low_fidelity_rejected"}
 )
 MECHANISM_GRID_MAX = 6
 _DEFAULT_EXTRA_HORIZONS: dict[str, list[int]] = {"1h": [72, 168], "4h": [42, 84]}
@@ -701,6 +710,9 @@ def _start_campaign(
         campaign_root / "source"
     )
     parent_pool = _freeze_parent_pool(store, job_id, campaign_root)
+    parent_pool["near_misses"] = _freeze_near_misses(
+        store, job_id, campaign_root, campaign_policy
+    )
     research_seeds = _freeze_research_seeds(store, job_id, campaign_root)
     starter_seeds = _snapshot_starter_seeds(
         store,
@@ -3678,7 +3690,12 @@ def _validate_campaign_design(
         "research_seed",
         "research_context",
         "policy_kernel",
+        "near_miss",
     }
+    available_near_miss_ids = [
+        str(item.get("candidate_id") or "")
+        for item in (manifest.get("parent_pool") or {}).get("near_misses") or []
+    ]
     available_policy_refs = [
         str(row.get("pointer") or "")
         for row in (diagnostic_pack.get("policy_scan") or {}).get("survivors") or []
@@ -3751,6 +3768,22 @@ def _validate_campaign_design(
                     f"slot {slot_id} names unavailable research_seed_id "
                     f"{research_seed_id!r}"
                 )
+        near_miss_id = str(slot.get("near_miss_id") or "").strip()
+        if near_miss_id or source == "near_miss":
+            if source != "near_miss":
+                raise ValueError(
+                    f"slot {slot_id} near_miss_id requires parent_source near_miss"
+                )
+            if not available_near_miss_ids:
+                raise ValueError(
+                    f"slot {slot_id} parent_source near_miss: this campaign froze "
+                    "no near-miss parents"
+                )
+            if near_miss_id and near_miss_id not in available_near_miss_ids:
+                raise ValueError(
+                    f"slot {slot_id} names unavailable near_miss_id "
+                    f"{near_miss_id!r}; available: {available_near_miss_ids}"
+                )
         policy_ref = str(slot.get("policy_ref") or "").strip()
         policy_survivor: dict[str, Any] | None = None
         if policy_ref or source == "policy_kernel":
@@ -3807,6 +3840,8 @@ def _validate_campaign_design(
             normalized_slot["starter_seed_id"] = starter_seed_id
         if research_seed_id:
             normalized_slot["research_seed_id"] = research_seed_id
+        if near_miss_id:
+            normalized_slot["near_miss_id"] = near_miss_id
         normalized_slots.append(normalized_slot)
     wildcard_count = sum(bool(slot["wildcard"]) for slot in normalized_slots)
     if extension:
@@ -3874,6 +3909,11 @@ def _validate_campaign_design(
             raise ValueError("grounded design requires an explicit research slot")
         if "de_novo" not in sources:
             raise ValueError("grounded design requires an explicit de_novo slot")
+        if available_near_miss_ids and "near_miss" not in sources:
+            raise ValueError(
+                "grounded design requires a near_miss slot while near-miss parents "
+                f"exist: {available_near_miss_ids}"
+            )
         available_parents = (manifest.get("parent_pool") or {}).get("candidates") or []
         exploration_parents = [
             parent
@@ -4184,6 +4224,7 @@ def _prepare_candidate(
         requested_policy=_policy_survivor(
             store, job_id, manifest, str(design_slot.get("policy_ref") or "")
         ),
+        requested_near_miss_id=str(design_slot.get("near_miss_id") or "") or None,
         slot=slot,
         candidates=state["candidates"],
     )
@@ -4192,13 +4233,36 @@ def _prepare_candidate(
     candidate_id = f"{state['campaign_id']}-c{slot:02d}"
     relative = f"{CAMPAIGN_ROOT}/{state['campaign_id']}/candidates/{candidate_id}"
     candidate_root = store.job_dir(job_id) / relative
-    seeded_window = _materialize_candidate_seed(
-        store,
-        job_id,
-        campaign_id=str(state["campaign_id"]),
-        candidate_root=candidate_root,
-        plan=parent_plan,
-    )
+    try:
+        seeded_window = _materialize_candidate_seed(
+            store,
+            job_id,
+            campaign_id=str(state["campaign_id"]),
+            candidate_root=candidate_root,
+            plan=parent_plan,
+        )
+    except ValueError as exc:
+        # A seed the dataset cannot host (e.g. a starter needing absent
+        # symbols) must not wedge the slot: every retry would hit the same
+        # frozen plan. Build the slot from the clean scaffold instead.
+        if source == "de_novo":
+            raise
+        shutil.rmtree(candidate_root, ignore_errors=True)
+        parent_plan = {
+            "source": "de_novo",
+            "parents": [],
+            "fallback_from": source,
+            "fallback_reason": str(exc)[:300],
+        }
+        source = "de_novo"
+        parents = []
+        seeded_window = _materialize_candidate_seed(
+            store,
+            job_id,
+            campaign_id=str(state["campaign_id"]),
+            candidate_root=candidate_root,
+            plan=parent_plan,
+        )
     target_regimes = list(design_slot.get("target_regimes") or [])
     if target_regimes:
         job_data = _load_job_yaml(candidate_root)
@@ -4251,6 +4315,23 @@ def _prepare_candidate(
         "research_seed_id": (parent_plan.get("research_seed") or {}).get("seed_id"),
         "policy_ref": (parent_plan.get("policy") or {}).get("pointer"),
         "policy_id": (parent_plan.get("policy") or {}).get("policy_id"),
+        "seed_fallback": (
+            {
+                "from": parent_plan.get("fallback_from"),
+                "reason": parent_plan["fallback_reason"],
+            }
+            if parent_plan.get("fallback_reason")
+            else None
+        ),
+        "near_miss": (
+            {
+                "candidate_id": (parent_plan.get("primary") or {}).get("candidate_id"),
+                "family": (parent_plan.get("primary") or {}).get("family"),
+                "screen": (parent_plan.get("primary") or {}).get("screen"),
+            }
+            if source == "near_miss"
+            else None
+        ),
         "secondary_parent_bundle": (parent_plan.get("secondary") or {}).get("bundle"),
         "mutation_kind": chosen_mutation,
         "neighborhood": neighborhood,
@@ -6055,6 +6136,8 @@ def _claim_full_dev(
             if item.get("status") in {"quick_complete", "full_dev_running"}
         ]
         eligible.sort(key=_candidate_score, reverse=True)
+        if policy.get("full_dev_family_diversity"):
+            eligible = _diversified_full_dev_order(eligible, state["candidates"])
         if not remaining or not eligible:
             return None
         tuning_limit = int(policy["inner_optuna_finalists"])
@@ -6099,6 +6182,37 @@ def _claim_full_dev(
         state.setdefault("finalize_started_at", utc_now_iso())
         _save_campaign(store, job_id, state)
         return campaign_id, claim_id, dict(candidate), tune
+
+
+def _full_dev_family(candidate: Mapping[str, Any]) -> str:
+    # The strategy family, not the policy id: every policy-scan survivor has
+    # its own id, so keying on it let one kernel family take every slot.
+    return str(candidate.get("family") or "unknown").strip().lower()
+
+
+def _diversified_full_dev_order(
+    eligible: list[dict[str, Any]], candidates: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Keep the score order but spend full-development slots across families:
+    a family already developed this campaign goes behind every family that
+    has not been, so one screen-dominant family (e.g. a policy kernel that
+    inverts on validation) cannot take every slot."""
+    developed = {
+        _full_dev_family(item)
+        for item in candidates
+        if item.get("dev") or item.get("full_dev_failure_codes") is not None
+    }
+    running = [item for item in eligible if item.get("status") == "full_dev_running"]
+    fresh = [
+        item
+        for item in eligible
+        if item not in running and _full_dev_family(item) not in developed
+    ]
+    return (
+        running
+        + fresh
+        + [item for item in eligible if item not in running and item not in fresh]
+    )
 
 
 def _select_full_dev_candidate(
@@ -6914,6 +7028,22 @@ def campaign_prompt_block(
             for row in (diagnostic_pack.get("policy_scan") or {}).get("survivors") or []
             if row.get("pointer") and (row.get("recipe") or {}).get("module")
         ]
+        near_misses = list((manifest.get("parent_pool") or {}).get("near_misses") or [])
+        near_miss_instruction = (
+            "Earlier campaigns left near-miss parents: books that made money on "
+            "the screen but broke one fixable rule ("
+            + "; ".join(
+                f"{item['candidate_id']} {item.get('family')}: "
+                f"{100 * float((item.get('screen') or {}).get('combined_net_return') or 0):+.1f}% "
+                f"failed {','.join((item.get('screen') or {}).get('failure_codes') or [])}"
+                for item in near_misses
+            )
+            + "). Include at least one parent_source near_miss slot, optionally "
+            "with near_miss_id set to one of those ids; its worker repairs the "
+            "failing rule instead of starting over. "
+            if near_misses
+            else ""
+        )
         cost_budget = _cost_budget(
             diagnostic_pack.get("baseline") or {}, policy, manifest.get("dataset")
         )
@@ -7206,7 +7336,7 @@ def campaign_prompt_block(
                 "at least one starter_seed and one grounded de_novo slot. "
                 f"{research_instruction}{regime_instruction}{macro_instruction}"
                 f"{cash_instruction}{cost_instruction}{risk_instruction}{ideation_instruction}"
-                f"{failure_instruction}{signal_instruction}"
+                f"{failure_instruction}{signal_instruction}{near_miss_instruction}"
                 "Use at most one incumbent slot and at "
                 "most two parameter slots. One wildcard must be de_novo. "
                 'Call wayfinder_core_jobs with action="evolution_design", '
@@ -7217,7 +7347,8 @@ def campaign_prompt_block(
                 "parent_source, mutation_kind, family, summary"
                 f"{', target_regimes' if specialist_design else ''}. parent_source "
                 "must be exactly one of incumbent, qd_elite, crossover, de_novo, "
-                "starter_seed, research_seed, research_context, policy_kernel; it "
+                "starter_seed, research_seed, research_context, policy_kernel, "
+                "near_miss; it "
                 "is an enum, so do not append a starter id or other qualifier. "
                 "mutation_kind must be exactly structural or parameter. For a "
                 "starter_seed slot, set optional starter_seed_id to one of "
@@ -7749,6 +7880,17 @@ def _candidate_handoff(candidate: dict[str, Any]) -> dict[str, Any]:
     recovery_reason = candidate.get("evaluation_recovery_reason")
     if recovery_reason:
         handoff["evaluation_recovery_reason"] = str(recovery_reason)[:240]
+    if isinstance(candidate.get("near_miss"), Mapping):
+        handoff["near_miss"] = {
+            **candidate["near_miss"],
+            "instruction": (
+                "This bundle made money on an earlier campaign's screen but broke "
+                "the rules in screen.failure_codes. Repair exactly those (for "
+                "example scale risk down to bound the losing slice, or trade "
+                "less often to cover costs) without replacing the mechanism, "
+                "then submit."
+            ),
+        }
     if isinstance(candidate.get("submission_rejection"), Mapping):
         handoff["submission_rejection"] = {
             **candidate["submission_rejection"],
@@ -8138,7 +8280,13 @@ def _full_dev(
         target_days=len(validation_regime.get("target_daily") or []),
         min_target_days=int(regime_config.get("min_target_days") or 10),
         audit_passed=bool(calibration["audit_passed"]),
-        haircut_cleared=validation_haircut.get("cleared"),
+        # Probation-bound finalists are certified by the forward paired trial;
+        # the policy can keep the trial haircut advisory before it.
+        haircut_cleared=(
+            validation_haircut.get("cleared")
+            if policy.get("full_dev_haircut_blocking", True)
+            else None
+        ),
         haircut_text=(
             f"t {validation_haircut['t_stat']} vs {validation_haircut['expected_max_t']} "
             f"expected from {validation_haircut['trials']} trials"
@@ -8353,7 +8501,13 @@ def _protected_fold_full_dev(
         required_positive_folds=int(certification_policy["required_positive_folds"]),
         max_fold_loss_pct=float(certification_policy["max_fold_loss_pct"]),
         audit_passed=bool(calibration["audit_passed"]),
-        haircut_cleared=validation_haircut.get("cleared"),
+        # Probation-bound finalists are certified by the forward paired trial;
+        # the policy can keep the trial haircut advisory before it.
+        haircut_cleared=(
+            validation_haircut.get("cleared")
+            if policy.get("full_dev_haircut_blocking", True)
+            else None
+        ),
         neutral_folds=sum(bool(row.get("neutral")) for row in fold_rows),
         stress_reused=stress_params == params,
     )
@@ -9622,6 +9776,95 @@ def _freeze_parent_pool(
     }
 
 
+def _near_miss_screen(entry: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The screen summary of a profitable candidate that broke only fixable
+    rules, or None."""
+    metadata = entry.get("metadata") or {}
+    # A book that reached full development already had its independent test.
+    if metadata.get("dev"):
+        return None
+    postmortem = metadata.get("latest_postmortem") or {}
+    screen = postmortem.get("screen") or {}
+    codes = [str(code) for code in postmortem.get("failure_codes") or []]
+    combined = screen.get("combined_net_return")
+    if (
+        combined is None
+        or float(combined) <= 0.0
+        or not codes
+        or not set(codes) <= _NEAR_MISS_FAILURES
+    ):
+        return None
+    slices = {
+        str(label): row.get("net_return")
+        for label, row in (screen.get("slices") or {}).items()
+        if isinstance(row, Mapping)
+    }
+    order = postmortem.get("repair_work_order") or {}
+    return {
+        "combined_net_return": float(combined),
+        "slice_net_returns": slices,
+        "failure_codes": codes,
+        "primary_failure": postmortem.get("primary_failure") or codes[0],
+        "cost_coverage": screen.get("cost_coverage"),
+        "cost_hurdle": screen.get("cost_hurdle"),
+        "max_slice_loss": screen.get("max_slice_loss"),
+        "diagnosis": order.get("diagnosis"),
+        "admissible_repairs": order.get("admissible_repairs"),
+    }
+
+
+def _freeze_near_misses(
+    store: JobStore, job_id: str, campaign_root: Path, policy: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Freeze the best profitable screen failures of earlier campaigns as
+    repairable parents, each retried at most ``near_miss_max_retries`` times."""
+    limit = int(policy.get("near_miss_parents") or 0)
+    if limit <= 0:
+        return []
+    max_retries = int(policy.get("near_miss_max_retries") or 2)
+    archive = load_archive(store, job_id).get("candidates") or []
+    retries: dict[str, int] = {}
+    for entry in archive:
+        if (entry.get("metadata") or {}).get("parent_source") != "near_miss":
+            continue
+        for parent_id in entry.get("parent_candidate_ids") or []:
+            retries[str(parent_id)] = retries.get(str(parent_id), 0) + 1
+    ranked: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
+    for entry in archive:
+        candidate_id = str(entry.get("candidate_id") or "")
+        if (
+            entry.get("status") not in _NEAR_MISS_ARCHIVE_STATUSES
+            or retries.get(candidate_id, 0) >= max_retries
+        ):
+            continue
+        screen = _near_miss_screen(entry)
+        if screen is not None:
+            ranked.append((screen["combined_net_return"], entry, screen))
+    ranked.sort(key=lambda row: row[0], reverse=True)
+    frozen: list[dict[str, Any]] = []
+    for _, entry, screen in ranked:
+        if len(frozen) >= limit:
+            break
+        stable = _ensure_executable_parent(store, job_id, entry)
+        if stable is None:
+            continue
+        candidate_id = str(entry["candidate_id"])
+        copy_job_bundle(stable, campaign_root / "parents" / candidate_id)
+        frozen.append(
+            {
+                "candidate_id": candidate_id,
+                "family": str(entry.get("family") or "unknown"),
+                "summary": str(entry.get("summary") or "")[:160],
+                "status": entry.get("status"),
+                "revision": entry.get("revision"),
+                "bundle": f"parents/{candidate_id}",
+                "retries_so_far": retries.get(candidate_id, 0),
+                "screen": screen,
+            }
+        )
+    return frozen
+
+
 def _ensure_executable_parent(
     store: JobStore, job_id: str, entry: dict[str, Any]
 ) -> Path | None:
@@ -10120,6 +10363,7 @@ def _select_parent_plan(
     requested_starter_id: str | None = None,
     requested_research_seed_id: str | None = None,
     requested_policy: Mapping[str, Any] | None = None,
+    requested_near_miss_id: str | None = None,
     slot: int,
     candidates: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -10129,6 +10373,32 @@ def _select_parent_plan(
     are never incumbent copies carrying a misleading lineage label.
     """
     pool = (manifest.get("parent_pool") or {}).get("candidates") or []
+    if requested_source == "near_miss":
+        near_misses = list((manifest.get("parent_pool") or {}).get("near_misses") or [])
+        used = {
+            str(parent_id)
+            for item in candidates
+            if item.get("parent_source") == "near_miss"
+            for parent_id in item.get("parent_candidate_ids") or []
+        }
+        parent = next(
+            (
+                item
+                for item in near_misses
+                if str(item.get("candidate_id") or "") == (requested_near_miss_id or "")
+            ),
+            None,
+        ) or next(
+            (
+                item
+                for item in near_misses
+                if str(item.get("candidate_id") or "") not in used
+            ),
+            None,
+        )
+        if parent is not None:
+            return {"source": "near_miss", "parents": [parent], "primary": parent}
+        return {"source": "de_novo", "parents": [], "fallback_from": "near_miss"}
     if requested_source == "policy_kernel":
         if requested_policy:
             return {
@@ -10230,6 +10500,7 @@ def _select_parent_plan(
                 item
                 for item in manifest.get("starter_seeds") or []
                 if str(item.get("starter_id") or "") not in used
+                and item.get("compatible", True)
             ),
             None,
         )
@@ -10251,7 +10522,7 @@ def _materialize_candidate_seed(
     source = str(plan["source"])
     if source == "incumbent":
         copy_job_bundle(frozen_source, candidate_root)
-    elif source in {"qd_elite", "crossover"}:
+    elif source in {"qd_elite", "crossover", "near_miss"}:
         primary = plan.get("primary") or {}
         parent = _resolve_frozen_parent_bundle(
             store, job_id, campaign_id, str(primary.get("bundle") or "")
