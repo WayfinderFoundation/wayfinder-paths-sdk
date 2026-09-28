@@ -2303,10 +2303,12 @@ def agent_set_mode_cmd(job_id: str, mode: AgentMode, wake_seconds: int | None) -
 def review_now_cmd(
     job_id: str, mode: str | None, apply_proposal_id: str | None
 ) -> None:
+    # An owner-requested review always runs; the wake economy meters timers.
     result = run_job_worker(
         job_id,
         mode=normalize_agent_mode(mode or "monitor"),
         apply_proposal_id=apply_proposal_id,
+        force_llm=True,
     )
     _echo_json({"ok": True, "result": result})
 
