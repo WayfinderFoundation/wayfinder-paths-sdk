@@ -123,7 +123,13 @@ def run_isolated_phase(
                     f"evolution phase timed out after {timeout_s:.0f}s active time"
                 )
             if receiver.poll(1.0):
-                payload = receiver.recv()
+                # A child that dies mid-phase closes the pipe: poll() is true
+                # and recv() raises an empty EOFError, which callers would file
+                # as candidate evidence. It is infrastructure.
+                try:
+                    payload = receiver.recv()
+                except EOFError:
+                    payload = None
                 break
             if not process.is_alive():
                 break
