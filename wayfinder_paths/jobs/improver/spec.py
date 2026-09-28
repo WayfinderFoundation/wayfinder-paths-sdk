@@ -220,6 +220,8 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         # max t of the campaign's quick attempts) blocks by default; False keeps
         # it on record while the finalist gate and forward probation certify.
         "full_dev_haircut_blocking": True,
+        # Spend full-development slots across families before repeating one.
+        "full_dev_family_diversity": False,
         "finalist_risk_normalization": True,
         "finalist_risk_margin": 0.9,
         "split": {"train": 0.80, "validation": 0.20},

@@ -36,6 +36,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _commit_designed_attempt,
     _commit_full_dev,
     _complexity_budget,
+    _diversified_full_dev_order,
     _economic_gate_child,
     _failure_mode_summary,
     _fleet_campaign_turn,
@@ -8314,3 +8315,27 @@ def test_full_dev_haircut_blocks_only_when_policy_says_so(
     assert not (not blocking and "validation_not_significant_after_trials" in codes)
     # The haircut stays on record either way.
     assert outcome["dev"]["validation"]["haircut"]["cleared"] is False
+
+
+def test_full_dev_order_spends_slots_across_families() -> None:
+    kernel = {"policy_id": "xsec", "family": "cross_sectional_momentum"}
+    eligible = [
+        {"candidate_id": "k2", **kernel, "status": "quick_complete"},
+        {"candidate_id": "k3", **kernel, "status": "quick_complete"},
+        {
+            "candidate_id": "m1",
+            "family": "Maker_Mean_Reversion",
+            "status": "quick_complete",
+        },
+        {"candidate_id": "retry", **kernel, "status": "full_dev_running"},
+    ]
+    developed = [
+        {"candidate_id": "k1", **kernel, "dev": {"validation": {}}},
+        {"candidate_id": "x1", "family": "other", "full_dev_failure_codes": []},
+    ]
+    order = _diversified_full_dev_order(eligible, developed + eligible)
+    # The running retry keeps its slot; the untried family jumps the kernel
+    # repeats, which stay available behind it.
+    assert [item["candidate_id"] for item in order] == ["retry", "m1", "k2", "k3"]
+    untried = _diversified_full_dev_order(eligible, eligible)
+    assert [item["candidate_id"] for item in untried] == ["retry", "k2", "k3", "m1"]

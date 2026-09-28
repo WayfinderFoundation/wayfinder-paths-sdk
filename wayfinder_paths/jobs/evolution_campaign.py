@@ -6105,6 +6105,8 @@ def _claim_full_dev(
             if item.get("status") in {"quick_complete", "full_dev_running"}
         ]
         eligible.sort(key=_candidate_score, reverse=True)
+        if policy.get("full_dev_family_diversity"):
+            eligible = _diversified_full_dev_order(eligible, state["candidates"])
         if not remaining or not eligible:
             return None
         tuning_limit = int(policy["inner_optuna_finalists"])
@@ -6149,6 +6151,37 @@ def _claim_full_dev(
         state.setdefault("finalize_started_at", utc_now_iso())
         _save_campaign(store, job_id, state)
         return campaign_id, claim_id, dict(candidate), tune
+
+
+def _full_dev_family(candidate: Mapping[str, Any]) -> str:
+    return str(
+        candidate.get("policy_id") or candidate.get("family") or "unknown"
+    ).lower()
+
+
+def _diversified_full_dev_order(
+    eligible: list[dict[str, Any]], candidates: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Keep the score order but spend full-development slots across families:
+    a family already developed this campaign goes behind every family that
+    has not been, so one screen-dominant family (e.g. a policy kernel that
+    inverts on validation) cannot take every slot."""
+    developed = {
+        _full_dev_family(item)
+        for item in candidates
+        if item.get("dev") or item.get("full_dev_failure_codes") is not None
+    }
+    running = [item for item in eligible if item.get("status") == "full_dev_running"]
+    fresh = [
+        item
+        for item in eligible
+        if item not in running and _full_dev_family(item) not in developed
+    ]
+    return (
+        running
+        + fresh
+        + [item for item in eligible if item not in running and item not in fresh]
+    )
 
 
 def _select_full_dev_candidate(
