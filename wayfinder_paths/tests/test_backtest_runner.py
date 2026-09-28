@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import signal
@@ -16,7 +15,7 @@ import httpx
 import pytest
 import yaml
 
-from wayfinder_paths.jobs import backtest_runner
+from wayfinder_paths.jobs import backtest_runner, sprite_client
 from wayfinder_paths.jobs.backtest_runner import (
     RUNNERS,
     BacktestRunner,
@@ -49,6 +48,7 @@ from wayfinder_paths.jobs.sprite_client import SpriteBacktestsClient
 from wayfinder_paths.jobs.sprite_runtime import run as run_runtime
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.tests import compute_phase_fixtures as phases
+from wayfinder_paths.tests.sprite_lease_fake import BACKEND, FakeSprites
 from wayfinder_paths.tests.test_jobs_preflight import _make_job
 
 
@@ -154,86 +154,10 @@ def test_same_submission_and_artifact_contract_across_providers(
     if provider == "local":
         runner = LocalRunner(config)
     else:
-        # Exercise the real HTTP client and portable runtime while substituting
-        # the provider/Django control plane. No external services or credentials.
-        remote = tmp_path / "remote"
-        remote.mkdir()
-        workspace = remote / "input.tar.gz"
-        archive = remote / "artifacts.tar.gz"
-        summary = remote / "summary.json"
-        state = {
-            "id": "remote-run",
-            "status": "ready",
-            "result": {},
-            "artifacts": {},
-            "error": "",
-        }
-        parts = []
-
-        def api(request):
-            if request.url.path.endswith("/sprite-backtests/"):
-                return httpx.Response(
-                    201,
-                    json={
-                        **state,
-                        "auth_token": "scoped",
-                        "runtime": {"capabilities": ["sdk-workspace-v1"]},
-                    },
-                )
-            if request.method == "PUT":
-                assert request.headers["Authorization"] == "Bearer scoped"
-                assert (
-                    hashlib.sha256(request.content).hexdigest()
-                    == request.headers["X-Content-SHA256"]
-                )
-                parts.append(request.content)
-                workspace.write_bytes(b"".join(parts))
-                return httpx.Response(
-                    200,
-                    json={
-                        "sha256": sha256(workspace),
-                        "size": workspace.stat().st_size,
-                    },
-                )
-            if request.url.path.endswith("/jobs/"):
-                proc = subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "wayfinder_paths.jobs.sprite_runtime",
-                        "--bundle",
-                        str(workspace),
-                        "--root",
-                        str(remote / "workspace"),
-                        "--output",
-                        str(summary),
-                        "--artifacts",
-                        str(archive),
-                    ],
-                    capture_output=True,
-                    timeout=30,
-                )
-                assert proc.returncode == 0, proc.stderr
-                state.update(
-                    status="succeeded",
-                    result={"output": json.loads(summary.read_text())},
-                    artifacts={
-                        "sha256": sha256(archive),
-                        "size": archive.stat().st_size,
-                    },
-                )
-                return httpx.Response(202, json={"status": "queued"})
-            assert request.headers["X-API-Key"] == "owner-key"
-            if request.url.path.endswith("/artifacts/"):
-                return httpx.Response(200, content=archive.read_bytes())
-            return httpx.Response(200, json=state)
-
-        http = httpx.Client(
-            transport=httpx.MockTransport(api), base_url="https://backend.example"
-        )
-        client = SpriteBacktestsClient(
-            "https://backend.example", "shell", "owner-key", client=http
-        )
+        # The real HTTP client and portable runtime against the lease protocol
+        # in memory. No external services or credentials.
+        client = FakeSprites(tmp_path / "fake").client()
+        http = client.http
         runner = SpritesRunner(config, client=client)
     with runner:
         submitted = runner.submit(store, job_id, op="script", options=options)
@@ -666,12 +590,14 @@ class InlineRunner(BacktestRunner):
     def _directory(self, run_id: str) -> Path:
         return self.config.runs_dir / "inline" / run_id
 
-    def submit_archive(self, archive: Path) -> dict:
+    def submit_archive(self, archive: Path, *, base: Path | None = None) -> dict:
         run_id = f"inline-{uuid.uuid4()}"
         directory = self._directory(run_id)
         directory.mkdir(parents=True)
         summary, artifacts = directory / "summary.json", directory / "artifacts.tgz"
-        code = run_runtime(archive, directory / "workspace", summary, artifacts)
+        code = run_runtime(
+            archive, directory / "workspace", summary, artifacts, base=base
+        )
         self.records[run_id] = {
             "id": run_id,
             "provider": "inline",
@@ -796,78 +722,10 @@ def test_phase_is_validated_before_anything_is_submitted(tmp_path):
     assert not (tmp_path / "runs").exists()
 
 
-def _fake_sprites(
-    tmp_path: Path, *, refuse: int | None = None
-) -> SpriteBacktestsClient:
-    """Django/Sprites control plane in memory, running the real runtime."""
-    remote = tmp_path / "remote"
-    remote.mkdir()
-    workspace, archive = remote / "input.tar.gz", remote / "artifacts.tar.gz"
-    summary = remote / "summary.json"
-    state = {
-        "id": "remote-run",
-        "status": "ready",
-        "result": {},
-        "artifacts": {},
-        "error": "",
-    }
-    parts: list[bytes] = []
-
-    def api(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/sprite-backtests/"):
-            if refuse is not None:
-                return httpx.Response(refuse, json={"detail": "worker limit reached"})
-            return httpx.Response(
-                201,
-                json={
-                    **state,
-                    "auth_token": "scoped",
-                    "runtime": {"capabilities": ["sdk-workspace-v1"]},
-                },
-            )
-        if request.method == "PUT":
-            parts.append(request.content)
-            workspace.write_bytes(b"".join(parts))
-            return httpx.Response(
-                200,
-                json={"sha256": sha256(workspace), "size": workspace.stat().st_size},
-            )
-        if request.url.path.endswith("/jobs/"):
-            proc = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "wayfinder_paths.jobs.sprite_runtime",
-                    "--bundle",
-                    str(workspace),
-                    "--root",
-                    str(remote / "workspace"),
-                    "--output",
-                    str(summary),
-                    "--artifacts",
-                    str(archive),
-                ],
-                capture_output=True,
-                timeout=60,
-            )
-            state.update(
-                status="succeeded" if proc.returncode == 0 else "failed",
-                result={"output": json.loads(summary.read_text())},
-                artifacts={"sha256": sha256(archive), "size": archive.stat().st_size},
-            )
-            return httpx.Response(202, json={"status": "queued"})
-        if request.method == "DELETE":
-            return httpx.Response(200, json=state)
-        if request.url.path.endswith("/artifacts/"):
-            return httpx.Response(200, content=archive.read_bytes())
-        return httpx.Response(200, json=state)
-
-    http = httpx.Client(
-        transport=httpx.MockTransport(api), base_url="https://backend.example"
-    )
-    return SpriteBacktestsClient(
-        "https://backend.example", "shell", "owner-key", client=http
-    )
+def _fake_sprites(tmp_path: Path, *, refuse: int | None = None) -> FakeSprites:
+    """Django lease endpoints and the Sprite worker in memory, running the
+    real runtime; see sprite_lease_fake."""
+    return FakeSprites(tmp_path / "fake", refuse=refuse)
 
 
 def _sprites_config(tmp_path: Path, **overrides) -> RunnerConfig:
@@ -883,7 +741,7 @@ def _sprites_config(tmp_path: Path, **overrides) -> RunnerConfig:
 
 
 def test_sprites_phase_ships_inputs_and_returns_only_outputs(tmp_path, monkeypatch):
-    client = _fake_sprites(tmp_path)
+    client = _fake_sprites(tmp_path).client()
     monkeypatch.setattr(
         backtest_runner, "SpriteBacktestsClient", lambda *args, **kwargs: client
     )
@@ -905,9 +763,9 @@ def test_sprites_phase_ships_inputs_and_returns_only_outputs(tmp_path, monkeypat
     client.http.close()
 
 
-@pytest.mark.parametrize("status", sorted(backtest_runner.CAPACITY_STATUSES))
+@pytest.mark.parametrize("status", sorted(sprite_client.CAPACITY_STATUSES))
 def test_refused_remote_capacity_falls_back_to_local(tmp_path, monkeypatch, status):
-    client = _fake_sprites(tmp_path, refuse=status)
+    client = _fake_sprites(tmp_path, refuse=status).client()
     monkeypatch.setattr(
         backtest_runner, "SpriteBacktestsClient", lambda *args, **kwargs: client
     )
@@ -928,14 +786,18 @@ def test_refused_remote_capacity_falls_back_to_local(tmp_path, monkeypatch, stat
 
 
 def test_fallback_routes_later_calls_to_the_runner_that_started_the_run(tmp_path):
-    client = _fake_sprites(tmp_path, refuse=429)
+    fake = _fake_sprites(tmp_path)
+    client = fake.client()
     config = _sprites_config(tmp_path)
     store, job_id, options = make_script(tmp_path, "print('fallback')\n")
-    runner = FallbackRunner(
-        SpritesRunner(config, client=client),
-        LocalRunner(replace(config, provider="local")),
-    )
+    primary = SpritesRunner(config, client=client)
+    runner = FallbackRunner(primary, LocalRunner(replace(config, provider="local")))
     with runner:
+        remote = runner.submit(store, job_id, op="script", options=options)
+        assert runner.wait(remote["id"])["status"] == "succeeded"
+        runner.collect(remote["id"], tmp_path / "remote-collected")
+        client.release(remote["lease_id"])
+        fake.refuse = 429
         submitted = runner.submit(store, job_id, op="script", options=options)
         assert submitted["provider"] == "local" and submitted["fallback"]
         result = runner.wait(submitted["id"], poll_interval=0.05)
@@ -943,14 +805,15 @@ def test_fallback_routes_later_calls_to_the_runner_that_started_the_run(tmp_path
         assert result["fallback"]["from"] == "sprites"
         runner.collect(submitted["id"], tmp_path / "collected")
         assert (tmp_path / "collected/operation-result.json").exists()
-        # Remote ids still reach the remote provider.
-        assert runner.status("remote-run")["id"] == "remote-run"
+        # Remote ids still reach the remote provider, here its backend record.
+        recorded = runner.status(remote["id"])
+        assert recorded["provider"] == "sprites" and recorded["source"] == "backend"
     client.http.close()
 
 
 @pytest.mark.parametrize("status", [400, 401, 404])
 def test_configuration_and_request_errors_never_fall_back(tmp_path, status):
-    client = _fake_sprites(tmp_path, refuse=status)
+    client = _fake_sprites(tmp_path, refuse=status).client()
     config = _sprites_config(tmp_path)
     runner = FallbackRunner(
         SpritesRunner(config, client=client),
@@ -972,7 +835,12 @@ def test_unreachable_backend_falls_back_but_strict_config_raises(tmp_path):
         transport=httpx.MockTransport(unreachable), base_url="https://backend.example"
     )
     client = SpriteBacktestsClient(
-        "https://backend.example", "shell", "owner-key", client=http
+        BACKEND,
+        "shell",
+        "owner-key",
+        client=http,
+        sleep=lambda seconds: None,
+        lease_dir=tmp_path / "leases",
     )
     archive = tmp_path / "inputs.tgz"
     archive.write_bytes(b"archive")
@@ -1046,33 +914,55 @@ def test_heavy_lane_cancel_records_itself_and_cancels_the_offloaded_run(tmp_path
     assert runner.wait(directory.name, poll_interval=0.05)["status"] == "cancelled"
 
 
-def test_sprites_status_rides_out_brief_backend_interruptions(tmp_path, monkeypatch):
-    responses = iter(
+def test_sprites_status_rides_out_brief_backend_interruptions(tmp_path):
+    backend = iter(
         [
             httpx.ConnectError("reset"),
             httpx.Response(502),
-            httpx.Response(200, json={"id": "lease", "status": "running"}),
+            httpx.Response(200, json={"id": "lease", "status": "running", "jobs": []}),
             httpx.Response(404, json={"detail": "not found"}),
         ]
     )
+    delays: list[float] = []
 
     def api(request: httpx.Request) -> httpx.Response:
-        response = next(responses)
+        if request.url.host == "sprite.example":
+            raise httpx.ConnectError("worker down", request=request)
+        response = next(backend)
         if isinstance(response, Exception):
             raise httpx.ConnectError("reset", request=request)
         return response
 
-    monkeypatch.setattr(backtest_runner.time, "sleep", lambda seconds: None)
-    http = httpx.Client(
-        transport=httpx.MockTransport(api), base_url="https://backend.example"
-    )
+    http = httpx.Client(transport=httpx.MockTransport(api), base_url=BACKEND)
     client = SpriteBacktestsClient(
-        "https://backend.example", "shell", "owner-key", client=http
+        BACKEND,
+        "shell",
+        "owner-key",
+        client=http,
+        sleep=delays.append,
+        lease_dir=tmp_path / "leases",
+    )
+    client.leases.save(
+        {
+            "id": "lease",
+            "backend": BACKEND,
+            "app_name": "shell",
+            "preset": "jobs-v1",
+            "worker_url": "https://sprite.example",
+            "token": "node-token",
+            "expires_at": "2099-01-01T00:00:00+00:00",
+            "timeout_seconds": 900,
+            "base": None,
+            "job": "job",
+        }
     )
     runner = SpritesRunner(_sprites_config(tmp_path), client=client)
-    assert runner.status("lease")["status"] == "running"
-    with pytest.raises(httpx.HTTPStatusError):
-        runner.status("lease")  # A client error is never retried.
+    # The worker stays unreachable; the backend's record answers after its
+    # own brief interruptions.
+    assert runner.status("lease:job")["status"] == "running"
+    assert delays == [1, 2, 4, 8, 1, 2]
+    with pytest.raises(httpx.HTTPStatusError, match=r"\[lease lease, job job\]"):
+        runner.status("lease:job")  # A client error is never retried.
     http.close()
 
 
@@ -1098,3 +988,131 @@ def test_a_caller_that_stops_waiting_cancels_its_run(tmp_path, monkeypatch):
             ),
         )
     assert len(cancelled) == 1 and cancelled[0].startswith("inline-")
+
+
+def _based_inputs(tmp_path: Path) -> Path:
+    root = _phase_inputs(tmp_path)
+    (root / "candidate").mkdir()
+    (root / "candidate/params.json").write_text('{"scale": 2}')
+    return root
+
+
+def test_sprites_phases_share_one_lease_and_send_their_base_once(tmp_path, monkeypatch):
+    fake = _fake_sprites(tmp_path)
+    clients: list[SpriteBacktestsClient] = []
+
+    def factory(*args, lease_dir, **kwargs):
+        clients.append(fake.client(lease_dir=lease_dir))
+        return clients[-1]
+
+    monkeypatch.setattr(backtest_runner, "SpriteBacktestsClient", factory)
+    root = _based_inputs(tmp_path)
+    config = _sprites_config(tmp_path)
+    totals = []
+    for scale in (2, 3):
+        outcome = run_phase(
+            phases.score_prices,
+            root,
+            ["candidate"],
+            {"prices": "data/prices.txt", "scale": scale},
+            config=config,
+            base_paths=["data"],
+        )
+        assert outcome["run"]["provider"] == "sprites"
+        totals.append(outcome["result"]["total"])
+    assert totals == [12.0, 18.0]
+    assert len(fake.bookings()) == 1 and len(fake.base_uploads) == 1
+    (lease_id,) = fake.leases
+    assert (config.runs_dir / "sprite-leases" / f"{lease_id}.json").exists()
+    with SpritesRunner(config) as runner:
+        runner.client.release(lease_id)
+    assert fake.leases[lease_id]["closed_reason"] == "released"
+    for client in clients:
+        client.http.close()
+
+
+def test_refused_sprites_run_the_same_base_locally_and_delete_it(tmp_path, monkeypatch):
+    client = _fake_sprites(tmp_path, refuse=429).client()
+    monkeypatch.setattr(
+        backtest_runner, "SpriteBacktestsClient", lambda *args, **kwargs: client
+    )
+    config = _sprites_config(tmp_path)
+    outcome = run_phase(
+        phases.score_prices,
+        _based_inputs(tmp_path),
+        ["candidate"],
+        {"prices": "data/prices.txt", "scale": 2},
+        config=config,
+        base_paths=["data"],
+    )
+    run = outcome["run"]
+    assert run["provider"] == "local" and "HTTP 429" in run["fallback"]["reason"]
+    assert outcome["result"]["total"] == 12.0
+    directory = config.runs_dir / run["id"]
+    assert not (directory / "base.tar.gz").exists()
+    assert not (directory / "workspace.tar.gz").exists()
+    client.http.close()
+
+
+def test_a_sprites_phase_that_times_out_raises_without_a_phase_record(
+    tmp_path, monkeypatch
+):
+    fake = _fake_sprites(tmp_path)
+    fake.hold_jobs = True
+    now = [time.time()]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    client = fake.client(sleep=sleep, clock=lambda: now[0])
+    monkeypatch.setattr(
+        backtest_runner, "SpriteBacktestsClient", lambda *args, **kwargs: client
+    )
+    with pytest.raises(PhaseFailed, match="stopped waiting") as failed:
+        run_phase(
+            phases.score_prices,
+            _based_inputs(tmp_path),
+            ["candidate"],
+            {"prices": "data/prices.txt", "scale": 2},
+            config=_sprites_config(tmp_path),
+            base_paths=["data"],
+        )
+    # No phase record: an evolution caller runs the phase locally instead.
+    assert failed.value.stage is None and failed.value.run["status"] == "timed_out"
+    assert failed.value.run["id"] in str(failed.value)
+    client.http.close()
+
+
+def test_local_wait_accepts_a_timeout_and_cancels_the_run(tmp_path):
+    store, job_id, options = make_script(tmp_path, "import time\ntime.sleep(30)\n")
+    runner = LocalRunner(RunnerConfig(provider="local", runs_dir=tmp_path / "runs"))
+    submitted = runner.submit(store, job_id, op="script", options=options)
+    result = runner.wait(submitted["id"], poll_interval=0.05, timeout=0.5)
+    assert result["status"] == "timed_out" and "Stopped waiting" in result["error"]
+    assert runner.wait(submitted["id"], poll_interval=0.05)["status"] == "cancelled"
+
+
+@pytest.mark.parametrize("failure", ["closed_twice", "gateway"])
+def test_sprites_that_cannot_hold_a_lease_are_unavailable(tmp_path, failure):
+    fake = _fake_sprites(tmp_path)
+    if failure == "closed_twice":
+        fake.closed_on_booking = True
+    client = fake.client()
+    if failure == "gateway":
+        client.http.close()
+        client.http = httpx.Client(
+            transport=httpx.MockTransport(lambda request: httpx.Response(504)),
+            base_url=BACKEND,
+        )
+    archive = tmp_path / "inputs.tgz"
+    archive.write_bytes(b"archive")
+    runner = SpritesRunner(_sprites_config(tmp_path, fallback="none"), client=client)
+    with pytest.raises(ComputeUnavailable) as unavailable:
+        runner.submit_archive(archive)
+    reason = str(unavailable.value)
+    assert (
+        "again after booking a new lease" in reason
+        if failure == "closed_twice"
+        else "unavailable (HTTP 504)" in reason
+    )
+    client.http.close()

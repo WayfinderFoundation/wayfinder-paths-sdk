@@ -12,6 +12,7 @@ from wayfinder_paths.jobs.sprite_bundle import (
     SpriteWorkspace,
     WorkspaceRequest,
     extract_archive,
+    pack_base,
     pack_inputs,
     pack_job,
     workspace_files,
@@ -249,3 +250,97 @@ def test_phases_must_be_module_level_sdk_functions() -> None:
 
     with pytest.raises(ValueError, match="module-level"):
         compute_phase(local)
+
+
+def _based_phase(tmp_path: Path, **args: Any) -> tuple[Path, Path]:
+    """A phase reading prices from a base archive and its scale from the delta."""
+    root = tmp_path / "source"
+    (root / "data").mkdir(parents=True, exist_ok=True)
+    (root / "data/prices.txt").write_text("1 2 3")
+    (root / "data/large-dataset.bin").write_bytes(b"d" * 100000)
+    (root / "candidate").mkdir(exist_ok=True)
+    (root / "candidate/scale.txt").write_text("2")
+    base = pack_base(root, ["data"], tmp_path / "base.tar.gz")
+    pack_inputs(
+        root,
+        ["candidate"],
+        {
+            "phase": phase_name(phases.score_prices),
+            "args": {"prices": "data/prices.txt", "scale": 2, **args},
+        },
+        tmp_path / "inputs.tar.gz",
+        base=base,
+    )
+    return tmp_path / "inputs.tar.gz", tmp_path / "base.tar.gz"
+
+
+def test_runtime_extracts_the_base_under_the_phase_inputs(tmp_path: Path) -> None:
+    archive, base = _based_phase(tmp_path)
+    summary, artifacts = tmp_path / "summary.json", tmp_path / "artifacts.tar.gz"
+    with pytest.raises(SystemExit) as exited:
+        main(
+            [
+                "--bundle",
+                str(archive),
+                "--base",
+                str(base),
+                "--root",
+                str(tmp_path / "remote"),
+                "--output",
+                str(summary),
+                "--artifacts",
+                str(artifacts),
+            ]
+        )
+    assert exited.value.code == 0
+    assert json.loads(summary.read_text())["summary"]["total"] == 12.0
+    # The base, like every input, stays on the worker.
+    assert _collected(tmp_path, artifacts) == [
+        "outputs/phase-result.json",
+        "outputs/scaled.txt",
+    ]
+
+
+def _failure(tmp_path: Path, archive: Path, base: Path | None) -> dict[str, Any]:
+    summary, artifacts = tmp_path / "summary.json", tmp_path / "artifacts.tar.gz"
+    remote = tmp_path / f"remote-{len(list(tmp_path.glob('remote-*')))}"
+    assert run(archive, remote, summary, artifacts, base=base) == 1
+    assert _collected(tmp_path / remote.name, artifacts) == ["outputs/phase-error.json"]
+    return json.loads(summary.read_text())
+
+
+def test_a_base_failure_is_a_prepare_failure(tmp_path: Path) -> None:
+    archive, base = _based_phase(tmp_path)
+    missing = _failure(tmp_path, archive, None)
+    assert missing["stage"] == "prepare"
+    assert "Base archive does not match" in missing["error"]
+    staging = tmp_path / "staging"
+    extract_archive(base, staging)
+    (staging / "data/prices.txt").write_text("9 9 9")
+    tampered = tmp_path / "tampered.tar.gz"
+    write_archive(staging, workspace_files(staging, [staging]), tampered)
+    corrupt = _failure(tmp_path, archive, tampered)
+    assert corrupt["stage"] == "prepare"
+    assert "checksum mismatch: data/prices.txt" in corrupt["error"]
+    # A path present in both archives is refused before anything is written.
+    (staging / "candidate").mkdir()
+    (staging / "candidate/scale.txt").write_text("2")
+    overlapping = tmp_path / "overlapping.tar.gz"
+    write_archive(staging, workspace_files(staging, [staging]), overlapping)
+    both = _failure(tmp_path, archive, overlapping)
+    assert both["stage"] == "prepare"
+    assert "present in both archives: candidate/scale.txt" in both["error"]
+
+
+def test_a_base_without_base_files_in_the_request_is_refused(tmp_path: Path) -> None:
+    _, base = _based_phase(tmp_path)
+    archive = _phase_archive(tmp_path / "plain", phases.score_prices, {})
+    unexpected = _failure(tmp_path, archive, base)
+    assert "present in both archives" in unexpected["error"]
+    root = tmp_path / "other"
+    (root / "extra").mkdir(parents=True)
+    (root / "extra/file.txt").write_text("x")
+    other = tmp_path / "other.tar.gz"
+    pack_base(root, ["extra"], other)
+    mismatched = _failure(tmp_path, archive, other)
+    assert "Base archive does not match" in mismatched["error"]

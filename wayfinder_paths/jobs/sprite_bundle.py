@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import os
@@ -9,7 +10,7 @@ import re
 import shutil
 import tarfile
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, TypedDict
@@ -74,6 +75,7 @@ class WorkspaceRequest(TypedDict):
     source_revision: str
     expected_sdk_commit: str | None
     files: dict[str, str]
+    base_files: dict[str, str]
 
 
 class PackedJob(ArchiveInfo):
@@ -92,10 +94,15 @@ class PhaseRequest(TypedDict):
     args: dict[str, Any]
     expected_sdk_commit: str | None
     files: dict[str, str]
+    base_files: dict[str, str]
 
 
 class PackedInputs(ArchiveInfo):
     request: PhaseRequest
+
+
+class PackedBase(ArchiveInfo):
+    checksums: dict[str, str]
 
 
 class AppliedOutputs(TypedDict):
@@ -201,7 +208,13 @@ def write_archive(root: Path, files: list[Path], destination: Path) -> ArchiveIn
         raise ValueError("Workspace has too many files")
     size = 0
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(destination, "w:gz", dereference=False) as archive:
+    # A fixed gzip timestamp keeps an unchanged base byte-identical when it is
+    # packed again, so a lease reuses the base it already holds.
+    with (
+        destination.open("wb") as raw,
+        gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed,
+        tarfile.open(fileobj=compressed, mode="w", dereference=False) as archive,
+    ):
         for file in files:
             relative = file.relative_to(lexical_root)
             safe_relative(relative.as_posix())
@@ -224,8 +237,14 @@ def write_archive(root: Path, files: list[Path], destination: Path) -> ArchiveIn
     }
 
 
-def extract_archive(source: Path, destination: Path) -> None:
-    """Validate the entire archive before writing; never allow links/devices."""
+def extract_archive(
+    source: Path, destination: Path, *, reserved: Collection[str] = ()
+) -> frozenset[str]:
+    """Validate the entire archive before writing; never allow links/devices.
+
+    Returns the extracted names. A name in ``reserved`` (the other archive of
+    the same workspace) is refused before anything is written.
+    """
     if source.stat().st_size > MAX_ARCHIVE_BYTES:
         raise ValueError("Compressed workspace exceeds 512 MiB")
     destination.mkdir(parents=True, exist_ok=True)
@@ -240,6 +259,8 @@ def extract_archive(source: Path, destination: Path) -> None:
                 raise ValueError(
                     "Archive contains a link, directory, special file, or duplicate"
                 )
+            if relative.as_posix() in reserved:
+                raise ValueError(f"A path is present in both archives: {member.name}")
             if not (root / relative).resolve().is_relative_to(root):
                 raise ValueError("Archive escapes destination")
             names.add(relative)
@@ -248,6 +269,7 @@ def extract_archive(source: Path, destination: Path) -> None:
                 raise ValueError("Archive expansion limit exceeded")
             members.append(member)
         archive.extractall(root, members=members, filter="data")
+    return frozenset(name.as_posix() for name in names)
 
 
 def workspace_files(root: Path, paths: list[Path]) -> list[Path]:
@@ -313,9 +335,24 @@ def pack_job(
         "source_root": str(root),
         "source_revision": compute_workspace_revision(store.job_dir(job_id)),
         "expected_sdk_commit": expected_sdk_commit,
-        "files": {file.relative_to(root).as_posix(): sha256(file) for file in files},
+        "files": _checksums(root, files),
+        "base_files": {},
     }
-    return {**_stage(root, files, request, destination), "request": request}
+    return {
+        **_stage(root, files, request["files"], destination, request=request),
+        "request": request,
+    }
+
+
+def pack_base(root: Path, paths: Sequence[str], destination: Path) -> PackedBase:
+    """Snapshot inputs shared by every phase of a lease, such as a dataset.
+
+    The archive is reproducible: packing unchanged files again yields the same
+    bytes, so the lease that already holds this base is reused.
+    """
+    files = _phase_files(root, paths)
+    checksums = _checksums(root, files)
+    return {**_stage(root, files, checksums, destination), "checksums": checksums}
 
 
 def pack_inputs(
@@ -325,25 +362,52 @@ def pack_inputs(
     destination: Path,
     *,
     expected_sdk_commit: str | None = None,
+    base: PackedBase | None = None,
 ) -> PackedInputs:
-    """Snapshot only the named inputs for one registered compute phase."""
-    relative = [safe_relative(value) for value in paths]
-    if any(path.parts[0] == OUTPUTS_DIR for path in relative):
-        raise ValueError("Phase inputs cannot come from the outputs directory")
-    files = workspace_files(root, [root / path for path in relative])
+    """Snapshot only the named inputs for one registered compute phase.
+
+    With a ``base`` (see ``pack_base``) these inputs are the delta extracted
+    over it; a file cannot be in both.
+    """
+    files = _phase_files(root, paths)
+    checksums = _checksums(root, files)
+    base_files = base["checksums"] if base is not None else {}
+    overlap = sorted(checksums.keys() & base_files.keys())
+    if overlap:
+        raise ValueError(f"Phase input is already in the base: {overlap[0]}")
     phase_request: PhaseRequest = {
         "protocol": PHASE_PROTOCOL,
         "op": PHASE_OP,
         "phase": request["phase"],
         "args": request["args"],
         "expected_sdk_commit": expected_sdk_commit,
-        "files": {file.relative_to(root).as_posix(): sha256(file) for file in files},
+        "files": checksums,
+        "base_files": dict(base_files),
     }
-    return {**_stage(root, files, phase_request, destination), "request": phase_request}
+    return {
+        **_stage(root, files, checksums, destination, request=phase_request),
+        "request": phase_request,
+    }
+
+
+def _phase_files(root: Path, paths: Sequence[str]) -> list[Path]:
+    relative = [safe_relative(value) for value in paths]
+    if any(path.parts[0] == OUTPUTS_DIR for path in relative):
+        raise ValueError("Phase inputs cannot come from the outputs directory")
+    return workspace_files(root, [root / path for path in relative])
+
+
+def _checksums(root: Path, files: list[Path]) -> dict[str, str]:
+    return {file.relative_to(root).as_posix(): sha256(file) for file in files}
 
 
 def _stage(
-    root: Path, files: list[Path], request: Mapping[str, Any], destination: Path
+    root: Path,
+    files: list[Path],
+    checksums: Mapping[str, str],
+    destination: Path,
+    *,
+    request: Mapping[str, Any] | None = None,
 ) -> ArchiveInfo:
     # Archive metadata is added without modifying the user's job or repository.
     with tempfile.TemporaryDirectory() as temporary:
@@ -353,13 +417,18 @@ def _stage(
             target = staged.file(relative)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(file, target)
-            if sha256(target) != request["files"][relative]:
+            # The source's modification time, not the copy's, keeps repeated
+            # packing of unchanged files byte-identical.
+            modified = file.stat().st_mtime_ns
+            os.utime(target, ns=(modified, modified))
+            if sha256(target) != checksums[relative]:
                 raise ValueError(
                     "Workspace changed while packaging; retry the submission"
                 )
-        staged.request_file.write_text(
-            json.dumps(request, allow_nan=False), encoding="utf-8"
-        )
+        if request is not None:
+            staged.request_file.write_text(
+                json.dumps(request, allow_nan=False), encoding="utf-8"
+            )
         return staged.archive(destination)
 
 

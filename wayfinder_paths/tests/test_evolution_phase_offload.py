@@ -47,11 +47,13 @@ _VOLATILE = {"checked_at", "sim_wall_seconds", "profile", "run_id"}
 
 
 class RemoteRunner(BacktestRunner):
-    """A remote provider stand-in: a fresh interpreter over the shipped archive."""
+    """A remote provider stand-in: a fresh interpreter over the shipped
+    archive, extracted over its base."""
 
     refuse: str | None = None
     lose_worker = False
     shipped: list[list[str]] = []
+    bases: list[list[str]] = []
 
     def __init__(self, config: RunnerConfig, *, owner_pid: int | None = None):
         super().__init__(config, owner_pid=owner_pid)
@@ -60,11 +62,16 @@ class RemoteRunner(BacktestRunner):
     def _directory(self, run_id: str) -> Path:
         return self.config.runs_dir / "remote" / run_id
 
-    def submit_archive(self, archive: Path) -> dict[str, Any]:
+    def submit_archive(
+        self, archive: Path, *, base: Path | None = None
+    ) -> dict[str, Any]:
         if RemoteRunner.refuse:
             raise ComputeUnavailable(RemoteRunner.refuse)
         with tarfile.open(archive) as tar:
             RemoteRunner.shipped.append(sorted(tar.getnames()))
+        if base is not None:
+            with tarfile.open(base) as tar:
+                RemoteRunner.bases.append(sorted(tar.getnames()))
         run_id = str(uuid.uuid4())
         directory = self._directory(run_id)
         directory.mkdir(parents=True)
@@ -86,6 +93,7 @@ class RemoteRunner(BacktestRunner):
                 "wayfinder_paths.jobs.sprite_runtime",
                 "--bundle",
                 str(archive),
+                *(["--base", str(base)] if base is not None else []),
                 "--root",
                 str(directory / "workspace"),
                 "--output",
@@ -126,6 +134,7 @@ def remote(monkeypatch: pytest.MonkeyPatch) -> type[RemoteRunner]:
     monkeypatch.setattr(RemoteRunner, "refuse", None)
     monkeypatch.setattr(RemoteRunner, "lose_worker", False)
     monkeypatch.setattr(RemoteRunner, "shipped", [])
+    monkeypatch.setattr(RemoteRunner, "bases", [])
     for name in (
         "WAYFINDER_BACKTEST_RUNNER",
         "WAYFINDER_CONFIG_PATH",
@@ -197,12 +206,15 @@ def test_offloaded_full_dev_matches_the_local_supervised_phase(tmp_path, remote)
 
     assert _stable(offloaded) == _stable(local)
     (shipped,) = remote.shipped
+    (base,) = remote.bases
     campaign = (
         f".wayfinder/jobs/{job_id}/research/evolution/campaigns/{state['campaign_id']}"
     )
     assert f"{campaign}/manifest.json" in shipped
     assert any(name.startswith(f"{campaign}/source/") for name in shipped)
-    assert any(name.startswith(f"{campaign}/dataset/") for name in shipped)
+    # The campaign dataset is the base every phase of the campaign shares.
+    assert base and all(name.startswith(f"{campaign}/dataset/") for name in base)
+    assert not any(name.startswith(f"{campaign}/dataset/") for name in shipped)
     bundle = f".wayfinder/jobs/{job_id}/{candidate['bundle']}/"
     assert any(name.startswith(bundle) for name in shipped)
     assert all(
@@ -241,9 +253,11 @@ def test_offloaded_certification_returns_its_evidence_access(tmp_path, remote):
     assert [row["op"] for row in rows] == ["evolution_protected_certification"]
     assert rows[0]["campaign_id"] == state["campaign_id"]
     (shipped,) = remote.shipped
+    (base,) = remote.bases
     protected = f"audit/{job_id}/evolution/campaigns/{state['campaign_id']}/dataset/"
-    assert any(name.startswith(protected) for name in shipped)
-    assert f"audit/{job_id}/evidence_access.jsonl" not in shipped
+    assert any(name.startswith(protected) for name in base)
+    assert not any(name.startswith(protected) for name in shipped)
+    assert f"audit/{job_id}/evidence_access.jsonl" not in shipped + base
     # The snapshot is shipped, never written back, so it still verifies.
     _verified_protected_dataset_root(store, job_id, str(state["campaign_id"]))
 

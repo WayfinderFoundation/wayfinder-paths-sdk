@@ -125,31 +125,49 @@ def installed_sdk_commit() -> str | None:
         return None
 
 
-def prepare(source: Path, root: Path) -> WorkspaceRequest:
+def prepare(source: Path, root: Path, base: Path | None = None) -> WorkspaceRequest:
     """Extract, verify and rebase the request into an isolated workspace."""
     workspace = SpriteWorkspace(root)
-    extract_archive(source, workspace.root)
-    return _prepare_job(
-        json.loads(workspace.request_file.read_text(encoding="utf-8")), workspace
-    )
+    names = extract_archive(source, workspace.root)
+    request = json.loads(workspace.request_file.read_text(encoding="utf-8"))
+    return _prepare_job(request, workspace, _extract_base(base, workspace, names))
+
+
+def _extract_base(
+    base: Path | None, workspace: SpriteWorkspace, names: frozenset[str]
+) -> frozenset[str]:
+    # After the job archive, so a base failure belongs to a known request; a
+    # path in both is refused, so the tree equals extracting the base first.
+    if base is None:
+        return frozenset()
+    return extract_archive(base, workspace.root, reserved=names)
 
 
 def _verify_inputs(
-    request: WorkspaceRequest | PhaseRequest, workspace: SpriteWorkspace
+    request: WorkspaceRequest | PhaseRequest,
+    workspace: SpriteWorkspace,
+    base_names: frozenset[str],
 ) -> None:
     expected = request.get("expected_sdk_commit")
     if expected and installed_sdk_commit() != expected:
         raise ValueError("Sprite SDK commit differs from the requested SDK commit")
-    for name, digest in request["files"].items():
+    base_files = request.get("base_files") or {}
+    if base_files.keys() & request["files"].keys():
+        raise ValueError("A path is listed in both the base and the job request")
+    if set(base_files) != base_names:
+        raise ValueError("Base archive does not match the request's base files")
+    for name, digest in {**request["files"], **base_files}.items():
         file = workspace.file(name)
         if sha256(file) != digest:
             raise ValueError(f"Workspace checksum mismatch: {name}")
 
 
-def _prepare_phase(request: PhaseRequest, workspace: SpriteWorkspace) -> PhaseRequest:
+def _prepare_phase(
+    request: PhaseRequest, workspace: SpriteWorkspace, base_names: frozenset[str]
+) -> PhaseRequest:
     if request.get("op") != PHASE_OP or not isinstance(request.get("args"), dict):
         raise ValueError("Unsupported compute phase request")
-    _verify_inputs(request, workspace)
+    _verify_inputs(request, workspace, base_names)
     workspace.outputs_dir.mkdir()
     # A JobStore() inside the phase must discover this copy, never a source
     # repository above a local runner's run directory.
@@ -162,7 +180,7 @@ def _prepare_phase(request: PhaseRequest, workspace: SpriteWorkspace) -> PhaseRe
 
 
 def _prepare_job(
-    request: WorkspaceRequest, workspace: SpriteWorkspace
+    request: WorkspaceRequest, workspace: SpriteWorkspace, base_names: frozenset[str]
 ) -> WorkspaceRequest:
     if request.get("protocol") != PROTOCOL or request.get("op") not in OPERATIONS:
         raise ValueError("Unsupported SDK workspace protocol or operation")
@@ -173,7 +191,7 @@ def _prepare_job(
         or source_root == "/"
     ):
         raise ValueError("Invalid source repository root")
-    _verify_inputs(request, workspace)
+    _verify_inputs(request, workspace, base_names)
     # JobStore discovers this isolated root rather than the SDK's installation.
     workspace.file("pyproject.toml").write_text(
         '[project]\nname = "sprite-workspace"\nversion = "0.0.0"\n',
@@ -278,19 +296,25 @@ def run(
     artifacts: Path,
     *,
     executor: OperationExecutor | None = None,
+    base: Path | None = None,
 ) -> int:
-    """Run one operation or phase and preserve its artifacts on success or failure."""
+    """Run one operation or phase and preserve its artifacts on success or failure.
+
+    ``base`` is an optional archive of inputs shared across a lease's jobs,
+    extracted into the same workspace; the base never returns with a phase.
+    """
     workspace = SpriteWorkspace(root)
     result: dict[str, Any] = {}
     code = 1
     phase = False
     stage = "prepare"
     try:
-        extract_archive(source, workspace.root)
+        names = extract_archive(source, workspace.root)
         request = json.loads(workspace.request_file.read_text(encoding="utf-8"))
         phase = request.get("protocol") == PHASE_PROTOCOL
+        base_names = _extract_base(base, workspace, names)
         if phase:
-            request = _prepare_phase(request, workspace)
+            request = _prepare_phase(request, workspace, base_names)
             function = resolve_phase(request["phase"])
             stage = "execute"
             with _execution_context(workspace.root):
@@ -299,7 +323,7 @@ def run(
                 )
             result_file = workspace.phase_result_file
         else:
-            request = _prepare_job(request, workspace)
+            request = _prepare_job(request, workspace, base_names)
             execute = executor if executor is not None else execute_operation
             with _execution_context(workspace.root):
                 payload = execute(request, workspace.root)
@@ -343,6 +367,9 @@ def run(
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", type=Path, required=True)
+    parser.add_argument(
+        "--base", type=Path, help="Archive of inputs shared across a lease's jobs"
+    )
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--artifacts", type=Path, required=True)
@@ -357,6 +384,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             args.root.resolve(),
             args.output.resolve(),
             args.artifacts.resolve(),
+            base=args.base.resolve() if args.base else None,
         )
     )
 

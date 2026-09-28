@@ -6447,12 +6447,16 @@ def _offloaded_phase(
         **args,
     }
     try:
+        paths, base_paths = _phase_input_paths(
+            store, job_id, candidate_root, campaign_id=campaign_id
+        )
         outcome = run_phase(
             phase,
             store.repo_root,
-            _phase_input_paths(store, job_id, candidate_root, campaign_id=campaign_id),
+            paths,
             request,
             config=replace(config, fallback="none"),
+            base_paths=base_paths,
         )
     except PhaseFailed as exc:
         if exc.outputs_path is not None:
@@ -6488,16 +6492,19 @@ def _offloaded_phase(
 
 def _phase_input_paths(
     store: JobStore, job_id: str, candidate_root: Path, *, campaign_id: str
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     """Exactly what full development and the economic gate read: this
     candidate, the campaign's manifest, data and baseline source, its state,
-    the governing constitution, and the protected snapshot when certifying."""
+    the governing constitution, and the protected snapshot when certifying.
+
+    Returned as (per-phase inputs, base). The base, the campaign dataset and
+    protected snapshot, is the same for every phase of the campaign, so a
+    remote lease receives it once."""
     job = store.job_dir(job_id)
     campaign = job / CAMPAIGN_ROOT / campaign_id
     paths = [
         candidate_root,
         campaign / "manifest.json",
-        campaign / CAMPAIGN_DATA_ROOT,
         campaign / "source",
         job / CAMPAIGN_STATE_PATH,
     ]
@@ -6510,9 +6517,13 @@ def _phase_input_paths(
         )
         if path.exists()
     )
+    base = [campaign / CAMPAIGN_DATA_ROOT]
     if _protected_fold_policy(_campaign_policy(store, job_id, campaign_id))["enabled"]:
-        paths.append(_protected_campaign_dataset_root(store, job_id, campaign_id))
-    return [path.relative_to(store.repo_root).as_posix() for path in paths]
+        base.append(_protected_campaign_dataset_root(store, job_id, campaign_id))
+    return (
+        [path.relative_to(store.repo_root).as_posix() for path in paths],
+        [path.relative_to(store.repo_root).as_posix() for path in base],
+    )
 
 
 def _phase_ledgers(store: JobStore, job_id: str) -> list[Path]:

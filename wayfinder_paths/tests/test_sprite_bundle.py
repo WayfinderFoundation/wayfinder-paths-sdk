@@ -11,6 +11,7 @@ from wayfinder_paths.jobs.sprite_bundle import (
     PHASE_PROTOCOL,
     SpriteWorkspace,
     extract_archive,
+    pack_base,
     pack_inputs,
     pack_job,
     sha256,
@@ -79,6 +80,7 @@ def test_overlapping_inputs_are_packaged_once(tmp_path: Path) -> None:
         names = bundle.getnames()
     assert len(names) == len(set(names)) == packed["files"]
     assert len(packed["request"]["files"]) == packed["files"] - 1
+    assert packed["request"]["base_files"] == {}
 
 
 def _phase_root(tmp_path: Path) -> Path:
@@ -109,6 +111,7 @@ def test_pack_inputs_ships_only_named_inputs_and_the_phase_request(
         "args": {"scale": 2},
         "expected_sdk_commit": "a" * 40,
         "files": {"data/prices.txt": sha256(root / "data/prices.txt")},
+        "base_files": {},
     }
     assert packed["sha256"] == sha256(archive) and packed["files"] == 2
     extract_archive(archive, tmp_path / "out")
@@ -156,3 +159,70 @@ def test_phase_workspace_collects_only_its_outputs(tmp_path: Path) -> None:
     assert info["files"] == 1
     assert (tmp_path / "collected/outputs/model.bin").read_bytes() == b"weights"
     assert not (tmp_path / "collected/data").exists()
+
+
+def test_pack_base_records_checksums_and_repacks_identically(tmp_path: Path) -> None:
+    root = _phase_root(tmp_path)
+    first = pack_base(root, ["data"], tmp_path / "first.tgz")
+    second = pack_base(root, ["data"], tmp_path / "second.tgz")
+    checksums = {
+        "data/prices.txt": sha256(root / "data/prices.txt"),
+        "data/unrelated.bin": sha256(root / "data/unrelated.bin"),
+    }
+    assert first == {
+        "sha256": sha256(tmp_path / "first.tgz"),
+        "size": (tmp_path / "first.tgz").stat().st_size,
+        "files": 2,
+        "checksums": checksums,
+    }
+    # Unchanged inputs pack to the same bytes, so a lease keeps its base.
+    assert second == first
+    extract_archive(tmp_path / "first.tgz", tmp_path / "out")
+    assert sorted(
+        path.relative_to(tmp_path / "out").as_posix()
+        for path in (tmp_path / "out").rglob("*")
+        if path.is_file()
+    ) == ["data/prices.txt", "data/unrelated.bin"]
+    (root / "data/prices.txt").write_text("4 5 6")
+    assert (
+        pack_base(root, ["data"], tmp_path / "changed.tgz")["sha256"]
+        != (first["sha256"])
+    )
+    with pytest.raises(ValueError):
+        pack_base(root, ["config.json"], tmp_path / "secret.tgz")
+
+
+def test_pack_inputs_over_a_base_ships_only_the_delta(tmp_path: Path) -> None:
+    root = _phase_root(tmp_path)
+    (root / "candidate").mkdir()
+    (root / "candidate/params.json").write_text("{}")
+    base = pack_base(root, ["data/unrelated.bin"], tmp_path / "base.tgz")
+    packed = pack_inputs(
+        root,
+        ["candidate", "data/prices.txt"],
+        {"phase": "p", "args": {}},
+        tmp_path / "inputs.tgz",
+        base=base,
+    )
+    assert packed["request"]["base_files"] == base["checksums"]
+    assert set(packed["request"]["files"]) == {
+        "candidate/params.json",
+        "data/prices.txt",
+    }
+    with tarfile.open(tmp_path / "inputs.tgz") as archive:
+        assert "data/unrelated.bin" not in archive.getnames()
+
+
+@pytest.mark.parametrize(
+    "paths", [["data"], ["data/unrelated.bin"], ["data/prices.txt", "data"]]
+)
+def test_pack_inputs_rejects_paths_overlapping_the_base(
+    tmp_path: Path, paths: list[str]
+) -> None:
+    root = _phase_root(tmp_path)
+    (root / "config.json").unlink()
+    base = pack_base(root, ["data/unrelated.bin"], tmp_path / "base.tgz")
+    with pytest.raises(ValueError, match="already in the base: data/unrelated.bin"):
+        pack_inputs(
+            root, paths, {"phase": "p", "args": {}}, tmp_path / "a.tgz", base=base
+        )

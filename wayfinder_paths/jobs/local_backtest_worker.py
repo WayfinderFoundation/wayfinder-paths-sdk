@@ -126,12 +126,14 @@ def work(directory: Path) -> None:
     signal.signal(signal.SIGTERM, cancel)
     signal.signal(signal.SIGINT, cancel)
     artifacts, output = directory / "artifacts.tar.gz", directory / "summary.json"
+    base = directory / "base.tar.gz"
     command = [
         sys.executable,
         "-m",
         "wayfinder_paths.jobs.sprite_runtime",
         "--bundle",
         str(directory / "workspace.tar.gz"),
+        *(["--base", str(base)] if base.exists() else []),
         "--root",
         str(directory / "workspace"),
         "--output",
@@ -193,6 +195,7 @@ def work(directory: Path) -> None:
         # The artifact archive holds the whole workspace; keep the extracted
         # tree only when it is the sole record of a run that could not archive.
         (directory / "workspace.tar.gz").unlink(missing_ok=True)
+        base.unlink(missing_ok=True)
         if record["artifacts"]:
             shutil.rmtree(directory / "workspace", ignore_errors=True)
         record["finished_at"] = utc_now_iso()
