@@ -39,6 +39,19 @@ def test_build_mcp_registers_tools() -> None:
         assert required in names, f"missing tool: {required}"
 
 
+@pytest.mark.parametrize("hosted", [False, True])
+def test_notification_settings_only_registered_on_shells(monkeypatch, hosted):
+    import wayfinder_paths.mcp.server as server
+
+    monkeypatch.setattr(server, "is_opencode_instance", lambda: hosted)
+    tools = {tool.name: tool for tool in server.build_mcp()._tool_manager.list_tools()}
+    assert ("notification_settings" in tools) is hosted
+    if hosted:
+        schema = tools["notification_settings"].parameters
+        assert "initiative_permission" not in json.dumps(schema)
+        assert "disabled" in json.dumps(schema)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status", "body"),
