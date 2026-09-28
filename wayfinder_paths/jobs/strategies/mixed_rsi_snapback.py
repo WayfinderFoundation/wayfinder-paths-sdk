@@ -74,9 +74,11 @@ class MixedRsiSnapbackStrategy:
                 "starter_rsi",
                 "starter_trend_sma",
             ),
+            require_all=False,
         )
-        if rows is None:
+        if not rows:
             return []
+        complete = len(rows) == len(symbols)
 
         weights: dict[str, float] = {}
         for symbol, row in rows.items():
@@ -89,7 +91,8 @@ class MixedRsiSnapbackStrategy:
                 or position.bars_held >= int(self.params["max_hold_bars"]) - 1
             )
             should_enter = (
-                position is None
+                complete
+                and position is None
                 and rsi < float(self.params["entry_rsi"])
                 and close > trend_sma
             )
@@ -101,7 +104,7 @@ class MixedRsiSnapbackStrategy:
                 else 0.0
             )
 
-        return target_weights_to_intents(
+        intents = target_weights_to_intents(
             ctx,
             weights,
             venue=str(self.params["venue"]),
@@ -109,6 +112,17 @@ class MixedRsiSnapbackStrategy:
             min_trade_notional=float(self.params["min_trade_notional"]),
             brackets=stop_brackets(ctx, symbols, self.params),
         )
+        if complete:
+            return intents
+        # Only explicit exits on healthy legs: no entry, rebalance, or close
+        # of an unmentioned leg inferred by the portfolio bridge.
+        return [
+            intent
+            for intent in intents
+            if intent["symbol"] in rows
+            and weights[intent["symbol"]] == 0
+            and intent.get("reduce_only")
+        ]
 
 
 def build_strategy(params: dict[str, Any] | None = None) -> MixedRsiSnapbackStrategy:

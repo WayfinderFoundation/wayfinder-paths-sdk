@@ -144,9 +144,11 @@ class MixedLiquidationFlushStrategy:
                 "starter_signal_age",
                 "starter_stop_atr",
             ),
+            require_all=False,
         )
-        if rows is None:
+        if not rows:
             return []
+        complete = len(rows) == len(symbols)
         intents: list[dict[str, Any]] = []
         entries: list[tuple[str, int]] = []
         hold_after = int(self.params["hold_after_signal_bars"])
@@ -169,7 +171,7 @@ class MixedLiquidationFlushStrategy:
                 elif signal == 0 and age >= hold_after:
                     intents.append(self._market_close(position, symbol, "hold_expired"))
                 continue
-            if signal != 0:
+            if complete and signal != 0:
                 entries.append((symbol, signal))
         if entries:
             intents.extend(self._entries(ctx, rows, entries))

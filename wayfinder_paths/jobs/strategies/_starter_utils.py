@@ -104,8 +104,14 @@ def current_rows(
     symbols: Sequence[str],
     *,
     required_columns: Sequence[str] = (),
+    require_all: bool = True,
 ) -> dict[str, pd.Series] | None:
-    """Return synchronized latest rows or stand the whole basket down."""
+    """Return current rows; baskets require every leg by default.
+
+    Independent-leg strategies may request available rows to evaluate exits
+    during a peer outage. They must still pause entries on an incomplete panel.
+    Stale rows are never returned, even in partial mode.
+    """
     timestamps = ctx.view.timestamps
     if not timestamps:
         return None
@@ -115,10 +121,14 @@ def current_rows(
     for symbol in symbols:
         frame = ctx.view.symbol_frame(symbol)
         if frame.empty or not required.issubset(frame.columns):
-            return None
+            if require_all:
+                return None
+            continue
         row = frame.iloc[-1]
         if pd.Timestamp(row["timestamp"]) != latest_timestamp:
-            return None
+            if require_all:
+                return None
+            continue
         rows[symbol] = row
     return rows
 

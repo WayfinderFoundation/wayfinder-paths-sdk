@@ -77,9 +77,11 @@ class MixedBollingerPullbackStrategy:
                 "starter_pullback_zscore",
                 "starter_trend_sma",
             ),
+            require_all=False,
         )
-        if rows is None:
+        if not rows:
             return []
+        complete = len(rows) == len(symbols)
 
         weights: dict[str, float] = {}
         entry_zscore = float(self.params["entry_zscore"])
@@ -105,14 +107,14 @@ class MixedBollingerPullbackStrategy:
                     if position.side == "long"
                     else -weight
                 )
-            elif zscore < -entry_zscore and close > trend_sma:
+            elif complete and zscore < -entry_zscore and close > trend_sma:
                 weights[symbol] = weight
-            elif zscore > entry_zscore and close < trend_sma:
+            elif complete and zscore > entry_zscore and close < trend_sma:
                 weights[symbol] = -weight
             else:
                 weights[symbol] = 0.0
 
-        return target_weights_to_intents(
+        intents = target_weights_to_intents(
             ctx,
             weights,
             venue=str(self.params["venue"]),
@@ -120,6 +122,15 @@ class MixedBollingerPullbackStrategy:
             min_trade_notional=float(self.params["min_trade_notional"]),
             brackets=stop_brackets(ctx, symbols, self.params),
         )
+        if complete:
+            return intents
+        return [
+            intent
+            for intent in intents
+            if intent["symbol"] in rows
+            and weights[intent["symbol"]] == 0
+            and intent.get("reduce_only")
+        ]
 
 
 def build_strategy(
