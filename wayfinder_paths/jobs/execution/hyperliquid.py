@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -519,6 +519,58 @@ class HyperliquidPerpBroker:
             symbol=symbol,
             client_order_id=client_order_id,
             error=error,
+        )
+
+    async def triggered_stop_fill(
+        self,
+        *,
+        symbol: str,
+        protection: Mapping[str, Any],
+        since_ms: int,
+    ) -> FillEvent | None:
+        """The fill of a native stop that is no longer resting, from the
+        user-fills ledger (a triggered stop closes the position without the
+        engine placing an order); None when the venue never filled it."""
+        order_id = str(protection.get("order_id") or "")
+        client_order_id = str(protection.get("client_order_id") or "")
+        if not order_id and not client_order_id:
+            return None
+        rows = await _user_fills_result(self.wallet_label, since_ms)
+        matched = [
+            row
+            for row in rows
+            if (order_id and str(row.get("oid")) == order_id)
+            or (client_order_id and str(row.get("cloid") or "") == client_order_id)
+        ]
+        size = sum(abs(float(row.get("sz") or 0.0)) for row in matched)
+        if size <= 0:
+            return None
+        notional = sum(
+            abs(float(row.get("sz") or 0.0)) * float(row.get("px") or 0.0)
+            for row in matched
+        )
+        fee = sum(
+            float(row.get("fee") or 0.0) + float(row.get("builderFee") or 0.0)
+            for row in matched
+        )
+        filled_ms = max(int(row.get("time") or 0) for row in matched)
+        return FillEvent(
+            status="filled",
+            venue="hyperliquid",
+            symbol=symbol,
+            side="sell" if str(protection.get("side")) == "long" else "buy",
+            filled_size=size,
+            avg_price=notional / size,
+            fee=fee,
+            order_id=order_id or None,
+            client_order_id=client_order_id or None,
+            reduce_only=True,
+            raw={
+                "source": "user_fills",
+                "fee_source": "user_fills",
+                "fills": len(matched),
+            },
+            timestamp=pd.Timestamp(filled_ms, unit="ms", tz="UTC").isoformat(),
         )
 
     async def cancel_stop_loss(

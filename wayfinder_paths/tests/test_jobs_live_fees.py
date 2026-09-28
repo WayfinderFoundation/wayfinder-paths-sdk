@@ -373,3 +373,61 @@ def test_risk_equity_includes_funding(tmp_path) -> None:
         now=pd.Timestamp("2026-08-17T00:00:00Z"),
     )
     assert snapshot["equity"] == pytest.approx(100.0 + 1.0 - 0.4)
+
+
+async def test_triggered_stop_fill_aggregates_the_stop_order_fills(monkeypatch) -> None:
+    async def fake_fills(wallet_label, start_ms):
+        assert wallet_label == "w" and start_ms == 1_000
+        return [
+            {
+                "oid": 558486095123,
+                "sz": "318.0",
+                "px": "0.11579",
+                "fee": "0.02",
+                "time": 5_000,
+            },
+            {
+                "oid": 558486095123,
+                "sz": "226.0",
+                "px": "0.11582",
+                "fee": "0.01",
+                "time": 5_000,
+            },
+            # decoy: the entry order
+            {
+                "oid": 558486044791,
+                "sz": "544.0",
+                "px": "0.12055",
+                "fee": "0.03",
+                "time": 2_000,
+            },
+        ]
+
+    monkeypatch.setattr(hl_module, "_user_fills_result", fake_fills)
+    broker = HyperliquidPerpBroker(wallet_label="w")
+    protection = {
+        "order_id": "558486095123",
+        "client_order_id": "0xabc",
+        "side": "long",
+    }
+
+    fill = await broker.triggered_stop_fill(
+        symbol="POL", protection=protection, since_ms=1_000
+    )
+
+    assert fill is not None and fill.successful
+    assert fill.side == "sell" and fill.reduce_only
+    assert fill.filled_size == pytest.approx(544.0)
+    assert fill.avg_price == pytest.approx((318 * 0.11579 + 226 * 0.11582) / 544)
+    assert fill.fee == pytest.approx(0.03)
+
+    async def no_fills(wallet_label, start_ms):
+        return []
+
+    monkeypatch.setattr(hl_module, "_user_fills_result", no_fills)
+    assert (
+        await broker.triggered_stop_fill(
+            symbol="POL", protection=protection, since_ms=1_000
+        )
+        is None
+    )
