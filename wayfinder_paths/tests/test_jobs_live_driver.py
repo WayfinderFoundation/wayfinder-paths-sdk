@@ -1268,3 +1268,103 @@ async def test_live_tick_recovers_silent_bracket_under_the_default(
     restored = EngineState.load(root / "state" / "engine_state.json")
     assert restored.brackets["SNX"]["native_required"] is True
     assert "SNX" in restored.native_protections
+
+
+class StopFilledBroker(FakeNativeLiveBroker):
+    def __init__(self, stop_fill: FillEvent | None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.stop_fill = stop_fill
+        self.lookups: list[dict[str, Any]] = []
+
+    async def triggered_stop_fill(self, **kwargs: Any) -> FillEvent | None:
+        self.lookups.append(kwargs)
+        return self.stop_fill
+
+
+def _pol_long_with_native_stop() -> EngineState:
+    state = EngineState(mode="live")
+    state.ledger.positions["POL"] = PositionRecord(
+        symbol="POL",
+        side="long",
+        size=544.0,
+        avg_price=0.12055,
+        opened_at="2026-09-28T03:05:00+00:00",
+    )
+    state.brackets["POL"] = {
+        "venue": "hyperliquid",
+        "native_required": True,
+        "stop_loss": 0.1158762,
+        "entry_price": 0.12055,
+    }
+    state.native_protections["POL"] = {
+        "venue": "hyperliquid",
+        "client_order_id": "stop-POL",
+        "order_id": "558486095123",
+        "symbol": "POL",
+        "side": "long",
+        "size": 544.0,
+        "trigger_price": 0.1158762,
+    }
+    return state
+
+
+async def test_a_native_stop_that_fired_is_booked_not_halted() -> None:
+    # majors-5m-lab 2026-09-28: the POL stop filled at 03:28, the monitor saw
+    # no resting stop at 03:31, called it missing and halted, and the ledger
+    # kept a long the venue no longer held.
+    state = _pol_long_with_native_stop()
+    stop_fill = FillEvent(
+        status="filled",
+        venue="hyperliquid",
+        symbol="POL",
+        side="sell",
+        filled_size=544.0,
+        avg_price=0.1158,
+        fee=0.03,
+        order_id="558486095123",
+        client_order_id="stop-POL",
+        reduce_only=True,
+        timestamp="2026-09-28T03:28:35+00:00",
+    )
+    broker = StopFilledBroker(stop_fill)
+
+    notes, fills, rows, halt_reason = await monitor_native_protection(
+        mode="live",
+        state=state,
+        brokers={"hyperliquid": broker},
+        venue_states={"hyperliquid": VenueState(positions={}, open_orders=[])},
+        now=pd.Timestamp("2026-09-28T03:31:14Z"),
+    )
+
+    assert halt_reason is None and broker.placed == []
+    assert "POL" not in state.ledger.positions
+    assert state.native_protections == {} and "POL" not in state.brackets
+    assert fills == [stop_fill] and len(rows) == 1
+    assert rows[0]["raw"]["intent_action"] == "STOP_LOSS"
+    assert rows[0]["raw"]["intent_metadata"]["exit_reason"] == "bracket_stop"
+    assert rows[0]["realized_pnl_delta"] < 0
+    assert notes[0]["kind"] == "native_stop_filled"
+    # The lookup starts just before the position opened.
+    assert broker.lookups[0]["since_ms"] == int(
+        pd.Timestamp("2026-09-28T03:00:00Z").timestamp() * 1000
+    )
+
+
+async def test_a_genuinely_missing_stop_still_closes_and_halts() -> None:
+    state = _pol_long_with_native_stop()
+    venue_position = PositionRecord(
+        symbol="POL", side="long", size=544.0, avg_price=0.12055
+    )
+    broker = StopFilledBroker(None, venue_positions={"POL": venue_position})
+
+    notes, fills, _, halt_reason = await monitor_native_protection(
+        mode="live",
+        state=state,
+        brokers={"hyperliquid": broker},
+        venue_states={"hyperliquid": VenueState(positions={"POL": venue_position})},
+        now=pd.Timestamp("2026-09-28T03:31:14Z"),
+    )
+
+    assert halt_reason == "owned native stop missing for POL"
+    assert [intent.action for intent in broker.placed] == ["CLOSE"]
+    assert any(note["kind"] == "native_protection_breach" for note in notes)

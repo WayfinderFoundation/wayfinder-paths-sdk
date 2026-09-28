@@ -59,6 +59,8 @@ async def monitor_native_protection(
             groups.setdefault(group_id, raw_group)
     breached_groups: set[str] = set()
     release_notes: list[dict[str, Any]] = []
+    stop_fills: list[FillEvent] = []
+    stop_rows: list[dict[str, Any]] = []
 
     for symbol, protection in list(protections.items()):
         cloid = str(protection.get("client_order_id") or "")
@@ -86,6 +88,19 @@ async def monitor_native_protection(
         )
         if cloid and cloid in open_cloids and size_matches:
             continue
+        if not (cloid and cloid in open_cloids):
+            # A stop that is no longer resting may have done its job: the
+            # venue closed the position without the engine placing an order,
+            # so only the user-fills ledger knows. Book it instead of halting.
+            booked = await _book_triggered_stop(
+                brokers=brokers, symbol=symbol, protection=protection, state=state
+            )
+            if booked is not None:
+                note, fill, row = booked
+                release_notes.append(note)
+                stop_fills.append(fill)
+                stop_rows.append(row)
+                continue
         group = protection.get("protection_group") or {}
         group_id = str(group.get("id") or "")
         group_symbols = [str(value) for value in group.get("symbols") or []]
@@ -149,7 +164,7 @@ async def monitor_native_protection(
             )
 
     if not reasons:
-        return release_notes, [], [], None
+        return release_notes, stop_fills, stop_rows, None
 
     notes: list[dict[str, Any]] = release_notes + [
         {
@@ -159,8 +174,8 @@ async def monitor_native_protection(
         }
         for reason in reasons
     ]
-    fills: list[FillEvent] = []
-    trade_rows: list[dict[str, Any]] = []
+    fills: list[FillEvent] = list(stop_fills)
+    trade_rows: list[dict[str, Any]] = list(stop_rows)
     for symbol in sorted(close_symbols):
         position = venue_positions.get(symbol)
         if position is None:
@@ -303,6 +318,68 @@ def _group_loss_limit(group: Mapping[str, Any]) -> float | None:
     if entry_gross is not None:
         limits.append(entry_gross * float(group.get("max_entry_gross_loss_pct") or 0.0))
     return min((value for value in limits if value > 0), default=None)
+
+
+async def _book_triggered_stop(
+    *,
+    brokers: Mapping[str, Any],
+    symbol: str,
+    protection: Mapping[str, Any],
+    state: EngineState,
+) -> tuple[dict[str, Any], FillEvent, dict[str, Any]] | None:
+    """Apply a native stop's venue fill to the ledger, or None when the venue
+    has no fill for it (a genuinely missing stop)."""
+    bracket = state.brackets.get(symbol) or {}
+    venue = str(protection.get("venue") or bracket.get("venue") or "")
+    broker = brokers.get(venue) or (
+        next(iter(brokers.values())) if len(brokers) == 1 else None
+    )
+    lookup = getattr(broker, "triggered_stop_fill", None)
+    position = state.ledger.positions.get(symbol)
+    if lookup is None or position is None:
+        return None
+    opened_at = getattr(position, "opened_at", None)
+    since = (
+        pd.Timestamp(opened_at) - pd.Timedelta(minutes=5)
+        if opened_at
+        else pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=7)
+    )
+    fill = await lookup(
+        symbol=symbol,
+        protection=protection,
+        since_ms=int(since.timestamp() * 1000),
+    )
+    if fill is None or not fill.successful:
+        return None
+    trigger_price = protection.get("trigger_price") or bracket.get("stop_loss")
+    fill.raw.update(
+        {
+            "intent_action": "STOP_LOSS",
+            "intent_metadata": {
+                "exit_reason": "bracket_stop",
+                "bracket": {"trigger_price": trigger_price},
+            },
+        }
+    )
+    realized_before = state.ledger.realized_pnl
+    state.ledger.apply_fill(fill)
+    row = fill.to_dict()
+    row["realized_pnl_delta"] = state.ledger.realized_pnl - realized_before
+    state.native_protections.pop(symbol, None)
+    if symbol not in state.ledger.positions:
+        state.brackets.pop(symbol, None)
+    prune_closed_protection_groups(state)
+    note = {
+        "kind": "native_stop_filled",
+        "symbol": symbol,
+        "client_order_id": protection.get("client_order_id"),
+        "order_id": fill.order_id,
+        "filled_size": fill.filled_size,
+        "avg_price": fill.avg_price,
+        "trigger_price": trigger_price,
+        "reason": "the venue stop fired; booked its fill instead of halting",
+    }
+    return note, fill, row
 
 
 async def _release_flat_protection(
