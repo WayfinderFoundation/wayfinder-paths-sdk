@@ -8331,7 +8331,7 @@ def test_full_dev_haircut_blocks_only_when_policy_says_so(
 
 
 def test_full_dev_order_spends_slots_across_families() -> None:
-    kernel = {"policy_id": "xsec", "family": "cross_sectional_momentum"}
+    kernel = {"family": "cross_sectional_momentum"}
     eligible = [
         {"candidate_id": "k2", **kernel, "status": "quick_complete"},
         {"candidate_id": "k3", **kernel, "status": "quick_complete"},
@@ -8343,7 +8343,13 @@ def test_full_dev_order_spends_slots_across_families() -> None:
         {"candidate_id": "retry", **kernel, "status": "full_dev_running"},
     ]
     developed = [
-        {"candidate_id": "k1", **kernel, "dev": {"validation": {}}},
+        # A different survivor of the same kernel family counts as the family.
+        {
+            "candidate_id": "k1",
+            "family": "Cross_Sectional_Momentum",
+            "policy_id": "other-survivor",
+            "dev": {"validation": {}},
+        },
         {"candidate_id": "x1", "family": "other", "full_dev_failure_codes": []},
     ]
     order = _diversified_full_dev_order(eligible, developed + eligible)

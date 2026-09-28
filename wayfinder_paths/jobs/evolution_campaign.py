@@ -6185,9 +6185,9 @@ def _claim_full_dev(
 
 
 def _full_dev_family(candidate: Mapping[str, Any]) -> str:
-    return str(
-        candidate.get("policy_id") or candidate.get("family") or "unknown"
-    ).lower()
+    # The strategy family, not the policy id: every policy-scan survivor has
+    # its own id, so keying on it let one kernel family take every slot.
+    return str(candidate.get("family") or "unknown").strip().lower()
 
 
 def _diversified_full_dev_order(
