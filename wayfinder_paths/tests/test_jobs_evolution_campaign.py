@@ -1000,6 +1000,19 @@ def test_starter_seeds_are_stamped_with_universe_compatibility(tmp_path) -> None
             plan={"source": "starter_seed", "starter": sleeves},
         )
     assert not (tmp_path / "never-created").exists()
+    # A qd/crossover slot with no parents falls back to a starter, and that
+    # fallback must skip starters the universe cannot host too.
+    fallback = _select_parent_plan(
+        {
+            **manifest,
+            "parent_pool": {"candidates": []},
+            "starter_seeds": [sleeves, starters[compatible_ids[0]]],
+        },
+        requested_source="qd_elite",
+        slot=1,
+        candidates=[],
+    )
+    assert fallback["starter"]["starter_id"] == compatible_ids[0]
 
 
 def test_design_prompt_offers_validated_signals_when_seeding_is_on(tmp_path) -> None:
@@ -8339,3 +8352,36 @@ def test_full_dev_order_spends_slots_across_families() -> None:
     assert [item["candidate_id"] for item in order] == ["retry", "m1", "k2", "k3"]
     untried = _diversified_full_dev_order(eligible, eligible)
     assert [item["candidate_id"] for item in untried] == ["retry", "k2", "k3", "m1"]
+
+
+def test_unbuildable_seed_falls_back_to_de_novo_instead_of_wedging(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    state = start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    unbuildable = {
+        **manifest["starter_seeds"][0],
+        "compatible": False,
+        "incompatibility_reason": "requires symbols ['ZZZ'] not in the job dataset",
+    }
+    monkeypatch.setattr(
+        evolution_campaign,
+        "_select_parent_plan",
+        lambda *_args, **_kwargs: {
+            "source": "starter_seed",
+            "parents": [],
+            "starter": unbuildable,
+        },
+    )
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="rotation",
+        summary="seed the dataset cannot host",
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
+    )
+    assert candidate["parent_source"] == "de_novo"
+    assert candidate["seed_fallback"]["from"] == "starter_seed"
+    assert "not in the job dataset" in candidate["seed_fallback"]["reason"]
+    assert (store.job_dir(job_id) / candidate["bundle"] / "job.yaml").exists()

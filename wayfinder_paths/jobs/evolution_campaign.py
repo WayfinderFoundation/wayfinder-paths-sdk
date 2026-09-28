@@ -4233,13 +4233,36 @@ def _prepare_candidate(
     candidate_id = f"{state['campaign_id']}-c{slot:02d}"
     relative = f"{CAMPAIGN_ROOT}/{state['campaign_id']}/candidates/{candidate_id}"
     candidate_root = store.job_dir(job_id) / relative
-    seeded_window = _materialize_candidate_seed(
-        store,
-        job_id,
-        campaign_id=str(state["campaign_id"]),
-        candidate_root=candidate_root,
-        plan=parent_plan,
-    )
+    try:
+        seeded_window = _materialize_candidate_seed(
+            store,
+            job_id,
+            campaign_id=str(state["campaign_id"]),
+            candidate_root=candidate_root,
+            plan=parent_plan,
+        )
+    except ValueError as exc:
+        # A seed the dataset cannot host (e.g. a starter needing absent
+        # symbols) must not wedge the slot: every retry would hit the same
+        # frozen plan. Build the slot from the clean scaffold instead.
+        if source == "de_novo":
+            raise
+        shutil.rmtree(candidate_root, ignore_errors=True)
+        parent_plan = {
+            "source": "de_novo",
+            "parents": [],
+            "fallback_from": source,
+            "fallback_reason": str(exc)[:300],
+        }
+        source = "de_novo"
+        parents = []
+        seeded_window = _materialize_candidate_seed(
+            store,
+            job_id,
+            campaign_id=str(state["campaign_id"]),
+            candidate_root=candidate_root,
+            plan=parent_plan,
+        )
     target_regimes = list(design_slot.get("target_regimes") or [])
     if target_regimes:
         job_data = _load_job_yaml(candidate_root)
@@ -4292,6 +4315,14 @@ def _prepare_candidate(
         "research_seed_id": (parent_plan.get("research_seed") or {}).get("seed_id"),
         "policy_ref": (parent_plan.get("policy") or {}).get("pointer"),
         "policy_id": (parent_plan.get("policy") or {}).get("policy_id"),
+        "seed_fallback": (
+            {
+                "from": parent_plan.get("fallback_from"),
+                "reason": parent_plan["fallback_reason"],
+            }
+            if parent_plan.get("fallback_reason")
+            else None
+        ),
         "near_miss": (
             {
                 "candidate_id": (parent_plan.get("primary") or {}).get("candidate_id"),
@@ -10469,6 +10500,7 @@ def _select_parent_plan(
                 item
                 for item in manifest.get("starter_seeds") or []
                 if str(item.get("starter_id") or "") not in used
+                and item.get("compatible", True)
             ),
             None,
         )
