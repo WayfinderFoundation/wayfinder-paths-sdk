@@ -131,6 +131,7 @@ def test_opencode_agents_scope_single_mcp_tool_names() -> None:
     assert "wayfinder_visual_import_chart_spec" not in primary
     assert "wayfinder_visual_preview_series" not in primary
     assert primary["wayfinder_notification_send"] == "allow"
+    assert primary["wayfinder_notification_settings"] == "allow"
     assert primary["wayfinder_research_*"] == "deny"
     assert primary["wayfinder_core_run_script"] == "ask"
     assert primary["wayfinder_onchain_swap"] == "ask"
@@ -209,6 +210,7 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
         "wayfinder_visual_set_chart_indicators": "allow",
         "wayfinder_visual_clear_chart_workspace": "allow",
         "wayfinder_notification_send": "allow",
+        "wayfinder_notification_settings": "allow",
         "wayfinder_research_*": "deny",
         "wayfinder_sports_snapshot": "allow",
         "wayfinder_sports_backtest_state": "allow",
