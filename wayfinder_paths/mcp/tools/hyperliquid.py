@@ -2110,11 +2110,14 @@ async def hyperliquid_get_candles(
     limit: int = 500,
 ) -> dict[str, Any]:
     """
-    Fetch historical Hyperliquid perp candles from the backend time-series service.
+    Fetch historical Hyperliquid perp or spot candles.
 
     asset_name: Hyperliquid coin or canonical market name. Core perps may be
         passed as "HYPE" or "HYPE-USDC"; HIP-3/dex perps require the dex prefix
-        such as "xyz:SPCX".
+        such as "xyz:SPCX". Spot requires the exact pair from market search,
+        e.g. "HYPE/USDC" or "PURR/USDC"; spot uses public candleSnapshot,
+        returns completed candles only, and prices are in the pair's quote currency.
+        Only the latest 5000 spot candles are available; missing bars stay missing.
     interval: Candle interval, e.g. "1m", "5m", "15m", "1h", "4h", "1d".
     lookback_hours: Used when start_ms/end_ms are omitted.
     start_ms/end_ms: Optional exact UTC millisecond range; provide both or neither.

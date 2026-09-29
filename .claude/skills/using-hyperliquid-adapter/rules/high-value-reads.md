@@ -46,6 +46,10 @@ when available `v` (volume) and `n` (trade count). Do not expect
 Symbol rules:
 - Core perp candles accept `HYPE` or `HYPE-USDC`; the backend normalizes to `HYPE`.
 - HIP-3 / dex perps require the dex prefix, for example `xyz:SPCX`.
+- Spot accepts exact pairs from market search, e.g. `HYPE/USDC` or `PURR/USDC`.
+  The same candle tool/client resolves spot metadata and reads public candleSnapshot.
+  Spot prices are in the quote currency, not automatically USD. Only completed bars
+  are returned; the latest 5000 candles are available, with no synthetic gap filling.
 - Plain `SPCX` is not enough for candles unless a provider search first maps it
   to the canonical dex coin.
 

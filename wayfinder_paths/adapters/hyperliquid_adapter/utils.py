@@ -35,6 +35,22 @@ def spot_index_from_asset_id(spot_asset_id: int) -> int:
     return int(spot_asset_id) - 10000
 
 
+def spot_asset_ids(meta: dict[str, Any]) -> dict[str, int]:
+    # Delisted tokens leave gaps: pair references are token indices, not positions.
+    tokens = {t["index"]: t["name"] for t in meta["tokens"]}
+    return {
+        f"{tokens[pair['tokens'][0]]}/{tokens[pair['tokens'][1]]}": 10000
+        + pair["index"]
+        for pair in meta["universe"]
+        if len(pair["tokens"]) == 2 and all(t in tokens for t in pair["tokens"])
+    }
+
+
+def spot_info_coin(spot_index: int) -> str:
+    # The first pair predates @index naming (shared by candles and order books).
+    return "PURR/USDC" if spot_index == 0 else f"@{spot_index}"
+
+
 def normalize_l2_book(
     raw: dict[str, Any],
     *,
