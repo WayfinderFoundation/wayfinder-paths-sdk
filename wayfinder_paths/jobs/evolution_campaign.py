@@ -6222,12 +6222,7 @@ def _diversified_full_dev_order(
         seen.add(fingerprint)
         distinct.append(item)
     fresh = [item for item in distinct if _full_dev_family(item) not in developed]
-    return (
-        running
-        + fresh
-        + [item for item in distinct if item not in fresh]
-        + twins
-    )
+    return running + fresh + [item for item in distinct if item not in fresh] + twins
 
 
 def _quick_fingerprint(candidate: Mapping[str, Any]) -> tuple[Any, ...] | None:

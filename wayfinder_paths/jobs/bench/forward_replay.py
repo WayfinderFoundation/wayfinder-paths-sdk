@@ -15,7 +15,10 @@ import pandas as pd
 from wayfinder_paths.jobs.bench.env import atomic_json, git_sha, sha256_json
 from wayfinder_paths.jobs.bench.world import execution_identity_sha256, load_world
 from wayfinder_paths.jobs.bundles import resolve_bundle_script_entrypoint
-from wayfinder_paths.jobs.candidate_shadow import run_candidate_shadows
+from wayfinder_paths.jobs.candidate_shadow import (
+    candidate_shadow_lookback_bars,
+    run_candidate_shadows,
+)
 from wayfinder_paths.jobs.economics import block_bootstrap_lcb
 from wayfinder_paths.jobs.execution.features import (
     load_feature_rows,
@@ -49,6 +52,7 @@ from wayfinder_paths.jobs.store import JobStore
 
 PARTICIPATION_FLOOR = 10
 CONFIDENCE = 0.90
+MIN_WARMUP_BARS = 500
 
 
 def race_bundles(
@@ -340,9 +344,14 @@ def replay_probation(
     if trial is not None:
         _rebase_trial(trial, cutoff=cutoff)
         store.write_json(job_id, "probation.json", doc)
-    warmup_rows = [
-        row for row in development_rows if _row_timestamp(row) <= pd.Timestamp(cutoff)
-    ][-2_000:]
+    warmup_rows = _warmup_rows(
+        development_rows,
+        cutoff=cutoff,
+        # Size history like the live driver does: every open trial's declared
+        # window. A fixed row count held ~1.7 days of a four-symbol 5m world,
+        # so long-lookback candidates never traded in probation.
+        bars=max(candidate_shadow_lookback_bars(store, job_id), MIN_WARMUP_BARS),
+    )
     replay_rows: list[Mapping[str, Any]] = [*warmup_rows, *holdout_rows]
     # Bars only: each shadow target merges the features its own spec
     # declares from the sandbox store, exactly as the live lane does.
@@ -369,6 +378,19 @@ def replay_probation(
         "carried": carried,
         "paired_daily_delta": metrics.get("daily_deltas") or [],
     }
+
+
+def _warmup_rows(
+    rows: Sequence[dict[str, Any]], *, cutoff: datetime, bars: int
+) -> list[dict[str, Any]]:
+    """The last ``bars`` bar timestamps at or before ``cutoff``, every symbol."""
+    limit = pd.Timestamp(cutoff)
+    eligible = [row for row in rows if _row_timestamp(row) <= limit]
+    stamps = sorted({_row_timestamp(row) for row in eligible})[-bars:]
+    if not stamps:
+        return []
+    first = stamps[0]
+    return [row for row in eligible if _row_timestamp(row) >= first]
 
 
 def _rebase_trial(trial: dict[str, Any], *, cutoff: datetime) -> None:

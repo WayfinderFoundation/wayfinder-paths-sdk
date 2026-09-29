@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import get_args
 
+import pandas as pd
 import pytest
 import yaml
 
@@ -19,6 +20,7 @@ from wayfinder_paths.jobs.bench.aggregate import aggregate_experiment
 from wayfinder_paths.jobs.bench.env import sandbox_relative
 from wayfinder_paths.jobs.bench.forward_replay import (
     _behavior_distance,
+    _warmup_rows,
     race_bundles,
     replay_probation,
 )
@@ -2175,3 +2177,20 @@ def test_bench_mirrors_production_governance(tmp_path) -> None:
     assert constitution["promotion"]["min_oos_trades"] == 12
     with pytest.raises(ValueError, match="unknown governance files"):
         _install_governance(store, job_id, {"secrets.yaml": {}})
+
+
+def test_probation_warmup_counts_bars_not_rows() -> None:
+    stamps = pd.date_range("2026-08-20", periods=1_000, freq="5min", tz="UTC")
+    rows = [
+        {"timestamp": stamp.isoformat(), "symbol": symbol, "close": 1.0}
+        for stamp in stamps
+        for symbol in ("BTC", "ETH", "SOL", "HYPE")
+    ]
+    cutoff = stamps[899].to_pydatetime()
+    warmup = _warmup_rows(rows, cutoff=cutoff, bars=864)
+    kept = sorted({row["timestamp"] for row in warmup})
+    # 864 bars of every symbol, ending at the cutoff; a 2,000-row slice of
+    # this four-symbol world would have held only 500.
+    assert len(kept) == 864
+    assert kept[-1] == stamps[899].isoformat()
+    assert len(warmup) == 864 * 4
