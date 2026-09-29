@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
+from math import isfinite
 from typing import Any
 
 
@@ -63,16 +64,16 @@ def normalize_l2_book(
         for level in levels:
             try:
                 if isinstance(level, dict):
-                    px = float(level.get("px"))
-                    sz = float(level.get("sz"))
+                    px = float(level["px"])
+                    sz = float(level["sz"])
                 elif isinstance(level, (list, tuple)) and len(level) >= 2:
                     px = float(level[0])
                     sz = float(level[1])
                 else:
                     continue
-            except (TypeError, ValueError):
+            except (KeyError, TypeError, ValueError):
                 continue
-            if px > 0 and sz > 0:
+            if isfinite(px) and isfinite(sz) and px > 0 and sz > 0:
                 normalized.append((px, sz))
         return normalized
 
@@ -96,6 +97,8 @@ def normalize_l2_book(
     except (TypeError, ValueError):
         mid_px = None
 
+    if mid_px is not None and not isfinite(mid_px):
+        mid_px = None
     if (mid_px is None or mid_px <= 0) and bids and asks:
         mid_px = (bids[0][0] + asks[0][0]) / 2.0
     if (mid_px is None or mid_px <= 0) and fallback_mid:
@@ -118,8 +121,8 @@ def usd_depth_in_band(
     if mid <= 0.0:
         return 0.0, mid
 
-    lo = mid * (1.0 - band_bps / 1e4)
-    hi = mid * (1.0 + band_bps / 1e4)
+    width = mid * band_bps / 1e4
+    lo, hi = mid - width, mid + width
 
     def usd_sum(levels: list[tuple[float, float]], predicate) -> float:
         total = 0.0

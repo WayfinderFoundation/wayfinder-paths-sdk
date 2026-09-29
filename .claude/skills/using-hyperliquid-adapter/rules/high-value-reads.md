@@ -67,6 +67,13 @@ Symbol rules:
 
 ### Order books
 
+- Read-only MCP: `hyperliquid_search_mid_prices(asset_names=["HYPE/USDC", "BTC-USDC"], include_depth=True)`
+  returns timestamped bid/ask notional within 50 bps of mid for up to 8 exact names.
+  Spot requires USDC quotes; USDC is valued at $1. The API caps each side at 20
+  levels, so this read widens aggregation as needed while preserving the raw
+  book mid. Dollar depth is approximate; `band_complete=false` means the visible
+  levels still do not cover the full band. It is not account buying power or a
+  fill guarantee. Daily/candle volume is not depth.
 - Perp/spot by coin string:
   - Call: `HyperliquidAdapter.get_l2_book(coin)`
 - Spot by asset id:

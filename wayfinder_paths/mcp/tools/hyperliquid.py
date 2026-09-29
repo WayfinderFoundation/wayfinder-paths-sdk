@@ -14,7 +14,14 @@ from wayfinder_paths.adapters.hyperliquid_adapter.adapter import (
     decode_outcome_encoding,
     outcome_asset_id,
 )
+from wayfinder_paths.adapters.hyperliquid_adapter.utils import (
+    normalize_l2_book,
+    spot_index_from_asset_id,
+    spot_info_coin,
+    usd_depth_in_band,
+)
 from wayfinder_paths.core.clients.HyperliquidDataClient import HYPERLIQUID_DATA_CLIENT
+from wayfinder_paths.core.clients.HyperliquidInfoClient import HYPERLIQUID_INFO_CLIENT
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.constants.hyperliquid import (
     ARBITRUM_USDC_ADDRESS,
@@ -2184,6 +2191,7 @@ async def hyperliquid_get_funding_history(
 @catch_errors
 async def hyperliquid_search_mid_prices(
     asset_names: list[str] | None = None,
+    include_depth: bool = False,
 ) -> dict[str, Any]:
     """
     Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets for current mid prices.
@@ -2193,12 +2201,24 @@ async def hyperliquid_search_mid_prices(
 
     asset_names: Canonical market paths to filter mid prices (e.g. "BTC-USDC", "xyz:NVDA",
         "KNTQ/USDH", "#40"), get these from hyperliquid_search_market(). If omitted, returns every market's mid price. Prefer non empty asset_names for efficiency.
+    include_depth: For 1-8 exact assets, also fetch timestamped public bid/ask
+        notional within 50 bps of book mid. Spot must be USDC-quoted. No wallet
+        required. Levels are aggregated when needed to cover the band; the USD
+        amounts are approximate visible depth, NOT daily volume,
+        account buying power, or a future fill guarantee. Re-quote before execution.
     """
+    if include_depth and (not asset_names or len(asset_names) > 8):
+        return err("invalid_args", "include_depth requires 1-8 exact asset names")
+    if include_depth and any(
+        "/" in name and not name.endswith("/USDC") for name in asset_names or []
+    ):
+        return err("invalid_args", "USD depth requires USDC-quoted spot pairs")
     adapter = HyperliquidAdapter()
     success, prices = await adapter.get_all_mid_prices()
     if asset_names:
         filtered: dict[str, str] = {}
         unmatched: list[str] = []
+        depth: dict[str, Any] = {}
         for name in asset_names:
             asset_id = await adapter.get_asset_id(name)
             if asset_id is None:
@@ -2210,7 +2230,50 @@ async def hyperliquid_search_mid_prices(
                     break
             else:
                 unmatched.append(name)
+            if include_depth:
+                coin = (
+                    spot_info_coin(spot_index_from_asset_id(asset_id))
+                    if "/" in name
+                    else adapter.get_mid_price_key(name, asset_id)[0]
+                )
+                # Raw L2 is capped at 20 levels, often only a few bps. Widen the
+                # bins, never add overlapping snapshots or extrapolate depth.
+                mid = None
+                for precision in (None, 4, 3):
+                    request: dict[str, Any] = {"type": "l2Book", "coin": coin}
+                    if precision is not None:
+                        request["nSigFigs"] = precision
+                    raw = await HYPERLIQUID_INFO_CLIENT.post(request)
+                    book = normalize_l2_book(raw)
+                    if mid is None:
+                        mid = book["midPx"]
+                    # Aggregation rounds prices; retain the unaggregated mid.
+                    book["midPx"] = mid
+                    band_complete = all(
+                        len(book[side]) < 20
+                        or (
+                            book[side][-1][0] <= mid * 0.995
+                            if side == "bids"
+                            else book[side][-1][0] >= mid * 1.005
+                        )
+                        for side in ("bids", "asks")
+                    )
+                    if not mid or band_complete:
+                        break
+                bid, mid = usd_depth_in_band(book, 50, "sell")
+                ask, _ = usd_depth_in_band(book, 50, "buy")
+                depth[name] = {
+                    "observed_at_ms": raw["time"],
+                    "mid_px": mid,
+                    "bid_notional_usd_50bps": bid,
+                    "ask_notional_usd_50bps": ask,
+                    "aggregation_sig_figs": precision,
+                    "band_complete": band_complete,
+                    "source": "Hyperliquid public l2Book; approximate visible depth, not a fill guarantee; USDC valued at $1",
+                }
         result: dict[str, Any] = {"prices": filtered}
+        if include_depth:
+            result["depth"] = depth
         if unmatched:
             # Silently-empty responses sent agents chasing ghosts (2026-07-06
             # kBONK incident) — name the misses and how to fix them.
