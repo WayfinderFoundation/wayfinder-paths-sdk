@@ -8389,6 +8389,33 @@ def test_full_dev_order_spends_slots_across_families() -> None:
     assert [item["candidate_id"] for item in untried] == ["retry", "k2", "k3", "m1"]
 
 
+def test_full_dev_order_spends_behavior_twins_last() -> None:
+    def screened(candidate_id: str, family: str, net_return: float) -> dict[str, Any]:
+        return {
+            "candidate_id": candidate_id,
+            "family": family,
+            "status": "quick_complete",
+            "quick": {
+                "stats": {"net_return": net_return, "trade_count": 76, "total_fees": 1.2}
+            },
+        }
+
+    developed = {
+        **screened("c04", "cross_sectional_rank", 0.5322196580463001),
+        "status": "low_fidelity_rejected",
+        "dev": {"validation": {}},
+    }
+    eligible = [
+        screened("c15", "cross_sectional_rank", 0.5322196580463001),
+        screened("c16", "cross_sectional_rank", 0.41),
+        screened("c17", "maker_mean_reversion", 0.30),
+        screened("c18", "maker_mean_reversion", 0.30),
+    ]
+    order = _diversified_full_dev_order(eligible, [developed, *eligible])
+    # c15 re-instantiated c04's recipe and c18 duplicates c17: both go last.
+    assert [item["candidate_id"] for item in order] == ["c17", "c16", "c15", "c18"]
+
+
 def test_unbuildable_seed_falls_back_to_de_novo_instead_of_wedging(
     tmp_path, monkeypatch
 ) -> None:

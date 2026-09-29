@@ -6203,15 +6203,41 @@ def _diversified_full_dev_order(
         if item.get("dev") or item.get("full_dev_failure_codes") is not None
     }
     running = [item for item in eligible if item.get("status") == "full_dev_running"]
-    fresh = [
-        item
-        for item in eligible
-        if item not in running and _full_dev_family(item) not in developed
-    ]
+    # Two revisions of one recipe screen identically; the second is spent only
+    # when nothing else is left.
+    seen = {
+        _quick_fingerprint(item)
+        for item in candidates
+        if item.get("dev") or item.get("full_dev_failure_codes") is not None
+    } | {_quick_fingerprint(item) for item in running}
+    twins: list[dict[str, Any]] = []
+    distinct: list[dict[str, Any]] = []
+    for item in eligible:
+        if item in running:
+            continue
+        fingerprint = _quick_fingerprint(item)
+        if fingerprint is not None and fingerprint in seen:
+            twins.append(item)
+            continue
+        seen.add(fingerprint)
+        distinct.append(item)
+    fresh = [item for item in distinct if _full_dev_family(item) not in developed]
     return (
         running
         + fresh
-        + [item for item in eligible if item not in running and item not in fresh]
+        + [item for item in distinct if item not in fresh]
+        + twins
+    )
+
+
+def _quick_fingerprint(candidate: Mapping[str, Any]) -> tuple[Any, ...] | None:
+    stats = (candidate.get("quick") or {}).get("stats") or {}
+    if stats.get("net_return") is None:
+        return None
+    return (
+        round(float(stats["net_return"]), 10),
+        stats.get("trade_count"),
+        round(float(stats.get("total_fees") or 0.0), 8),
     )
 
 
