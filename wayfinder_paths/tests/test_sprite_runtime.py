@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
+from wayfinder_paths.jobs import sprite_runtime
 from wayfinder_paths.jobs.compute_phase import compute_phase, phase_name
 from wayfinder_paths.jobs.sprite_bundle import (
     SpriteWorkspace,
@@ -344,3 +347,142 @@ def test_a_base_without_base_files_in_the_request_is_refused(tmp_path: Path) -> 
     pack_base(root, ["extra"], other)
     mismatched = _failure(tmp_path, archive, other)
     assert "Base archive does not match" in mismatched["error"]
+
+
+def _git(root: Path, *args: str) -> str:
+    return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
+
+
+@pytest.fixture
+def warnings(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    messages: list[str] = []
+    monkeypatch.setattr(sprite_runtime, "_warned", set())
+    monkeypatch.setattr(sprite_runtime.logger, "warning", messages.append)
+    return messages
+
+
+def test_a_checkout_offloads_its_head_and_warns_when_the_sprite_cannot_match_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, warnings: list[str]
+) -> None:
+    root = tmp_path / "sdk"
+    (root / "wayfinder_paths").mkdir(parents=True)
+    (root / "wayfinder_paths" / "__init__.py").write_text("")
+    _git(tmp_path, "init", "-q", str(root))
+    _git(root, "add", ".")
+    _git(
+        root, "-c", "user.email=a@b.c", "-c", "user.name=t", "commit", "-q", "-m", "sdk"
+    )
+    monkeypatch.setattr(sprite_runtime, "_SDK_ROOT", root)
+    head = _git(root, "rev-parse", "HEAD")
+    assert sprite_runtime.node_sdk_commit() == sprite_runtime.node_sdk_commit() == head
+    assert (
+        warnings
+        == [  # Once per process.
+            f"SDK commit {head[:12]} is not on any remote branch; push it, or its Sprite install fails"
+        ]
+    )
+    _git(tmp_path, "init", "-q", "--bare", str(tmp_path / "remote.git"))
+    _git(root, "remote", "add", "origin", str(tmp_path / "remote.git"))
+    _git(root, "push", "-q", "origin", "HEAD:refs/heads/main")
+    _git(root, "fetch", "-q", "origin")
+    warnings.clear()
+    assert sprite_runtime.node_sdk_commit() == head and not warnings
+    # Local commits on top of main: the nearest main ancestor, which GitHub has.
+    for message in ("local one", "local two"):
+        _git(
+            root,
+            "-c",
+            "user.email=a@b.c",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            message,
+        )
+    local = _git(root, "rev-parse", "HEAD")
+    assert sprite_runtime.node_sdk_commit() == head
+    assert warnings == [
+        f"SDK commit {local[:12]} is not pushed; offloaded jobs run its nearest main "
+        f"ancestor {head[:12]}, without its 2 newer commit(s)"
+    ]
+    warnings.clear()
+    (root / "wayfinder_paths" / "__init__.py").write_text("# changed")
+    assert sprite_runtime.node_sdk_commit() == head
+    assert warnings == [
+        f"Offloaded jobs run SDK commit {head[:12]} without this checkout's uncommitted changes"
+    ]
+    # A pin check never accepts modified code as the commit.
+    assert sprite_runtime.installed_sdk_commit() is None
+    marker = root / ".sdk-commit"
+    marker.write_text("")  # An empty marker names nothing: the checkout decides.
+    assert sprite_runtime.node_sdk_commit() == head
+    marker.write_text("c" * 40 + "\n")
+    assert (
+        sprite_runtime.node_sdk_commit()
+        == sprite_runtime.installed_sdk_commit()
+        == "c" * 40
+    )
+
+
+class _Distribution:
+    def __init__(self, direct_url: str | None, version: str = "0.11.1") -> None:
+        self.direct_url, self.version = direct_url, version
+
+    def read_text(self, name: str) -> str | None:
+        return self.direct_url if name == "direct_url.json" else None
+
+
+def test_installed_packages_name_their_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, warnings: list[str]
+) -> None:
+    monkeypatch.setattr(
+        sprite_runtime, "_SDK_ROOT", tmp_path
+    )  # No marker, no checkout.
+    commit = "d" * 40
+    git_install = json.dumps(
+        {"url": "https://github.com/x", "vcs_info": {"vcs": "git", "commit_id": commit}}
+    )
+    monkeypatch.setattr(
+        sprite_runtime.importlib.metadata,
+        "distribution",
+        lambda name: _Distribution(git_install),
+    )
+    assert sprite_runtime.node_sdk_commit() == commit
+    # A PyPI release resolves its v<version> tag on GitHub, once.
+    requests: list[str] = []
+
+    def github(url: str, **kwargs: Any) -> httpx.Response:
+        requests.append(url)
+        return httpx.Response(
+            200, json={"sha": "e" * 40}, request=httpx.Request("GET", url)
+        )
+
+    monkeypatch.setattr(sprite_runtime.httpx, "get", github)
+    monkeypatch.setattr(
+        sprite_runtime.importlib.metadata,
+        "distribution",
+        lambda name: _Distribution(None, "9.9.9"),
+    )
+    sprite_runtime._release_commit.cache_clear()
+    assert (
+        sprite_runtime.node_sdk_commit() == sprite_runtime.node_sdk_commit() == "e" * 40
+    )
+    assert requests == [
+        f"https://api.github.com/repos/{sprite_runtime.SDK_REPOSITORY}/commits/v9.9.9"
+    ]
+    monkeypatch.setattr(
+        sprite_runtime.httpx,
+        "get",
+        lambda url, **kwargs: (_ for _ in ()).throw(httpx.ConnectError("offline")),
+    )
+    monkeypatch.setattr(
+        sprite_runtime.importlib.metadata,
+        "distribution",
+        lambda name: _Distribution(None, "9.9.8"),
+    )
+    assert sprite_runtime.node_sdk_commit() is None
+    assert warnings == [
+        "Could not resolve SDK release v9.9.8 to a commit; jobs run locally"
+    ]

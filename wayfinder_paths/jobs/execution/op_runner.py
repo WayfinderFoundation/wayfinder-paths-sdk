@@ -382,7 +382,11 @@ def _run_entrypoint(op: str, kwargs: dict[str, Any]) -> Any:
         )
 
         config = load_runner_config()
-        if config.configured:
+        # Standalone operations book a remote lease only when opted in: a lease
+        # boots and installs, which pays off over a campaign, not a single op.
+        if config.configured and (
+            config.provider == "local" or config.offload_operations
+        ):
             # The run's own ledger stays in its isolated copy; the protected
             # record belongs to the source repository.
             _record_evidence_access(op, kwargs)

@@ -67,6 +67,7 @@ class FakeSprites:
         lease_seconds: int = 3600,
         timeout_seconds: int = 900,
         transfer_timeout_seconds: int = 600,
+        setup_timeout_seconds: int = 0,
     ) -> None:
         self.root = root
         self.refuse = refuse
@@ -74,6 +75,7 @@ class FakeSprites:
         self.lease_seconds = lease_seconds
         self.timeout_seconds = timeout_seconds
         self.transfer_timeout_seconds = transfer_timeout_seconds
+        self.setup_timeout_seconds = setup_timeout_seconds
         self.requests: list[httpx.Request] = []
         self.leases: dict[str, dict[str, Any]] = {}
         self.workers: dict[str, Worker] = {}
@@ -98,6 +100,7 @@ class FakeSprites:
         lease_dir: Path | None = None,
         sleep: Callable[[float], None] | None = None,
         clock: Callable[[], float] | None = None,
+        sdk_commit: str | None = None,
     ) -> SpriteBacktestsClient:
         http = httpx.Client(
             transport=httpx.MockTransport(self.handle), base_url=BACKEND
@@ -110,6 +113,7 @@ class FakeSprites:
             sleep=sleep if sleep is not None else lambda seconds: None,
             clock=clock,
             lease_dir=lease_dir if lease_dir is not None else self.root / "leases",
+            sdk_commit=sdk_commit,
         )
 
     def idle_out(self, lease_id: str) -> None:
@@ -169,8 +173,9 @@ class FakeSprites:
                     self.refuse, json={"detail": "worker limit reached"}
                 )
             body = json.loads(request.content)
-            assert set(body) == {"preset_key", "token_sha256"}
+            assert set(body) <= {"preset_key", "token_sha256", "sdk_commit"}
             assert re.fullmatch(r"[0-9a-f]{64}", body["token_sha256"])
+            assert re.fullmatch(r"[0-9a-f]{40}", body.get("sdk_commit", "0" * 40))
             known = self._hashes.get(body["token_sha256"])
             if known is not None and self.leases[known]["wiped_at"] is None:
                 # Idempotent booking: the same token gets its unwiped lease.
@@ -217,10 +222,15 @@ class FakeSprites:
             "idle_timeout_seconds": 600,
             "timeout_seconds": self.timeout_seconds,
             "transfer_timeout_seconds": self.transfer_timeout_seconds,
+            "setup_timeout_seconds": self.setup_timeout_seconds,
             "last_activity_at": now.isoformat(),
             "wiped_at": None,
             "wipe_pending": False,
-            "runtime": {"capabilities": list(self.capabilities), "sdk_commit": None},
+            # Like Django's sdk_runtime presets: the Sprite runs the requested commit.
+            "runtime": {
+                "capabilities": list(self.capabilities),
+                "sdk_commit": body.get("sdk_commit"),
+            },
             "jobs": [],
         }
         self.workers[host] = Worker(

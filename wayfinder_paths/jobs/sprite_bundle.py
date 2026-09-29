@@ -49,7 +49,15 @@ OPERATIONS = frozenset(
         "script",
     }
 )
-_SKIP = {"__pycache__", ".git", ".venv", "background_ops", "running_ops"}
+# sprite-leases holds this node's lease tokens; they never enter a bundle.
+_SKIP = {
+    "__pycache__",
+    ".git",
+    ".venv",
+    "background_ops",
+    "running_ops",
+    "sprite-leases",
+}
 _FORBIDDEN = {".env", "config.json", "wallets.json", "credentials.json"}
 # The strategy definition (what compute_workspace_revision hashes) and its
 # version history are inputs to a run, never outputs applied back to the job.

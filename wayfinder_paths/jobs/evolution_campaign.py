@@ -17,12 +17,13 @@ import json
 import math
 import os
 import re
+import resource
 import shutil
 import statistics
 import tempfile
 import uuid
 from collections.abc import Collection, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import replace
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
@@ -47,6 +48,7 @@ from wayfinder_paths.jobs.archive import (
 from wayfinder_paths.jobs.backtest_runner import (
     ComputeUnavailable,
     PhaseFailed,
+    create_runner,
     load_runner_config,
     run_phase,
 )
@@ -193,6 +195,7 @@ from wayfinder_paths.jobs.signal_library import (
     signal_defs,
 )
 from wayfinder_paths.jobs.signal_population import population_defs
+from wayfinder_paths.jobs.sprite_client import LeaseUnavailable
 from wayfinder_paths.jobs.starter_casebook import select_starter_cases
 from wayfinder_paths.jobs.starters import (
     STARTER_DEFINITIONS,
@@ -779,8 +782,19 @@ def _start_campaign(
     # The design pack aggregates checked-in diagnostics only. Candidate
     # evaluation owns fresh simulations; campaign start must stay a cheap
     # control-plane operation rather than adding another incumbent backtest.
+    # The campaign's first phase: on a remote runner it books the lease the rest
+    # of the campaign reuses.
+    scan_args = {
+        "policy": campaign_policy,
+        "discovery_baseline": bool(certification_policy["enabled"]),
+    }
+    scans = _offloaded_phase(
+        campaign_scans_phase, store, job_id, None, campaign_id=campaign_id, **scan_args
+    )
+    if scans is None:
+        scans = _start_scans(store, job_id, campaign_root, **scan_args)
     baseline = (
-        _discovery_baseline_receipt(store, job_id, campaign_root)
+        scans["discovery_baseline"]
         if certification_policy["enabled"]
         else _existing_baseline_receipt(
             root,
@@ -788,36 +802,13 @@ def _start_campaign(
             params=_target_execution_params(campaign_root / "source"),
         )
     )
-    failure_modes = _incumbent_failure_modes(
-        store, job_id, campaign_root, policy=campaign_policy
-    )
-    if failure_modes is not None:
-        baseline["failure_modes"] = failure_modes
+    if scans["failure_modes"] is not None:
+        baseline["failure_modes"] = scans["failure_modes"]
     baseline["complexity"] = _bundle_complexity(store, job_id, campaign_root / "source")
-    try:
-        with experiment_compute_lock(
-            store, job_id, label=f"evolution-signal-scan:{job_id}"
-        ):
-            validated_signals = _validated_signals(
-                store, job_id, campaign_root, policy=campaign_policy
-            )
-            policy_scan_block = _policy_scan_block(
-                store, job_id, campaign_root, policy=campaign_policy
-            )
-    except ComputeLockBusy as exc:
-        # Seeding never blocks a start; the designer reads why the feed is
-        # empty and the next campaign scans again.
-        busy = {"available": False, "reason": f"compute budget busy: {exc}"}
-        validated_signals = (
-            dict(busy)
-            if bool(campaign_policy.get("signal_first_seeding", False))
-            else None
-        )
-        policy_scan_block = (
-            dict(busy)
-            if bool(campaign_policy.get("policy_scan_enabled", True))
-            else None
-        )
+    validated_signals, policy_scan_block = (
+        scans["validated_signals"],
+        scans["policy_scan"],
+    )
     diagnostic_pack = build_diagnostic_pack(
         root,
         campaign_id=campaign_id,
@@ -877,6 +868,50 @@ def _start_campaign(
         },
     )
     return state
+
+
+def _start_scans(
+    store: JobStore,
+    job_id: str,
+    campaign_root: Path,
+    *,
+    policy: dict[str, Any],
+    discovery_baseline: bool,
+) -> dict[str, Any]:
+    """Campaign start's heavy work over the new campaign's snapshot: the
+    incumbent's failure modes, the validated-signal feed, the policy scan and,
+    when certifying, the discovery baseline."""
+    scans: dict[str, Any] = {
+        "discovery_baseline": (
+            _discovery_baseline_receipt(store, job_id, campaign_root)
+            if discovery_baseline
+            else None
+        ),
+        "failure_modes": _incumbent_failure_modes(
+            store, job_id, campaign_root, policy=policy
+        ),
+    }
+    try:
+        with experiment_compute_lock(
+            store, job_id, label=f"evolution-signal-scan:{job_id}"
+        ):
+            scans["validated_signals"] = _validated_signals(
+                store, job_id, campaign_root, policy=policy
+            )
+            scans["policy_scan"] = _policy_scan_block(
+                store, job_id, campaign_root, policy=policy
+            )
+    except ComputeLockBusy as exc:
+        # Seeding never blocks a start; the designer reads why the feed is
+        # empty and the next campaign scans again.
+        busy = {"available": False, "reason": f"compute budget busy: {exc}"}
+        scans["validated_signals"] = (
+            dict(busy) if bool(policy.get("signal_first_seeding", False)) else None
+        )
+        scans["policy_scan"] = (
+            dict(busy) if bool(policy.get("policy_scan_enabled", True)) else None
+        )
+    return scans
 
 
 def _campaign_regime_context(
@@ -4519,15 +4554,9 @@ def evaluate_candidate(
         with experiment_compute_lock(
             store, job_id, label=f"evolution-evaluate:{job_id}"
         ):
-            with evolution_resource_phase(
-                store,
-                job_id,
-                phase="quick_evaluate",
-                candidate_id=candidate_id,
-            ):
-                outcome = _evaluate_candidate(
-                    store, job_id, candidate_snapshot, campaign_id=campaign_id
-                )
+            outcome = _screen(
+                store, job_id, candidate_snapshot, campaign_id=campaign_id
+            )
     except (ComputeLockBusy, TransientInfrastructureError):
         _release_finalize_claim(
             store,
@@ -4638,6 +4667,25 @@ def _rejected_submission(error: str) -> dict[str, Any]:
     """A deterministic authoring mistake: no simulation ran, so no attempt is
     charged; the worker fixes the bundle and resubmits."""
     return {"status": "rejected_submission", "evidence": {"error": error[:500]}}
+
+
+def _screen(
+    store: JobStore, job_id: str, candidate: dict[str, Any], *, campaign_id: str
+) -> dict[str, Any]:
+    """The low-fidelity screen, on the configured remote runner when there is one:
+    screening runs for every candidate and would otherwise use the node's CPU."""
+    offloaded = _offloaded_phase(
+        screen_phase, store, job_id, candidate, campaign_id=campaign_id
+    )
+    if offloaded is not None:
+        return offloaded
+    with evolution_resource_phase(
+        store,
+        job_id,
+        phase="quick_evaluate",
+        candidate_id=str(candidate["candidate_id"]),
+    ):
+        return _evaluate_candidate(store, job_id, candidate, campaign_id=campaign_id)
 
 
 def _evaluate_candidate(
@@ -5085,6 +5133,18 @@ def _apply_screen_verdict(
         postmortem["viable"] = False
 
 
+def _reference_result_path(
+    store: JobStore, job_id: str, candidate: Mapping[str, Any], campaign_id: str
+) -> Path:
+    return (
+        store.job_dir(job_id)
+        / CAMPAIGN_ROOT
+        / campaign_id
+        / "reference_results"
+        / f"{candidate['candidate_id']}.json"
+    )
+
+
 def _candidate_reference_receipt(
     store: JobStore,
     job_id: str,
@@ -5092,10 +5152,8 @@ def _candidate_reference_receipt(
     *,
     campaign_id: str,
 ) -> dict[str, Any]:
-    relative = (
-        f"{CAMPAIGN_ROOT}/{campaign_id}/reference_results/"
-        f"{candidate['candidate_id']}.json"
-    )
+    cache = _reference_result_path(store, job_id, candidate, campaign_id)
+    relative = cache.relative_to(store.job_dir(job_id)).as_posix()
     cached = store.read_json(job_id, relative, default={}) or {}
     # Records from before seeds were paired against the incumbent carry no
     # reference_revision; their reference was the seed.
@@ -5143,7 +5201,7 @@ def _candidate_reference_receipt(
                 if extra.stats.get(key) is not None
             },
         }
-    atomic_write_json(root / relative, receipt)
+    atomic_write_json(cache, receipt)
     return receipt
 
 
@@ -6085,6 +6143,7 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
         state["completed_at"] = utc_now_iso()
         state["retire_to_flat"] = retire_to_flat_verdict(store, job_id, state=state)
         _save_campaign(store, job_id, state)
+    _end_campaign_leases(store)
     if state["retire_to_flat"].get("recommended"):
         # Production proposes; the bench applies (bench/recurrence.py). Either
         # way the loop can now say "nothing beats cash, stop bleeding".
@@ -6363,6 +6422,36 @@ def _full_dev_child(
 
 
 @compute_phase
+def campaign_scans_phase(
+    inputs: Path, outputs: Path, args: dict[str, Any]
+) -> dict[str, Any]:
+    """Campaign start's scans over a packed copy of the new campaign's snapshot."""
+    store = JobStore(repo_root=inputs)
+    job_id, campaign_id = str(args["job_id"]), str(args["campaign_id"])
+    with _returned_phase_writes(store, outputs, args):
+        return _start_scans(
+            store,
+            job_id,
+            store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id,
+            policy=args["policy"],
+            discovery_baseline=bool(args["discovery_baseline"]),
+        )
+
+
+@compute_phase
+def screen_phase(inputs: Path, outputs: Path, args: dict[str, Any]) -> dict[str, Any]:
+    """The low-fidelity screen over a packed copy of one candidate's campaign inputs."""
+    store = JobStore(repo_root=inputs)
+    with _returned_phase_writes(store, outputs, args):
+        return _evaluate_candidate(
+            store,
+            str(args["job_id"]),
+            args["candidate"],
+            campaign_id=str(args["campaign_id"]),
+        )
+
+
+@compute_phase
 def full_dev_phase(inputs: Path, outputs: Path, args: dict[str, Any]) -> dict[str, Any]:
     """Full development over a packed copy of one candidate's campaign inputs."""
     store = JobStore(repo_root=inputs)
@@ -6394,12 +6483,13 @@ def _offloaded_phase(
     phase: PhaseFunction,
     store: JobStore,
     job_id: str,
-    candidate: dict[str, Any],
+    candidate: dict[str, Any] | None,
     *,
     campaign_id: str,
     **args: Any,
 ) -> dict[str, Any] | None:
-    """Run a finalize phase on the configured remote runner.
+    """Run a campaign phase on the configured remote runner: one candidate's, or
+    the campaign's own (``candidate`` None) at start.
 
     ``None`` means run it here instead: no remote runner is configured, or the
     remote could not take or start it. Local execution stays the supervised
@@ -6414,9 +6504,14 @@ def _offloaded_phase(
         ) from exc
     if not config.configured or config.provider == "local":
         return None
-    candidate_root = resolve_candidate_bundle(
-        store, job_id, candidate, campaign_id=campaign_id
-    )
+    campaign = store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id
+    roots = [campaign / "source"]
+    if candidate is not None:
+        roots.insert(
+            0,
+            resolve_candidate_bundle(store, job_id, candidate, campaign_id=campaign_id),
+        )
+    candidate_id = str(candidate["candidate_id"]) if candidate is not None else None
     name = phase_name(phase)
 
     def run_locally(reason: str) -> None:
@@ -6425,14 +6520,13 @@ def _offloaded_phase(
             {
                 "type": "evolution_phase_ran_locally",
                 "phase": name,
-                "candidate_id": str(candidate["candidate_id"]),
+                "candidate_id": candidate_id,
                 "provider": config.provider,
                 "reason": reason[:500],
             },
         )
 
-    campaign = store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id
-    for root in (candidate_root, campaign / "source"):
+    for root in roots:
         script = store.resolve_script_entrypoint(
             job_id, _load_job_yaml(root), candidate_dir=root
         )
@@ -6446,9 +6540,15 @@ def _offloaded_phase(
         "source_root": str(store.repo_root),
         **args,
     }
+    started, cpu_before = perf_counter(), _node_cpu_seconds()
+    returnable = _returnable_files(store, job_id, candidate, campaign_id)
     try:
-        paths, base_paths = _phase_input_paths(
-            store, job_id, candidate_root, campaign_id=campaign_id
+        paths, base_paths = (
+            _phase_input_paths(
+                store, job_id, roots[0], candidate, campaign_id=campaign_id
+            )
+            if candidate is not None
+            else _campaign_input_paths(store, job_id, campaign_id)
         )
         outcome = run_phase(
             phase,
@@ -6460,9 +6560,7 @@ def _offloaded_phase(
         )
     except PhaseFailed as exc:
         if exc.outputs_path is not None:
-            _apply_returned_writes(
-                store, job_id, Path(exc.outputs_path), candidate_root
-            )
+            _apply_returned_writes(store, job_id, Path(exc.outputs_path), returnable)
         if exc.stage != "execute":
             run_locally(str(exc))
             return None
@@ -6476,26 +6574,57 @@ def _offloaded_phase(
     except (ComputeUnavailable, ValueError, OSError, httpx.HTTPError) as exc:
         run_locally(str(exc))
         return None
-    _apply_returned_writes(store, job_id, Path(outcome["outputs_path"]), candidate_root)
+    _apply_returned_writes(store, job_id, Path(outcome["outputs_path"]), returnable)
     store.append_journal(
         job_id,
         {
             "type": "evolution_phase_offloaded",
             "phase": name,
-            "candidate_id": str(candidate["candidate_id"]),
+            "candidate_id": candidate_id,
             "provider": outcome["run"].get("provider"),
             "run_id": outcome["run"].get("id"),
+            # Evidence the node stayed responsive: its own CPU against wall time.
+            "wall_seconds": round(perf_counter() - started, 3),
+            "node_cpu_seconds": round(_node_cpu_seconds() - cpu_before, 3),
         },
     )
     return dict(outcome["result"])
 
 
+def _end_campaign_leases(store: JobStore) -> None:
+    """A campaign keeps its remote lease warm between phases (the Sprite pauses
+    while idle); the lease ends with the campaign instead of idling out."""
+    try:
+        config = load_runner_config(repo_root=store.repo_root)
+    except ValueError:
+        return
+    if not config.configured or config.provider == "local":
+        return
+    # An unreleased lease still closes at its idle timeout.
+    with suppress(ComputeUnavailable, LeaseUnavailable, OSError, httpx.HTTPError):
+        with create_runner(config=config) as runner:
+            runner.release_idle_leases()
+
+
+def _node_cpu_seconds() -> float:
+    """CPU this process and its finished children used (packing, uploads, polling)."""
+    own = resource.getrusage(resource.RUSAGE_SELF)
+    children = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return own.ru_utime + own.ru_stime + children.ru_utime + children.ru_stime
+
+
 def _phase_input_paths(
-    store: JobStore, job_id: str, candidate_root: Path, *, campaign_id: str
+    store: JobStore,
+    job_id: str,
+    candidate_root: Path,
+    candidate: Mapping[str, Any],
+    *,
+    campaign_id: str,
 ) -> tuple[list[str], list[str]]:
-    """Exactly what full development and the economic gate read: this
-    candidate, the campaign's manifest, data and baseline source, its state,
-    the governing constitution, and the protected snapshot when certifying.
+    """Exactly what the offloaded phases read: this candidate, the campaign's
+    manifest, data and baseline source, its state, the governing constitution,
+    and the protected snapshot when certifying; screening also reads the
+    diagnostic pack and this candidate's reference bundle and cached result.
 
     Returned as (per-phase inputs, base). The base, the campaign dataset and
     protected snapshot, is the same for every phase of the campaign, so a
@@ -6508,21 +6637,53 @@ def _phase_input_paths(
         campaign / "source",
         job / CAMPAIGN_STATE_PATH,
     ]
+    reference = candidate.get("reference_bundle")
     paths.extend(
         path
         for path in (
             campaign / FORWARD_SNAPSHOT,
             job / CONSTITUTION_FILENAME,
             governance_dir(store.repo_root, job_id),
+            campaign / DIAGNOSTIC_PACK,
+            *([job / str(reference)] if reference else []),
+            _reference_result_path(store, job_id, candidate, campaign_id),
         )
         if path.exists()
     )
+    return (
+        [path.relative_to(store.repo_root).as_posix() for path in paths],
+        _campaign_base_paths(store, job_id, campaign_id),
+    )
+
+
+def _campaign_base_paths(store: JobStore, job_id: str, campaign_id: str) -> list[str]:
+    """The campaign dataset and protected snapshot: identical for every phase of
+    the campaign, from its start on, so one lease uploads them once."""
+    campaign = store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id
     base = [campaign / CAMPAIGN_DATA_ROOT]
     if _protected_fold_policy(_campaign_policy(store, job_id, campaign_id))["enabled"]:
         base.append(_protected_campaign_dataset_root(store, job_id, campaign_id))
+    return [path.relative_to(store.repo_root).as_posix() for path in base]
+
+
+def _campaign_input_paths(
+    store: JobStore, job_id: str, campaign_id: str
+) -> tuple[list[str], list[str]]:
+    """What campaign start's scans read: the new campaign's snapshot (no candidate
+    exists yet) and the job's live calibration and leader closes when present."""
+    job = store.job_dir(job_id)
+    campaign = job / CAMPAIGN_ROOT / campaign_id
+    paths = [
+        path for path in sorted(campaign.iterdir()) if path.name != CAMPAIGN_DATA_ROOT
+    ]
+    paths.extend(
+        path
+        for path in (job / CALIBRATION_PATH, job / LEADER_CLOSES_RELATIVE)
+        if path.exists()
+    )
     return (
         [path.relative_to(store.repo_root).as_posix() for path in paths],
-        [path.relative_to(store.repo_root).as_posix() for path in base],
+        _campaign_base_paths(store, job_id, campaign_id),
     )
 
 
@@ -6541,13 +6702,10 @@ def _returned_phase_writes(
     the journal or the evidence-access ledger, and a re-tuned candidate
     definition. Caches and other scratch writes stay in the copy."""
     job_id = str(args["job_id"])
-    definition = (
-        resolve_candidate_bundle(
-            store, job_id, args["candidate"], campaign_id=str(args["campaign_id"])
-        )
-        / "job.yaml"
+    files = _returnable_files(
+        store, job_id, args.get("candidate"), str(args["campaign_id"])
     )
-    before = definition.read_bytes()
+    before = {file: file.read_bytes() if file.exists() else None for file in files}
     ledgers = _phase_ledgers(store, job_id)
     offsets = {path: path.stat().st_size if path.exists() else 0 for path in ledgers}
     try:
@@ -6563,24 +6721,44 @@ def _returned_phase_writes(
                 target = outputs / "appended" / ledger.relative_to(store.repo_root)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(rows.replace(copy_root, source_root))
-        if definition.read_bytes() != before:
-            target = outputs / "files" / definition.relative_to(store.repo_root)
+        for file in files:
+            if not file.exists() or file.read_bytes() == before[file]:
+                continue
+            target = outputs / "files" / file.relative_to(store.repo_root)
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(definition.read_bytes())
+            target.write_bytes(file.read_bytes())
+
+
+def _returnable_files(
+    store: JobStore,
+    job_id: str,
+    candidate: Mapping[str, Any] | None,
+    campaign_id: str,
+) -> list[Path]:
+    """Files a phase may hand back besides ledger rows: a candidate's re-tuned
+    definition and its cached reference result. Campaign phases return none."""
+    if candidate is None:
+        return []
+    root = resolve_candidate_bundle(
+        store, job_id, dict(candidate), campaign_id=campaign_id
+    )
+    return [
+        root / "job.yaml",
+        _reference_result_path(store, job_id, candidate, campaign_id),
+    ]
 
 
 def _apply_returned_writes(
-    store: JobStore, job_id: str, outputs: Path, candidate_root: Path
+    store: JobStore, job_id: str, outputs: Path, returnable: list[Path]
 ) -> None:
     ledgers = set(_phase_ledgers(store, job_id))
-    definition = candidate_root / "job.yaml"
     for kind in ("appended", "files"):
         base = outputs / kind
         for file in sorted(base.rglob("*")) if base.is_dir() else []:
             if not file.is_file():
                 continue
             target = store.repo_root / file.relative_to(base)
-            if kind == "files" and target == definition:
+            if kind == "files" and target in returnable:
                 atomic_write_text(target, file.read_text(encoding="utf-8"))
             elif kind == "appended" and target in ledgers:
                 target.parent.mkdir(parents=True, exist_ok=True)

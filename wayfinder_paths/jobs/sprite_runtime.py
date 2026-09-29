@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import functools
+import importlib.metadata
 import json
+import re
 import runpy
+import subprocess
 import sys
 import traceback
 from collections.abc import Callable, Iterator, Sequence
@@ -12,7 +16,9 @@ from contextlib import chdir, contextmanager
 from pathlib import Path
 from typing import Any
 
+import httpx
 import yaml
+from loguru import logger
 
 from wayfinder_paths.jobs.compute_phase import resolve_phase
 from wayfinder_paths.jobs.gating import compute_workspace_revision
@@ -84,45 +90,154 @@ def _contains_path(file: Path, path: str) -> bool:
     return False
 
 
+GIT_TIMEOUT_SECONDS = 10
+SDK_REPOSITORY = "WayfinderFoundation/wayfinder-paths-sdk"
+_SDK_ROOT = Path(__file__).resolve().parents[2]
+_COMMIT = re.compile(r"[0-9a-f]{40}")
+_warned: set[str] = set()
+
+
+def _warn_once(message: str, *args: Any) -> None:
+    """Every runner resolves the commit again (a new commit counts); each warning is
+    logged once per process."""
+    text = message.format(*args)
+    if text not in _warned:
+        _warned.add(text)
+        logger.warning(text)
+
+
+def _git(*args: str) -> str:
+    return (
+        subprocess.check_output(
+            ["git", "-C", str(_SDK_ROOT), *args],
+            stderr=subprocess.DEVNULL,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+        .decode()
+        .strip()
+    )
+
+
+def _marker_commit() -> str | None:
+    """.sdk-commit, written by the Shell image and by the Sprite runtime installer."""
+    marker = _SDK_ROOT / ".sdk-commit"
+    commit = marker.read_text().strip() if marker.exists() else ""
+    return commit if _COMMIT.fullmatch(commit) else None
+
+
+def _modified_checkout() -> str:
+    return _git(
+        "status",
+        "--porcelain",
+        "--",
+        "wayfinder_paths",
+        "pyproject.toml",
+        "poetry.lock",
+    )
+
+
 def installed_sdk_commit() -> str | None:
     """Checkpoint marker or an unchanged source checkout can satisfy a pin."""
-    import subprocess
-
-    sdk_root = Path(__file__).resolve().parents[2]
-    marker = sdk_root / ".sdk-commit"
-    if marker.exists():
-        return marker.read_text().strip()
-    if not (sdk_root / ".git").exists():
-        return None
+    marker = _marker_commit()
+    if marker is not None or not (_SDK_ROOT / ".git").exists():
+        return marker
     try:
         # Include staged and untracked SDK changes: HEAD alone would falsely
         # identify a developer's modified implementation as the pinned release.
-        dirty = subprocess.check_output(
-            [
-                "git",
-                "-C",
-                str(sdk_root),
-                "status",
-                "--porcelain",
-                "--",
-                "wayfinder_paths",
-                "pyproject.toml",
-                "poetry.lock",
-            ],
-            stderr=subprocess.DEVNULL,
-        )
-        if dirty.strip():
-            return None
-        return (
-            subprocess.check_output(
-                ["git", "-C", str(sdk_root), "rev-parse", "HEAD"],
-                stderr=subprocess.DEVNULL,
-            )
-            .decode()
-            .strip()
-        )
-    except (OSError, subprocess.CalledProcessError):
+        return None if _modified_checkout() else _git("rev-parse", "HEAD")
+    except (OSError, subprocess.SubprocessError):
         return None
+
+
+def node_sdk_commit() -> str | None:
+    """The public SDK commit a lease's Sprite installs to run this node's jobs.
+
+    In order: the image marker (``.sdk-commit``); a git checkout's HEAD, with a warning
+    when the Sprite cannot match it exactly; a pip install from git (its recorded
+    commit); a PyPI release (its ``v<version>`` tag, resolved on GitHub). None leaves an
+    SDK runner profile to refuse the booking, so the job runs locally.
+    """
+    marker = _marker_commit()
+    if marker is not None:
+        return marker
+    if (_SDK_ROOT / ".git").exists():
+        return _checkout_commit()
+    return _distribution_commit()
+
+
+def _checkout_commit() -> str | None:
+    """HEAD when a remote has it; otherwise its nearest main ancestor, which a fresh
+    Sprite can download."""
+    try:
+        head = _git("rev-parse", "HEAD")
+        modified = _modified_checkout()
+        pushed = _git("branch", "--remotes", "--contains", head)
+        commit = head if pushed else _main_ancestor(head)
+        newer = _git("rev-list", "--count", f"{commit}..{head}") if commit else ""
+    except (OSError, subprocess.SubprocessError):
+        _warn_once("Could not read the SDK checkout's commit; jobs run locally")
+        return None
+    if commit is None:
+        _warn_once(
+            "SDK commit {} is not on any remote branch; push it, or its Sprite install fails",
+            head[:12],
+        )
+        commit = head
+    elif commit != head:
+        _warn_once(
+            "SDK commit {} is not pushed; offloaded jobs run its nearest main ancestor {}, "
+            "without its {} newer commit(s)",
+            head[:12],
+            commit[:12],
+            newer,
+        )
+    if modified:
+        _warn_once(
+            "Offloaded jobs run SDK commit {} without this checkout's uncommitted changes",
+            commit[:12],
+        )
+    return commit
+
+
+def _main_ancestor(head: str) -> str | None:
+    """The nearest commit HEAD shares with the remote main branch (local refs only)."""
+    for ref in ("refs/remotes/origin/HEAD", "refs/remotes/origin/main"):
+        try:
+            return _git("merge-base", head, ref)
+        except subprocess.CalledProcessError:
+            continue
+    return None
+
+
+def _distribution_commit() -> str | None:
+    try:
+        distribution = importlib.metadata.distribution("wayfinder-paths")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+    # PEP 610: a pip install from git records the commit it installed.
+    direct = json.loads(distribution.read_text("direct_url.json") or "{}")
+    commit = (direct.get("vcs_info") or {}).get("commit_id", "")
+    if _COMMIT.fullmatch(commit):
+        return commit
+    return _release_commit(distribution.version)
+
+
+@functools.cache
+def _release_commit(version: str) -> str | None:
+    try:
+        response = httpx.get(
+            f"https://api.github.com/repos/{SDK_REPOSITORY}/commits/v{version}",
+            headers={"Accept": "application/vnd.github+json"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        commit = response.json()["sha"]
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        _warn_once(
+            "Could not resolve SDK release v{} to a commit; jobs run locally", version
+        )
+        return None
+    return commit if isinstance(commit, str) and _COMMIT.fullmatch(commit) else None
 
 
 def prepare(source: Path, root: Path, base: Path | None = None) -> WorkspaceRequest:

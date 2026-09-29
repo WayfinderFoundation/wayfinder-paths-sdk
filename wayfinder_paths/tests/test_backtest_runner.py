@@ -300,7 +300,9 @@ def test_agent_entrypoint_selects_runner_only_for_portable_ops(monkeypatch, tmp_
     native = Mock(return_value={"native": True})
     configured = Mock(return_value={"provider": "sprites", "status": "succeeded"})
     ledger = Mock()
-    config = RunnerConfig(provider="sprites", runs_dir=tmp_path, configured=True)
+    config = RunnerConfig(
+        provider="sprites", runs_dir=tmp_path, configured=True, offload_operations=True
+    )
     monkeypatch.setattr(op_runner, "_run", native)
     monkeypatch.setattr(op_runner, "_record_evidence_access", ledger)
     monkeypatch.setattr(backtest_runner, "load_runner_config", lambda: config)
@@ -318,6 +320,41 @@ def test_agent_entrypoint_selects_runner_only_for_portable_ops(monkeypatch, tmp_
         lambda: replace(config, provider="local", configured=False),
     )
     assert op_runner._run_entrypoint("backtest_job", {}) == {"native": True}
+
+
+def test_standalone_operations_book_a_remote_lease_only_when_opted_in(
+    monkeypatch, tmp_path
+):
+    from wayfinder_paths.jobs import backtest_runner
+    from wayfinder_paths.jobs.execution import op_runner
+
+    native = Mock(return_value={"native": True})
+    configured = Mock(return_value={"provider": "sprites"})
+    monkeypatch.setattr(op_runner, "_run", native)
+    monkeypatch.setattr(op_runner, "_record_evidence_access", Mock())
+    monkeypatch.setattr(backtest_runner, "run_configured_operation", configured)
+    remote = RunnerConfig(provider="sprites", runs_dir=tmp_path, configured=True)
+    # A one-off backtest never boots a Sprite; campaigns keep theirs warm.
+    monkeypatch.setattr(backtest_runner, "load_runner_config", lambda: remote)
+    assert op_runner._run_entrypoint("backtest_job", {"job_id": "j"}) == {
+        "native": True
+    }
+    configured.assert_not_called()
+    # provider: local keeps its isolated local runs.
+    local = replace(remote, provider="local")
+    monkeypatch.setattr(backtest_runner, "load_runner_config", lambda: local)
+    op_runner._run_entrypoint("backtest_job", {"job_id": "j"})
+    configured.assert_called_once()
+
+
+def test_offload_operations_must_be_a_boolean(tmp_path):
+    config = {"backtest_runner": {"provider": "local", "offload_operations": True}}
+    assert load_runner_config(
+        repo_root=tmp_path, config=config, environ={}
+    ).offload_operations
+    config["backtest_runner"]["offload_operations"] = "yes"
+    with pytest.raises(ValueError, match="offload_operations"):
+        load_runner_config(repo_root=tmp_path, config=config, environ={})
 
 
 def test_local_run_ids_cannot_escape_storage(tmp_path):
@@ -738,6 +775,21 @@ def _sprites_config(tmp_path: Path, **overrides) -> RunnerConfig:
         api_key="owner-key",
         **overrides,
     )
+
+
+def test_sprites_runner_offloads_its_own_sdk_commit_unless_pinned(
+    tmp_path, monkeypatch
+):
+    made = []
+    monkeypatch.setattr(
+        backtest_runner,
+        "SpriteBacktestsClient",
+        lambda *args, **kwargs: made.append(kwargs) or Mock(),
+    )
+    monkeypatch.setattr(backtest_runner, "node_sdk_commit", lambda: "c" * 40)
+    SpritesRunner(_sprites_config(tmp_path))
+    SpritesRunner(_sprites_config(tmp_path, sdk_commit="d" * 40))
+    assert [kwargs["sdk_commit"] for kwargs in made] == ["c" * 40, "d" * 40]
 
 
 def test_sprites_phase_ships_inputs_and_returns_only_outputs(tmp_path, monkeypatch):

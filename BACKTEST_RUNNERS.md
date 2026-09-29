@@ -171,32 +171,40 @@ anything else. A remote checkpoint only knows the phases in its SDK commit, so
 pin `sdk_commit` when a phase is new. Existing backtest operations keep their
 job-workspace behavior unchanged.
 
-### Evolution finalize phases
+### Evolution phases
 
-Campaign finalization runs its two heavy phases, full development and the
-final economic gate, as registered phases (`full_dev_phase`,
-`economic_gate_phase`) whenever a remote provider is configured. Each ships
-only what it reads: the one candidate bundle, the campaign manifest, dataset,
-baseline `source/`, campaign state, the governing constitution, and the
-protected certification snapshot when protected folds are on. The campaign
+A campaign's heavy phases run as registered phases whenever a remote provider is
+configured: the low-fidelity screen of every candidate (`screen_phase`, including
+its Optuna tuning preview), and at finalization full development (`full_dev_phase`,
+including Optuna tuning) and the final economic gate (`economic_gate_phase`).
+Screening runs for every candidate, so offloading it keeps a Shell's shared CPU
+for the agent. Each ships only what it reads: the one candidate bundle, the
+campaign manifest, dataset, baseline `source/`, campaign state, the governing
+constitution, and the protected certification snapshot when protected folds are
+on; screening also ships the campaign's diagnostic pack and the candidate's
+reference bundle and cached reference result. The campaign
 dataset and the protected snapshot are the phase's base, identical for every
 phase of the campaign, so the campaign's successive phases reuse one Sprite
 lease and upload the dataset once; everything else is the per-phase delta.
 Other candidates, the job journal and the evidence ledger stay home. The phase
 runs the same code over the shipped copy and returns the result plus its
 writes: rows it appended to the journal or the evidence-access ledger (with
-copy paths mapped back to the repository) and a re-tuned candidate `job.yaml`. The protected snapshot is
-never written back, so it still verifies.
+copy paths mapped back to the repository), a re-tuned candidate `job.yaml`, and a
+reference result screening computed. The protected snapshot is never written back,
+so it still verifies. Optuna searches are seeded and run one trial at a time, so a
+remote search matches the local one trial for trial.
 
-With no runner configured, or `provider: local`, finalization is unchanged: the
+With no runner configured, or `provider: local`, these phases are unchanged: the
 supervised in-process child that the heavy lane can pause and whose memory it
 bounds. The same child runs when the remote refuses capacity, cannot be
 reached, cannot start the phase (for example a checkpoint on another SDK commit),
 loses the run, times out or loses its lease before the phase recorded a result,
 or when a candidate's entrypoint points outside its bundle; each such case
 journals `evolution_phase_ran_locally` with the reason. A successful
-remote run journals `evolution_phase_offloaded` with its provider and run id,
-and leaves no local resource telemetry. A failure raised by the phase's own code
+remote run journals `evolution_phase_offloaded` with its provider and run id, its
+`wall_seconds` and the `node_cpu_seconds` the node itself spent packing, uploading
+and polling. Comparing the two shows whether the node stayed responsive; it leaves
+no other local resource telemetry. A failure raised by the phase's own code
 is classified exactly as the local child does: a contract failure is candidate
 evidence, while memory, lock and other infrastructure failures release the claim
 for a later retry. Choose a preset whose timeout covers full development
@@ -308,9 +316,10 @@ Runner tests execute real local computations, process grids, client-exit recover
 timeouts/cancellation, partial artifacts, checksum failures, configuration selection,
 the existing agent entry point, heavy-lane cancellation, compute phases, the local
 fallback for every refusal status, and a third provider registered only in the test.
-The evolution offload tests run full development and the economic gate in a
-separate interpreter over exactly the shipped inputs and require the same result
-as the local supervised phase, including protected certification.
+The evolution offload tests run screening, full development and the economic gate
+in a separate interpreter over exactly the shipped inputs and require the same
+result as the local supervised phase, including protected certification and the
+Optuna searches (trial for trial; they need the `ml` group).
 The Sprite tests use the real HTTP client and portable runtime against an
 in-memory implementation of Django's lease endpoints and the Sprite worker API
 (`sprite_lease_fake.py`); they do not create billed Sprites or establish live

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+import random
 import shutil
 import subprocess
 import sys
@@ -39,11 +41,12 @@ from wayfinder_paths.jobs.synthetic.strategies import CHURNER
 from wayfinder_paths.tests.test_jobs_evolution_campaign import (
     _enable_protected_folds,
     _evaluatable_job,
+    _prepare_campaign_candidates,
 )
 
 STARTED = datetime(2026, 8, 25, 12, tzinfo=UTC)
 # Wall-clock timing and cache provenance legitimately differ between two runs.
-_VOLATILE = {"checked_at", "sim_wall_seconds", "profile", "run_id"}
+_VOLATILE = {"checked_at", "sim_wall_seconds", "wall_seconds", "profile", "run_id"}
 
 
 class RemoteRunner(BacktestRunner):
@@ -52,6 +55,7 @@ class RemoteRunner(BacktestRunner):
 
     refuse: str | None = None
     lose_worker = False
+    released = 0
     shipped: list[list[str]] = []
     bases: list[list[str]] = []
 
@@ -127,12 +131,16 @@ class RemoteRunner(BacktestRunner):
         extract_archive(self._directory(run_id) / "artifacts.tgz", destination)
         return self.records[run_id]
 
+    def release_idle_leases(self) -> None:
+        RemoteRunner.released += 1
+
 
 @pytest.fixture
 def remote(monkeypatch: pytest.MonkeyPatch) -> type[RemoteRunner]:
     monkeypatch.setitem(RUNNERS, "remote", RemoteRunner)
     monkeypatch.setattr(RemoteRunner, "refuse", None)
     monkeypatch.setattr(RemoteRunner, "lose_worker", False)
+    monkeypatch.setattr(RemoteRunner, "released", 0)
     monkeypatch.setattr(RemoteRunner, "shipped", [])
     monkeypatch.setattr(RemoteRunner, "bases", [])
     for name in (
@@ -229,6 +237,187 @@ def test_offloaded_full_dev_matches_the_local_supervised_phase(tmp_path, remote)
     assert row["provider"] == "remote"
 
 
+def test_offloaded_screen_matches_the_local_screen(tmp_path, remote):
+    store, job_id = _evaluatable_job(tmp_path)
+    state = start_campaign(store, job_id, now=STARTED)
+    campaign_id = str(state["campaign_id"])
+    candidate = _mutated_candidate(store, job_id)
+    local = campaign_module._screen(store, job_id, candidate, campaign_id=campaign_id)
+    reference = campaign_module._reference_result_path(
+        store, job_id, candidate, campaign_id
+    )
+    cached = reference.read_bytes() if reference.exists() else None
+    reference.unlink(missing_ok=True)
+
+    _configure(store)
+    offloaded = campaign_module._screen(
+        store, job_id, candidate, campaign_id=campaign_id
+    )
+
+    assert _stable(offloaded) == _stable(local)
+    # A reference result the remote computed is cached back in the source.
+    assert (reference.read_bytes() if reference.exists() else None) == cached
+    (shipped,) = remote.shipped
+    campaign = f".wayfinder/jobs/{job_id}/research/evolution/campaigns/{campaign_id}"
+    pack = store.job_dir(job_id) / campaign_module.CAMPAIGN_ROOT / campaign_id
+    if (pack / campaign_module.DIAGNOSTIC_PACK).exists():
+        assert f"{campaign}/{campaign_module.DIAGNOSTIC_PACK}" in shipped
+    if candidate.get("reference_bundle"):
+        reference_bundle = f".wayfinder/jobs/{job_id}/{candidate['reference_bundle']}/"
+        assert any(name.startswith(reference_bundle) for name in shipped)
+    (row,) = _journal(store, job_id, "evolution_phase_offloaded")
+    assert row["phase"] == "wayfinder_paths.jobs.evolution_campaign:screen_phase"
+    assert row["wall_seconds"] >= 0 and row["node_cpu_seconds"] >= 0
+
+
+def _optuna_candidate(
+    store: JobStore, job_id: str, state: dict[str, Any]
+) -> dict[str, Any]:
+    """A parameter candidate with a typed search space, and a small Optuna budget
+    with no timeout, so a remote search is trial-for-trial the local one."""
+    manifest_path = store.job_dir(job_id) / state["manifest"]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["policy"].update(
+        {
+            "inner_optuna_trials": 6,
+            "inner_optuna_timeout_seconds": 0,
+            "inner_optuna_preview_trials": 4,
+            "inner_optuna_preview_timeout_seconds": 0,
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    parameter = _prepare_campaign_candidates(store, job_id, STARTED)[-1]
+    assert parameter["mutation_kind"] == "parameter"
+    (store.job_dir(job_id) / parameter["bundle"] / "search_space.json").write_text(
+        json.dumps({"lookback": {"type": "int", "low": 12, "high": 96}}),
+        encoding="utf-8",
+    )
+    return parameter
+
+
+def test_offloaded_optuna_tuning_matches_the_local_search(tmp_path, remote):
+    pytest.importorskip("optuna")
+    store, job_id = _evaluatable_job(tmp_path)
+    state = start_campaign(store, job_id, now=STARTED)
+    parameter = _optuna_candidate(store, job_id, state)
+    definition = store.job_dir(job_id) / parameter["bundle"] / "job.yaml"
+    original = definition.read_bytes()
+    local = _isolated_full_dev(store, job_id, parameter, tune=True)
+    tuned = definition.read_bytes()
+    definition.write_bytes(original)  # The remote run starts from the same candidate.
+
+    _configure(store)
+    offloaded = _isolated_full_dev(store, job_id, parameter, tune=True)
+
+    assert local["tuning"]["trials"] == 6
+    assert _stable(offloaded) == _stable(local)
+    # The re-tuned definition comes back to the source repository.
+    assert definition.read_bytes() == tuned
+    (row,) = _journal(store, job_id, "evolution_phase_offloaded")
+    assert row["phase"] == "wayfinder_paths.jobs.evolution_campaign:full_dev_phase"
+
+
+def test_offloaded_screen_runs_the_same_optuna_preview(tmp_path, remote):
+    pytest.importorskip("optuna")
+    store, job_id = _evaluatable_job(tmp_path)
+    state = start_campaign(store, job_id, now=STARTED)
+    campaign_id = str(state["campaign_id"])
+    parameter = _optuna_candidate(store, job_id, state)
+    # A strategy that closes trades, so the quick screen reaches the preview.
+    script = store.job_dir(job_id) / parameter["bundle"] / "workspace/src/strategy.py"
+    script.write_text(CHURNER, encoding="utf-8")
+    local = campaign_module._screen(store, job_id, parameter, campaign_id=campaign_id)
+
+    _configure(store)
+    offloaded = campaign_module._screen(
+        store, job_id, parameter, campaign_id=campaign_id
+    )
+
+    assert local["tuning_preview"]["trials"] == 4
+    assert _stable(offloaded) == _stable(local)
+    (row,) = _journal(store, job_id, "evolution_phase_offloaded")
+    assert row["phase"] == "wayfinder_paths.jobs.evolution_campaign:screen_phase"
+
+
+def _with_history(store: JobStore, job_id: str, bars: int = 1500) -> None:
+    """Enough seeded random-walk history for campaign start's scans to find rows."""
+    rng = random.Random(3)
+    price, rows = 10.0, []
+    start = datetime(2026, 6, 1, tzinfo=UTC)
+    for index in range(bars):
+        price *= math.exp(rng.gauss(0.0, 0.01))
+        rows.append(
+            {
+                "timestamp": (start + timedelta(hours=index)).isoformat(),
+                "symbol": "IMX",
+                "open": price,
+                "high": price * 1.01,
+                "low": price * 0.99,
+                "close": price,
+                "volume": 100.0 + index % 7,
+            }
+        )
+    path = store.job_dir(job_id) / "results" / "backtest" / "input_bars.json"
+    path.write_text(
+        json.dumps({"metadata": {"days": bars // 24}, "bars": rows}), encoding="utf-8"
+    )
+
+
+def test_offloaded_campaign_start_matches_the_local_start(
+    tmp_path, remote, monkeypatch
+):
+    local_store, local_job = _evaluatable_job(tmp_path / "local")
+    remote_store, remote_job = _evaluatable_job(tmp_path / "remote")
+    for store, job_id in ((local_store, local_job), (remote_store, remote_job)):
+        _with_history(store, job_id)
+    captured: dict[str, Any] = {}
+    start_scans, offloaded_phase = (
+        campaign_module._start_scans,
+        campaign_module._offloaded_phase,
+    )
+
+    def local_scans(*args, **kwargs):
+        captured["local"] = start_scans(*args, **kwargs)
+        return captured["local"]
+
+    def remote_phase(*args, **kwargs):
+        result = offloaded_phase(*args, **kwargs)
+        if result is not None:
+            captured.setdefault("remote", result)
+        return result
+
+    monkeypatch.setattr(campaign_module, "_start_scans", local_scans)
+    monkeypatch.setattr(campaign_module, "_offloaded_phase", remote_phase)
+    start_campaign(local_store, local_job, now=STARTED)
+    _configure(remote_store)
+    state = start_campaign(remote_store, remote_job, now=STARTED)
+
+    assert _stable(captured["remote"]) == _stable(captured["local"])
+    assert captured["local"]["policy_scan"]  # The scans had data to work on.
+    (row,) = _journal(remote_store, remote_job, "evolution_phase_offloaded")
+    assert (
+        row["phase"] == "wayfinder_paths.jobs.evolution_campaign:campaign_scans_phase"
+    )
+    assert row["candidate_id"] is None
+    # The campaign's next phase reuses the start's base: one lease, one upload.
+    candidate = _mutated_candidate(remote_store, remote_job)
+    campaign_module._screen(
+        remote_store, remote_job, candidate, campaign_id=str(state["campaign_id"])
+    )
+    assert len(remote.bases) == 2 and remote.bases[0] == remote.bases[1]
+
+
+def test_a_completed_campaign_ends_its_lease(tmp_path, remote):
+    store, _ = _evaluatable_job(tmp_path)
+    campaign_module._end_campaign_leases(store)  # No runner: nothing to end.
+    _configure(store, provider="local")
+    campaign_module._end_campaign_leases(store)
+    assert remote.released == 0
+    _configure(store)
+    campaign_module._end_campaign_leases(store)
+    assert remote.released == 1
+
+
 def test_offloaded_certification_returns_its_evidence_access(tmp_path, remote):
     store, job_id = _evaluatable_job(tmp_path)
     _enable_protected_folds(store, job_id)
@@ -310,6 +499,51 @@ def test_remote_that_cannot_run_the_phase_falls_back_to_the_local_child(
     (row,) = _journal(store, job_id, "evolution_phase_ran_locally")
     assert row["provider"] == "remote" and row["reason"]
     assert not _journal(store, job_id, "evolution_phase_offloaded")
+
+
+@pytest.mark.parametrize("failure", ["refused", "unstartable", "lost_worker"])
+def test_a_screen_the_remote_cannot_run_is_computed_locally(
+    tmp_path, remote, monkeypatch, failure
+):
+    store, job_id = _evaluatable_job(tmp_path)
+    state = start_campaign(store, job_id, now=STARTED)
+    candidate = _mutated_candidate(store, job_id)
+    # The same function the remote phase runs, computed here instead.
+    local = Mock(return_value={"status": "quick_complete", "local": True})
+    monkeypatch.setattr(campaign_module, "_evaluate_candidate", local)
+    if failure == "refused":
+        monkeypatch.setattr(RemoteRunner, "refuse", "worker limit reached")
+        _configure(store)
+    elif failure == "unstartable":
+        _configure(store, sdk_commit="0" * 40)  # a runtime on another SDK
+    else:
+        monkeypatch.setattr(RemoteRunner, "lose_worker", True)
+        _configure(store)
+
+    outcome = campaign_module._screen(
+        store, job_id, candidate, campaign_id=str(state["campaign_id"])
+    )
+
+    assert outcome == {"status": "quick_complete", "local": True}
+    local.assert_called_once()
+    (row,) = _journal(store, job_id, "evolution_phase_ran_locally")
+    assert row["phase"] == "wayfinder_paths.jobs.evolution_campaign:screen_phase"
+    assert row["provider"] == "remote" and row["reason"]
+    assert not _journal(store, job_id, "evolution_phase_offloaded")
+
+
+def test_screens_stay_local_without_a_remote_runner(tmp_path, remote, monkeypatch):
+    store, job_id = _evaluatable_job(tmp_path)
+    state = start_campaign(store, job_id, now=STARTED)
+    candidate = _mutated_candidate(store, job_id)
+    local = Mock(return_value={"status": "quick_complete"})
+    monkeypatch.setattr(campaign_module, "_evaluate_candidate", local)
+    campaign_id = str(state["campaign_id"])
+    campaign_module._screen(store, job_id, candidate, campaign_id=campaign_id)
+    _configure(store, provider="local")
+    campaign_module._screen(store, job_id, candidate, campaign_id=campaign_id)
+    assert local.call_count == 2 and not remote.shipped
+    assert not _journal(store, job_id, "evolution_phase_ran_locally")
 
 
 def test_unconfigured_or_local_runner_keeps_the_supervised_child(
@@ -426,15 +660,25 @@ def test_phase_writes_return_to_the_source_repository(tmp_path):
     }
     journal_before = (source.job_dir(job_id) / "journal.jsonl").read_bytes()
 
+    reference = campaign_module._reference_result_path(
+        source, job_id, candidate, str(state["campaign_id"])
+    )
+    reference.unlink(missing_ok=True)
     with _returned_phase_writes(copy, outputs, args):
         tuned = copy.job_dir(job_id) / candidate["bundle"] / "job.yaml"
         tuned.write_text(tuned.read_text() + "# tuned\n", encoding="utf-8")
         copy.append_journal(job_id, {"type": "probe", "path": f"{copy_root}/x"})
         campaign_module.record_evidence_access(copy_root, job_id, "probe_access")
+        # Screening caches the candidate's reference result.
+        cached = copy_root / reference.relative_to(source.repo_root)
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_text('{"revision": "r", "slices": {}}', encoding="utf-8")
 
-    _apply_returned_writes(source, job_id, outputs, candidate_root)
+    returnable = [candidate_root / "job.yaml", reference]
+    _apply_returned_writes(source, job_id, outputs, returnable)
 
     assert (candidate_root / "job.yaml").read_text().endswith("# tuned\n")
+    assert json.loads(reference.read_text()) == {"revision": "r", "slices": {}}
     journal = (source.job_dir(job_id) / "journal.jsonl").read_bytes()
     assert journal.startswith(journal_before)
     (probe,) = _journal(source, job_id, "probe")
@@ -444,4 +688,4 @@ def test_phase_writes_return_to_the_source_repository(tmp_path):
     (outputs / "files" / "unexpected.txt").parent.mkdir(parents=True, exist_ok=True)
     (outputs / "files" / "unexpected.txt").write_text("x")
     with pytest.raises(TransientInfrastructureError, match="unexpected"):
-        _apply_returned_writes(source, job_id, outputs, candidate_root)
+        _apply_returned_writes(source, job_id, outputs, returnable)

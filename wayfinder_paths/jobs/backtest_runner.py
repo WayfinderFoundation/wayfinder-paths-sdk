@@ -43,6 +43,7 @@ from wayfinder_paths.jobs.sprite_client import (
     LeaseUnavailable,
     SpriteBacktestsClient,
 )
+from wayfinder_paths.jobs.sprite_runtime import node_sdk_commit
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.runner.monitor_state import atomic_write_json
 
@@ -99,6 +100,9 @@ class RunnerConfig:
     app_name: str = ""
     preset: str = "jobs-v1"
     api_key: str = field(default="", repr=False)
+    # A remote lease costs a boot and an install, so only campaigns (evolution) use
+    # one by default; standalone operations run locally unless this opts them in.
+    offload_operations: bool = False
 
 
 def load_runner_config(
@@ -132,6 +136,7 @@ def load_runner_config(
         "extra_paths",
         "sdk_commit",
         "sprites",
+        "offload_operations",
     }
     if set(section) - allowed:
         raise ValueError("Unknown backtest_runner configuration field")
@@ -200,6 +205,9 @@ def load_runner_config(
     if commit is not None:
         if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
             raise ValueError("sdk_commit must be a full lowercase Git SHA")
+    offload_operations = section.get("offload_operations", False)
+    if not isinstance(offload_operations, bool):
+        raise ValueError("offload_operations must be true or false")
     backend = env.get("WAYFINDER_SPRITES_BACKEND", sprites.get("backend", ""))
     app = env.get("WAYFINDER_SPRITES_APP_NAME", sprites.get("app_name", ""))
     preset = env.get("WAYFINDER_SPRITES_PRESET", sprites.get("preset", "jobs-v1"))
@@ -244,6 +252,7 @@ def load_runner_config(
         app_name=app,
         preset=preset,
         api_key=key,
+        offload_operations=offload_operations,
     )
 
 
@@ -264,6 +273,10 @@ class BacktestRunner(ABC):
 
     def close(self) -> None:
         """Release client resources, without cancelling submitted computations."""
+        return None
+
+    def release_idle_leases(self) -> None:
+        """End remote leases no submission is using; local runs hold none."""
         return None
 
     def submit(
@@ -370,6 +383,8 @@ class SpritesRunner(BacktestRunner):
             config.app_name,
             config.api_key,
             lease_dir=config.runs_dir / "sprite-leases",
+            # Django installs this commit on the lease's Sprite (see node_sdk_commit).
+            sdk_commit=config.sdk_commit or node_sdk_commit(),
         )
         self._owns_client = client is None
 
@@ -388,6 +403,9 @@ class SpritesRunner(BacktestRunner):
             # failure after a lease was booked re-raises instead.
             raise ComputeUnavailable(str(exc)) from exc
         return {**submitted, "provider": "sprites"}
+
+    def release_idle_leases(self) -> None:
+        self.client.release_idle()
 
     def status(self, run_id: str) -> dict[str, Any]:
         # The client retries brief network or backend interruptions.
@@ -622,6 +640,9 @@ class FallbackRunner(BacktestRunner):
     def close(self) -> None:
         self.primary.close()
         self.local.close()
+
+    def release_idle_leases(self) -> None:
+        self.primary.release_idle_leases()
 
 
 def create_runner(

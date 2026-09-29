@@ -119,6 +119,7 @@ def test_booking_sends_only_the_token_hash_and_keeps_the_token_private(
         "expires_at": lease["expires_at"],
         "timeout_seconds": 900,
         "transfer_timeout_seconds": 600,
+        "setup_timeout_seconds": 0,
         "base": hashlib.sha256(base.read_bytes()).hexdigest(),
         "job": run["job_id"],
     }
@@ -545,6 +546,45 @@ def test_the_default_wait_ends_by_the_lease_expiry(tmp_path: Path) -> None:
     client.http.close()
 
 
+def test_booking_asks_django_to_install_the_nodes_sdk_commit(tmp_path: Path) -> None:
+    fake = FakeSprites(tmp_path)
+    client = fake.client(sdk_commit="a" * 40)
+    archive, base = _pack(_phase_repo(tmp_path), tmp_path / "packed", scale=2)
+    run = client.submit_archive(archive, base=base)
+    assert client.wait(run["id"])["status"] == "succeeded"
+    (booking,) = fake.bookings()
+    assert json.loads(booking.content)["sdk_commit"] == "a" * 40
+    assert fake.leases[run["lease_id"]]["runtime"]["sdk_commit"] == "a" * 40
+    # A submission pinned to another commit replaces the lease (one per owner) with a
+    # lease running that commit, once the first run's results are collected.
+    client.collect(run["id"], tmp_path / "collected")
+    pinned = client.submit_archive(archive, base=base, expected_sdk_commit="b" * 40)
+    assert pinned["lease_id"] != run["lease_id"]
+    assert json.loads(fake.bookings()[-1].content)["sdk_commit"] == "b" * 40
+    assert client.wait(pinned["id"])["status"] == "succeeded"
+    client.http.close()
+
+
+def test_the_default_wait_includes_the_setup_allowance(tmp_path: Path) -> None:
+    # A fresh Sprite installs its runtime before the first job runs.
+    fake = FakeSprites(
+        tmp_path,
+        lease_seconds=7200,
+        timeout_seconds=60,
+        transfer_timeout_seconds=30,
+        setup_timeout_seconds=600,
+    )
+    fake.hold_jobs = True
+    clock = FakeClock()
+    client = fake.client(sleep=clock.sleep, clock=clock)
+    archive, base = _pack(_phase_repo(tmp_path), tmp_path / "packed", scale=2)
+    run = client.submit_archive(archive, base=base)
+    started = clock()
+    assert client.wait(run["id"], poll_interval=5)["status"] == "timed_out"
+    assert clock() - started == pytest.approx(60 + 30 + 600 + 120, abs=5)
+    client.http.close()
+
+
 def test_cancellation_keeps_the_lease_for_reuse(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -639,6 +679,7 @@ def _record(worker_url: str = "https://sprite.example") -> LeaseRecord:
         "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
         "timeout_seconds": 900,
         "transfer_timeout_seconds": 600,
+        "setup_timeout_seconds": 0,
         "base": None,
         "job": "job",
     }
@@ -775,7 +816,8 @@ def test_a_failed_upload_releases_the_lease(tmp_path: Path) -> None:
     client = fake.client()
     archive, base = _pack(_phase_repo(tmp_path), tmp_path / "packed", scale=2)
     fake.worker_down = True
-    with pytest.raises(httpx.ConnectError):
+    # Nothing ran, so the job can still run locally.
+    with pytest.raises(LeaseUnavailable, match="worker unreachable while submitting"):
         client.submit_archive(archive, base=base)
     assert len(fake.worker_requests("/base")) == ATTEMPTS
     ((_, lease),) = fake.leases.items()
@@ -853,3 +895,123 @@ def test_cli_rejects_non_object_options(
         )
     assert exc.value.code == 2
     assert "--options must contain a JSON object" in capsys.readouterr().err
+
+
+def test_a_lease_is_reused_only_for_the_nodes_commit_and_a_working_setup(
+    tmp_path: Path,
+) -> None:
+    fake = FakeSprites(tmp_path)
+    client = fake.client(sdk_commit="a" * 40)
+    archive, base = _pack(_phase_repo(tmp_path), tmp_path / "packed", scale=2)
+
+    def run_once(name: str) -> dict[str, Any]:
+        run = client.submit_archive(archive, base=base)
+        assert client.wait(run["id"])["status"] == "succeeded"
+        client.collect(run["id"], tmp_path / name)
+        return run
+
+    first = run_once("one")
+    # The node's SDK changed: the old lease is released and a new one runs the new commit.
+    client.sdk_commit = "b" * 40
+    second = run_once("two")
+    assert second["lease_id"] != first["lease_id"]
+    assert fake.leases[first["lease_id"]]["closed_reason"] == "released"
+    # A lease whose install failed is never reused.
+    fake.leases[second["lease_id"]]["setup"] = {"state": "failed", "error": "no wheel"}
+    third = run_once("three")
+    assert third["lease_id"] != second["lease_id"]
+    # A node that cannot name its commit never reuses an SDK lease.
+    client.sdk_commit = None
+    assert run_once("four")["lease_id"] != third["lease_id"]
+    client.http.close()
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        lambda request: httpx.Response(200, text="<html>captive portal</html>"),
+        lambda request: httpx.Response(500, json={"detail": "boom"}),
+        lambda request: httpx.Response(
+            302, headers={"Location": "https://login.example"}
+        ),
+        lambda request: httpx.Response(
+            201, json={"id": str(uuid.uuid4()), "status": "ready"}
+        ),
+    ],
+)
+def test_an_unusable_backend_answer_leaves_the_node_to_compute_locally(
+    tmp_path: Path, answer: Callable[[httpx.Request], httpx.Response]
+) -> None:
+    http = httpx.Client(transport=httpx.MockTransport(answer), base_url=BACKEND)
+    client = SpriteBacktestsClient(
+        BACKEND,
+        "shell",
+        "owner-key",
+        client=http,
+        sleep=lambda seconds: None,
+        lease_dir=tmp_path / "leases",
+    )
+    archive = tmp_path / "inputs.tgz"
+    archive.write_bytes(b"archive")
+    with pytest.raises(LeaseUnavailable):
+        client.submit_archive(archive)
+    http.close()
+
+
+def test_a_corrupt_lease_record_never_breaks_submissions(tmp_path: Path) -> None:
+    fake = FakeSprites(tmp_path)
+    client = fake.client()
+    (client.leases._ready() / "broken.json").write_text("{not json")
+    archive, base = _pack(_phase_repo(tmp_path), tmp_path / "packed", scale=2)
+    run = client.submit_archive(archive, base=base)
+    assert client.wait(run["id"])["status"] == "succeeded"
+    client.http.close()
+
+
+def test_choosing_a_lease_never_waits_long_on_another_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sprite_client, "LOCK_WAIT_SECONDS", 0.3)
+    fake = FakeSprites(tmp_path)
+    client = fake.client()
+    archive, base = _pack(_phase_repo(tmp_path), tmp_path / "packed", scale=2)
+    with client.leases.locked():  # Another process booking holds the lease lock.
+        with pytest.raises(LeaseUnavailable, match="choosing a lease"):
+            client.submit_archive(archive, base=base)
+    client.http.close()
+
+
+def test_waiting_rides_out_a_network_outage(tmp_path: Path) -> None:
+    fake = FakeSprites(tmp_path)
+    clock = FakeClock()
+    client = fake.client(sleep=clock.sleep, clock=clock)
+    archive, base = _pack(_phase_repo(tmp_path), tmp_path / "packed", scale=2)
+    run = client.submit_archive(archive, base=base)
+    # The laptop goes offline: neither the worker nor the backend answers for a while.
+    failures = {"left": 2 * ATTEMPTS + 2}
+
+    def offline(request: httpx.Request) -> httpx.Response:
+        if failures["left"]:
+            failures["left"] -= 1
+            raise httpx.ConnectError("offline", request=request)
+        return fake.handle(request)
+
+    client.http.close()
+    client.http = httpx.Client(transport=httpx.MockTransport(offline), base_url=BACKEND)
+    assert client.wait(run["id"], poll_interval=5)["status"] == "succeeded"
+    assert not failures["left"]
+    client.http.close()
+
+
+def test_release_idle_ends_only_leases_no_submission_uses(tmp_path: Path) -> None:
+    fake = FakeSprites(tmp_path)
+    client = fake.client()
+    archive, base = _pack(_phase_repo(tmp_path), tmp_path / "packed", scale=2)
+    run = client.submit_archive(archive, base=base)
+    assert client.release_idle() == []  # Its results are not collected yet.
+    assert client.wait(run["id"])["status"] == "succeeded"
+    client.collect(run["id"], tmp_path / "collected")
+    assert client.release_idle() == [run["lease_id"]]
+    assert fake.leases[run["lease_id"]]["closed_reason"] == "released"
+    assert not client.leases.all()
+    client.http.close()

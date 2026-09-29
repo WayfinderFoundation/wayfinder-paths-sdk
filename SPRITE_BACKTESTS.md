@@ -223,19 +223,31 @@ memory/CPU and the lease lifetime. Oversized archives fail explicitly.
 
 ## Build and verification
 
-The `shell/sprites` checkpoint pipeline resolves `wayfinder-jobs-v1` (or another
-selected ref) to a full commit, installs its committed source and lock, and runs
-`wayfinder_paths/tests/test_sprite_*.py` inside the Sprite before creating
-the checkpoint. Commit these modules/tests before building: `git archive` excludes
-uncommitted files. Use a new release ID for any SDK, worker or dependency change.
+Every lease boots a fresh Sprite, so it can run any version of this SDK. The node books
+with its `sdk_commit`, and a backend `sdk_runtime` runner profile installs that commit during
+worker setup: a checksum-pinned CPython 3.12.8, the commit's archive from GitHub, then
+`poetry sync --only main,ml` from the committed lock. The commit is the configured pin
+(`sdk_commit` / `WAYFINDER_BACKTEST_SDK_COMMIT`), otherwise `node_sdk_commit()`:
+
+| Installed as | Commit |
+| --- | --- |
+| Shell image (or a Sprite runtime) | `.sdk-commit`, written when the image is built |
+| Git checkout | `HEAD` when a remote branch has it; otherwise its nearest main ancestor (`git merge-base HEAD origin/HEAD`, else `origin/main`), with a warning naming it and the newer commits it lacks. Uncommitted SDK changes are warned about too: the Sprite runs the chosen commit without them |
+| `pip install git+...` | The commit pip recorded (`direct_url.json`) |
+| PyPI release | Its `v<version>` tag, resolved once on GitHub |
+
+When none applies (for example GitHub is unreachable), the booking is refused and the job
+runs locally. The node uploads its base bundle during setup; the first job waits for setup,
+and the node adds the lease's `setup_timeout_seconds` to its wait. SDK tests run in CI, not
+on the Sprite.
 
 The test matrix executes real portable-workspace computations: single/quick runs,
 serial/thread/process grids, Optuna, walk-forward, experiments, robustness,
 validation/preflight, legacy portfolio/multi-leverage APIs, ML files and large
 artifacts. Transport tests cover booking, lease reuse and replacement, retries,
 checksums, timeouts, unsafe archives and collection. Local tests do not establish
-live provider capacity; run a representative development Sprite job after
-registering a new checkpoint.
+live provider capacity; run a representative development Sprite job after changing the
+pinned commit.
 
 ## Local development
 
