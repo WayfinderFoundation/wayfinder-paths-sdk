@@ -2378,6 +2378,10 @@ async def hyperliquid_search_market(
             if value is not None and key not in {"raw_metadata", "raw_context"}
         }
         hit["market"]["min_order_notional_usd"] = MIN_ORDER_USD_NOTIONAL
+        if (open_interest := hit["market"].pop("open_interest", None)) is not None:
+            hit["market"]["open_interest_base"] = open_interest
+            if (mid := hit["market"].get("mid_px")) is not None:
+                hit["market"]["open_interest_usd_at_mid"] = open_interest * mid
 
     return ok(
         {

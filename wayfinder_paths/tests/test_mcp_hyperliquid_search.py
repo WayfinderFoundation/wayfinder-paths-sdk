@@ -180,6 +180,9 @@ async def test_search_includes_public_market_context_without_wallet_reads(monkey
     assert market["min_order_notional_usd"] == 10
     assert market["compatible_margin_modes"] == ["cross", "isolated"]
     assert market["impact_px_ask"] == 80001
+    assert market["open_interest_base"] == 12000
+    assert market["open_interest_usd_at_mid"] == 960_000_000
+    assert "open_interest" not in market
     assert "raw_context" not in market
     assert response["result"]["warnings"] == []
 
