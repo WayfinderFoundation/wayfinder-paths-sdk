@@ -28,11 +28,16 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from loguru import logger
 
 from wayfinder_paths.jobs.execution.op_process import track_evolution_process
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.runner.monitor_state import atomic_write_json
+
+if TYPE_CHECKING:
+    from wayfinder_paths.jobs.backtest_runner import RunnerConfig
 
 # Mirrors wayfinder_paths.jobs.heavy_lane.STATUS_PATH_ENV; spelled out here so
 # the child never imports the lane module (and the agent-host client behind
@@ -51,7 +56,7 @@ _EVIDENCE_OPS = {
 }
 
 
-def _run(op: str, kwargs: dict[str, Any]) -> Any:
+def _record_evidence_access(op: str, kwargs: dict[str, Any]) -> None:
     if op in _EVIDENCE_OPS and kwargs.get("job_id"):
         # Every validation query is on the protected record (audit/<job_id>/)
         # — the review's evidence-access ledger. Best-effort, never blocks.
@@ -68,6 +73,10 @@ def _run(op: str, kwargs: dict[str, Any]) -> Any:
             )
         except Exception:  # noqa: BLE001
             pass
+
+
+def _run(op: str, kwargs: dict[str, Any]) -> Any:
+    _record_evidence_access(op, kwargs)
     return _run_op(op, kwargs)
 
 
@@ -367,6 +376,75 @@ def _install_cancel_handler() -> None:
         signal.signal(signal.SIGTERM, _cancel_on_sigterm)
 
 
+def configured_runner(op: str) -> RunnerConfig | None:
+    """The configured runner that computes ``op`` instead of this process, or None.
+
+    Portable operations use a configured local runner (an isolated copy), and a
+    remote one only when ``backtest_runner.offload_operations`` opts standalone
+    operations in: a lease boots and installs a machine, which pays off over a
+    campaign, not a single op.
+    """
+    from wayfinder_paths.jobs.sprite_bundle import OPERATIONS
+
+    if op not in OPERATIONS:
+        return None
+    from wayfinder_paths.jobs.backtest_runner import (
+        load_runner_config,
+        offload_switched_off,
+    )
+
+    config = load_runner_config()
+    if not config.configured:
+        return None
+    if config.provider == "local":
+        return config
+    if config.offload_operations:
+        off = offload_switched_off(config)
+        if off is not None:
+            logger.info("Running {} on this node: {}", op, off)
+            return None
+        logger.info(
+            "Offloading {} to the {} runner: backtest_runner.offload_operations"
+            " is enabled",
+            op,
+            config.provider,
+        )
+        return config
+    logger.info(
+        "Running {} on this node: the {} runner takes standalone operations"
+        " only with backtest_runner.offload_operations",
+        op,
+        config.provider,
+    )
+    return None
+
+
+def run_on_runner(op: str, kwargs: dict[str, Any], config: RunnerConfig) -> Any:
+    from wayfinder_paths.jobs.backtest_runner import (
+        OffloadSwitchedOff,
+        run_configured_operation,
+    )
+
+    # The run's own ledger stays in its isolated copy; the protected record
+    # belongs to the source repository.
+    _record_evidence_access(op, kwargs)
+    try:
+        return run_configured_operation(op, kwargs, config=config)
+    except OffloadSwitchedOff as exc:
+        # Switched off is not a shortage: compute here as before offloading existed,
+        # whatever the fallback. Nothing was started remotely.
+        logger.warning("Running {} on this node: {}", op, exc)
+        return _run_op(op, kwargs)
+
+
+def _run_entrypoint(op: str, kwargs: dict[str, Any]) -> Any:
+    """Use configured compute backends at the boundary, never inside a worker."""
+    config = configured_runner(op)
+    if config is not None:
+        return run_on_runner(op, kwargs, config)
+    return _run(op, kwargs)
+
+
 def main() -> None:
     _lower_priority()
     _install_cancel_handler()
@@ -374,7 +452,7 @@ def main() -> None:
     op = str(request["op"])
     kwargs = dict(request.get("kwargs") or {})
     with track_evolution_process(op, kwargs):
-        result = _run(op, dict(kwargs))
+        result = _run_entrypoint(op, dict(kwargs))
     json.dump(result, sys.stdout, default=str)
     # Flush before nudging: the re-prompted session's campaign block must see
     # the completed op's result file, not a half-written one.

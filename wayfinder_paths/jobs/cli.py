@@ -50,6 +50,7 @@ from wayfinder_paths.jobs.execution.job import (
     backtest_execution_job,
     summarize_backtest_payload,
 )
+from wayfinder_paths.jobs.execution.op_runner import configured_runner, run_on_runner
 from wayfinder_paths.jobs.execution.preflight import (
     build_live_dataset,
     fetch_funding_features,
@@ -157,7 +158,8 @@ _FOREGROUND_OPTION = click.option(
     is_flag=True,
     default=False,
     help="Run in this process, bypassing the compute lane. On a hosted box "
-    "this is worker-capped so the live loop keeps a core.",
+    "this is worker-capped so the live loop keeps a core. With "
+    "backtest_runner.offload_operations the remote runner still computes it.",
 )
 
 
@@ -230,7 +232,16 @@ def _run_heavy_op(
 ) -> Any:
     """A hosted box queues heavy work behind the live loop and waits on it
     (`--detach` returns the submission, `--foreground` bypasses the lane);
-    everywhere else the command runs as it always did."""
+    everywhere else the command runs as it always did. Whenever this process
+    would compute it, a remote runner configured for standalone operations
+    (`backtest_runner.offload_operations`) computes it instead, as the lane and
+    detached children already do."""
+    if foreground or not (lane_enabled() or detach or detached_by_default):
+        runner = configured_runner(op)
+        if runner is not None and runner.provider != "local":
+            # The computation leaves this box, so neither the lane nor the
+            # worker cap applies; the command still waits for the result.
+            return run_on_runner(op, kwargs, runner)
     if foreground:
         if lane_enabled():
             # Sharing the box with a live tick: leave it a core.

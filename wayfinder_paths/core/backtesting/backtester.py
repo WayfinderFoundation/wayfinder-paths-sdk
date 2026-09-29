@@ -14,12 +14,19 @@ Basic usage:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from wayfinder_paths.core.backtesting.data import drop_incomplete_bars
+from wayfinder_paths.core.backtesting.offload import (
+    read_frames,
+    remote_runner,
+    run_backtest_phase,
+    write_result,
+)
 from wayfinder_paths.core.backtesting.stats import calculate_stats
 from wayfinder_paths.core.backtesting.types import (
     BacktestConfig,
@@ -29,6 +36,9 @@ from wayfinder_paths.core.backtesting.utils import (
     get_maintenance_margin_rate,
     validate_target_positions,
 )
+from wayfinder_paths.jobs.backtest_runner import OffloadSwitchedOff
+from wayfinder_paths.jobs.compute_phase import compute_phase
+from wayfinder_paths.runner.paths import find_repo_root
 
 
 def _bar_interval(index: pd.Index) -> pd.Timedelta:
@@ -119,7 +129,48 @@ def run_backtest(
         >>>
         >>> result = run_backtest(prices, target_positions)
         >>> print(f"Sharpe: {result.stats['sharpe']:.2f}")
+
+    Runs here by default. With the remote override in config.json (a remote
+    ``backtest_runner.provider`` and ``offload_operations: true``), a top-level call runs
+    the same simulation on that runner and returns the same result; see offload.py.
     """
+    root = find_repo_root()
+    runner = remote_runner(root)
+    if runner is None:
+        return run_backtest_locally(prices, target_positions, config)
+    config = config if config is not None else BacktestConfig()
+    try:
+        return run_backtest_phase(
+            backtest_phase,
+            root,
+            runner,
+            {
+                "prices": prices,
+                "target_positions": target_positions,
+                "funding_rates": config.funding_rates,
+            },
+            {},
+            config,
+        )
+    except OffloadSwitchedOff:
+        # The backend has offloading switched off: nothing started remotely.
+        return run_backtest_locally(prices, target_positions, config)
+
+
+@compute_phase
+def backtest_phase(inputs: Path, outputs: Path, args: dict[str, Any]) -> dict[str, Any]:
+    frames = read_frames(inputs, args)
+    config = BacktestConfig(**args["config"], funding_rates=frames.get("funding_rates"))
+    result = run_backtest_locally(frames["prices"], frames["target_positions"], config)
+    return write_result(result, outputs)
+
+
+def run_backtest_locally(
+    prices: pd.DataFrame,
+    target_positions: pd.DataFrame,
+    config: BacktestConfig | None = None,
+) -> BacktestResult:
+    """``run_backtest`` in this process, whatever the configuration."""
     if config is None:
         config = BacktestConfig()
 

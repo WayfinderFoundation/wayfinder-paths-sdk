@@ -11,7 +11,10 @@ from typing import Any
 
 import pandas as pd
 
-from wayfinder_paths.core.backtesting.backtester import run_backtest
+from wayfinder_paths.core.backtesting.backtester import (
+    run_backtest,
+    run_backtest_locally,
+)
 from wayfinder_paths.core.backtesting.data import (
     align_dataframes,
     convert_to_spot,
@@ -122,7 +125,8 @@ async def quick_backtest(
         config.funding_rates = funding
         config.periods_per_year = periods_per_year
 
-    return run_backtest(prices, target_positions, config)
+    # Quick means local, even with the remote override on.
+    return run_backtest_locally(prices, target_positions, config)
 
 
 async def backtest_with_rates(

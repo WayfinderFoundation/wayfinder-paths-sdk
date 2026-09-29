@@ -1588,14 +1588,22 @@ def test_forced_start_skips_its_own_spacing_but_not_a_running_campaign(
 
 
 def test_owner_compute_budget_override_is_written_journaled_and_honoured(
-    tmp_path,
+    tmp_path, monkeypatch
 ) -> None:
     """An exhausted rolling budget refuses a start; the owner's override
     writes an expiring machine marker, journals it, and the start's own
     compute lock honours it."""
     store, job_id = _job(tmp_path, "majors-5m-lab")
-    # The ledger and the marker are judged against wall-clock time.
-    now = datetime.now(UTC).replace(microsecond=0)
+    # Noon UTC: the campaign and its guard clear both peak pricing windows.
+    now = datetime(2026, 8, 25, 12, tzinfo=UTC)
+
+    # The compute lock judges the ledger and the marker against its own clock.
+    class _FrozenClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now
+
+    monkeypatch.setattr("wayfinder_paths.jobs.compute_lock.datetime", _FrozenClock)
     budget_path = tmp_path / EVOLUTION_BUDGET_RELATIVE
     budget_path.parent.mkdir(parents=True, exist_ok=True)
     budget_path.write_text(

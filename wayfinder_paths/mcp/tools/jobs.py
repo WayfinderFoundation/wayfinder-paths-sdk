@@ -18,6 +18,7 @@ from wayfinder_paths.jobs.application import (
 )
 from wayfinder_paths.jobs.apply_launcher import launch_application
 from wayfinder_paths.jobs.backtest_artifacts import diagnose_backtest
+from wayfinder_paths.jobs.backtest_runner import load_runner_config
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.contracts import validate_job_for_kind
 from wayfinder_paths.jobs.execution.experiments import list_experiments
@@ -335,6 +336,14 @@ def _submit_to_lane(
     )
 
 
+def _remote_runner_configured(store: JobStore) -> bool:
+    try:
+        config = load_runner_config(repo_root=store.repo_root)
+    except ValueError:
+        return False  # The op reports the invalid configuration itself.
+    return config.configured and config.provider != "local"
+
+
 async def _start_background_op(
     store: JobStore, job_id: str, op: str, kwargs: dict[str, Any]
 ) -> dict[str, Any]:
@@ -422,8 +431,8 @@ async def _spawn_background_op(
             "op": op,
             "pid": proc.pid,
             "note": (
-                "running detached — this request is done; results land in the "
-                "job dir as usual when the run finishes"
+                "running detached — use op_status for results and any "
+                "collected artifact directory"
             ),
             "check": _op_status_hint(job_id, op),
         }
@@ -1461,7 +1470,14 @@ async def core_jobs(
     if action == "evolution_start":
         if not job_id:
             return err("invalid_request", "evolution_start requires job_id")
-        return await _run_job_op("evolution_start", {"job_id": job_id, "force": force})
+        start_kwargs: dict[str, Any] = {"job_id": job_id, "force": force}
+        if _remote_runner_configured(store):
+            # An offloaded start first boots the campaign's lease, which can
+            # outlast the synchronous cap; poll it like any background op.
+            return await _start_background_op(
+                store, job_id, "evolution_start", start_kwargs
+            )
+        return await _run_job_op("evolution_start", start_kwargs)
 
     if action == "evolution_status":
         if not job_id:

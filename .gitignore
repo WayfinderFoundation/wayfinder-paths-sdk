@@ -76,3 +76,5 @@ examples/paths/
 # Ledger
 .ledger/
 audit/
+.venv
+.claude/

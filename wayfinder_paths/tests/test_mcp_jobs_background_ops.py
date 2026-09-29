@@ -899,3 +899,49 @@ def test_cli_heavy_op_runs_as_before_off_hosted_boxes(tmp_path, monkeypatch) -> 
     assert outcome.exit_code == 0, outcome.output
     assert json.loads(outcome.output)["result"] == {"inline": True}
     assert spawned == ["robustness_check"]
+
+
+@pytest.mark.asyncio
+async def test_evolution_start_runs_detached_with_a_remote_runner(
+    tmp_path, monkeypatch
+) -> None:
+    captured: dict = {}
+
+    async def fake_start(store, job_id, op, kwargs):
+        captured.update({"op": op, "kwargs": kwargs})
+        return {"ok": True, "result": {"started": True}}
+
+    async def fake_sync(op, kwargs):
+        captured["sync_op"] = op
+        return {"ok": True, "result": {}}
+
+    monkeypatch.setattr(jobs_module, "_start_background_op", fake_start)
+    monkeypatch.setattr(jobs_module, "_run_job_op", fake_sync)
+    monkeypatch.setattr(jobs_module, "JobStore", lambda: JobStore(repo_root=tmp_path))
+    monkeypatch.delenv("WAYFINDER_BACKTEST_RUNNER", raising=False)
+    monkeypatch.delenv("WAYFINDER_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("WAYFINDER_CONFIG", raising=False)
+
+    await core_jobs(action="evolution_start", job_id="bg-demo")
+    assert captured == {"sync_op": "evolution_start"}  # No runner: synchronous.
+
+    # Booking the campaign's lease can outlast the synchronous cap.
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "system": {"api_key": "owner-key"},
+                "backtest_runner": {
+                    "provider": "sprites",
+                    "sprites": {
+                        "backend": "https://backend.example",
+                        "app_name": "shell",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = await core_jobs(action="evolution_start", job_id="bg-demo")
+    assert result["result"]["started"] is True
+    assert captured["op"] == "evolution_start"
+    assert captured["kwargs"] == {"job_id": "bg-demo", "force": False}

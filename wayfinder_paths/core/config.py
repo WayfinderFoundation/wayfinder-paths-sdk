@@ -5,8 +5,8 @@ from typing import Any
 
 _CONFIG_ENV_KEYS = ("WAYFINDER_CONFIG_PATH", "WAYFINDER_CONFIG")
 _DEFAULT_CONFIG_FILENAME = "config.json"
-_DEFAULT_API_BASE_URL = "https://wayfinder.ai/api/v1"
-_API_BASE_URL_ENV = "WAYFINDER_API_BASE_URL"
+DEFAULT_API_BASE_URL = "https://wayfinder.ai/api/v1"
+API_BASE_URL_ENV = "WAYFINDER_API_BASE_URL"
 _WALLET_MNEMONIC_KEY = "wallet_mnemonic"
 
 
@@ -96,14 +96,14 @@ def get_rpc_urls() -> dict[str, Any]:
 
 
 def get_api_base_url() -> str:
-    env_url = os.environ.get(_API_BASE_URL_ENV)
+    env_url = os.environ.get(API_BASE_URL_ENV)
     if env_url:
         return str(env_url).strip().rstrip("/")
     system = CONFIG.get("system", {})
     api_url = system.get("api_base_url")
     if api_url:
         return str(api_url).strip().rstrip("/")
-    return _DEFAULT_API_BASE_URL
+    return DEFAULT_API_BASE_URL
 
 
 def get_paths_api_base_url() -> str:
