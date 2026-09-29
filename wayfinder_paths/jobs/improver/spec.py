@@ -222,6 +222,9 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "full_dev_haircut_blocking": True,
         # Spend full-development slots across families before repeating one.
         "full_dev_family_diversity": False,
+        # Full development also requires a profitable train window, so a book
+        # that wins only on validation cannot take a finalist slot.
+        "full_dev_requires_train_profit": False,
         "finalist_risk_normalization": True,
         "finalist_risk_margin": 0.9,
         "split": {"train": 0.80, "validation": 0.20},

@@ -8294,6 +8294,11 @@ def _full_dev(
             else None
         ),
     )
+    verdict = _require_train_profit(
+        verdict,
+        train_return=train_return,
+        required=bool(policy.get("full_dev_requires_train_profit")),
+    )
     passed = bool(verdict["passed"])
     return {
         "status": verdict["status"],
@@ -8510,6 +8515,11 @@ def _protected_fold_full_dev(
         ),
         neutral_folds=sum(bool(row.get("neutral")) for row in fold_rows),
         stress_reused=stress_params == params,
+    )
+    verdict = _require_train_profit(
+        verdict,
+        train_return=_decision_return(train_stats),
+        required=bool(policy.get("full_dev_requires_train_profit")),
     )
     validation_trades = sum(_decision_trade_count(row) for row in base_stats_rows)
     certificate_dataset = _slice(
@@ -8876,6 +8886,24 @@ def _probe_mismatch_text(probe: Mapping[str, Any]) -> str:
             + (f" ({10_000 * float(gap):.1f} bps)" if gap is not None else "")
         )
     return "; ".join(parts)
+
+
+def _require_train_profit(
+    verdict: dict[str, Any], *, train_return: float, required: bool
+) -> dict[str, Any]:
+    # A book that loses on train and wins only on validation was picked by
+    # the validation window's noise; it must not take a finalist slot.
+    if not required or not verdict["passed"] or train_return > 0.0:
+        return verdict
+    return {
+        "status": "low_fidelity_rejected",
+        "passed": False,
+        "failure_codes": ["train_unprofitable"],
+        "evidence": (
+            f"validation passed but the train window returned {train_return:+.2%}; "
+            "profit only on validation is not a consistent edge"
+        ),
+    }
 
 
 def _full_dev_verdict(
