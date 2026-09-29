@@ -32,6 +32,7 @@ from wayfinder_paths.core.backtesting.types import (
 from wayfinder_paths.jobs.backtest_runner import (
     RunnerConfig,
     load_runner_config,
+    offload_switched_off,
     run_phase,
 )
 
@@ -56,7 +57,12 @@ def remote_runner(root: Path) -> RunnerConfig | None:
     ):
         return None
     config = load_runner_config(repo_root=root)
-    if config.configured and config.provider != "local" and config.offload_operations:
+    if (
+        config.configured
+        and config.provider != "local"
+        and config.offload_operations
+        and offload_switched_off(config) is None
+    ):
         return config
     return None
 

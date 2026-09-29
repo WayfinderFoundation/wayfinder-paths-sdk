@@ -17,7 +17,11 @@ from typing import Any
 import click
 
 from wayfinder_paths.core.config import write_config_json
-from wayfinder_paths.jobs.backtest_runner import load_runner_config, sdk_config_path
+from wayfinder_paths.jobs.backtest_runner import (
+    load_runner_config,
+    offload_switched_off,
+    sdk_config_path,
+)
 from wayfinder_paths.jobs.store import JobStore
 
 PROVIDER_ENV = "WAYFINDER_BACKTEST_RUNNER"
@@ -26,13 +30,17 @@ PROVIDER_ENV = "WAYFINDER_BACKTEST_RUNNER"
 def offload_status(root: Path, env: Mapping[str, str]) -> dict[str, Any]:
     config = load_runner_config(repo_root=root, environ=env)
     remote = config.configured and config.provider != "local"
+    # The backend can switch offloading off too; this node then computes locally.
+    backend_off = offload_switched_off(config) if remote else None
+    effective = remote and backend_off is None
     status: dict[str, Any] = {
         "offloading": remote,
         "provider": config.provider,
-        "evolution_campaigns": "remote" if remote else "local",
+        "evolution_campaigns": "remote" if effective else "local",
         "standalone_operations": (
-            "remote" if remote and config.offload_operations else "local"
+            "remote" if effective and config.offload_operations else "local"
         ),
+        "backend_switched_off": backend_off,
         "fallback": config.fallback,
         "config_path": str(sdk_config_path(root, env)),
     }

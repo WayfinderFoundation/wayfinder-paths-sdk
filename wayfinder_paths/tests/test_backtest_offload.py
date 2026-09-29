@@ -157,3 +157,25 @@ def test_only_a_top_level_call_offloads(market, tmp_path, monkeypatch):
     # So does every call inside an agent operation, which offloads (or not) as a whole.
     monkeypatch.setenv("WAYFINDER_OP_STATUS_PATH", str(tmp_path / "op.status.json"))
     assert run_backtest(market, _hold(market)).stats
+
+
+async def test_switched_off_offloading_runs_the_backtest_here(
+    market, tmp_path, monkeypatch
+):
+    local = await _delta_neutral()
+    fake = FakeSprites(tmp_path / "fake")
+    fake.switched_off = "backtests_disabled"
+    client = fake.client(lease_dir=tmp_path / "runs" / "sprite-leases")
+    monkeypatch.setattr(
+        backtest_runner, "SpriteBacktestsClient", lambda *args, **kwargs: client
+    )
+    # fallback: none still computes here: switched off is a setting, not a shortage.
+    _override(monkeypatch, tmp_path, fallback="none")
+    first = await _delta_neutral()
+    pd.testing.assert_series_equal(pd.Series(first.stats), pd.Series(local.stats))
+    assert len(fake.bookings()) == 1
+    # Remembered: the next backtest never asks the backend.
+    second = await _delta_neutral()
+    pd.testing.assert_series_equal(pd.Series(second.stats), pd.Series(local.stats))
+    assert len(fake.bookings()) == 1
+    client.http.close()

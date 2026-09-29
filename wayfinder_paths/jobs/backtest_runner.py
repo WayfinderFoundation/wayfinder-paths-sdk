@@ -45,7 +45,9 @@ from wayfinder_paths.jobs.sprite_bundle import (
 from wayfinder_paths.jobs.sprite_client import (
     TERMINAL_STATUSES,
     LeaseUnavailable,
+    OffloadOff,
     SpriteBacktestsClient,
+    offload_off_reason,
 )
 from wayfinder_paths.jobs.sprite_runtime import node_sdk_commit
 from wayfinder_paths.jobs.store import JobStore
@@ -56,6 +58,11 @@ FALLBACKS = frozenset({"local", "none"})
 
 class ComputeUnavailable(RuntimeError):
     """The provider cannot take this run now; nothing was started remotely."""
+
+
+class OffloadSwitchedOff(ComputeUnavailable):
+    """The provider has offloading switched off (a setting, not a shortage): the run
+    belongs on this node, whatever the configured fallback."""
 
 
 class PhaseFailed(RuntimeError):
@@ -401,7 +408,7 @@ class SpritesRunner(BacktestRunner):
             config.backend,
             config.app_name,
             config.api_key,
-            lease_dir=config.runs_dir / "sprite-leases",
+            lease_dir=sprite_lease_dir(config),
             # Django installs this commit on the lease's Sprite (see node_sdk_commit).
             sdk_commit=config.sdk_commit or node_sdk_commit(),
         )
@@ -418,6 +425,8 @@ class SpritesRunner(BacktestRunner):
                 expected_sdk_commit=self.config.sdk_commit,
                 purpose=purpose,
             )
+        except OffloadOff as exc:
+            raise OffloadSwitchedOff(str(exc)) from exc
         except LeaseUnavailable as exc:
             # Refused, unreachable or never-ready bookings started nothing; a
             # failure after a lease was booked re-raises instead.
@@ -683,6 +692,18 @@ class FallbackRunner(BacktestRunner):
 
     def release_idle_leases(self, *, reason: str) -> list[str]:
         return self.primary.release_idle_leases(reason=reason)
+
+
+def sprite_lease_dir(config: RunnerConfig) -> Path:
+    return config.runs_dir / "sprite-leases"
+
+
+def offload_switched_off(config: RunnerConfig) -> str | None:
+    """Why the remote provider is known to have offloading switched off, without
+    asking it (see OFFLOAD_OFF_RECHECK_SECONDS); None when it may be on."""
+    if config.provider != "sprites":
+        return None
+    return offload_off_reason(sprite_lease_dir(config), config.backend, time.time())
 
 
 def create_runner(

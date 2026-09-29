@@ -77,6 +77,12 @@ CLOSED_STATUSES = frozenset({401, 403, 410})
 # wiped (404). The backend's anonymized record answers instead.
 WORKER_GONE_STATUSES = frozenset({404, *CLOSED_STATUSES, *RETRY_STATUSES})
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "timed_out", "cancelled"})
+# Refusal reasons meaning the backend has offloading switched off (a setting, not a
+# shortage). The node computes locally and asks again only after the recheck interval.
+OFFLOAD_OFF_REASONS = frozenset({"backtests_disabled", "profile_disabled"})
+OFFLOAD_OFF_RECHECK_SECONDS = 600
+# In the lease directory, which never enters a bundle; not *.json, which holds leases.
+OFFLOAD_OFF_FILE = "offload-off.state"
 WORKSPACE_CAPABILITY = "sdk-workspace-v1"
 WAIT_GRACE_SECONDS = 120
 # A cancel issued at a wait deadline gets this long, whatever the worker does.
@@ -93,6 +99,11 @@ _LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
 class LeaseUnavailable(RuntimeError):
     """No usable lease: refused, unreachable, never ready, or closed twice.
     Nothing was started on a Sprite."""
+
+
+class OffloadOff(LeaseUnavailable):
+    """The backend has offloading switched off: compute locally, whatever the
+    configured fallback."""
 
 
 class ArtifactMismatch(ValueError):
@@ -204,6 +215,15 @@ class LeaseStore:
 
     def delete(self, lease_id: str) -> None:
         self._path(lease_id).unlink(missing_ok=True)
+
+    def mark_offload_off(self, backend: str, reason: str, until: float) -> None:
+        atomic_write_json(
+            self._ready() / OFFLOAD_OFF_FILE,
+            {"backend": backend, "reason": reason, "until": until},
+        )
+
+    def clear_offload_off(self) -> None:
+        (self.directory / OFFLOAD_OFF_FILE).unlink(missing_ok=True)
 
 
 class SpriteBacktestsClient:
@@ -513,7 +533,11 @@ class SpriteBacktestsClient:
         purpose: str,
     ) -> tuple[LeaseRecord, dict[str, Any]]:
         commit = expected_sdk_commit or self.sdk_commit
+        off = offload_off_reason(self.leases.directory, self.backend, self._clock())
+        if off is not None:
+            raise OffloadOff(off)
         with self.leases.locked(timeout=LOCK_WAIT_SECONDS):
+            draining = False
             try:
                 for record in self._own_records():
                     try:
@@ -528,6 +552,7 @@ class SpriteBacktestsClient:
                         continue
                     if record["job"] is not None or lease["status"] != "ready":
                         continue  # Another submission of this node still needs it.
+                    draining = draining or bool(lease.get("draining"))
                     problem = self._reuse_problem(
                         lease, record, preset, base_sha, commit
                     )
@@ -558,10 +583,16 @@ class SpriteBacktestsClient:
                         reason=f"cannot be reused: {problem}",
                         deadline=self._clock() + RELEASE_DEADLINE_SECONDS,
                     )
+                if draining:
+                    # Bookings are off while the backend drains its leases.
+                    raise self._offload_off("backtests_disabled")
                 return self._book(preset, job_id, commit, purpose)
             except httpx.TransportError as exc:
                 raise LeaseUnavailable(f"Sprites backend unreachable: {exc}") from exc
             except httpx.HTTPStatusError as exc:
+                reason = _refusal_reason(exc.response)
+                if reason in OFFLOAD_OFF_REASONS:
+                    raise self._offload_off(reason) from exc
                 code = exc.response.status_code
                 # Refusals, and a backend or gateway failing after the retries (5xx,
                 # redirects), are unavailable; other 4xx are configuration errors.
@@ -604,7 +635,24 @@ class SpriteBacktestsClient:
             return "this node's SDK commit is unknown"
         if (lease.get("setup") or {}).get("state") == "failed":
             return "its SDK install failed"
+        if lease.get("draining"):
+            return "the backend is draining leases: offloading is switched off"
         return None
+
+    def _offload_off(self, reason: str) -> OffloadOff:
+        """Remember that offloading is off, so this node computes locally without
+        asking again until the recheck interval passes."""
+        self.leases.mark_offload_off(
+            self.backend, reason, self._clock() + OFFLOAD_OFF_RECHECK_SECONDS
+        )
+        logger.warning(
+            "Offloading is switched off on {} ({}); computing locally, asking again "
+            "in {} s",
+            self.backend,
+            reason,
+            OFFLOAD_OFF_RECHECK_SECONDS,
+        )
+        return OffloadOff(f"Offloading is switched off on {self.backend} ({reason})")
 
     def _book(
         self, preset: str, job_id: str, commit: str | None, purpose: str
@@ -658,6 +706,7 @@ class SpriteBacktestsClient:
             with suppress(httpx.HTTPError):
                 self._release(lease_id, reason=f"booking failed: {exc!r}")
             raise
+        self.leases.clear_offload_off()
         logger.info(
             "{} lease {} is ready at {}",
             record["provider"],
@@ -1162,6 +1211,31 @@ def _complete(lease: dict[str, Any]) -> dict[str, Any]:
     if not LEASE_FIELDS <= lease.keys():
         raise LeaseUnavailable("Sprites backend answered an incomplete lease document")
     return lease
+
+
+def offload_off_reason(lease_dir: Path, backend: str, now: float) -> str | None:
+    """Why ``backend`` has offloading switched off, while this node's record of that
+    is fresh; None when offloading may be on."""
+    try:
+        state = json.loads((lease_dir / OFFLOAD_OFF_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (
+        not isinstance(state, dict)
+        or state.get("backend") != backend.rstrip("/")
+        or not isinstance(state.get("until"), (int, float))
+        or state["until"] <= now
+    ):
+        return None
+    return f"Offloading is switched off on {state['backend']} ({state.get('reason')})"
+
+
+def _refusal_reason(response: httpx.Response) -> str | None:
+    try:
+        reason = response.json().get("reason")
+    except (ValueError, AttributeError):
+        return None
+    return reason if isinstance(reason, str) else None
 
 
 def _detail(response: httpx.Response) -> str:

@@ -92,6 +92,8 @@ class FakeSprites:
         self.lost_chunk_answers: set[tuple[str, int]] = set()
         self.conflicts: set[str] = set()
         self.hold_jobs = False
+        # Django with offloading switched off: bookings refused with this reason.
+        self.switched_off: str | None = None
         self._provisioning: dict[str, int | None] = {}
         self._hashes: dict[str, str] = {}
         self._hosts: dict[str, str] = {}
@@ -140,6 +142,12 @@ class FakeSprites:
             if r.method == "POST" and r.url.path in {LEASES, SHELL_LEASES}
         ]
 
+    def drain(self) -> None:
+        """Turn bookings off as Django does: refuse new ones, mark open leases draining."""
+        self.switched_off = "backtests_disabled"
+        for lease in self.leases.values():
+            lease["draining"] = True
+
     def close(self, lease_id: str, reason: str) -> None:
         """Django's close and wipe: running jobs end, the URL is withdrawn."""
         lease = self.leases[lease_id]
@@ -174,6 +182,14 @@ class FakeSprites:
             if self.refuse is not None:
                 return httpx.Response(
                     self.refuse, json={"detail": "worker limit reached"}
+                )
+            if self.switched_off is not None:
+                return httpx.Response(
+                    503,
+                    json={
+                        "detail": "Sprite backtesting is disabled",
+                        "reason": self.switched_off,
+                    },
                 )
             body = json.loads(request.content)
             assert set(body) <= {"preset_key", "token_sha256", "sdk_commit", "purpose"}
@@ -232,6 +248,7 @@ class FakeSprites:
             "last_activity_at": now.isoformat(),
             "wiped_at": None,
             "wipe_pending": False,
+            "draining": False,
             # Like Django's sdk_runtime presets: the Sprite runs the requested commit.
             "runtime": {
                 "capabilities": list(self.capabilities),

@@ -388,7 +388,10 @@ def configured_runner(op: str) -> RunnerConfig | None:
 
     if op not in OPERATIONS:
         return None
-    from wayfinder_paths.jobs.backtest_runner import load_runner_config
+    from wayfinder_paths.jobs.backtest_runner import (
+        load_runner_config,
+        offload_switched_off,
+    )
 
     config = load_runner_config()
     if not config.configured:
@@ -396,6 +399,10 @@ def configured_runner(op: str) -> RunnerConfig | None:
     if config.provider == "local":
         return config
     if config.offload_operations:
+        off = offload_switched_off(config)
+        if off is not None:
+            logger.info("Running {} on this node: {}", op, off)
+            return None
         logger.info(
             "Offloading {} to the {} runner: backtest_runner.offload_operations"
             " is enabled",
@@ -413,12 +420,21 @@ def configured_runner(op: str) -> RunnerConfig | None:
 
 
 def run_on_runner(op: str, kwargs: dict[str, Any], config: RunnerConfig) -> Any:
-    from wayfinder_paths.jobs.backtest_runner import run_configured_operation
+    from wayfinder_paths.jobs.backtest_runner import (
+        OffloadSwitchedOff,
+        run_configured_operation,
+    )
 
     # The run's own ledger stays in its isolated copy; the protected record
     # belongs to the source repository.
     _record_evidence_access(op, kwargs)
-    return run_configured_operation(op, kwargs, config=config)
+    try:
+        return run_configured_operation(op, kwargs, config=config)
+    except OffloadSwitchedOff as exc:
+        # Switched off is not a shortage: compute here as before offloading existed,
+        # whatever the fallback. Nothing was started remotely.
+        logger.warning("Running {} on this node: {}", op, exc)
+        return _run_op(op, kwargs)
 
 
 def _run_entrypoint(op: str, kwargs: dict[str, Any]) -> Any:

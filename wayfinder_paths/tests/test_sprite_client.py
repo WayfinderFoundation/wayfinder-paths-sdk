@@ -1123,3 +1123,48 @@ def test_a_lease_that_cannot_be_reused_is_released_with_the_reason(
         in "".join(messages)
     )
     client.http.close()
+
+
+def test_switched_off_offloading_is_remembered_then_rechecked(tmp_path: Path) -> None:
+    fake = FakeSprites(tmp_path)
+    fake.switched_off = "backtests_disabled"
+    clock = FakeClock()
+    client = fake.client(clock=clock, sleep=clock.sleep)
+    archive, base = _pack(_phase_repo(tmp_path), tmp_path / "packed", scale=2)
+    with pytest.raises(sprite_client.OffloadOff, match="backtests_disabled"):
+        client.submit_archive(archive, base=base)
+    # Within the recheck interval the node computes locally without asking.
+    with pytest.raises(sprite_client.OffloadOff):
+        client.submit_archive(archive, base=base)
+    assert len(fake.bookings()) == 1
+    assert sprite_client.offload_off_reason(tmp_path / "leases", BACKEND, clock())
+    # Another backend's switch says nothing about this one.
+    assert (
+        sprite_client.offload_off_reason(
+            tmp_path / "leases", "https://other.example", clock()
+        )
+        is None
+    )
+    clock.now += sprite_client.OFFLOAD_OFF_RECHECK_SECONDS
+    fake.switched_off = None
+    run = client.submit_archive(archive, base=base)
+    assert len(fake.bookings()) == 2
+    # Offloading is on again, so the record is gone.
+    assert sprite_client.offload_off_reason(tmp_path / "leases", BACKEND, 0) is None
+    assert client.wait(run["id"])["status"] == "succeeded"
+    client.http.close()
+
+
+def test_a_draining_lease_is_released_and_nothing_is_booked(tmp_path: Path) -> None:
+    fake = FakeSprites(tmp_path)
+    client = fake.client()
+    archive, base = _pack(_phase_repo(tmp_path), tmp_path / "packed", scale=2)
+    first = client.submit_archive(archive, base=base)
+    client.wait(first["id"])
+    client.collect(first["id"], tmp_path / "collected")
+    fake.drain()
+    with pytest.raises(sprite_client.OffloadOff, match="backtests_disabled"):
+        client.submit_archive(archive, base=base)
+    assert fake.leases[first["lease_id"]]["closed_reason"] == "released"
+    assert len(fake.bookings()) == 1
+    client.http.close()

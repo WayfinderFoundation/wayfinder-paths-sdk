@@ -51,6 +51,7 @@ from wayfinder_paths.jobs.backtest_runner import (
     PhaseFailed,
     create_runner,
     load_runner_config,
+    offload_switched_off,
     run_phase,
 )
 from wayfinder_paths.jobs.bench.leaders import (
@@ -6543,6 +6544,11 @@ def _offloaded_phase(
             },
         )
 
+    # Known switched off: skip packing and uploading the campaign for a refusal.
+    off = offload_switched_off(config)
+    if off is not None:
+        run_locally(off)
+        return None
     for root in roots:
         script = store.resolve_script_entrypoint(
             job_id, _load_job_yaml(root), candidate_dir=root

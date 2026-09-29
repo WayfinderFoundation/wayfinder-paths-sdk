@@ -90,7 +90,17 @@ started remotely in these cases, so nothing runs twice. The run's record carries
 later `status`, `cancel` and `collect` calls reach whichever runner started it.
 Authentication, not-found and request errors (400, 401, 404) are configuration
 problems and always raise. A failure after a remote run started never retries
-locally. Set `fallback: "none"` to raise `ComputeUnavailable` instead. Local runs have no time
+locally. Set `fallback: "none"` to raise `ComputeUnavailable` instead.
+
+A backend that has offloading switched off (`sprites_backtest_enabled = false`, or a
+disabled runner profile) refuses with a `backtests_disabled` or `profile_disabled`
+reason. That is a setting, not a shortage, so the node computes locally whatever
+`fallback` says. Operations run in place as they did before offloading, evolution
+phases run in their local child, and `run_backtest` runs here. The node records the
+refusal in `runs_dir/sprite-leases/offload-off.state` and asks again only after 10
+minutes, so nothing is packed or uploaded meanwhile. A lease the backend reports as
+`draining` is released instead of reused. `wayfinder offload status` shows
+`backend_switched_off` while that record is fresh. A successful booking clears it. Local runs have no time
 limit by default, matching in-place execution; `timeout_seconds` sets one of
 1–21,600 seconds, with up to 60 seconds for partial artifact recovery after
 interruption.

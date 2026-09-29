@@ -715,3 +715,29 @@ def test_phase_writes_return_to_the_source_repository(tmp_path):
     (outputs / "files" / "unexpected.txt").write_text("x")
     with pytest.raises(TransientInfrastructureError, match="unexpected"):
         _apply_returned_writes(source, job_id, outputs, returnable)
+
+
+def test_a_campaign_skips_packing_while_the_backend_has_offloading_off(
+    tmp_path, remote, monkeypatch
+):
+    store, job_id = _evaluatable_job(tmp_path)
+    state = start_campaign(store, job_id, now=STARTED)
+    candidate = _mutated_candidate(store, job_id)
+    local = Mock(return_value={"status": "quick_complete", "local": True})
+    monkeypatch.setattr(campaign_module, "_evaluate_candidate", local)
+    _configure(store)
+    shipped = len(remote.shipped)
+    monkeypatch.setattr(
+        campaign_module,
+        "offload_switched_off",
+        lambda config: "Offloading is switched off on backend (backtests_disabled)",
+    )
+
+    outcome = campaign_module._screen(
+        store, job_id, candidate, campaign_id=str(state["campaign_id"])
+    )
+
+    assert outcome == {"status": "quick_complete", "local": True}
+    assert len(remote.shipped) == shipped  # Nothing packed or submitted.
+    (row,) = _journal(store, job_id, "evolution_phase_ran_locally")
+    assert "backtests_disabled" in row["reason"]

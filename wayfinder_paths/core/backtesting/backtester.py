@@ -36,6 +36,7 @@ from wayfinder_paths.core.backtesting.utils import (
     get_maintenance_margin_rate,
     validate_target_positions,
 )
+from wayfinder_paths.jobs.backtest_runner import OffloadSwitchedOff
 from wayfinder_paths.jobs.compute_phase import compute_phase
 from wayfinder_paths.runner.paths import find_repo_root
 
@@ -138,18 +139,22 @@ def run_backtest(
     if runner is None:
         return run_backtest_locally(prices, target_positions, config)
     config = config if config is not None else BacktestConfig()
-    return run_backtest_phase(
-        backtest_phase,
-        root,
-        runner,
-        {
-            "prices": prices,
-            "target_positions": target_positions,
-            "funding_rates": config.funding_rates,
-        },
-        {},
-        config,
-    )
+    try:
+        return run_backtest_phase(
+            backtest_phase,
+            root,
+            runner,
+            {
+                "prices": prices,
+                "target_positions": target_positions,
+                "funding_rates": config.funding_rates,
+            },
+            {},
+            config,
+        )
+    except OffloadSwitchedOff:
+        # The backend has offloading switched off: nothing started remotely.
+        return run_backtest_locally(prices, target_positions, config)
 
 
 @compute_phase

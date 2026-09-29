@@ -1196,3 +1196,38 @@ def test_sprites_that_cannot_hold_a_lease_are_unavailable(tmp_path, failure):
         else "unavailable (HTTP 504)" in reason
     )
     client.http.close()
+
+
+def test_switched_off_offloading_computes_in_place_whatever_the_fallback(
+    monkeypatch, tmp_path
+):
+    from wayfinder_paths.jobs import backtest_runner
+    from wayfinder_paths.jobs.execution import op_runner
+    from wayfinder_paths.jobs.sprite_client import LeaseStore
+
+    native = Mock(return_value={"native": True})
+    monkeypatch.setattr(op_runner, "_run_op", native)
+    monkeypatch.setattr(op_runner, "_record_evidence_access", Mock())
+    config = RunnerConfig(
+        provider="sprites",
+        runs_dir=tmp_path,
+        configured=True,
+        fallback="none",
+        offload_operations=True,
+        backend="https://backend.example",
+    )
+    # Discovered while booking: the op runs here instead of failing.
+    refused = Mock(side_effect=backtest_runner.OffloadSwitchedOff("switched off"))
+    monkeypatch.setattr(backtest_runner, "run_configured_operation", refused)
+    assert op_runner.run_on_runner("backtest_job", {"job_id": "j"}, config) == {
+        "native": True
+    }
+    native.assert_called_once_with("backtest_job", {"job_id": "j"})
+    # Already known: the op never reaches the runner, so nothing is packed.
+    monkeypatch.setattr(backtest_runner, "load_runner_config", lambda: config)
+    assert op_runner.configured_runner("backtest_job") is config
+    LeaseStore(backtest_runner.sprite_lease_dir(config)).mark_offload_off(
+        "https://backend.example", "backtests_disabled", time.time() + 60
+    )
+    assert op_runner.configured_runner("backtest_job") is None
+    assert "backtests_disabled" in (backtest_runner.offload_switched_off(config) or "")
