@@ -19,15 +19,18 @@ Add this section to the SDK configuration selected by `WAYFINDER_CONFIG_PATH` /
     "runs_dir": ".wayfinder/backtest_runs",
     "retain_runs": 10,
     "extra_paths": [],
-    "offload_operations": false,
-    "sprites": {
-      "backend": "https://your-development-backend.example",
-      "app_name": "your-shell-app",
-      "preset": "jobs-v1"
-    }
+    "offload_operations": false
   }
 }
 ```
+
+Sprites need nothing beyond `"provider": "sprites"` and the SDK's API key, on a Shell and
+a local SDK alike. The lease is booked on the Django the SDK already calls (the origin of
+`system.api_base_url` / `WAYFINDER_API_BASE_URL`) and belongs to whoever the API key
+belongs to: a Shell's own key books under its Shell, any other key books a local lease with
+no Shell. The optional `sprites` subsection overrides that: `backend` (another HTTPS
+origin), `app_name` (book under a named Shell, as older backends require) and `preset`
+(default `jobs-v1`).
 
 Keep the same configuration across environments and select the provider with:
 
@@ -45,8 +48,8 @@ export WAYFINDER_BACKTEST_RUNNER=sprites
 | `WAYFINDER_BACKTEST_TIMEOUT_SECONDS` | `backtest_runner.timeout_seconds` (optional local execution limit) |
 | `WAYFINDER_BACKTEST_RETAIN_RUNS` | `backtest_runner.retain_runs` (finished runs and receipts kept; default 10) |
 | `WAYFINDER_BACKTEST_SDK_COMMIT` | `backtest_runner.sdk_commit` (optional full Git SHA) |
-| `WAYFINDER_SPRITES_BACKEND` | `backtest_runner.sprites.backend` (HTTPS origin; loopback HTTP allowed) |
-| `WAYFINDER_SPRITES_APP_NAME` | `backtest_runner.sprites.app_name` |
+| `WAYFINDER_SPRITES_BACKEND` | `backtest_runner.sprites.backend` (HTTPS origin; loopback HTTP allowed; default: the origin of the SDK's API base URL) |
+| `WAYFINDER_SPRITES_APP_NAME` | `backtest_runner.sprites.app_name` (optional; default: decided by the API key) |
 | `WAYFINDER_SPRITES_PRESET` | `backtest_runner.sprites.preset` |
 | `WAYFINDER_API_KEY` | Existing `system.api_key`; required for Sprites only |
 
@@ -323,6 +326,27 @@ runner. Live/scheduled execution and authenticated dataset fetching retain their
 existing execution paths. Direct calls to SDK computation functions remain the
 underlying engine; runner selection happens at the operation boundary, so a
 Sprite never recursively submits another Sprite.
+
+## `run_backtest`
+
+`run_backtest` runs in process by default. Remote is an override: with a remote provider
+and `offload_operations: true`, a top-level call ships its prices, targets and config to
+the remote runner as the registered `backtest_phase`, runs the same simulation there, and
+returns the same `BacktestResult`, field for field. Callers change nothing, so agent
+scripts, `backtest_with_rates`, `backtest_delta_neutral` and multi-leverage runs offload
+transparently; data is still fetched on this node, which holds the credentials. Frames and
+results travel as exact JSON, never pickle. A sweep of calls reuses one lease, and each
+call logs where it ran at `INFO`.
+
+These stay local whatever the override:
+
+- `quick_backtest`, and `run_backtest_locally` for callers that want the local engine;
+- calls inside an agent operation, which is offloaded (or not) whole at its own boundary;
+- calls from worker threads and worker processes of a computation.
+
+The remote runner installs this node's SDK commit, so commit and push SDK changes a remote
+run depends on. The test suite pins `run_backtest` local, so a developer's override never
+books a lease from a unit test.
 
 ## Shared runtime and provider differences
 

@@ -32,7 +32,12 @@ from wayfinder_paths.jobs.sprite_client import (
     split_run_id,
 )
 from wayfinder_paths.tests import compute_phase_fixtures as phases
-from wayfinder_paths.tests.sprite_lease_fake import BACKEND, INSTANCE, FakeSprites
+from wayfinder_paths.tests.sprite_lease_fake import (
+    BACKEND,
+    LEASES,
+    SHELL_LEASES,
+    FakeSprites,
+)
 from wayfinder_paths.tests.test_jobs_preflight import _make_job
 
 
@@ -113,7 +118,7 @@ def test_booking_sends_only_the_token_hash_and_keeps_the_token_private(
     assert record == {
         "id": lease["id"],
         "backend": BACKEND,
-        "app_name": "shell",
+        "app_name": "",
         "preset": "jobs-v1",
         "provider": "sprites",
         "worker_url": lease["worker_url"],
@@ -183,6 +188,24 @@ def test_sequential_jobs_reuse_the_lease_and_upload_the_base_once(
     client.http.close()
 
 
+def test_the_api_key_alone_books_unless_a_shell_is_named(tmp_path: Path) -> None:
+    fake = FakeSprites(tmp_path)
+    root = _phase_repo(tmp_path)
+    for app_name, route in ((None, LEASES), ("shell", SHELL_LEASES)):
+        client = fake.client(
+            lease_dir=tmp_path / f"leases-{app_name}", app_name=app_name
+        )
+        archive, base = _pack(root, tmp_path / f"packed-{app_name}", scale=1)
+        _run_to_completion(client, archive, base, tmp_path / f"out-{app_name}")
+        (record,) = client.leases.all()
+        client.release(record["id"])
+        assert {(r.method, r.url.path) for r in fake.backend_requests()} >= {
+            ("POST", route),
+            ("DELETE", f"{route}{record['id']}/"),
+        }
+        client.http.close()
+
+
 def test_a_job_needing_another_base_releases_the_lease_and_books_a_new_one(
     tmp_path: Path,
 ) -> None:
@@ -199,10 +222,10 @@ def test_a_job_needing_another_base_releases_the_lease_and_books_a_new_one(
     assert second["lease_id"] != first["lease_id"]
     assert fake.leases[first["lease_id"]]["closed_reason"] == "released"
     assert [(r.method, r.url.path) for r in fake.backend_requests()] == [
-        ("POST", INSTANCE),
-        ("GET", f"{INSTANCE}{first['lease_id']}/"),
-        ("DELETE", f"{INSTANCE}{first['lease_id']}/"),
-        ("POST", INSTANCE),
+        ("POST", LEASES),
+        ("GET", f"{LEASES}{first['lease_id']}/"),
+        ("DELETE", f"{LEASES}{first['lease_id']}/"),
+        ("POST", LEASES),
     ]
     assert [record["id"] for record in client.leases.all()] == [second["lease_id"]]
     assert client.wait(second["id"])["status"] == "succeeded"
@@ -807,8 +830,8 @@ def test_failed_booking_validation_releases_the_lease(tmp_path: Path) -> None:
     ((lease_id, lease),) = fake.leases.items()
     assert lease["closed_reason"] == "released"
     assert [(r.method, r.url.path) for r in fake.backend_requests()] == [
-        ("POST", INSTANCE),
-        ("DELETE", f"{INSTANCE}{lease_id}/"),
+        ("POST", LEASES),
+        ("DELETE", f"{LEASES}{lease_id}/"),
     ]
     assert not fake.worker_requests() and not client.leases.all()
     client.http.close()

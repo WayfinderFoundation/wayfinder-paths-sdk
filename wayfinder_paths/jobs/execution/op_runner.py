@@ -28,13 +28,16 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
 from wayfinder_paths.jobs.execution.op_process import track_evolution_process
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.runner.monitor_state import atomic_write_json
+
+if TYPE_CHECKING:
+    from wayfinder_paths.jobs.backtest_runner import RunnerConfig
 
 # Mirrors wayfinder_paths.jobs.heavy_lane.STATUS_PATH_ENV; spelled out here so
 # the child never imports the lane module (and the agent-host client behind
@@ -373,40 +376,56 @@ def _install_cancel_handler() -> None:
         signal.signal(signal.SIGTERM, _cancel_on_sigterm)
 
 
-def _run_entrypoint(op: str, kwargs: dict[str, Any]) -> Any:
-    """Use configured compute backends at the boundary, never inside a worker."""
+def configured_runner(op: str) -> RunnerConfig | None:
+    """The configured runner that computes ``op`` instead of this process, or None.
+
+    Portable operations use a configured local runner (an isolated copy), and a
+    remote one only when ``backtest_runner.offload_operations`` opts standalone
+    operations in: a lease boots and installs a machine, which pays off over a
+    campaign, not a single op.
+    """
     from wayfinder_paths.jobs.sprite_bundle import OPERATIONS
 
-    if op in OPERATIONS:
-        from wayfinder_paths.jobs.backtest_runner import (
-            load_runner_config,
-            run_configured_operation,
-        )
+    if op not in OPERATIONS:
+        return None
+    from wayfinder_paths.jobs.backtest_runner import load_runner_config
 
-        config = load_runner_config()
-        # Standalone operations book a remote lease only when opted in: a lease
-        # boots and installs, which pays off over a campaign, not a single op.
-        if config.configured and (
-            config.provider == "local" or config.offload_operations
-        ):
-            if config.provider != "local":
-                logger.info(
-                    "Offloading {} to the {} runner: backtest_runner.offload_operations"
-                    " is enabled",
-                    op,
-                    config.provider,
-                )
-            # The run's own ledger stays in its isolated copy; the protected
-            # record belongs to the source repository.
-            _record_evidence_access(op, kwargs)
-            return run_configured_operation(op, kwargs, config=config)
-        if config.configured:
-            logger.info(
-                "Running {} on this node: the {} runner takes standalone operations"
-                " only with backtest_runner.offload_operations",
-                op,
-                config.provider,
-            )
+    config = load_runner_config()
+    if not config.configured:
+        return None
+    if config.provider == "local":
+        return config
+    if config.offload_operations:
+        logger.info(
+            "Offloading {} to the {} runner: backtest_runner.offload_operations"
+            " is enabled",
+            op,
+            config.provider,
+        )
+        return config
+    logger.info(
+        "Running {} on this node: the {} runner takes standalone operations"
+        " only with backtest_runner.offload_operations",
+        op,
+        config.provider,
+    )
+    return None
+
+
+def run_on_runner(op: str, kwargs: dict[str, Any], config: RunnerConfig) -> Any:
+    from wayfinder_paths.jobs.backtest_runner import run_configured_operation
+
+    # The run's own ledger stays in its isolated copy; the protected record
+    # belongs to the source repository.
+    _record_evidence_access(op, kwargs)
+    return run_configured_operation(op, kwargs, config=config)
+
+
+def _run_entrypoint(op: str, kwargs: dict[str, Any]) -> Any:
+    """Use configured compute backends at the boundary, never inside a worker."""
+    config = configured_runner(op)
+    if config is not None:
+        return run_on_runner(op, kwargs, config)
     return _run(op, kwargs)
 
 

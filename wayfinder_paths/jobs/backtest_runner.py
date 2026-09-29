@@ -24,6 +24,7 @@ from urllib.parse import urlsplit
 
 from loguru import logger
 
+from wayfinder_paths.core.config import API_BASE_URL_ENV, DEFAULT_API_BASE_URL
 from wayfinder_paths.jobs.compute_phase import phase_name, resolve_phase
 from wayfinder_paths.jobs.execution.op_process import (
     process_identity_fields,
@@ -108,6 +109,13 @@ class RunnerConfig:
     offload_operations: bool = False
 
 
+def sdk_config_path(root: Path, env: Mapping[str, str]) -> Path:
+    """The SDK config file, honoring the normal config-file override."""
+    override = env.get("WAYFINDER_CONFIG_PATH") or env.get("WAYFINDER_CONFIG")
+    path = Path(override).expanduser() if override else root / "config.json"
+    return path if path.is_absolute() else root / path
+
+
 def load_runner_config(
     *,
     repo_root: Path | None = None,
@@ -118,12 +126,9 @@ def load_runner_config(
     env = os.environ if environ is None else environ
     root = (repo_root or JobStore().repo_root).resolve()
     if config is None:
-        # Respect the normal SDK config-file override. Parse strictly here: a
-        # broken remote configuration must never silently execute locally.
-        override = env.get("WAYFINDER_CONFIG_PATH") or env.get("WAYFINDER_CONFIG")
-        path = Path(override).expanduser() if override else root / "config.json"
-        if not path.is_absolute():
-            path = root / path
+        # Parse strictly here: a broken remote configuration must never silently
+        # execute locally.
+        path = sdk_config_path(root, env)
         config = json.loads(path.read_text()) if path.exists() else {}
     if not isinstance(config, Mapping):
         raise ValueError("SDK configuration must be an object")
@@ -211,13 +216,21 @@ def load_runner_config(
     offload_operations = section.get("offload_operations", False)
     if not isinstance(offload_operations, bool):
         raise ValueError("offload_operations must be true or false")
-    backend = env.get("WAYFINDER_SPRITES_BACKEND", sprites.get("backend", ""))
+    system = config.get("system", {})
+    if not isinstance(system, Mapping):
+        system = {}
+    # Sprites are booked on the same Django the SDK already calls.
+    api_url = urlsplit(
+        env.get(API_BASE_URL_ENV) or system.get("api_base_url") or DEFAULT_API_BASE_URL
+    )
+    backend = env.get(
+        "WAYFINDER_SPRITES_BACKEND",
+        sprites.get("backend", f"{api_url.scheme}://{api_url.netloc}"),
+    )
+    # Without one, Django books by the API key, on a Shell and a local SDK alike.
     app = env.get("WAYFINDER_SPRITES_APP_NAME", sprites.get("app_name", ""))
     preset = env.get("WAYFINDER_SPRITES_PRESET", sprites.get("preset", "jobs-v1"))
-    system = config.get("system", {})
-    key = env.get("WAYFINDER_API_KEY") or (
-        system.get("api_key", "") if isinstance(system, Mapping) else ""
-    )
+    key = env.get("WAYFINDER_API_KEY") or system.get("api_key", "")
     if provider == "sprites":
         backend = string(backend, "sprites.backend").rstrip("/")
         url = urlsplit(backend)
@@ -235,12 +248,11 @@ def load_runner_config(
             raise ValueError(
                 "sprites.backend must be an HTTPS origin (HTTP allowed on loopback)"
             )
-        app, preset, key = (
-            string(app, "sprites.app_name"),
+        preset, key = (
             string(preset, "sprites.preset"),
             string(key, "WAYFINDER_API_KEY or system.api_key"),
         )
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", app):
+        if app and not re.fullmatch(r"[A-Za-z0-9_-]+", app):
             raise ValueError("sprites.app_name must be a single path segment")
     return RunnerConfig(
         provider=provider,

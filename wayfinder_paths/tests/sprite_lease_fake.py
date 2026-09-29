@@ -23,7 +23,9 @@ from wayfinder_paths.jobs.sprite_client import SpriteBacktestsClient
 
 BACKEND = "https://backend.example"
 API_KEY = "owner-key"
-INSTANCE = "/api/v1/opencode/instances/shell/sprite-backtests/"
+# The owner routes: booked by API key alone, or under a named Shell.
+LEASES = "/api/v1/opencode/sprite-leases/"
+SHELL_LEASES = "/api/v1/opencode/instances/shell/sprite-backtests/"
 
 
 def _now() -> str:
@@ -101,13 +103,14 @@ class FakeSprites:
         sleep: Callable[[float], None] | None = None,
         clock: Callable[[], float] | None = None,
         sdk_commit: str | None = None,
+        app_name: str | None = None,
     ) -> SpriteBacktestsClient:
         http = httpx.Client(
             transport=httpx.MockTransport(self.handle), base_url=BACKEND
         )
         return SpriteBacktestsClient(
             BACKEND,
-            "shell",
+            app_name,
             API_KEY,
             client=http,
             sleep=sleep if sleep is not None else lambda seconds: None,
@@ -134,7 +137,7 @@ class FakeSprites:
         return [
             r
             for r in self.backend_requests()
-            if r.method == "POST" and r.url.path == INSTANCE
+            if r.method == "POST" and r.url.path in {LEASES, SHELL_LEASES}
         ]
 
     def close(self, lease_id: str, reason: str) -> None:
@@ -167,7 +170,7 @@ class FakeSprites:
     def _django(self, request: httpx.Request) -> httpx.Response:
         assert request.headers["X-API-Key"] == API_KEY
         assert "Authorization" not in request.headers
-        if request.method == "POST" and request.url.path == INSTANCE:
+        if request.method == "POST" and request.url.path in {LEASES, SHELL_LEASES}:
             if self.refuse is not None:
                 return httpx.Response(
                     self.refuse, json={"detail": "worker limit reached"}
@@ -189,7 +192,8 @@ class FakeSprites:
                 self.lost_bookings = max(0, self.lost_bookings - 1)
                 raise httpx.ReadTimeout("booking answer lost", request=request)
             return httpx.Response(201, json=lease)
-        lease_id = request.url.path.removeprefix(INSTANCE).strip("/")
+        root = LEASES if request.url.path.startswith(LEASES) else SHELL_LEASES
+        lease_id = request.url.path.removeprefix(root).strip("/")
         if lease_id not in self.leases:
             return httpx.Response(404, json={"detail": "Not found."})
         if request.method == "DELETE":

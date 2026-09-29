@@ -13,10 +13,14 @@ using the source commit and Poetry lock baked into its checkpoint.
 ## Leases
 
 **Booking.** The node generates a lease token (`secrets.token_urlsafe(32)`) and
-sends Django only its SHA-256 with the preset key, authenticated by the owner's
-existing `X-API-Key`, and the booking's `purpose`: a short label for Django's
+sends Django only its SHA-256 with the preset key to `POST
+/api/v1/opencode/sprite-leases/`, authenticated by the owner's existing `X-API-Key`,
+and the booking's `purpose`: a short label for Django's
 audit log, such as `evolution:campaign_scans_phase` (each job sends its own with
-`POST /jobs`). Django creates the Sprite worker, makes its URL public
+`POST /jobs`). A Shell and a local SDK book the same way: the API key decides the owner,
+so a Shell's own key books under its Shell and any other key books a local lease with no
+Shell. Naming a Shell (`--app-name`, `sprites.app_name`) uses
+`/api/v1/opencode/instances/<app name>/sprite-backtests/` instead. Django creates the Sprite worker, makes its URL public
 while a worker that enforces the token is serving, and returns the lease: its
 id, `provider`, `worker_url`, expiry, job timeout and idle timeout. A booking whose answer
 was lost is repeated with the same token, which Django answers with the same
@@ -80,8 +84,7 @@ environment from the repository containing `.wayfinder/jobs/<job_id>`:
 
 ```bash
 python -m wayfinder_paths.jobs.sprite_client \
-  --backend https://your-development-backend.example \
-  --app-name your-shell-app --preset jobs-v1 \
+  --backend https://your-development-backend.example --preset jobs-v1 \
   --repo /absolute/path/to/workspace --job-id my-job \
   --sdk-commit FULL_COMMIT_SHA \
   --output /absolute/path/to/new-results-directory

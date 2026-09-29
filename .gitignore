@@ -77,3 +77,4 @@ examples/paths/
 .ledger/
 audit/
 .venv
+.claude/

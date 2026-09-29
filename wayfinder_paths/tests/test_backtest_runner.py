@@ -97,6 +97,31 @@ def test_configuration_defaults_environment_precedence_and_no_secret_repr(tmp_pa
     assert overridden.fallback == "local"
 
 
+def test_sprites_need_only_the_provider_on_a_shell_or_a_local_sdk(tmp_path):
+    document = {
+        "backtest_runner": {"provider": "sprites"},
+        "system": {
+            "api_key": "test-secret",
+            "api_base_url": "https://strategies-dev.wayfinder.ai/api/v1",
+        },
+    }
+    config = load_runner_config(repo_root=tmp_path, config=document, environ={})
+    # The SDK's own Django books the lease, and the API key alone decides for whom.
+    assert config.backend == "https://strategies-dev.wayfinder.ai"
+    assert (config.app_name, config.preset) == ("", "jobs-v1")
+    shell = load_runner_config(
+        repo_root=tmp_path,
+        config=document,
+        environ={"WAYFINDER_API_BASE_URL": "https://wayfinder.ai/api/v1"},
+    )
+    assert shell.backend == "https://wayfinder.ai"
+    document["system"] = {"api_key": "test-secret"}
+    assert (
+        load_runner_config(repo_root=tmp_path, config=document, environ={}).backend
+        == "https://wayfinder.ai"
+    )
+
+
 @pytest.mark.parametrize(
     "section",
     [

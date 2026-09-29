@@ -122,16 +122,19 @@ class LeaseRecord(TypedDict):
 
 @dataclass(frozen=True, slots=True)
 class SpriteRoutes:
-    """Owner-authenticated Django lease routes."""
+    """Owner-authenticated Django lease routes. Without an app name, Django books by the
+    API key alone: a Shell's own key under its Shell, any other key a local lease."""
 
-    app_name: str
+    app_name: str = ""
 
     @property
-    def instance(self) -> str:
-        return f"/api/v1/opencode/instances/{self.app_name}/sprite-backtests/"
+    def leases(self) -> str:
+        if self.app_name:
+            return f"/api/v1/opencode/instances/{self.app_name}/sprite-backtests/"
+        return "/api/v1/opencode/sprite-leases/"
 
     def lease(self, lease_id: str) -> str:
-        return f"{self.instance}{checked_id(lease_id)}/"
+        return f"{self.leases}{checked_id(lease_id)}/"
 
 
 @dataclass(slots=True)
@@ -214,7 +217,7 @@ class SpriteBacktestsClient:
     def __init__(
         self,
         backend: str,
-        app_name: str,
+        app_name: str | None,
         api_key: str,
         *,
         client: httpx.Client | None = None,
@@ -228,7 +231,7 @@ class SpriteBacktestsClient:
         # (normally this node's own); a submission's expected commit takes precedence.
         self.sdk_commit = sdk_commit
         self.backend = backend.rstrip("/")
-        self.app_name = app_name
+        self.app_name = app_name or ""
         self.http = (
             client
             if client is not None
@@ -237,7 +240,7 @@ class SpriteBacktestsClient:
             )
         )
         self.owner_headers = {"X-API-Key": api_key}
-        self.routes = SpriteRoutes(app_name)
+        self.routes = SpriteRoutes(self.app_name)
         self.leases = LeaseStore(
             lease_dir
             if lease_dir is not None
@@ -673,7 +676,7 @@ class SpriteBacktestsClient:
         if purpose:
             body["purpose"] = purpose
         response = self._retrying(
-            lambda: self._backend("POST", self.routes.instance, json=body),
+            lambda: self._backend("POST", self.routes.leases, json=body),
             statuses=BOOKING_RETRY_STATUSES,
         )
         return token, _complete(_lease_document(response))
@@ -1193,7 +1196,10 @@ def _worker_url_problem(url: str) -> str | None:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", required=True)
-    parser.add_argument("--app-name", required=True)
+    parser.add_argument(
+        "--app-name",
+        help="Book under this Shell (default: decided by the API key, as on a Shell)",
+    )
     parser.add_argument("--preset", default="jobs-v1")
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--job-id")
