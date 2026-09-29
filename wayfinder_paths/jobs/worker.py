@@ -439,6 +439,8 @@ def _declared_feeds(root: Path) -> list[dict[str, Any]]:
 
 _IDEATION_PATH = "research/ideation/latest.json"
 _IDEATION_SEEN_PATH = "research/ideation/last_seen.json"
+_THESIS_CHALLENGE_PATH = "research/thesis_challenge.json"
+THESIS_CHALLENGE_INTERVAL_S = 24 * 3600
 
 
 def _benchmark_mode() -> bool:
@@ -455,6 +457,20 @@ def _wake_now() -> dt.datetime:
     if stamp.tzinfo is None:
         return stamp.replace(tzinfo=dt.UTC)
     return stamp.astimezone(dt.UTC)
+
+
+def _thesis_challenge_age_s(root: Path) -> float | None:
+    path = root / _THESIS_CHALLENGE_PATH
+    if not path.exists():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        stamp = dt.datetime.fromisoformat(str(doc.get("challenged_at")))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=dt.UTC)
+    return (_wake_now() - stamp).total_seconds()
 
 
 def _ideation_thresholds(root: Path) -> tuple[int, int]:
@@ -1158,6 +1174,15 @@ def _build_worker_prompt_sections(
             "(`wayfinder job exhaustion file ...`). Stating that research is "
             "not warranted is NOT a legal outcome of a stale wake — prose "
             "never satisfies the constitution.\n"
+            "- YOU ARE THIS JOB'S ONLY IMPROVER: no evolution campaign runs "
+            "for it, so improvements reach the owner only through your "
+            "proposals. Each full wake advances its island and ends with "
+            "evidence the owner can act on; when a variant clearly beats the "
+            "incumbent out of sample, proposing it is expected, not optional. "
+            "The TELEMETRY GATE limits forward-performance claims and changes "
+            "justified by forward evidence only — missing or thin forward "
+            "data NEVER blocks a proposal whose evidence is the job's own "
+            "historical bars tested out of sample with costs.\n"
         )
     )
     job_contract = str(
@@ -1922,6 +1947,56 @@ def _build_worker_prompt_sections(
             "block above the snapshot, including writing "
             "research/ideation/latest.json.\n"
         )
+    # A job no evolution campaign improves has no other candidate factory:
+    # once a day a clean intervene wake (never the ideation wake) puts the
+    # job's core thesis against alternatives on its own history.
+    thesis_directive = ""
+    thesis_task_line = ""
+    thesis_age = _thesis_challenge_age_s(root)
+    if (
+        not evolution_enabled
+        and job_contract != "freestyle_v1"
+        and mode == "intervene"
+        and apply_proposal_id is None
+        and not restage_tasks
+        and not ideation_session
+        and (_benchmark_mode() or not gate_red)
+        and (thesis_age is None or thesis_age > THESIS_CHALLENGE_INTERVAL_S)
+    ):
+        age_desc = (
+            "has never run"
+            if thesis_age is None
+            else f"last ran {thesis_age / 3600:.0f}h ago"
+        )
+        thesis_directive = (
+            f"THESIS CHALLENGE — due (it {age_desc}; the contract is one a "
+            "day). Whatever this wake's island, do this first:\n"
+            "1. State the job's CORE THESIS in one sentence: what the "
+            "strategy bets on and why it should earn.\n"
+            "2. Test it on the job's own historical bars against at least TWO "
+            "alternatives: one SIMPLER (buy-and-hold, or the same entry behind "
+            "a trend or regime filter) and one DIFFERENT mechanism for the "
+            "same market. Use costs and out-of-sample windows (experiments / "
+            "walk-forward / robustness_check through the heavy-compute lane), "
+            "never in-sample fits.\n"
+            "3. If an alternative beats the incumbent out of sample after "
+            'costs, PROPOSE it this wake — `core_jobs(action="propose", '
+            'kind="code_change", candidate_dir=...)` with the six-section '
+            "memo; the owner decides. Otherwise the report states 'thesis "
+            "holds against <A> and <B>' with the numbers.\n"
+            f"4. Write {_THESIS_CHALLENGE_PATH}: "
+            '{"challenged_at": "<UTC ISO8601>", "thesis": ..., "incumbent": '
+            '{"oos_net_return": ..., "oos_max_drawdown": ...}, "alternatives": '
+            '[{"name": ..., "mechanism": ..., "oos_net_return": ..., '
+            '"oos_max_drawdown": ...}], "outcome": "proposed"|"thesis_holds", '
+            '"proposal_id": ...|null}.\n'
+            "An exhaustion claim on a signal lane does not cover the thesis, "
+            "and thin forward data does not excuse it.\n\n"
+        )
+        thesis_task_line = (
+            "- This wake is a THESIS CHALLENGE: execute the THESIS CHALLENGE "
+            f"block above the snapshot, including writing {_THESIS_CHALLENGE_PATH}.\n"
+        )
     restage_priority = ""
     restage_task_line = ""
     if restage_tasks:
@@ -2052,6 +2127,7 @@ def _build_worker_prompt_sections(
         f"{restage_priority}"
         f"{impasse_directive}"
         f"{ideation_directive}"
+        f"{thesis_directive}"
         f"Current wake id (pass verbatim to risk_block_symbol): {wake_id}\n"
         "Current snapshot:\n"
         f"{_canonical_json(prompt_payload, max_chars=12000)}\n\n"
@@ -2063,6 +2139,7 @@ def _build_worker_prompt_sections(
         "Task:\n"
         f"{restage_task_line}"
         f"{ideation_task_line}"
+        f"{thesis_task_line}"
         f"{task_line}"
         "- Write the appropriate monitor/intervene/auto/apply report.\n"
         f"{report_outcome_directive}"

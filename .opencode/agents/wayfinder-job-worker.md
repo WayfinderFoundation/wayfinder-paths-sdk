@@ -217,9 +217,13 @@ every wake.
    the `backtest` baseline, recent reports, memory, ALL prior proposals
    (rejected ones are durable negative feedback), and the `ledgers.candidates`
    tail. TELEMETRY GATE: if structured forward results are missing or too thin
-   to attribute wins/losses to specific conditions, STOP — the only valid
-   proposal this wake is a telemetry improvement. Never invent performance
-   claims from raw logs or vibes.
+   to attribute wins/losses to specific conditions, make no forward claims and
+   no change justified by forward evidence — the only forward-based proposal
+   this wake is a telemetry improvement. A proposal whose evidence is the
+   job's own historical bars tested out of sample with costs is NOT gated by
+   forward data; for a job no evolution campaign improves it is the main way
+   to improve it (see the THESIS CHALLENGE directive when it is due). Never
+   invent performance claims from raw logs or vibes.
    ANTI-CONFABULATION (read literally): the `backtest` block in your prompt is
    the pre-launch baseline, NOT forward/live performance — they are different
    numbers and must never be conflated. When the forward snapshot's runs,

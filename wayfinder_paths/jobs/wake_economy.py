@@ -22,6 +22,7 @@ from wayfinder_paths.jobs.exhaustion import (
     list_exhaustion_claims,
 )
 from wayfinder_paths.jobs.halt import read_halt
+from wayfinder_paths.jobs.improver.spec import ImproverSpec
 from wayfinder_paths.jobs.lifecycle import is_operational
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.probation import load_probation
@@ -41,6 +42,11 @@ WAKE_ECONOMY_ENV = "WAYFINDER_WAKE_ECONOMY"
 WAKE_QUIET_MAX_HOURS_ENV = "WAYFINDER_WAKE_QUIET_MAX_HOURS"
 DEFAULT_WAKE_QUIET_MAX_HOURS = 12.0
 SKIP_REASON = "saturation_watermark_unchanged"
+# Jobs no evolution campaign improves: scheduled research wakes at most this
+# often (a few island-rotated wakes a day); event-triggered wakes are immediate.
+IDLE_WAKE_HOURS_ENV = "WAYFINDER_IDLE_WAKE_HOURS"
+DEFAULT_IDLE_WAKE_HOURS = 6.0
+IDLE_CADENCE_SKIP_REASON = "idle_research_cadence"
 
 REMEDIATION_QUIET_LINE = (
     "Remediation is evidence-blocked and backed off — it does NOT satisfy "
@@ -317,14 +323,79 @@ def maybe_skip_wake(
     last_full = _parse_time(state.get("last_full_wake_at"))
     if last_full is None or (now - last_full).total_seconds() >= _quiet_max_seconds():
         return None  # max-quiet floor: a full wake is due regardless
-    if research_saturation_posture(store, job.id)["posture"] != "saturated":
-        return None
+    posture = research_saturation_posture(store, job.id)
     watermark = saturation_watermark(store, job.id, job=job)
+    if (
+        wake_source == "scheduled_timer"
+        and (now - last_full).total_seconds() < _idle_wake_seconds()
+        and "not_operational" not in posture["blockers"]
+        and not _evolution_covers(store, job)
+    ):
+        # A job no evolution campaign improves runs its research on a few
+        # full wakes a day, each on its own island; events still wake it.
+        next_full_wake_by = (
+            last_full + dt.timedelta(seconds=_idle_wake_seconds())
+        ).isoformat()
+        return _skip_wake(
+            store,
+            job,
+            mode=mode,
+            state=state,
+            now=now,
+            wake_source=wake_source,
+            wake_triggers=wake_triggers,
+            watermark=watermark,
+            next_full_wake_by=next_full_wake_by,
+            skip_reason=IDLE_CADENCE_SKIP_REASON,
+            summary=(
+                "wake skipped: research cadence — the last full wake ran under "
+                f"{_idle_wake_seconds() / 3600:g}h ago; next full wake by "
+                f"{next_full_wake_by}"
+            ),
+            journal_type="wake_skipped_idle_cadence",
+        )
+    if posture["posture"] != "saturated":
+        return None
     if watermark != state.get("watermark"):
         return None  # evidence moved — the full wake adjudicates it
     next_full_wake_by = (
         last_full + dt.timedelta(seconds=_quiet_max_seconds())
     ).isoformat()
+    return _skip_wake(
+        store,
+        job,
+        mode=mode,
+        state=state,
+        now=now,
+        wake_source=wake_source,
+        wake_triggers=wake_triggers,
+        watermark=watermark,
+        next_full_wake_by=next_full_wake_by,
+        skip_reason=SKIP_REASON,
+        summary=(
+            "wake skipped: research saturated and the evidence watermark is "
+            f"unchanged since the last full wake; next full wake by "
+            f"{next_full_wake_by}"
+        ),
+        journal_type="wake_skipped_saturated",
+    )
+
+
+def _skip_wake(
+    store: JobStore,
+    job: WayfinderJob,
+    *,
+    mode: str,
+    state: Mapping[str, Any],
+    now: dt.datetime,
+    wake_source: str,
+    wake_triggers: list[str] | None,
+    watermark: Any,
+    next_full_wake_by: str,
+    skip_reason: str,
+    summary: str,
+    journal_type: str,
+) -> dict[str, Any]:
     prior_skips = dict(state.get("skips") or {})
     skips = {
         "count": int(prior_skips.get("count") or 0) + 1,
@@ -338,15 +409,11 @@ def maybe_skip_wake(
         "status": "quiet",
         "outcome": "no_change",
         "material_change": False,
-        "skip_reason": SKIP_REASON,
+        "skip_reason": skip_reason,
         "wake_source": wake_source,
         "wake_triggers": sorted(set(wake_triggers or [])),
         "decision_watermark_hash": _fingerprint({"watermark": watermark}),
-        "summary": (
-            "wake skipped: research saturated and the evidence watermark is "
-            f"unchanged since the last full wake; next full wake by "
-            f"{next_full_wake_by}"
-        ),
+        "summary": summary,
         "watermark": watermark,
         "next_full_wake_by": next_full_wake_by,
         "skips": skips,
@@ -360,12 +427,12 @@ def maybe_skip_wake(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     # Deduped heartbeat (the remediation note-dedupe pattern): one journal
-    # entry per saturation episode; repeat skips roll into the state counter.
+    # entry per skip episode; repeat skips roll into the state counter.
     if not prior_skips:
         store.append_journal(
             job.id,
             {
-                "type": "wake_skipped_saturated",
+                "type": journal_type,
                 "mode": mode,
                 "wake_source": wake_source,
                 "next_full_wake_by": next_full_wake_by,
@@ -402,6 +469,15 @@ def _quiet_max_seconds() -> float:
         float(os.environ.get(WAKE_QUIET_MAX_HOURS_ENV) or DEFAULT_WAKE_QUIET_MAX_HOURS)
         * 3600
     )
+
+
+def _idle_wake_seconds() -> float:
+    return float(os.environ.get(IDLE_WAKE_HOURS_ENV) or DEFAULT_IDLE_WAKE_HOURS) * 3600
+
+
+def _evolution_covers(store: JobStore, job: WayfinderJob) -> bool:
+    root = store.job_dir(job.id)
+    return bool(ImproverSpec.load(root).evolution_eligibility(root, job.id)["eligible"])
 
 
 def _parse_time(value: Any) -> dt.datetime | None:

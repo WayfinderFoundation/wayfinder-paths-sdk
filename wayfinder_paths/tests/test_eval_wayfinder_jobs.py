@@ -517,7 +517,14 @@ def test_improve_loop_protocol_is_pinned_in_worker_config() -> None:
     assert "OBSERVE → PARTITION → SCORE → DECIDE → RECORD" in text
     assert "70% CORE / 25% ADJACENT / 5% DIVERGENT" in text
     assert "TELEMETRY GATE" in text
-    assert "the only valid\n   proposal this wake is a telemetry improvement" in text
+    assert (
+        "the only forward-based proposal\n   this wake is a telemetry improvement"
+        in text
+    )
+    # The gate scopes forward claims only; historical OOS evidence may propose.
+    assert "job's own historical bars tested out of sample with costs is NOT gated" in (
+        text.replace("\n   ", " ")
+    )
     assert "never re-explore a candidate family already" in text
     assert "ledger append <job_id> candidates" in text
     assert "skeptic pass" in text

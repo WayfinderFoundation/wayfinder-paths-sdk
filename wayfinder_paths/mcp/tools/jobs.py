@@ -1235,7 +1235,12 @@ async def core_jobs(
         mode = normalize_agent_mode(agent_mode or "monitor")
         if mode == "off":
             mode = "monitor"
-        return ok(run_job_worker(job_id, mode=mode, apply_proposal_id=proposal_id))
+        # A requested review always runs; the wake economy meters timers.
+        return ok(
+            run_job_worker(
+                job_id, mode=mode, apply_proposal_id=proposal_id, force_llm=True
+            )
+        )
 
     if action == "validate_job":
         return ok(validate_job_for_kind(job_id, strict=strict, store=store))

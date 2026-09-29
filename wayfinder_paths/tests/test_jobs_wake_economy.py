@@ -33,6 +33,13 @@ from wayfinder_paths.tests.test_jobs_remediation import _health
 from wayfinder_paths.tests.test_wayfinder_jobs import _worker_snapshot
 
 
+@pytest.fixture(autouse=True)
+def _no_research_cadence(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These tests exercise the saturation watermark; the research cadence for
+    # jobs without evolution has its own tests below.
+    monkeypatch.setenv("WAYFINDER_IDLE_WAKE_HOURS", "0")
+
+
 class ForbiddenOpenCodeClient:
     """A skipped wake must never touch the OpenCode client."""
 
@@ -473,3 +480,67 @@ def test_prompt_carries_wake_provenance_and_compact_outcome_contract(
     assert '"triggers": [' in prompt and '"risk_halt"' in prompt
     assert "no_change | deferred | experiment_completed" in prompt
     assert "do not append candidate/decision ledgers" in prompt
+
+
+def test_non_evolution_job_wakes_on_a_research_cadence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("WAYFINDER_IDLE_WAKE_HOURS", "6")
+    store, job = _saturated_job(tmp_path)
+    now = datetime.now(UTC)
+    last_full = now - timedelta(hours=2)
+    record_full_wake(store, job, now=last_full)
+    # New evidence does not shorten the cadence: the next scheduled full wake
+    # adjudicates it.
+    _record_closed_trades(store, job.id, 1)
+
+    report = maybe_skip_wake(
+        store, job, mode="intervene", apply_proposal_id=None, now=now
+    )
+
+    assert report is not None
+    assert report["skip_reason"] == "idle_research_cadence"
+    assert report["next_full_wake_by"] == (last_full + timedelta(hours=6)).isoformat()
+    assert _journal_types(store, job.id).count("wake_skipped_idle_cadence") == 1
+    # Events and owner reviews still wake it at once.
+    assert (
+        maybe_skip_wake(
+            store,
+            job,
+            mode="intervene",
+            apply_proposal_id=None,
+            force=True,
+            wake_triggers=["risk_halt"],
+            now=now,
+        )
+        is None
+    )
+    # Once the cadence has passed, the moved watermark earns a full wake.
+    assert (
+        maybe_skip_wake(
+            store,
+            job,
+            mode="intervene",
+            apply_proposal_id=None,
+            now=now + timedelta(hours=5),
+        )
+        is None
+    )
+
+
+def test_research_cadence_leaves_evolution_jobs_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("WAYFINDER_IDLE_WAKE_HOURS", "6")
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.wake_economy._evolution_covers", lambda *_: True
+    )
+    store, job = _saturated_job(tmp_path)
+    now = datetime.now(UTC)
+    record_full_wake(store, job, now=now - timedelta(hours=2))
+    _record_closed_trades(store, job.id, 1)
+
+    assert (
+        maybe_skip_wake(store, job, mode="intervene", apply_proposal_id=None, now=now)
+        is None
+    )
