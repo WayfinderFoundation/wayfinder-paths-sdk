@@ -23,15 +23,22 @@ from wayfinder_paths.mcp.tools.tokens import (
 
 
 @pytest.mark.asyncio
-async def test_resolve_token_happy_path():
+@pytest.mark.parametrize("market_data", [False, True])
+async def test_resolve_token_happy_path(market_data: bool) -> None:
     fake_client = AsyncMock()
     fake_client.get_token_details = AsyncMock(return_value={"symbol": "USDC"})
 
-    with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
-        out = await onchain_resolve_token("usd-coin-arbitrum")
+    with (
+        patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client),
+        patch("wayfinder_paths.mcp.utils._report_tool_metric"),
+    ):
+        out = await onchain_resolve_token("usd-coin-arbitrum", market_data=market_data)
 
     assert out["ok"] is True
     assert out["result"]["symbol"] == "USDC"
+    fake_client.get_token_details.assert_awaited_once_with(
+        "usd-coin-arbitrum", market_data=market_data
+    )
 
 
 @pytest.mark.asyncio

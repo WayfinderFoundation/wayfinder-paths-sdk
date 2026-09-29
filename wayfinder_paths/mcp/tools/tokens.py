@@ -15,16 +15,20 @@ ALL_CHAINS = ("all", "_")
 @catch_errors(
     "Token could not be resolved, please use onchain_fuzzy_search_tokens() to find the token."
 )
-async def onchain_resolve_token(query: str) -> dict[str, Any]:
+async def onchain_resolve_token(
+    query: str, market_data: bool = False
+) -> dict[str, Any]:
     """Resolve a token by canonical id/address; chain-scoped shorthands are tolerated.
 
     Args:
         query: Prefer coingecko_id-chain_code or chain_code_address. Shorthands like
             polygon_usdc or usdc-polygon can resolve, but use the returned canonical ID
             for quotes, execution, and scripts.
+        market_data: Include current price, market cap and volume when available.
+            These are market snapshots, not chain-local depth or executable quotes.
     """
     try:
-        token = await TOKEN_CLIENT.get_token_details(query)
+        token = await TOKEN_CLIENT.get_token_details(query, market_data=market_data)
     except httpx.HTTPStatusError as exc:
         status_code = exc.response.status_code
         if status_code in (400, 404):
