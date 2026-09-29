@@ -177,10 +177,20 @@ class TokenClient(WayfinderClient):
         return token
 
     async def discover_tokens(
-        self, chain_code: str, dimension: str = "trending", limit: int = 25
+        self,
+        chain_code: str,
+        dimension: str = "trending",
+        limit: int = 25,
+        query: str | None = None,
     ) -> dict[str, Any]:
         url = f"{get_api_base_url()}/blockchain/tokens/discover/"
-        params = {"chain_code": chain_code, "dimension": dimension, "limit": limit}
+        params: dict[str, Any] = {
+            "chain_code": chain_code,
+            "dimension": dimension,
+            "limit": limit,
+        }
+        if query:
+            params["query"] = query
         response = await self._authed_request("GET", url, params=params)
         response.raise_for_status()
         return response.json()

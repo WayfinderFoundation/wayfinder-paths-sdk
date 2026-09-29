@@ -81,6 +81,8 @@ def test_observed_outcomes_and_latest_book_not_market_liquidity() -> None:
         "ask_depth": {"123": 20000},
         "event_urls": ["https://polymarket.com/event/fed"],
         "hyperliquid_depth": {},
+        "onchain_tokens": {},
+        "onchain_pools": {},
     }
 
 
@@ -213,3 +215,189 @@ def test_latest_hyperliquid_book_replaces_older_deeper_snapshot():
         ]
     )
     assert evidence["hyperliquid_depth"]["HYPE/USDC"]["bid_notional_usd_50bps"] == 500
+
+
+@pytest.fixture
+def onchain_case(proposal: Proposal) -> tuple[Proposal, list[dict[str, Any]]]:
+    address = "0x" + "a" * 40
+    token_id = f"ethereum_{address}"
+    payload = proposal.model_dump()
+    for variant in payload["variants"]:
+        variant["positions"][0].update(
+            kind="token", instrument_id=token_id, direction="long"
+        )
+    return Proposal.model_validate(payload), [
+        {
+            "token_id": token_id,
+            "address": address,
+            "chain": {"code": "ethereum", "id": 1},
+            "identity": {"is_canonical": False, "suspicious": False},
+            "links": {"homepage": ["https://project.test/"]},
+        },
+        {
+            "results": [
+                {
+                    "url": "https://docs.project.test/contracts",
+                    "contentExcerpt": f"Ethereum token: {address}",
+                }
+            ]
+        },
+        {
+            "chain_code": "ethereum",
+            "tokens": [
+                {
+                    "token_id": token_id,
+                    "chain_code": "ethereum",
+                    "address": address,
+                    "pool_address": "0x" + "b" * 40,
+                    "liquidity_usd": 400000,
+                    "volume_24h_usd": 200000,
+                }
+            ],
+        },
+    ]
+
+
+def test_onchain_evidence_corroborates_contract_and_caps_local_pool(
+    onchain_case: tuple[Proposal, list[dict[str, Any]]],
+) -> None:
+    proposal, results = onchain_case
+    evidence = research_evidence(results)
+    validate_market_capacity(proposal, evidence)
+    token_id = proposal.variants[0].positions[0].instrument_id
+    assert (
+        evidence["onchain_tokens"][token_id]["issuer_reference"]
+        == "https://docs.project.test/contracts"
+    )
+    assert "links" not in evidence["onchain_tokens"][token_id]
+    assert "pages" not in evidence
+    assert evidence["onchain_pools"][token_id]["pool_address"] == "0x" + "b" * 40
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "unresolved",
+        "no_page",
+        "wrong_host",
+        "host_prefix",
+        "wrong_address",
+        "address_prefix",
+        "suspicious",
+    ],
+)
+def test_onchain_identity_cannot_be_replaced_with_a_disclaimer(
+    onchain_case: tuple[Proposal, list[dict[str, Any]]],
+    failure: str,
+) -> None:
+    proposal, results = onchain_case
+    page = results[1]["results"][0]
+    if failure == "unresolved":
+        results[0] = {}
+    elif failure == "no_page":
+        results[1] = {}
+    elif failure == "wrong_host":
+        page["url"] = "https://exchange.test/listing"
+    elif failure == "host_prefix":
+        page["url"] = "https://project.test.attacker.test/contracts"
+    elif failure == "wrong_address":
+        page["contentExcerpt"] = "0x" + "b" * 40
+    elif failure == "address_prefix":
+        page["contentExcerpt"] += "a"
+    else:
+        results[0]["identity"]["suspicious"] = True
+    with pytest.raises(ValueError, match="registry-linked issuer"):
+        validate_market_capacity(proposal, research_evidence(results))
+
+
+def test_canonical_identity_needs_no_issuer_fetch_but_still_needs_pool(
+    onchain_case: tuple[Proposal, list[dict[str, Any]]],
+) -> None:
+    proposal, results = onchain_case
+    results[0]["identity"]["is_canonical"] = True
+    results[1] = {}
+    validate_market_capacity(proposal, research_evidence(results))
+    with pytest.raises(ValueError, match="sizing proxy"):
+        validate_market_capacity(proposal, research_evidence(results[:2]))
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("liquidity_usd", 399999),
+        ("volume_24h_usd", 199999),
+        ("volume_24h_usd", float("nan")),
+        ("liquidity_usd", float("inf")),
+        ("liquidity_usd", None),
+        ("chain_code", "base"),
+        ("address", "0x" + "b" * 40),
+    ],
+)
+def test_onchain_pool_cap_cannot_use_global_volume_or_another_token(
+    onchain_case: tuple[Proposal, list[dict[str, Any]]], field: str, value: Any
+) -> None:
+    proposal, results = onchain_case
+    results[0]["total_volume_usd_24h"] = 1e12
+    results[2]["tokens"][0][field] = value
+    with pytest.raises(ValueError, match="sizing proxy"):
+        validate_market_capacity(proposal, research_evidence(results))
+
+
+def test_sol_mint_and_registry_homepage_path_are_case_sensitive(
+    onchain_case: tuple[Proposal, list[dict[str, Any]]],
+) -> None:
+    _, results = onchain_case
+    mint = "AbCd" * 8
+    results[0].update(address=mint, links={"homepage": ["https://shared.test/project"]})
+    page = results[1]["results"][0]
+    page.update(url="https://shared.test/another", contentExcerpt=mint)
+    token_id = results[0]["token_id"]
+    assert (
+        research_evidence(results)["onchain_tokens"][token_id]["issuer_reference"]
+        is None
+    )
+    page["url"] = "https://shared.test/project/contracts"
+    assert (
+        research_evidence(results)["onchain_tokens"][token_id]["issuer_reference"]
+        == page["url"]
+    )
+    page["contentExcerpt"] = mint.lower()
+    assert (
+        research_evidence(results)["onchain_tokens"][token_id]["issuer_reference"]
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "homepage,page_url,allowed",
+    [
+        ("https://app.project.com", "https://docs.project.com/contracts", True),
+        ("https://project.co.uk", "https://other.co.uk/contracts", False),
+        ("https://project.github.io", "https://other.github.io/contracts", False),
+        ("https://project.github.io", "https://docs.project.github.io/contracts", True),
+        (
+            "https://github.com/project/contracts",
+            "https://github.com/attacker/contracts",
+            False,
+        ),
+        (
+            "https://github.com/project/contracts",
+            "https://github.com/project/contracts/blob/main/token.sol",
+            True,
+        ),
+    ],
+)
+def test_issuer_domain_matching_respects_registrable_and_private_suffixes(
+    onchain_case: tuple[Proposal, list[dict[str, Any]]],
+    homepage: str,
+    page_url: str,
+    allowed: bool,
+) -> None:
+    _, results = onchain_case
+    results[0]["links"] = {"homepage": [homepage]}
+    results[1]["results"][0]["url"] = page_url
+    token_id = results[0]["token_id"]
+    assert (
+        bool(research_evidence(results)["onchain_tokens"][token_id]["issuer_reference"])
+        is allowed
+    )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import httpx
@@ -96,7 +97,10 @@ _LIST_DIMENSIONS = ("trending", "volume", "new", "active")
 
 @catch_errors
 async def onchain_list_tokens(
-    chain_code: str, dimension: str = "trending", limit: int = 25
+    chain_code: str,
+    dimension: str = "trending",
+    limit: int = 25,
+    query: str | None = None,
 ) -> dict[str, Any]:
     """Browse a chain's top tokens — what's actually live and moving right now.
 
@@ -112,6 +116,11 @@ async def onchain_list_tokens(
         dimension: ranking — "trending" (default), "volume" (24h), "new"
             (recently launched), or "active" (most 24h transactions).
         limit: max tokens to return (1-50, default 25).
+        query: Optional token name or exact contract address to search pools on
+            this chain instead of browsing. Match the returned address, not the
+            symbol. Liquidity is selected-pool reserves, NOT executable depth;
+            volume is that pool's 24h turnover, not global token volume. Empty
+            results mean unavailable discovery data, not an untradeable token.
     """
     if chain_code not in CHAIN_CODE_TO_ID:
         return err(
@@ -124,5 +133,8 @@ async def onchain_list_tokens(
             "invalid_dimension",
             f"dimension must be one of: {', '.join(_LIST_DIMENSIONS)}",
         )
-    result = await TOKEN_CLIENT.discover_tokens(chain_code, dimension, limit)
+    result = await TOKEN_CLIENT.discover_tokens(
+        chain_code, dimension, limit, query=query
+    )
+    result["retrieved_at_ms"] = int(time.time() * 1000)
     return ok(result)
