@@ -6203,15 +6203,36 @@ def _diversified_full_dev_order(
         if item.get("dev") or item.get("full_dev_failure_codes") is not None
     }
     running = [item for item in eligible if item.get("status") == "full_dev_running"]
-    fresh = [
-        item
-        for item in eligible
-        if item not in running and _full_dev_family(item) not in developed
-    ]
+    # Two revisions of one recipe screen identically; the second is spent only
+    # when nothing else is left.
+    seen = {
+        _quick_fingerprint(item)
+        for item in candidates
+        if item.get("dev") or item.get("full_dev_failure_codes") is not None
+    } | {_quick_fingerprint(item) for item in running}
+    twins: list[dict[str, Any]] = []
+    distinct: list[dict[str, Any]] = []
+    for item in eligible:
+        if item in running:
+            continue
+        fingerprint = _quick_fingerprint(item)
+        if fingerprint is not None and fingerprint in seen:
+            twins.append(item)
+            continue
+        seen.add(fingerprint)
+        distinct.append(item)
+    fresh = [item for item in distinct if _full_dev_family(item) not in developed]
+    return running + fresh + [item for item in distinct if item not in fresh] + twins
+
+
+def _quick_fingerprint(candidate: Mapping[str, Any]) -> tuple[Any, ...] | None:
+    stats = (candidate.get("quick") or {}).get("stats") or {}
+    if stats.get("net_return") is None:
+        return None
     return (
-        running
-        + fresh
-        + [item for item in eligible if item not in running and item not in fresh]
+        round(float(stats["net_return"]), 10),
+        stats.get("trade_count"),
+        round(float(stats.get("total_fees") or 0.0), 8),
     )
 
 
@@ -8294,6 +8315,11 @@ def _full_dev(
             else None
         ),
     )
+    verdict = _require_train_profit(
+        verdict,
+        train_return=train_return,
+        required=bool(policy.get("full_dev_requires_train_profit")),
+    )
     passed = bool(verdict["passed"])
     return {
         "status": verdict["status"],
@@ -8510,6 +8536,11 @@ def _protected_fold_full_dev(
         ),
         neutral_folds=sum(bool(row.get("neutral")) for row in fold_rows),
         stress_reused=stress_params == params,
+    )
+    verdict = _require_train_profit(
+        verdict,
+        train_return=_decision_return(train_stats),
+        required=bool(policy.get("full_dev_requires_train_profit")),
     )
     validation_trades = sum(_decision_trade_count(row) for row in base_stats_rows)
     certificate_dataset = _slice(
@@ -8876,6 +8907,24 @@ def _probe_mismatch_text(probe: Mapping[str, Any]) -> str:
             + (f" ({10_000 * float(gap):.1f} bps)" if gap is not None else "")
         )
     return "; ".join(parts)
+
+
+def _require_train_profit(
+    verdict: dict[str, Any], *, train_return: float, required: bool
+) -> dict[str, Any]:
+    # A book that loses on train and wins only on validation was picked by
+    # the validation window's noise; it must not take a finalist slot.
+    if not required or not verdict["passed"] or train_return > 0.0:
+        return verdict
+    return {
+        "status": "low_fidelity_rejected",
+        "passed": False,
+        "failure_codes": ["train_unprofitable"],
+        "evidence": (
+            f"validation passed but the train window returned {train_return:+.2%}; "
+            "profit only on validation is not a consistent edge"
+        ),
+    }
 
 
 def _full_dev_verdict(
@@ -9813,6 +9862,27 @@ def _near_miss_screen(entry: Mapping[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _inverted_families(archive: list[dict[str, Any]]) -> set[str]:
+    """Families whose full development made money in training and lost on
+    independent validation: a screen win from one of them is not a near miss
+    worth a repair slot, it is the same inversion again."""
+    inverted: set[str] = set()
+    for entry in archive:
+        dev = (entry.get("metadata") or {}).get("dev") or {}
+        train = ((dev.get("train") or {}).get("stats") or {}).get("net_return")
+        validation = ((dev.get("validation") or {}).get("stats") or {}).get(
+            "net_return"
+        )
+        if (
+            train is not None
+            and validation is not None
+            and float(train) > 0
+            and float(validation) < 0
+        ):
+            inverted.add(str(entry.get("family") or "").strip().lower())
+    return inverted
+
+
 def _freeze_near_misses(
     store: JobStore, job_id: str, campaign_root: Path, policy: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
@@ -9829,12 +9899,14 @@ def _freeze_near_misses(
             continue
         for parent_id in entry.get("parent_candidate_ids") or []:
             retries[str(parent_id)] = retries.get(str(parent_id), 0) + 1
+    inverted = _inverted_families(archive)
     ranked: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
     for entry in archive:
         candidate_id = str(entry.get("candidate_id") or "")
         if (
             entry.get("status") not in _NEAR_MISS_ARCHIVE_STATUSES
             or retries.get(candidate_id, 0) >= max_retries
+            or str(entry.get("family") or "").strip().lower() in inverted
         ):
             continue
         screen = _near_miss_screen(entry)

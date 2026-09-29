@@ -60,6 +60,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _protected_fold_verdict,
     _prune_risky_trials,
     _rejected_submission,
+    _require_train_profit,
     _research_context_instruction,
     _risk_ceiling_scale,
     _same_family_nonwins,
@@ -8173,8 +8174,20 @@ def test_near_miss_screen_keeps_profitable_fixable_failures_only() -> None:
 
 def test_near_misses_are_frozen_ranked_and_retry_capped(tmp_path, monkeypatch) -> None:
     store, job_id = _job(tmp_path, "majors-5m-lab")
+    # A family that already made money in training and lost on validation:
+    # its best screen win is the same inversion again, not a near miss.
+    kernel = _near_miss_entry("kernel", 0.8, ["screen_slice_loss_bound"])
+    kernel["family"] = "Sleeve_Momentum"
+    developed = _near_miss_entry("developed", 0.6, ["screen_slice_loss_bound"])
+    developed["family"] = "sleeve_momentum"
+    developed["metadata"]["dev"] = {
+        "train": {"stats": {"net_return": 0.47}},
+        "validation": {"stats": {"net_return": -0.27}},
+    }
     archive = {
         "candidates": [
+            kernel,
+            developed,
             _near_miss_entry("small", 0.126, ["cost_not_covered"]),
             _near_miss_entry("big", 0.297, ["screen_slice_loss_bound"]),
             _near_miss_entry("stale", 0.9, ["cost_not_covered"], status="invalid"),
@@ -8330,6 +8343,22 @@ def test_full_dev_haircut_blocks_only_when_policy_says_so(
     assert outcome["dev"]["validation"]["haircut"]["cleared"] is False
 
 
+def test_train_profit_rule_rejects_validation_only_winners() -> None:
+    passed = {
+        "status": "dev_frontier",
+        "passed": True,
+        "failure_codes": [],
+        "evidence": "ok",
+    }
+    rejected = _require_train_profit(passed, train_return=-0.049, required=True)
+    assert rejected["status"] == "low_fidelity_rejected"
+    assert rejected["failure_codes"] == ["train_unprofitable"]
+    assert _require_train_profit(passed, train_return=0.38, required=True) is passed
+    assert _require_train_profit(passed, train_return=-0.049, required=False) is passed
+    failed = {**passed, "status": "low_fidelity_rejected", "passed": False}
+    assert _require_train_profit(failed, train_return=-0.049, required=True) is failed
+
+
 def test_full_dev_order_spends_slots_across_families() -> None:
     kernel = {"family": "cross_sectional_momentum"}
     eligible = [
@@ -8358,6 +8387,33 @@ def test_full_dev_order_spends_slots_across_families() -> None:
     assert [item["candidate_id"] for item in order] == ["retry", "m1", "k2", "k3"]
     untried = _diversified_full_dev_order(eligible, eligible)
     assert [item["candidate_id"] for item in untried] == ["retry", "k2", "k3", "m1"]
+
+
+def test_full_dev_order_spends_behavior_twins_last() -> None:
+    def screened(candidate_id: str, family: str, net_return: float) -> dict[str, Any]:
+        return {
+            "candidate_id": candidate_id,
+            "family": family,
+            "status": "quick_complete",
+            "quick": {
+                "stats": {"net_return": net_return, "trade_count": 76, "total_fees": 1.2}
+            },
+        }
+
+    developed = {
+        **screened("c04", "cross_sectional_rank", 0.5322196580463001),
+        "status": "low_fidelity_rejected",
+        "dev": {"validation": {}},
+    }
+    eligible = [
+        screened("c15", "cross_sectional_rank", 0.5322196580463001),
+        screened("c16", "cross_sectional_rank", 0.41),
+        screened("c17", "maker_mean_reversion", 0.30),
+        screened("c18", "maker_mean_reversion", 0.30),
+    ]
+    order = _diversified_full_dev_order(eligible, [developed, *eligible])
+    # c15 re-instantiated c04's recipe and c18 duplicates c17: both go last.
+    assert [item["candidate_id"] for item in order] == ["c17", "c16", "c15", "c18"]
 
 
 def test_unbuildable_seed_falls_back_to_de_novo_instead_of_wedging(
