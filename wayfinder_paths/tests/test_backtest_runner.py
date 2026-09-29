@@ -627,7 +627,9 @@ class InlineRunner(BacktestRunner):
     def _directory(self, run_id: str) -> Path:
         return self.config.runs_dir / "inline" / run_id
 
-    def submit_archive(self, archive: Path, *, base: Path | None = None) -> dict:
+    def submit_archive(
+        self, archive: Path, *, base: Path | None = None, purpose: str = ""
+    ) -> dict:
         run_id = f"inline-{uuid.uuid4()}"
         directory = self._directory(run_id)
         directory.mkdir(parents=True)
@@ -638,6 +640,7 @@ class InlineRunner(BacktestRunner):
         self.records[run_id] = {
             "id": run_id,
             "provider": "inline",
+            "destination": {"runner": "inline"},
             "status": "succeeded" if code == 0 else "failed",
             "error": "" if code == 0 else "inline computation failed",
             "result": {"output": json.loads(summary.read_text())},

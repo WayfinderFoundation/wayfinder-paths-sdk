@@ -1470,12 +1470,14 @@ async def core_jobs(
     if action == "evolution_start":
         if not job_id:
             return err("invalid_request", "evolution_start requires job_id")
-        kwargs = {"job_id": job_id, "force": force}
+        start_kwargs: dict[str, Any] = {"job_id": job_id, "force": force}
         if _remote_runner_configured(store):
             # An offloaded start first boots the campaign's lease, which can
             # outlast the synchronous cap; poll it like any background op.
-            return await _start_background_op(store, job_id, "evolution_start", kwargs)
-        return await _run_job_op("evolution_start", kwargs)
+            return await _start_background_op(
+                store, job_id, "evolution_start", start_kwargs
+            )
+        return await _run_job_op("evolution_start", start_kwargs)
 
     if action == "evolution_status":
         if not job_id:

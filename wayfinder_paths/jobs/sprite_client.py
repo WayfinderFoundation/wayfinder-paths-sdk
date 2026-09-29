@@ -23,6 +23,7 @@ from typing import Any, Self, TypedDict, cast
 from urllib.parse import urlsplit
 
 import httpx
+from loguru import logger
 
 from wayfinder_paths.jobs.sprite_bundle import (
     MAX_ARCHIVE_BYTES,
@@ -51,6 +52,7 @@ RELEASE_DEADLINE_SECONDS = 300
 LEASE_FIELDS = frozenset(
     {
         "id",
+        "provider",
         "status",
         "worker_url",
         "expires_at",
@@ -82,6 +84,9 @@ CANCEL_BUDGET_SECONDS = 10
 PROVISIONING_POLL_SECONDS = 2
 PROVISIONING_TIMEOUT_SECONDS = 600
 _ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+# Why a lease is booked or a job runs (e.g. "evolution:screen_phase"). Django keeps it in
+# the lease audit log, so it is a short label and never user data.
+PURPOSE = re.compile(r"[a-z][a-z0-9_.:-]{0,63}")
 _LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
@@ -99,6 +104,8 @@ class LeaseRecord(TypedDict):
     backend: str
     app_name: str
     preset: str
+    # Where the lease's machine runs (the runner profile's provider, e.g. "sprites").
+    provider: str
     worker_url: str
     token: str
     expires_at: str
@@ -264,6 +271,7 @@ class SpriteBacktestsClient:
         options: dict[str, Any] | None = None,
         extra_paths: list[str] | None = None,
         expected_sdk_commit: str | None = None,
+        purpose: str = "",
     ) -> dict[str, Any]:
         with tempfile.TemporaryDirectory() as directory:
             archive = Path(directory) / "workspace.tar.gz"
@@ -277,7 +285,10 @@ class SpriteBacktestsClient:
                 expected_sdk_commit=expected_sdk_commit,
             )
             return self.submit_archive(
-                archive, preset=preset, expected_sdk_commit=expected_sdk_commit
+                archive,
+                preset=preset,
+                expected_sdk_commit=expected_sdk_commit,
+                purpose=purpose or f"operation:{op}",
             )
 
     def submit_archive(
@@ -288,30 +299,40 @@ class SpriteBacktestsClient:
         require_artifacts: bool = True,
         preset: str = "jobs-v1",
         expected_sdk_commit: str | None = None,
+        purpose: str = "",
     ) -> dict[str, Any]:
         """Run a prebuilt job or phase archive, over ``base`` when given.
 
         A live lease of this node is reused; its base is uploaded once and
         each job uploads only its own archive. A lease found closed while
-        submitting is replaced once.
+        submitting is replaced once. ``purpose`` labels the booking and the
+        job in Django's lease audit log.
         """
+        if purpose and not PURPOSE.fullmatch(purpose):
+            raise ValueError(f"purpose must match {PURPOSE.pattern}: {purpose!r}")
         job_id = str(uuid.uuid4())
         scope = _Scope(None, job_id)
         with _naming(scope):
             base_sha = sha256(base) if base is not None else None
             for attempt in range(2):
                 record, lease = self._acquire(
-                    preset, base_sha, job_id, expected_sdk_commit
+                    preset, base_sha, job_id, expected_sdk_commit, purpose
                 )
                 scope.lease = record["id"]
                 try:
                     accepted = self._send(
-                        record, job_id, archive, base, base_sha, require_artifacts
+                        record,
+                        job_id,
+                        archive,
+                        base,
+                        base_sha,
+                        require_artifacts,
+                        purpose,
                     )
                 except Exception as exc:
                     # Frees the one-lease slot and stops anything half-started.
                     with suppress(httpx.HTTPError), self.leases.locked():
-                        self._release(record["id"])
+                        self._release(record["id"], reason=f"submission failed: {exc}")
                     if _closed(exc):
                         if not attempt:
                             continue
@@ -342,6 +363,7 @@ class SpriteBacktestsClient:
                     ),
                     "expires_at": record["expires_at"],
                     "runtime": lease.get("runtime", {}),
+                    "destination": _destination(record),
                 }
         raise AssertionError("Submission loop must return or raise")
 
@@ -460,9 +482,9 @@ class SpriteBacktestsClient:
     def release(self, lease_id: str) -> dict[str, Any]:
         """Close a lease now; Django wipes its Sprite. Idempotent."""
         with _naming(_Scope(lease_id, None)), self.leases.locked():
-            return self._release(lease_id)
+            return self._release(lease_id, reason="released by its owner")
 
-    def release_idle(self) -> list[str]:
+    def release_idle(self, *, reason: str) -> list[str]:
         """Close this node's leases no submission is using, for example when a
         campaign that kept one warm between its phases ends."""
         released = []
@@ -472,7 +494,9 @@ class SpriteBacktestsClient:
                     continue
                 with suppress(httpx.HTTPError):
                     self._release(
-                        record["id"], deadline=self._clock() + RELEASE_DEADLINE_SECONDS
+                        record["id"],
+                        reason=reason,
+                        deadline=self._clock() + RELEASE_DEADLINE_SECONDS,
                     )
                     released.append(record["id"])
         return released
@@ -483,6 +507,7 @@ class SpriteBacktestsClient:
         base_sha: str | None,
         job_id: str,
         expected_sdk_commit: str | None,
+        purpose: str,
     ) -> tuple[LeaseRecord, dict[str, Any]]:
         commit = expected_sdk_commit or self.sdk_commit
         with self.leases.locked(timeout=LOCK_WAIT_SECONDS):
@@ -500,9 +525,10 @@ class SpriteBacktestsClient:
                         continue
                     if record["job"] is not None or lease["status"] != "ready":
                         continue  # Another submission of this node still needs it.
-                    if record["preset"] == preset and self._reusable(
-                        lease, record, base_sha, commit
-                    ):
+                    problem = self._reuse_problem(
+                        lease, record, preset, base_sha, commit
+                    )
+                    if problem is None:
                         claimed = self.leases.save(
                             {
                                 **record,
@@ -515,12 +541,21 @@ class SpriteBacktestsClient:
                                 "setup_timeout_seconds": lease["setup_timeout_seconds"],
                             }
                         )
+                        logger.info(
+                            "Reusing {} lease {} at {} for {}",
+                            claimed["provider"],
+                            claimed["id"],
+                            urlsplit(claimed["worker_url"]).hostname,
+                            purpose or "an unlabelled job",
+                        )
                         return claimed, lease
                     # One open lease per owner: free the slot for a new booking.
                     self._release(
-                        record["id"], deadline=self._clock() + RELEASE_DEADLINE_SECONDS
+                        record["id"],
+                        reason=f"cannot be reused: {problem}",
+                        deadline=self._clock() + RELEASE_DEADLINE_SECONDS,
                     )
-                return self._book(preset, job_id, commit)
+                return self._book(preset, job_id, commit, purpose)
             except httpx.TransportError as exc:
                 raise LeaseUnavailable(f"Sprites backend unreachable: {exc}") from exc
             except httpx.HTTPStatusError as exc:
@@ -540,34 +575,50 @@ class SpriteBacktestsClient:
                     f"Sprites {outcome} (HTTP {code}): {_detail(exc.response)}"
                 ) from exc
 
-    def _reusable(
+    def _reuse_problem(
         self,
         lease: Mapping[str, Any],
         record: LeaseRecord,
+        preset: str,
         base_sha: str | None,
         commit: str | None,
-    ) -> bool:
-        """A lease runs this node's jobs only while it runs this node's SDK commit (a
-        node whose commit is unknown never reuses an SDK lease) and its setup worked."""
+    ) -> str | None:
+        """Why a lease cannot run this job, or None. A lease runs this node's jobs only
+        while it runs this node's SDK commit (a node whose commit is unknown never
+        reuses an SDK lease) and its setup worked."""
         remaining = _epoch(lease["expires_at"]) - self._clock()
         runtime = lease.get("runtime") or {}
-        return (
-            (base_sha is None or record["base"] in {None, base_sha})
-            and remaining
-            >= lease["timeout_seconds"] + 2 * lease["transfer_timeout_seconds"]
-            and _runtime_problem(lease, commit) is None
-            and (commit is not None or not runtime.get("sdk_commit"))
-            and (lease.get("setup") or {}).get("state") != "failed"
-        )
+        if record["preset"] != preset:
+            return f"booked for preset {record['preset']}"
+        if base_sha is not None and record["base"] not in {None, base_sha}:
+            return "holds another base"
+        if remaining < lease["timeout_seconds"] + 2 * lease["transfer_timeout_seconds"]:
+            return f"expires in {max(remaining, 0):.0f} s"
+        problem = _runtime_problem(lease, commit)
+        if problem is not None:
+            return problem
+        if commit is None and runtime.get("sdk_commit"):
+            return "this node's SDK commit is unknown"
+        if (lease.get("setup") or {}).get("state") == "failed":
+            return "its SDK install failed"
+        return None
 
     def _book(
-        self, preset: str, job_id: str, commit: str | None
+        self, preset: str, job_id: str, commit: str | None, purpose: str
     ) -> tuple[LeaseRecord, dict[str, Any]]:
-        token, lease = self._request_booking(preset, commit)
+        token, lease = self._request_booking(preset, commit, purpose)
         if lease["status"] == "closed":
             # The retried booking found this token's lease already closed.
-            token, lease = self._request_booking(preset, commit)
+            token, lease = self._request_booking(preset, commit, purpose)
         lease_id = checked_id(lease["id"])
+        logger.info(
+            "Booked {} lease {} (preset {}, SDK {}) for {}; waiting for it to start",
+            lease["provider"],
+            lease_id,
+            preset,
+            commit or "unpinned",
+            purpose or "an unlabelled job",
+        )
         try:
             deadline = self._clock() + PROVISIONING_TIMEOUT_SECONDS
             while lease["status"] == "provisioning" and self._clock() < deadline:
@@ -584,6 +635,7 @@ class SpriteBacktestsClient:
                     "backend": self.backend,
                     "app_name": self.app_name,
                     "preset": preset,
+                    "provider": lease["provider"],
                     "worker_url": lease["worker_url"],
                     "token": token,
                     "expires_at": lease["expires_at"],
@@ -599,19 +651,27 @@ class SpriteBacktestsClient:
             )
             if problem:
                 raise ValueError(problem)
-        except BaseException:
+        except BaseException as exc:
             with suppress(httpx.HTTPError):
-                self._release(lease_id)
+                self._release(lease_id, reason=f"booking failed: {exc!r}")
             raise
+        logger.info(
+            "{} lease {} is ready at {}",
+            record["provider"],
+            lease_id,
+            urlsplit(record["worker_url"]).hostname,
+        )
         return record, lease
 
     def _request_booking(
-        self, preset: str, sdk_commit: str | None
+        self, preset: str, sdk_commit: str | None, purpose: str
     ) -> tuple[str, dict[str, Any]]:
         token = secrets.token_urlsafe(32)
         body = {"preset_key": preset, "token_sha256": token_sha256(token)}
         if sdk_commit is not None:
             body["sdk_commit"] = sdk_commit
+        if purpose:
+            body["purpose"] = purpose
         response = self._retrying(
             lambda: self._backend("POST", self.routes.instance, json=body),
             statuses=BOOKING_RETRY_STATUSES,
@@ -656,8 +716,9 @@ class SpriteBacktestsClient:
         )
 
     def _release(
-        self, lease_id: str, *, deadline: float | None = None
+        self, lease_id: str, *, reason: str, deadline: float | None = None
     ) -> dict[str, Any]:
+        logger.info("Releasing lease {}: {}", lease_id, reason)
         path = self.routes.lease(lease_id)
         try:
             lease = self._retrying(
@@ -688,23 +749,22 @@ class SpriteBacktestsClient:
         base: Path | None,
         base_sha: str | None,
         require_artifacts: bool,
+        purpose: str,
     ) -> dict[str, Any]:
         if base is not None and record["base"] != base_sha:
             uploaded = self._upload(record, "base", base)
             record = self._record_base(record["id"], uploaded["sha256"])
         workspace = self._upload(record, "workspace", archive)
-        return self._worker(
-            record,
-            "POST",
-            "/jobs",
-            payload={
-                "job_id": job_id,
-                "kind": "sdk_job",
-                "workspace_sha256": workspace["sha256"],
-                "base_sha256": base_sha,
-                "require_artifacts": require_artifacts,
-            },
-        ).json()
+        payload: dict[str, Any] = {
+            "job_id": job_id,
+            "kind": "sdk_job",
+            "workspace_sha256": workspace["sha256"],
+            "base_sha256": base_sha,
+            "require_artifacts": require_artifacts,
+        }
+        if purpose:
+            payload["purpose"] = purpose
+        return self._worker(record, "POST", "/jobs", payload=payload).json()
 
     def _abandon(self, record: LeaseRecord, job_id: str) -> None:
         with suppress(httpx.HTTPError):
@@ -823,7 +883,11 @@ class SpriteBacktestsClient:
         # Under a deadline, Django finishes the wipe even if this call times out,
         # and reconciliation retries it.
         with self.leases.locked(), suppress(httpx.TransportError):
-            self._release(lease_id, deadline=deadline)
+            self._release(
+                lease_id,
+                reason=f"its worker is unreachable to cancel job {job_id}",
+                deadline=deadline,
+            )
 
     def _retrying[T](
         self,
@@ -1032,6 +1096,17 @@ def _run(
         "result": dict(result),
         "artifacts": dict(artifacts),
         "error": error,
+    }
+
+
+def _destination(record: LeaseRecord) -> dict[str, Any]:
+    """Where a submission runs, for run receipts and job journals."""
+    return {
+        "provider": record["provider"],
+        "lease_id": record["id"],
+        "preset": record["preset"],
+        "worker_host": urlsplit(record["worker_url"]).hostname,
+        "backend": record["backend"],
     }
 
 

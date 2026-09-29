@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 import pytest
+from loguru import logger
 
 from wayfinder_paths.jobs import sprite_client
 from wayfinder_paths.jobs.compute_phase import phase_name
@@ -114,6 +115,7 @@ def test_booking_sends_only_the_token_hash_and_keeps_the_token_private(
         "backend": BACKEND,
         "app_name": "shell",
         "preset": "jobs-v1",
+        "provider": "sprites",
         "worker_url": lease["worker_url"],
         "token": token,
         "expires_at": lease["expires_at"],
@@ -674,6 +676,7 @@ def _record(worker_url: str = "https://sprite.example") -> LeaseRecord:
         "backend": BACKEND,
         "app_name": "shell",
         "preset": "jobs-v1",
+        "provider": "sprites",
         "worker_url": worker_url,
         "token": "node-token",
         "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
@@ -1008,10 +1011,92 @@ def test_release_idle_ends_only_leases_no_submission_uses(tmp_path: Path) -> Non
     client = fake.client()
     archive, base = _pack(_phase_repo(tmp_path), tmp_path / "packed", scale=2)
     run = client.submit_archive(archive, base=base)
-    assert client.release_idle() == []  # Its results are not collected yet.
+    # Its results are not collected yet.
+    assert client.release_idle(reason="campaign completed") == []
     assert client.wait(run["id"])["status"] == "succeeded"
     client.collect(run["id"], tmp_path / "collected")
-    assert client.release_idle() == [run["lease_id"]]
+    assert client.release_idle(reason="campaign completed") == [run["lease_id"]]
     assert fake.leases[run["lease_id"]]["closed_reason"] == "released"
     assert not client.leases.all()
+    client.http.close()
+
+
+def test_a_purpose_labels_the_booking_and_job_and_logs_say_where_they_ran(
+    tmp_path: Path,
+) -> None:
+    fake = FakeSprites(tmp_path)
+    root = _phase_repo(tmp_path)
+    client = fake.client()
+    messages: list[str] = []
+    sink = logger.add(lambda message: messages.append(str(message)), level="INFO")
+    try:
+        archive, base = _pack(root, tmp_path / "first", scale=1)
+        first = client.submit_archive(
+            archive, base=base, purpose="evolution:campaign_scans_phase"
+        )
+        # A closed lease's document no longer carries its worker URL.
+        host = fake.leases[first["lease_id"]]["worker_url"].removeprefix("https://")
+        client.wait(first["id"])
+        client.collect(first["id"], tmp_path / "collected-first")
+        archive, base = _pack(root, tmp_path / "second", scale=2)
+        second = client.submit_archive(
+            archive, base=base, purpose="evolution:screen_phase"
+        )
+        client.wait(second["id"])
+        client.collect(second["id"], tmp_path / "collected-second")
+        client.release_idle(reason="evolution campaign c1 completed")
+    finally:
+        logger.remove(sink)
+    assert second["lease_id"] == first["lease_id"]
+    assert first["destination"] == {
+        "provider": "sprites",
+        "lease_id": first["lease_id"],
+        "preset": "jobs-v1",
+        "worker_host": host,
+        "backend": BACKEND,
+    }
+    # Django's audit log gets the booking's purpose and each job's.
+    (booking,) = fake.bookings()
+    assert json.loads(booking.content)["purpose"] == "evolution:campaign_scans_phase"
+    jobs = [json.loads(r.content) for r in fake.worker_requests("/jobs")]
+    assert [job["purpose"] for job in jobs] == [
+        "evolution:campaign_scans_phase",
+        "evolution:screen_phase",
+    ]
+    log = "".join(messages)
+    assert f"Booked sprites lease {first['lease_id']}" in log
+    assert f"is ready at {host}" in log
+    assert (
+        f"Reusing sprites lease {first['lease_id']} at {host} for evolution:screen_phase"
+        in log
+    )
+    assert (
+        f"Releasing lease {first['lease_id']}: evolution campaign c1 completed" in log
+    )
+    assert "node-token" not in log and client.leases.all() == []
+    with pytest.raises(ValueError, match="purpose"):
+        client.submit_archive(archive, base=base, purpose="Free text with spaces")
+    client.http.close()
+
+
+def test_a_lease_that_cannot_be_reused_is_released_with_the_reason(
+    tmp_path: Path,
+) -> None:
+    fake = FakeSprites(tmp_path)
+    root = _phase_repo(tmp_path)
+    client = fake.client()
+    archive, base = _pack(root, tmp_path / "first", scale=1)
+    first = client.submit_archive(archive, base=base)
+    client.wait(first["id"])
+    client.collect(first["id"], tmp_path / "collected")
+    messages: list[str] = []
+    sink = logger.add(lambda message: messages.append(str(message)), level="INFO")
+    try:
+        client.submit_archive(archive, base=base, preset="jobs-v2")
+    finally:
+        logger.remove(sink)
+    assert (
+        f"Releasing lease {first['lease_id']}: cannot be reused: booked for preset jobs-v1"
+        in "".join(messages)
+    )
     client.http.close()

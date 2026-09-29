@@ -173,7 +173,7 @@ class FakeSprites:
                     self.refuse, json={"detail": "worker limit reached"}
                 )
             body = json.loads(request.content)
-            assert set(body) <= {"preset_key", "token_sha256", "sdk_commit"}
+            assert set(body) <= {"preset_key", "token_sha256", "sdk_commit", "purpose"}
             assert re.fullmatch(r"[0-9a-f]{64}", body["token_sha256"])
             assert re.fullmatch(r"[0-9a-f]{40}", body.get("sdk_commit", "0" * 40))
             known = self._hashes.get(body["token_sha256"])
@@ -211,8 +211,10 @@ class FakeSprites:
         self._provisioning[lease_id] = self.provisioning_polls
         self.leases[lease_id] = {
             "id": lease_id,
+            "provider": "sprites",
             "sprite_name": host.split(".")[0],
             "preset_key": body["preset_key"],
+            "purpose": body.get("purpose", ""),
             "status": "ready" if self.provisioning_polls == 0 else "provisioning",
             "closed_reason": "",
             "error": "",
@@ -372,7 +374,7 @@ class FakeSprites:
         return httpx.Response(200, json={"sha256": digest, "size": size})
 
     def _run(self, worker: Worker, body: dict[str, Any]) -> httpx.Response:
-        assert set(body) == {
+        assert set(body) - {"purpose"} == {
             "job_id",
             "kind",
             "workspace_sha256",

@@ -22,6 +22,8 @@ from types import FrameType
 from typing import Any, Self, TypedDict
 from urllib.parse import urlsplit
 
+from loguru import logger
+
 from wayfinder_paths.jobs.compute_phase import phase_name, resolve_phase
 from wayfinder_paths.jobs.execution.op_process import (
     process_identity_fields,
@@ -81,6 +83,7 @@ class PhaseFailed(RuntimeError):
 class PhaseOutcome(TypedDict):
     result: Any
     outputs_path: str
+    # The run's final status, with the ``destination`` it ran on.
     run: dict[str, Any]
 
 
@@ -275,9 +278,10 @@ class BacktestRunner(ABC):
         """Release client resources, without cancelling submitted computations."""
         return None
 
-    def release_idle_leases(self) -> None:
-        """End remote leases no submission is using; local runs hold none."""
-        return None
+    def release_idle_leases(self, *, reason: str) -> list[str]:
+        """End remote leases no submission is using and return their ids; local runs
+        hold none."""
+        return []
 
     def submit(
         self,
@@ -301,16 +305,18 @@ class BacktestRunner(ABC):
                 extra_paths=[*self.config.extra_paths, *(extra_paths or [])],
                 expected_sdk_commit=self.config.sdk_commit,
             )
-            return self.submit_archive(archive)
+            return self.submit_archive(archive, purpose=f"operation:{op}")
 
     @abstractmethod
     def submit_archive(
-        self, archive: Path, *, base: Path | None = None
+        self, archive: Path, *, base: Path | None = None, purpose: str = ""
     ) -> dict[str, Any]:
         """Start a prebuilt job workspace or phase archive; the caller keeps it.
 
         ``base`` (see ``pack_base``) is extracted into the same workspace; a
-        provider may keep it between runs so it travels only once.
+        provider may keep it between runs so it travels only once. ``purpose``
+        labels the run where it is audited (e.g. ``evolution:screen_phase``).
+        The result's ``destination`` says where the run went.
         Raise ComputeUnavailable when the provider refuses capacity before
         anything started, so a configured fallback can run it elsewhere.
         """
@@ -389,7 +395,7 @@ class SpritesRunner(BacktestRunner):
         self._owns_client = client is None
 
     def submit_archive(
-        self, archive: Path, *, base: Path | None = None
+        self, archive: Path, *, base: Path | None = None, purpose: str = ""
     ) -> dict[str, Any]:
         try:
             submitted = self.client.submit_archive(
@@ -397,15 +403,25 @@ class SpritesRunner(BacktestRunner):
                 base=base,
                 preset=self.config.preset,
                 expected_sdk_commit=self.config.sdk_commit,
+                purpose=purpose,
             )
         except LeaseUnavailable as exc:
             # Refused, unreachable or never-ready bookings started nothing; a
             # failure after a lease was booked re-raises instead.
             raise ComputeUnavailable(str(exc)) from exc
-        return {**submitted, "provider": "sprites"}
+        destination = {"runner": "sprites", **submitted["destination"]}
+        logger.info(
+            "{} runs on {} lease {} at {} (run {})",
+            purpose or "An unlabelled job",
+            destination["provider"],
+            destination["lease_id"],
+            destination["worker_host"],
+            submitted["id"],
+        )
+        return {**submitted, "provider": "sprites", "destination": destination}
 
-    def release_idle_leases(self) -> None:
-        self.client.release_idle()
+    def release_idle_leases(self, *, reason: str) -> list[str]:
+        return self.client.release_idle(reason=reason)
 
     def status(self, run_id: str) -> dict[str, Any]:
         # The client retries brief network or backend interruptions.
@@ -467,6 +483,7 @@ class LocalRunner(BacktestRunner):
         archive: Path,
         *,
         base: Path | None = None,
+        purpose: str = "",
         extra: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._prune_runs()
@@ -480,6 +497,8 @@ class LocalRunner(BacktestRunner):
             record: dict[str, Any] = {
                 "id": run_id,
                 "provider": "local",
+                "purpose": purpose,
+                "destination": {"runner": "local"},
                 "status": "queued",
                 "timeout_seconds": self.config.timeout_seconds,
                 "result": {},
@@ -606,13 +625,21 @@ class FallbackRunner(BacktestRunner):
         self.primary, self.local = primary, local
 
     def submit_archive(
-        self, archive: Path, *, base: Path | None = None
+        self, archive: Path, *, base: Path | None = None, purpose: str = ""
     ) -> dict[str, Any]:
         try:
-            return self.primary.submit_archive(archive, base=base)
+            return self.primary.submit_archive(archive, base=base, purpose=purpose)
         except ComputeUnavailable as exc:
+            logger.warning(
+                "{} runs locally: the {} runner could not take it ({})",
+                purpose or "An unlabelled job",
+                self.config.provider,
+                exc,
+            )
             fallback = {"fallback": {"from": self.config.provider, "reason": str(exc)}}
-            return self.local.submit_archive(archive, base=base, extra=fallback)
+            return self.local.submit_archive(
+                archive, base=base, purpose=purpose, extra=fallback
+            )
 
     def _runner(self, run_id: str) -> BacktestRunner:
         return self.local if self.local.owns(run_id) else self.primary
@@ -641,8 +668,8 @@ class FallbackRunner(BacktestRunner):
         self.primary.close()
         self.local.close()
 
-    def release_idle_leases(self) -> None:
-        self.primary.release_idle_leases()
+    def release_idle_leases(self, *, reason: str) -> list[str]:
+        return self.primary.release_idle_leases(reason=reason)
 
 
 def create_runner(
@@ -684,7 +711,10 @@ def run_configured_operation(
         submitted = runner.submit(store, job_id, op=op, options=options)
         run_id = submitted["id"]
         receipt_dir = _receipt(config, submitted, owner)
-        result = _wait_or_cancel(runner, run_id)
+        result = {
+            **_wait_or_cancel(runner, run_id),
+            "destination": submitted["destination"],
+        }
         if result.get("artifacts"):
             destination = receipt_dir / "artifacts"
             runner.collect(run_id, destination)
@@ -712,12 +742,14 @@ def run_phase(
     *,
     config: RunnerConfig | None = None,
     base_paths: Sequence[str] = (),
+    purpose: str = "",
 ) -> PhaseOutcome:
     """Run a registered pure phase on the configured runner.
 
     Only the named inputs travel and only the phase's ``outputs/`` returns.
     ``base_paths`` are inputs shared by successive phases, such as a dataset:
     they are packed separately so a provider that keeps them sends them once.
+    ``purpose`` labels the run for audit logs (default ``phase:<function>``).
     Nothing is applied to any job; the caller owns the result. Collected
     outputs live in a run receipt that retention eventually prunes.
     """
@@ -746,10 +778,17 @@ def run_phase(
                 expected_sdk_commit=settings.sdk_commit,
                 base=pack_base(root, base_paths, base) if base is not None else None,
             )
-            submitted = runner.submit_archive(archive, base=base)
+            submitted = runner.submit_archive(
+                archive,
+                base=base,
+                purpose=purpose or f"phase:{name.rpartition(':')[2]}",
+            )
         run_id = submitted["id"]
         receipt_dir = _receipt(settings, submitted, owner)
-        result = _wait_or_cancel(runner, run_id)
+        result = {
+            **_wait_or_cancel(runner, run_id),
+            "destination": submitted["destination"],
+        }
         collected = SpriteWorkspace(receipt_dir / "collected")
         if result.get("artifacts"):
             runner.collect(run_id, collected.root)

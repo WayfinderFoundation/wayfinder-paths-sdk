@@ -19,6 +19,7 @@ Add this section to the SDK configuration selected by `WAYFINDER_CONFIG_PATH` /
     "runs_dir": ".wayfinder/backtest_runs",
     "retain_runs": 10,
     "extra_paths": [],
+    "offload_operations": false,
     "sprites": {
       "backend": "https://your-development-backend.example",
       "app_name": "your-shell-app",
@@ -48,6 +49,10 @@ export WAYFINDER_BACKTEST_RUNNER=sprites
 | `WAYFINDER_SPRITES_APP_NAME` | `backtest_runner.sprites.app_name` |
 | `WAYFINDER_SPRITES_PRESET` | `backtest_runner.sprites.preset` |
 | `WAYFINDER_API_KEY` | Existing `system.api_key`; required for Sprites only |
+
+`offload_operations` (config only, default `false`) lets standalone agent
+operations book a remote lease too (see [Existing agent operations](#existing-agent-operations));
+evolution campaigns offload without it.
 
 Environment values take precedence. Relative paths resolve against the job's
 repository root. Invalid configuration fails explicitly and never runs locally
@@ -174,9 +179,15 @@ job-workspace behavior unchanged.
 ### Evolution phases
 
 A campaign's heavy phases run as registered phases whenever a remote provider is
-configured: the low-fidelity screen of every candidate (`screen_phase`, including
-its Optuna tuning preview), and at finalization full development (`full_dev_phase`,
-including Optuna tuning) and the final economic gate (`economic_gate_phase`).
+configured: at campaign start the policy scans, failure-mode scan, signal
+validation and discovery baseline (`campaign_scans_phase`), the low-fidelity
+screen of every candidate (`screen_phase`, including its Optuna tuning preview),
+and at finalization full development (`full_dev_phase`, including Optuna tuning)
+and the final economic gate (`economic_gate_phase`). Only campaigns book leases:
+a lease boots a fresh Sprite and installs the SDK, which pays off over a
+campaign's hours of phases but not for a single check. With a remote runner the
+MCP `evolution_start` runs as a background operation, since booking can outlast
+the synchronous call.
 Screening runs for every candidate, so offloading it keeps a Shell's shared CPU
 for the agent. Each ships only what it reads: the one candidate bundle, the
 campaign manifest, dataset, baseline `source/`, campaign state, the governing
@@ -184,8 +195,9 @@ constitution, and the protected certification snapshot when protected folds are
 on; screening also ships the campaign's diagnostic pack and the candidate's
 reference bundle and cached reference result. The campaign
 dataset and the protected snapshot are the phase's base, identical for every
-phase of the campaign, so the campaign's successive phases reuse one Sprite
-lease and upload the dataset once; everything else is the per-phase delta.
+phase of the campaign, so the campaign start books the lease that its
+successive phases reuse, and the dataset is uploaded once; everything else is
+the per-phase delta.
 Other candidates, the job journal and the evidence ledger stay home. The phase
 runs the same code over the shipped copy and returns the result plus its
 writes: rows it appended to the journal or the evidence-access ledger (with
@@ -204,14 +216,52 @@ journals `evolution_phase_ran_locally` with the reason. A successful
 remote run journals `evolution_phase_offloaded` with its provider and run id, its
 `wall_seconds` and the `node_cpu_seconds` the node itself spent packing, uploading
 and polling. Comparing the two shows whether the node stayed responsive; it leaves
-no other local resource telemetry. A failure raised by the phase's own code
+no other local resource telemetry. Both rows carry the phase's `purpose`
+(`evolution:<phase>`); see [Offload audit trail](#offload-audit-trail). A failure raised by the phase's own code
 is classified exactly as the local child does: a contract failure is candidate
 evidence, while memory, lock and other infrastructure failures release the claim
 for a later retry. Choose a preset whose timeout covers full development
 (`WAYFINDER_EVOLUTION_FULL_DEV_TIMEOUT_S`, 5,400 seconds by default), and pin
 `sdk_commit` so remote results come from the same code as local ones. The lease
-idles out after the campaign's last phase and is wiped; the client's
-`release(lease_id)` (CLI `--release LEASE_ID`) closes it at once.
+stays booked between phases (the Sprite pauses while idle; the `jobs-v1` profile
+allows an hour between phases) and is released when the campaign completes,
+journaled as `evolution_leases_released`; a campaign that never completes leaves
+it to the lease's idle timeout. The client's `release(lease_id)` (CLI
+`--release LEASE_ID`) closes a lease at once.
+
+### Offload audit trail
+
+Every offload decision says why it happened and where the work went, in three places:
+
+- **Job journal.** `evolution_phase_offloaded` has `purpose`, `reason` (the runner
+  configuration that sent it away), `destination` and `run_id`.
+  `evolution_phase_ran_locally` has `purpose` and the `reason` it stayed on this node.
+  `evolution_leases_released` has the campaign and its `lease_ids`.
+- **Run receipts** (`runs_dir/receipts/*/run.json`). The submission and the final
+  status record `destination`. For Sprites this is `runner`, `provider` (where
+  Django's runner profile runs the machine), `lease_id`, `preset`, `worker_host` and
+  `backend`. A local run records `{"runner": "local"}`, and a fallback records why
+  under `fallback`.
+- **Logs** (loguru, stderr of the operation). These lines are logged at `INFO`:
+  - "Offloading <phase> for campaign … : <reason>";
+  - "Booked <provider> lease <id> (preset, SDK commit) for <purpose>", then "…
+    is ready at <worker host>";
+  - "Reusing <provider> lease <id> at <host> for <purpose>";
+  - "Releasing lease <id>: <reason>", for example `cannot be reused: holds another
+    base` or `evolution campaign <id> completed`;
+  - "… finished on runner=… provider=… lease_id=…", with wall and node CPU
+    seconds.
+
+  These are logged as warnings:
+  - a fallback to local compute;
+  - a phase that ran on this node instead.
+
+Django's lease audit log (see the backend's `docs/sprite-backtests.md`) records the
+same `purpose`. It is on the booking (`lease_booked`) and on each job
+(`job_started`), next to the provider and the provider's own machine identifiers.
+A purpose is a short label (`^[a-z][a-z0-9_.:-]{0,63}$`) such as
+`evolution:screen_phase`, `operation:backtest_job` or `phase:<function>`, never user
+data.
 
 ## Adding a provider
 
@@ -236,6 +286,10 @@ Provider settings live in their own `backtest_runner` subsection, parsed in
 Adding `backtest_runner` to SDK config or setting `WAYFINDER_BACKTEST_RUNNER`
 enables the abstraction for portable operations launched through the existing
 agent/MCP `op_runner` entry point, including detached backtests and experiments.
+With a remote provider, a standalone operation books a lease only when
+`offload_operations` is `true`. Otherwise it runs in place on this node and logs
+why. Booking boots and installs a fresh machine, which is worth it for an
+evolution campaign but not for an hourly check.
 The normal `core_jobs(action="backtest_job", ...)` call stays the same. `op_status`
 returns the shared run envelope, including its provider and collected
 `artifacts_path`; the compact summary is under `result.output` in that envelope.

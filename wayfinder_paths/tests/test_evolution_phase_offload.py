@@ -55,9 +55,15 @@ class RemoteRunner(BacktestRunner):
 
     refuse: str | None = None
     lose_worker = False
-    released = 0
+    released: list[str] = []
+    purposes: list[str] = []
     shipped: list[list[str]] = []
     bases: list[list[str]] = []
+    destination = {
+        "runner": "remote",
+        "lease_id": "lease-1",
+        "worker_host": "w.example",
+    }
 
     def __init__(self, config: RunnerConfig, *, owner_pid: int | None = None):
         super().__init__(config, owner_pid=owner_pid)
@@ -67,10 +73,11 @@ class RemoteRunner(BacktestRunner):
         return self.config.runs_dir / "remote" / run_id
 
     def submit_archive(
-        self, archive: Path, *, base: Path | None = None
+        self, archive: Path, *, base: Path | None = None, purpose: str = ""
     ) -> dict[str, Any]:
         if RemoteRunner.refuse:
             raise ComputeUnavailable(RemoteRunner.refuse)
+        RemoteRunner.purposes.append(purpose)
         with tarfile.open(archive) as tar:
             RemoteRunner.shipped.append(sorted(tar.getnames()))
         if base is not None:
@@ -83,6 +90,7 @@ class RemoteRunner(BacktestRunner):
             self.records[run_id] = {
                 "id": run_id,
                 "provider": "remote",
+                "destination": RemoteRunner.destination,
                 "status": "failed",
                 "error": "worker lost",
                 "result": {},
@@ -111,6 +119,7 @@ class RemoteRunner(BacktestRunner):
         self.records[run_id] = {
             "id": run_id,
             "provider": "remote",
+            "destination": RemoteRunner.destination,
             "status": "succeeded" if proc.returncode == 0 else "failed",
             "error": "" if proc.returncode == 0 else proc.stderr.decode()[-2000:],
             "result": {"output": json.loads(summary.read_text())},
@@ -131,8 +140,9 @@ class RemoteRunner(BacktestRunner):
         extract_archive(self._directory(run_id) / "artifacts.tgz", destination)
         return self.records[run_id]
 
-    def release_idle_leases(self) -> None:
-        RemoteRunner.released += 1
+    def release_idle_leases(self, *, reason: str) -> list[str]:
+        RemoteRunner.released.append(reason)
+        return ["lease-1"]
 
 
 @pytest.fixture
@@ -140,7 +150,8 @@ def remote(monkeypatch: pytest.MonkeyPatch) -> type[RemoteRunner]:
     monkeypatch.setitem(RUNNERS, "remote", RemoteRunner)
     monkeypatch.setattr(RemoteRunner, "refuse", None)
     monkeypatch.setattr(RemoteRunner, "lose_worker", False)
-    monkeypatch.setattr(RemoteRunner, "released", 0)
+    monkeypatch.setattr(RemoteRunner, "released", [])
+    monkeypatch.setattr(RemoteRunner, "purposes", [])
     monkeypatch.setattr(RemoteRunner, "shipped", [])
     monkeypatch.setattr(RemoteRunner, "bases", [])
     for name in (
@@ -235,6 +246,12 @@ def test_offloaded_full_dev_matches_the_local_supervised_phase(tmp_path, remote)
     assert row["phase"] == "wayfinder_paths.jobs.evolution_campaign:full_dev_phase"
     assert row["candidate_id"] == candidate["candidate_id"]
     assert row["provider"] == "remote"
+    # The journal says why the phase left this node and where it ran; the runner
+    # got the label the lease audit log records.
+    assert row["purpose"] == "evolution:full_dev_phase"
+    assert "backtest_runner.provider 'remote'" in row["reason"]
+    assert row["destination"] == RemoteRunner.destination
+    assert remote.purposes[-1] == "evolution:full_dev_phase"
 
 
 def test_offloaded_screen_matches_the_local_screen(tmp_path, remote):
@@ -408,14 +425,22 @@ def test_offloaded_campaign_start_matches_the_local_start(
 
 
 def test_a_completed_campaign_ends_its_lease(tmp_path, remote):
-    store, _ = _evaluatable_job(tmp_path)
-    campaign_module._end_campaign_leases(store)  # No runner: nothing to end.
+    store, job_id = _evaluatable_job(tmp_path)
+    # No runner: nothing to end.
+    campaign_module._end_campaign_leases(store, job_id, "c1")
     _configure(store, provider="local")
-    campaign_module._end_campaign_leases(store)
-    assert remote.released == 0
+    campaign_module._end_campaign_leases(store, job_id, "c1")
+    assert remote.released == []
+    assert not _journal(store, job_id, "evolution_leases_released")
     _configure(store)
-    campaign_module._end_campaign_leases(store)
-    assert remote.released == 1
+    campaign_module._end_campaign_leases(store, job_id, "c1")
+    assert remote.released == ["evolution campaign c1 completed"]
+    (row,) = _journal(store, job_id, "evolution_leases_released")
+    assert (row["campaign_id"], row["provider"], row["lease_ids"]) == (
+        "c1",
+        "remote",
+        ["lease-1"],
+    )
 
 
 def test_offloaded_certification_returns_its_evidence_access(tmp_path, remote):
@@ -528,6 +553,7 @@ def test_a_screen_the_remote_cannot_run_is_computed_locally(
     local.assert_called_once()
     (row,) = _journal(store, job_id, "evolution_phase_ran_locally")
     assert row["phase"] == "wayfinder_paths.jobs.evolution_campaign:screen_phase"
+    assert row["purpose"] == "evolution:screen_phase"
     assert row["provider"] == "remote" and row["reason"]
     assert not _journal(store, job_id, "evolution_phase_offloaded")
 

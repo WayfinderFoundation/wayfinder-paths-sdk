@@ -30,6 +30,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from wayfinder_paths.jobs.execution.op_process import track_evolution_process
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.runner.monitor_state import atomic_write_json
@@ -387,10 +389,24 @@ def _run_entrypoint(op: str, kwargs: dict[str, Any]) -> Any:
         if config.configured and (
             config.provider == "local" or config.offload_operations
         ):
+            if config.provider != "local":
+                logger.info(
+                    "Offloading {} to the {} runner: backtest_runner.offload_operations"
+                    " is enabled",
+                    op,
+                    config.provider,
+                )
             # The run's own ledger stays in its isolated copy; the protected
             # record belongs to the source repository.
             _record_evidence_access(op, kwargs)
             return run_configured_operation(op, kwargs, config=config)
+        if config.configured:
+            logger.info(
+                "Running {} on this node: the {} runner takes standalone operations"
+                " only with backtest_runner.offload_operations",
+                op,
+                config.provider,
+            )
     return _run(op, kwargs)
 
 

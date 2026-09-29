@@ -34,6 +34,7 @@ from typing import Any
 import httpx
 import pandas as pd
 import yaml
+from loguru import logger
 
 from wayfinder_paths.jobs.archive import (
     ARCHIVE_STATUSES,
@@ -784,7 +785,7 @@ def _start_campaign(
     # control-plane operation rather than adding another incumbent backtest.
     # The campaign's first phase: on a remote runner it books the lease the rest
     # of the campaign reuses.
-    scan_args = {
+    scan_args: dict[str, Any] = {
         "policy": campaign_policy,
         "discovery_baseline": bool(certification_policy["enabled"]),
     }
@@ -6143,7 +6144,7 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
         state["completed_at"] = utc_now_iso()
         state["retire_to_flat"] = retire_to_flat_verdict(store, job_id, state=state)
         _save_campaign(store, job_id, state)
-    _end_campaign_leases(store)
+    _end_campaign_leases(store, job_id, str(state["campaign_id"]))
     if state["retire_to_flat"].get("recommended"):
         # Production proposes; the bench applies (bench/recurrence.py). Either
         # way the loop can now say "nothing beats cash, stop bleeding".
@@ -6513,16 +6514,32 @@ def _offloaded_phase(
         )
     candidate_id = str(candidate["candidate_id"]) if candidate is not None else None
     name = phase_name(phase)
+    # The label Django's lease audit log records for the booking and the job.
+    purpose = f"evolution:{phase.__name__}"
+    subject = f"{phase.__name__} for campaign {campaign_id}" + (
+        f" candidate {candidate_id}" if candidate_id else ""
+    )
+    reason = (
+        f"evolution campaigns run their compute phases on backtest_runner.provider "
+        f"{config.provider!r} (preset {config.preset!r}) to keep this node responsive"
+    )
 
-    def run_locally(reason: str) -> None:
+    def run_locally(problem: str) -> None:
+        logger.warning(
+            "Running {} on this node instead of the {} runner: {}",
+            subject,
+            config.provider,
+            problem,
+        )
         store.append_journal(
             job_id,
             {
                 "type": "evolution_phase_ran_locally",
                 "phase": name,
+                "purpose": purpose,
                 "candidate_id": candidate_id,
                 "provider": config.provider,
-                "reason": reason[:500],
+                "reason": problem[:500],
             },
         )
 
@@ -6540,6 +6557,7 @@ def _offloaded_phase(
         "source_root": str(store.repo_root),
         **args,
     }
+    logger.info("Offloading {}: {}", subject, reason)
     started, cpu_before = perf_counter(), _node_cpu_seconds()
     returnable = _returnable_files(store, job_id, candidate, campaign_id)
     try:
@@ -6557,6 +6575,7 @@ def _offloaded_phase(
             request,
             config=replace(config, fallback="none"),
             base_paths=base_paths,
+            purpose=purpose,
         )
     except PhaseFailed as exc:
         if exc.outputs_path is not None:
@@ -6575,23 +6594,37 @@ def _offloaded_phase(
         run_locally(str(exc))
         return None
     _apply_returned_writes(store, job_id, Path(outcome["outputs_path"]), returnable)
+    run = outcome["run"]
+    wall_seconds = round(perf_counter() - started, 3)
+    node_cpu_seconds = round(_node_cpu_seconds() - cpu_before, 3)
+    logger.info(
+        "{} finished on {}: {} s wall, {} s of this node's CPU",
+        subject,
+        " ".join(f"{key}={value}" for key, value in run["destination"].items()),
+        wall_seconds,
+        node_cpu_seconds,
+    )
     store.append_journal(
         job_id,
         {
             "type": "evolution_phase_offloaded",
             "phase": name,
+            "purpose": purpose,
             "candidate_id": candidate_id,
-            "provider": outcome["run"].get("provider"),
-            "run_id": outcome["run"].get("id"),
+            "provider": run.get("provider"),
+            "run_id": run.get("id"),
+            "reason": reason,
+            # Runner, provider, lease and worker host: where the phase ran.
+            "destination": run["destination"],
             # Evidence the node stayed responsive: its own CPU against wall time.
-            "wall_seconds": round(perf_counter() - started, 3),
-            "node_cpu_seconds": round(_node_cpu_seconds() - cpu_before, 3),
+            "wall_seconds": wall_seconds,
+            "node_cpu_seconds": node_cpu_seconds,
         },
     )
     return dict(outcome["result"])
 
 
-def _end_campaign_leases(store: JobStore) -> None:
+def _end_campaign_leases(store: JobStore, job_id: str, campaign_id: str) -> None:
     """A campaign keeps its remote lease warm between phases (the Sprite pauses
     while idle); the lease ends with the campaign instead of idling out."""
     try:
@@ -6603,7 +6636,19 @@ def _end_campaign_leases(store: JobStore) -> None:
     # An unreleased lease still closes at its idle timeout.
     with suppress(ComputeUnavailable, LeaseUnavailable, OSError, httpx.HTTPError):
         with create_runner(config=config) as runner:
-            runner.release_idle_leases()
+            released = runner.release_idle_leases(
+                reason=f"evolution campaign {campaign_id} completed"
+            )
+        if released:
+            store.append_journal(
+                job_id,
+                {
+                    "type": "evolution_leases_released",
+                    "campaign_id": campaign_id,
+                    "provider": config.provider,
+                    "lease_ids": released,
+                },
+            )
 
 
 def _node_cpu_seconds() -> float:

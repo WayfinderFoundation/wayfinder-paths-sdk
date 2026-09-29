@@ -14,15 +14,17 @@ using the source commit and Poetry lock baked into its checkpoint.
 
 **Booking.** The node generates a lease token (`secrets.token_urlsafe(32)`) and
 sends Django only its SHA-256 with the preset key, authenticated by the owner's
-existing `X-API-Key`. Django creates the Sprite worker, makes its URL public
+existing `X-API-Key`, and the booking's `purpose`: a short label for Django's
+audit log, such as `evolution:campaign_scans_phase` (each job sends its own with
+`POST /jobs`). Django creates the Sprite worker, makes its URL public
 while a worker that enforces the token is serving, and returns the lease: its
-id, `worker_url`, expiry, job timeout and idle timeout. A booking whose answer
+id, `provider`, `worker_url`, expiry, job timeout and idle timeout. A booking whose answer
 was lost is repeated with the same token, which Django answers with the same
 lease; a lease still `provisioning` is polled every 2 s for up to 10 minutes.
 
 **The lease record.** The token never leaves the node except as the Sprite's
-bearer credential. It is stored with the lease id, worker URL, expiry, job
-timeout, preset, the base's SHA-256 and any job awaiting collection in
+bearer credential. It is stored with the lease id, provider, worker URL, expiry,
+job timeout, preset, the base's SHA-256 and any job awaiting collection in
 `~/.wayfinder/sprite-leases/<lease id>.json` (the configured runner uses
 `runs_dir/sprite-leases/`). The directory is `0700` and each file is created
 `0600`. A record is removed once its lease is released or found closed.
@@ -50,6 +52,9 @@ collected (or the job was cancelled or left none). The base is uploaded once
 per lease: a job with the same base only uploads its delta, and a job needing a
 different base releases the lease and books a new one. Otherwise the node
 releases the lease and books another; by default an owner holds one open lease.
+Every book, reuse and release is logged with the lease, its provider and worker
+host, and (for a release) the reason, such as `cannot be reused: holds another
+base`.
 
 **Automatic wipe.** When a job starts, the previous job's directory
 (workspace, artifacts, logs, result) is wiped, so collect a job's artifacts
