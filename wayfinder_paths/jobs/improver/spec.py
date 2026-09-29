@@ -185,6 +185,9 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "signal_scan_min_events": 30,
         "policy_scan_enabled": True,
         "policy_scan_limit": 6,
+        # Drop scan survivors whose exact configuration already lost on
+        # validation in an earlier campaign (they return identical every time).
+        "policy_scan_retire_failed": False,
         # One redesign pass after the screens; off on the product branch until
         # the bench A/B measures its prepare-time cost against the extra slots.
         "redesign_checkpoint": False,

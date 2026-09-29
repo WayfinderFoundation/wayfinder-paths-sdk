@@ -56,6 +56,8 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _parent_source,
     _persist_executable_bundle,
     _plateau_select,
+    _policy_scan_block,
+    _policy_scan_instruction,
     _pooled_fold_stats,
     _protected_fold_verdict,
     _prune_risky_trials,
@@ -8396,7 +8398,11 @@ def test_full_dev_order_spends_behavior_twins_last() -> None:
             "family": family,
             "status": "quick_complete",
             "quick": {
-                "stats": {"net_return": net_return, "trade_count": 76, "total_fees": 1.2}
+                "stats": {
+                    "net_return": net_return,
+                    "trade_count": 76,
+                    "total_fees": 1.2,
+                }
             },
         }
 
@@ -8447,3 +8453,62 @@ def test_unbuildable_seed_falls_back_to_de_novo_instead_of_wedging(
     assert candidate["seed_fallback"]["from"] == "starter_seed"
     assert "not in the job dataset" in candidate["seed_fallback"]["reason"]
     assert (store.job_dir(job_id) / candidate["bundle"] / "job.yaml").exists()
+
+
+def test_policy_scan_retires_configurations_that_failed_validation(
+    tmp_path, monkeypatch
+) -> None:
+    def developed(policy_id: str, validation: float) -> dict[str, Any]:
+        return {
+            "metadata": {
+                "policy_id": policy_id,
+                "dev": {"validation": {"stats": {"net_return": validation}}},
+            }
+        }
+
+    archive = [
+        developed("sleeve-7ef3", -0.31),
+        developed("rank-e902", 0.111),
+        {"metadata": {"policy_id": "never-developed"}},
+    ]
+    survivors = [
+        {"policy_id": "sleeve-7ef3"},
+        {"policy_id": "rank-e902"},
+        {"policy_id": "never-developed"},
+    ]
+    monkeypatch.setattr(
+        evolution_campaign,
+        "_campaign_scan_frames",
+        lambda *_args, **_kwargs: {
+            "train": None,
+            "bar_seconds": 300,
+            "taker_round_trip_bps": 9.0,
+        },
+    )
+    monkeypatch.setattr(
+        evolution_campaign,
+        "policy_scan",
+        lambda *_args, **_kwargs: {
+            "available": True,
+            "survivors": [dict(row) for row in survivors],
+        },
+    )
+    monkeypatch.setattr(
+        evolution_campaign,
+        "load_archive",
+        lambda *_args, **_kwargs: {"candidates": archive},
+    )
+    kept = _policy_scan_block(
+        None, "job", tmp_path, policy={"policy_scan_retire_failed": True}
+    )
+    assert [row["policy_id"] for row in kept["survivors"]] == [
+        "rank-e902",
+        "never-developed",
+    ]
+    assert kept["retired"] == ["sleeve-7ef3"]
+    assert "1 further survivor(s) are retired" in _policy_scan_instruction(
+        {"available": True, "survivors": [], "retired": kept["retired"]}
+    )
+    untouched = _policy_scan_block(None, "job", tmp_path, policy={})
+    assert len(untouched["survivors"]) == 3
+    assert "retired" not in untouched
