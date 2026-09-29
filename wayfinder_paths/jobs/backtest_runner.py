@@ -38,6 +38,7 @@ from wayfinder_paths.jobs.sprite_bundle import (
     pack_base,
     pack_inputs,
     pack_job,
+    restore_workspace_paths,
     safe_relative,
     sha256,
 )
@@ -732,7 +733,8 @@ def run_configured_operation(
             runner.collect(run_id, destination)
             # Failed runs apply too: in place, their partial ledgers persist.
             result = {
-                **result,
+                # The run reports paths in its runner's copy; name the job's.
+                **restore_workspace_paths(result, destination),
                 "artifacts_path": str(destination),
                 "applied": apply_job_outputs(store, destination),
             }

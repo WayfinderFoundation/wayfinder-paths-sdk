@@ -511,29 +511,70 @@ def apply_job_outputs(store: JobStore, artifacts: Path) -> AppliedOutputs:
     return report
 
 
-def _restorations(
+def restore_workspace_paths(value: Any, artifacts: Path) -> Any:
+    """A run's JSON report with the runner workspace's paths and revision mapped
+    back to the source repository's, as apply_job_outputs maps the files it
+    writes, so its paths name the job rather than the runner's copy."""
+    workspace = SpriteWorkspace(artifacts)
+    request: WorkspaceRequest = json.loads(
+        workspace.request_file.read_text(encoding="utf-8")
+    )
+    root, revision = _workspace_identity(workspace, request)
+    source_root = request["source_root"]
+
+    def restore(item: Any) -> Any:
+        if isinstance(item, str):
+            if item == revision:
+                return request["source_revision"]
+            if root is None:
+                return item
+            if item == root:
+                return source_root
+            return item.replace(root + "/", source_root + "/")
+        if isinstance(item, list):
+            return [restore(entry) for entry in item]
+        if isinstance(item, dict):
+            return {restore(key): restore(entry) for key, entry in item.items()}
+        return item
+
+    return restore(value)
+
+
+def _workspace_identity(
     workspace: SpriteWorkspace, request: WorkspaceRequest
-) -> list[tuple[bytes, bytes]]:
+) -> tuple[str | None, str | None]:
+    """The run's workspace root and revision, each None where it is the source's."""
     try:
         runtime = json.loads(workspace.runtime_file.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return []  # Runtimes before sprite-runtime.json did not record them.
-    pairs: list[tuple[bytes, bytes]] = []
+        return None, None  # Runtimes before sprite-runtime.json did not record them.
     root, revision = runtime.get("workspace_root"), runtime.get("workspace_revision")
-    if (
+    if not (
         isinstance(root, str)
         and Path(root).is_absolute()
         and root not in {"/", request["source_root"]}
     ):
-        pairs.append(((root + "/").encode(), (request["source_root"] + "/").encode()))
-    # Rebasing absolute paths in job.yaml changes the copy's revision hash;
-    # stamps must name the revision the job was packed at. Only the quoted
-    # JSON value is mapped: a short hex id could also occur inside other hashes.
-    if (
+        root = None
+    if not (
         isinstance(revision, str)
         and re.fullmatch(r"[0-9a-f]{12,}", revision)
         and revision != request["source_revision"]
     ):
+        revision = None
+    return root, revision
+
+
+def _restorations(
+    workspace: SpriteWorkspace, request: WorkspaceRequest
+) -> list[tuple[bytes, bytes]]:
+    root, revision = _workspace_identity(workspace, request)
+    pairs: list[tuple[bytes, bytes]] = []
+    if root is not None:
+        pairs.append(((root + "/").encode(), (request["source_root"] + "/").encode()))
+    # Rebasing absolute paths in job.yaml changes the copy's revision hash;
+    # stamps must name the revision the job was packed at. Only the quoted
+    # JSON value is mapped: a short hex id could also occur inside other hashes.
+    if revision is not None:
         pairs.append(
             (f'"{revision}"'.encode(), f'"{request["source_revision"]}"'.encode())
         )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import tarfile
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from wayfinder_paths.jobs.sprite_bundle import (
     pack_base,
     pack_inputs,
     pack_job,
+    restore_workspace_paths,
     sha256,
 )
 from wayfinder_paths.tests.test_jobs_preflight import _make_job
@@ -226,3 +228,42 @@ def test_pack_inputs_rejects_paths_overlapping_the_base(
         pack_inputs(
             root, paths, {"phase": "p", "args": {}}, tmp_path / "a.tgz", base=base
         )
+
+
+def test_a_runs_report_names_the_job_not_the_runners_copy(tmp_path: Path) -> None:
+    source, copy = str(tmp_path / "repo"), "/tmp/wf-backtest/jobs/run/repo"
+    workspace = SpriteWorkspace(tmp_path / "artifacts")
+    workspace.root.mkdir()
+    workspace.request_file.write_text(
+        json.dumps({"source_root": source, "source_revision": "aaaaaaaaaaaa"})
+    )
+    workspace.runtime_file.write_text(
+        json.dumps({"workspace_root": copy, "workspace_revision": "bbbbbbbbbbbb"})
+    )
+    latest = ".wayfinder/jobs/job/results/backtest/latest.json"
+    report = {
+        "output": {
+            "summary": {"artifacts": {"latest": f"{copy}/{latest}"}},
+            "root": copy,
+            "source_revision": "bbbbbbbbbbbb",
+            f"{copy}/{latest}": 1,
+        },
+        "stderr": f"wrote {copy}/{latest}",
+        "values": [3, None, True, 1.5],
+        # Only a whole revision value is the copy's: a hash elsewhere is left alone.
+        "note": "commit bbbbbbbbbbbb",
+    }
+    assert restore_workspace_paths(report, workspace.root) == {
+        "output": {
+            "summary": {"artifacts": {"latest": f"{source}/{latest}"}},
+            "root": source,
+            "source_revision": "aaaaaaaaaaaa",
+            f"{source}/{latest}": 1,
+        },
+        "stderr": f"wrote {source}/{latest}",
+        "values": [3, None, True, 1.5],
+        "note": "commit bbbbbbbbbbbb",
+    }
+    # Runtimes that recorded no workspace leave the report as it came.
+    workspace.runtime_file.unlink()
+    assert restore_workspace_paths(report, workspace.root) == report
