@@ -60,6 +60,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _protected_fold_verdict,
     _prune_risky_trials,
     _rejected_submission,
+    _require_train_profit,
     _research_context_instruction,
     _risk_ceiling_scale,
     _same_family_nonwins,
@@ -8340,6 +8341,22 @@ def test_full_dev_haircut_blocks_only_when_policy_says_so(
     assert not (not blocking and "validation_not_significant_after_trials" in codes)
     # The haircut stays on record either way.
     assert outcome["dev"]["validation"]["haircut"]["cleared"] is False
+
+
+def test_train_profit_rule_rejects_validation_only_winners() -> None:
+    passed = {
+        "status": "dev_frontier",
+        "passed": True,
+        "failure_codes": [],
+        "evidence": "ok",
+    }
+    rejected = _require_train_profit(passed, train_return=-0.049, required=True)
+    assert rejected["status"] == "low_fidelity_rejected"
+    assert rejected["failure_codes"] == ["train_unprofitable"]
+    assert _require_train_profit(passed, train_return=0.38, required=True) is passed
+    assert _require_train_profit(passed, train_return=-0.049, required=False) is passed
+    failed = {**passed, "status": "low_fidelity_rejected", "passed": False}
+    assert _require_train_profit(failed, train_return=-0.049, required=True) is failed
 
 
 def test_full_dev_order_spends_slots_across_families() -> None:
