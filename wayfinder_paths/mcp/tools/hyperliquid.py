@@ -2245,7 +2245,10 @@ async def hyperliquid_search_market(
     limit: Max number of results to return per category.
     market_type: optional filter — "perp", "hip3", "spot", or "hip4". Buckets the caller filters out come back empty.
 
-    Returns a list of asset names to be used when executing Hyperliquid orders.
+    Returns canonical asset names. Perp results also include public market
+    metadata, funding, 24h notional volume, margin modes and impact prices when
+    available. Impact prices/volume are NOT executable quotes or orderbook depth.
+    Missing-provider warnings mean discovery is incomplete, not that a market is absent.
     """
     adapter = HyperliquidAdapter()
     (
@@ -2278,6 +2281,7 @@ async def hyperliquid_search_market(
     spots = list(spot_data) if isinstance(spot_data, dict) else []
     outcome_data = outcome_data if isinstance(outcome_data, list) else []
 
+    perp_hits: list[dict[str, Any]]
     if not query.strip():
         perp_hits = [{"name": p} for p in perps[:limit]]
         spot_hits = [{"name": s} for s in spots[:limit]]
@@ -2354,11 +2358,41 @@ async def hyperliquid_search_market(
         case "hip4":
             perp_hits, spot_hits = [], []
 
+    # Reuse the public data already fetched above; no wallet access or extra requests.
+    contexts = (
+        perp_data[1]
+        if isinstance(perp_data, (list, tuple)) and len(perp_data) > 1
+        else []
+    )
+    markets = {
+        adapter.canonical_asset_name(entry["name"], {}): _summarize_market_context(
+            entry, contexts[index] if index < len(contexts) else None
+        )
+        for index, entry in enumerate(perp_universe)
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+    }
+    for hit in perp_hits:
+        hit["market"] = {
+            key: value
+            for key, value in markets[hit["name"]].items()
+            if value is not None and key not in {"raw_metadata", "raw_context"}
+        }
+        hit["market"]["min_order_notional_usd"] = MIN_ORDER_USD_NOTIONAL
+
     return ok(
         {
             "perps": perp_hits,
             "spots": spot_hits,
             "outcomes": outcome_hits,
+            "warnings": [
+                f"{name} metadata unavailable; discovery is incomplete"
+                for name, available in (
+                    ("perp", perp_ok),
+                    ("spot", spot_ok),
+                    ("outcome", outcome_ok),
+                )
+                if not available
+            ],
         }
     )
 

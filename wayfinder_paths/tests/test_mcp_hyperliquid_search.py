@@ -13,6 +13,13 @@ from wayfinder_paths.mcp.tools.hyperliquid import (
 # market-inventory drift.
 
 
+@pytest.fixture(autouse=True)
+def no_tool_telemetry(monkeypatch):
+    monkeypatch.setattr(
+        "wayfinder_paths.mcp.utils._report_tool_metric", lambda *_: None
+    )
+
+
 def _names(rows):
     return {row["name"] for row in rows}
 
@@ -146,6 +153,38 @@ async def _mock_spot_assets(self):
 
 
 @pytest.mark.asyncio
+async def test_search_includes_public_market_context_without_wallet_reads(monkeypatch):
+    async def metadata(self):
+        return True, [
+            {"universe": [{"name": "BTC", "maxLeverage": 40, "szDecimals": 5}]},
+            [
+                {
+                    "funding": "0.00001",
+                    "dayNtlVlm": "2000000000",
+                    "midPx": "80000",
+                    "impactPxs": ["79999", "80001"],
+                    "openInterest": "12000",
+                }
+            ],
+        ]
+
+    monkeypatch.setattr(HyperliquidAdapter, "get_meta_and_asset_ctxs", metadata)
+    monkeypatch.setattr(HyperliquidAdapter, "get_spot_assets", _mock_spot_assets)
+    monkeypatch.setattr(
+        HyperliquidAdapter, "get_outcome_markets", _mock_outcome_markets
+    )
+    response = await hyperliquid_search_market("bitcoin", market_type="perp")
+    market = response["result"]["perps"][0]["market"]
+    assert market["day_notional_volume_usd"] == 2_000_000_000
+    assert market["funding_rate_hourly"] == 0.00001
+    assert market["min_order_notional_usd"] == 10
+    assert market["compatible_margin_modes"] == ["cross", "isolated"]
+    assert market["impact_px_ask"] == 80001
+    assert "raw_context" not in market
+    assert response["result"]["warnings"] == []
+
+
+@pytest.mark.asyncio
 async def test_search_bitcoin():
     res = await hyperliquid_search_market("bitcoin", limit=10)
     assert res["ok"]
@@ -233,7 +272,12 @@ async def test_search_market_handles_perp_meta_failure_without_error(monkeypatch
     res = await hyperliquid_search_market("bitcoin", limit=10, market_type="perp")
 
     assert res["ok"]
-    assert res["result"] == {"perps": [], "spots": [], "outcomes": []}
+    assert res["result"] == {
+        "perps": [],
+        "spots": [],
+        "outcomes": [],
+        "warnings": ["perp metadata unavailable; discovery is incomplete"],
+    }
 
 
 @pytest.mark.asyncio
