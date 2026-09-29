@@ -57,6 +57,22 @@ export WAYFINDER_BACKTEST_RUNNER=sprites
 operations book a remote lease too (see [Existing agent operations](#existing-agent-operations));
 evolution campaigns offload without it.
 
+To switch Sprite offloading without editing the file:
+
+```bash
+poetry run wayfinder offload status             # where campaigns and operations compute
+poetry run wayfinder offload on                 # provider sprites, offload_operations true
+poetry run wayfinder offload on --campaigns-only  # evolution campaigns only
+poetry run wayfinder offload off                # provider local
+```
+
+`on` and `off` change only `provider` and `offload_operations` in the config file
+and keep every other `backtest_runner` setting. A configuration that could not run
+remotely, such as one missing the API key, is not saved. `off` does not end open
+leases, which close at their idle timeout; release them earlier with
+`release_idle_leases()`. `WAYFINDER_BACKTEST_RUNNER` still overrides the file, and
+`status` warns when it is set.
+
 Environment values take precedence. Relative paths resolve against the job's
 repository root. Invalid configuration fails explicitly and never runs locally
 instead. Sprite execution time/resource limits are controlled by the selected
