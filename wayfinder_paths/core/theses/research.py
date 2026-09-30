@@ -36,6 +36,7 @@ def research_evidence(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
     outcomes: dict[str, str] = {}
     ask_depth: dict[str, float] = {}
     event_urls: set[str] = set()
+    fetched_urls: set[str] = set()
     hyperliquid_depth: dict[str, dict[str, Any]] = {}
     onchain_tokens: dict[str, dict[str, Any]] = {}
     onchain_pools: dict[str, dict[str, Any]] = {}
@@ -68,6 +69,17 @@ def research_evidence(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
         # Only core_web_fetch results are admitted by the caller, not search
         # snippets or the agent's query (which can already contain the address).
         pages.extend(result.get("results", []))
+        # Direct event/market reads can supply resolution rules without a web
+        # fetch. Search candidates alone cannot establish a source was read.
+        if result.get("action") in {"get_event", "get_market"}:
+            source = result.get("event") or result.get("market") or {}
+            slug = (
+                source.get("slug")
+                if result["action"] == "get_event"
+                else source.get("eventSlug")
+            )
+            if slug and (source.get("description") or source.get("rules")):
+                fetched_urls.add(f"https://polymarket.com/event/{slug}")
         candidates = list(result.get("candidates", []))
         if market := result.get("market"):
             candidates.append(
@@ -100,14 +112,35 @@ def research_evidence(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
     for token in onchain_tokens.values():
         token["issuer_reference"] = _issuer_reference(token, pages)
         token.pop("links")
+    fetched_urls.update(
+        page["url"]
+        for page in pages
+        if page.get("url") and page.get("contentExcerpt", "").strip()
+    )
     return {
         "outcomes": outcomes,
         "ask_depth": ask_depth,
         "event_urls": sorted(event_urls),
+        "fetched_urls": sorted(fetched_urls),
         "hyperliquid_depth": hyperliquid_depth,
         "onchain_tokens": onchain_tokens,
         "onchain_pools": onchain_pools,
     }
+
+
+def missing_source_reads(proposal: Proposal, evidence: dict[str, Any]) -> list[str]:
+    """A cited source was read, not a certification of its truth or relevance."""
+    fetched_urls = set(evidence.get("fetched_urls", []))
+    invested = {p.component_id for v in proposal.variants for p in v.positions}
+    return [
+        c.id
+        for c in proposal.components
+        if c.id in invested
+        and not any(
+            set(re.findall(r"https?://[^\s<>\])]+", citation)) & fetched_urls
+            for citation in c.evidence
+        )
+    ]
 
 
 def _issuer_reference(token: dict[str, Any], pages: list[dict[str, Any]]) -> str | None:

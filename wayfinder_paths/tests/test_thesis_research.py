@@ -4,6 +4,7 @@ import pytest
 
 from wayfinder_paths.core.theses.models import Proposal
 from wayfinder_paths.core.theses.research import (
+    missing_source_reads,
     research_evidence,
     validate_market_capacity,
 )
@@ -80,10 +81,83 @@ def test_observed_outcomes_and_latest_book_not_market_liquidity() -> None:
         "outcomes": {"123": "no"},
         "ask_depth": {"123": 20000},
         "event_urls": ["https://polymarket.com/event/fed"],
+        "fetched_urls": [],
         "hyperliquid_depth": {},
         "onchain_tokens": {},
         "onchain_pools": {},
     }
+
+
+@pytest.mark.parametrize(
+    "result,expected",
+    [
+        (
+            {"results": [{"url": "https://example.com", "contentExcerpt": "Policy"}]},
+            ["https://example.com"],
+        ),
+        ({"results": [{"url": "https://example.com", "contentExcerpt": "  "}]}, []),
+        ({"results": [{"url": "https://example.com", "error": "unavailable"}]}, []),
+        (
+            {
+                "action": "search",
+                "candidates": [{"eventSlug": "fed", "description": "Policy"}],
+            },
+            [],
+        ),
+        (
+            {
+                "action": "get_event",
+                "event": {"slug": "fed", "description": "Resolution rules"},
+            },
+            ["https://polymarket.com/event/fed"],
+        ),
+        (
+            {
+                "action": "get_market",
+                "market": {"eventSlug": "fed", "rules": "Resolution rules"},
+                "summaryMode": True,
+            },
+            ["https://polymarket.com/event/fed"],
+        ),
+        (
+            {
+                "action": "get_market",
+                "market": {"eventSlug": "fed"},
+                "summaryMode": True,
+            },
+            [],
+        ),
+    ],
+)
+def test_source_reads_require_returned_text(
+    result: dict[str, Any], expected: list[str]
+) -> None:
+    assert research_evidence([result])["fetched_urls"] == expected
+
+
+def test_source_reads_only_require_invested_components(proposal: Proposal) -> None:
+    assert missing_source_reads(proposal, {}) == ["policy"]
+    assert missing_source_reads(
+        proposal, {"fetched_urls": ["https://unrelated.test"]}
+    ) == ["policy"]
+    assert (
+        missing_source_reads(proposal, {"fetched_urls": ["https://example.com"]}) == []
+    )
+    # Extra research components without an allocation do not require a fetch.
+    extra = proposal.components[0].model_copy(update={"id": "alternative"})
+    proposal = proposal.model_copy(update={"components": [*proposal.components, extra]})
+    assert (
+        missing_source_reads(proposal, {"fetched_urls": ["https://example.com"]}) == []
+    )
+    proposal = proposal.model_copy(
+        update={
+            "variants": [
+                v.model_copy(update={"positions": [], "cash_bps": 10000})
+                for v in proposal.variants
+            ]
+        }
+    )
+    assert missing_source_reads(proposal, {}) == []
 
 
 def test_later_closed_market_invalidates_outcome() -> None:
