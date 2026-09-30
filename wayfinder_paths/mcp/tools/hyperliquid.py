@@ -2377,19 +2377,24 @@ async def hyperliquid_search_market(
             for token in query.lower().split()
             for a in MARKET_SEARCH_ALIASES.get(token, {token})
         }
+        query_underlyings = {underlying(token) for token in query.lower().split()}
         market_terms = {
             alias
-            for token in map(underlying, query.lower().split())
+            for token in query_underlyings
             for alias in MARKET_SEARCH_ALIASES.get(token, {token})
         }
 
         def score(text: str, *, market_name: bool) -> float:
             if market_name:
-                # Exact canonical identity outranks aliases/fuzzy symbols. Quote
-                # currencies and builder dex names are not underlying matches.
+                # Canonical identity > underlying identity > alias > fuzzy match.
+                # Quote currencies and dex names are not underlying matches.
                 if text.lower() == query.strip().lower():
                     return 2.0
                 text = underlying(text.lower())
+                if text in query_underlyings:
+                    return 1.75
+                if text in market_terms:
+                    return 1.5
             # matches / min(len_a, len_b) — rewards covering the shorter string
             # fully. HL token symbols are short and often vowel-stripped (KNTQ
             # for kinetiq, kBONK for bonk), so subsequence-style matching is the

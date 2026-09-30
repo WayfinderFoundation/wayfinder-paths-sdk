@@ -182,6 +182,43 @@ async def test_search_exact_canonical_identity_ranks_first(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "names", "expected"),
+    [
+        ("BTC", ["kBTC", "UBTC", "BTC"], "BTC-USDC"),
+        ("bitcoin", ["kBTC", "BTC"], "BTC-USDC"),
+        ("NVDA", ["xyz:kNVDA", "xyz:NVDA"], "xyz:NVDA"),
+        ("nvidia", ["xyz:kNVDA", "xyz:NVDA"], "xyz:NVDA"),
+        ("BTC", ["kBTC/USDC", "UBTC/USDC", "BTC/USDC"], "BTC/USDC"),
+        ("bitcoin", ["kBTC/USDC", "UBTC/USDC"], "UBTC/USDC"),
+    ],
+)
+async def test_search_underlying_and_alias_identity_outrank_subsequences(
+    market_inventory: None,
+    monkeypatch: pytest.MonkeyPatch,
+    query: str,
+    names: list[str],
+    expected: str,
+) -> None:
+    async def metadata(self: HyperliquidAdapter) -> tuple[bool, list]:
+        return True, [{"universe": [{"name": name} for name in names]}, []]
+
+    async def spots(self: HyperliquidAdapter) -> tuple[bool, dict[str, int]]:
+        return True, {name: 10000 + index for index, name in enumerate(names)}
+
+    if "/" in expected:
+        monkeypatch.setattr(HyperliquidAdapter, "get_spot_assets", spots)
+        response = await hyperliquid_search_market(query, market_type="spot", limit=1)
+        bucket = "spots"
+    else:
+        monkeypatch.setattr(HyperliquidAdapter, "get_meta_and_asset_ctxs", metadata)
+        response = await hyperliquid_search_market(query, limit=1)
+        bucket = "perps"
+    assert response["ok"]
+    assert [row["name"] for row in response["result"][bucket]] == [expected]
+
+
+@pytest.mark.asyncio
 async def test_search_pair_does_not_match_other_underlyings_through_quote(
     market_inventory: None,
 ) -> None:
