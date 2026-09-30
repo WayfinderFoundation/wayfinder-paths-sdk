@@ -25,6 +25,7 @@ from wayfinder_paths.jobs.compute_lock import (
     COMPUTE_OVERRIDE_RELATIVE,
     EVOLUTION_BUDGET_RELATIVE,
     ComputeLockBusy,
+    experiment_compute_lock,
 )
 from wayfinder_paths.jobs.evolution_campaign import (
     _archive_campaign_candidate,
@@ -59,6 +60,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _pooled_fold_stats,
     _protected_fold_verdict,
     _prune_risky_trials,
+    _record_compute_budget_override,
     _rejected_submission,
     _require_train_profit,
     _research_context_instruction,
@@ -1627,19 +1629,22 @@ def test_owner_compute_budget_override_is_written_journaled_and_honoured(
     assert state["status"] == "active"
     root = store.job_dir(job_id)
     manifest = json.loads((root / state["manifest"]).read_text(encoding="utf-8"))
-    expires_at = (
-        datetime.fromisoformat(manifest["deadline_at"]) + timedelta(hours=4)
-    ).isoformat()
+    lifetime = (
+        datetime.fromisoformat(manifest["deadline_at"]) + timedelta(hours=4) - now
+    )
     marker = json.loads(
         (tmp_path / COMPUTE_OVERRIDE_RELATIVE).read_text(encoding="utf-8")
     )
+    expires_at = marker.pop("expires_at")
     assert marker == {
         "job_id": job_id,
         "campaign_id": state["campaign_id"],
         "by": "owner",
         "at": now.isoformat(),
-        "expires_at": expires_at,
     }
+    assert (
+        abs((datetime.fromisoformat(expires_at) - now - lifetime).total_seconds()) <= 5
+    )
     rows = [
         json.loads(line)
         for line in (root / "journal.jsonl").read_text(encoding="utf-8").splitlines()
@@ -8396,7 +8401,11 @@ def test_full_dev_order_spends_behavior_twins_last() -> None:
             "family": family,
             "status": "quick_complete",
             "quick": {
-                "stats": {"net_return": net_return, "trade_count": 76, "total_fees": 1.2}
+                "stats": {
+                    "net_return": net_return,
+                    "trade_count": 76,
+                    "total_fees": 1.2,
+                }
             },
         }
 
@@ -8447,3 +8456,48 @@ def test_unbuildable_seed_falls_back_to_de_novo_instead_of_wedging(
     assert candidate["seed_fallback"]["from"] == "starter_seed"
     assert "not in the job dataset" in candidate["seed_fallback"]["reason"]
     assert (store.job_dir(job_id) / candidate["bundle"] / "job.yaml").exists()
+
+
+def test_owner_compute_override_on_a_replayed_clock_lives_on_the_wall_clock(
+    tmp_path,
+) -> None:
+    """The bench starts a campaign at a replayed date; its override must
+    still cover that campaign's ops, which the lock judges on the wall
+    clock."""
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    wall = datetime.now(UTC)
+    budget_path = tmp_path / EVOLUTION_BUDGET_RELATIVE
+    budget_path.parent.mkdir(parents=True, exist_ok=True)
+    budget_path.write_text(
+        json.dumps(
+            {
+                "events": [
+                    {
+                        "ts": wall.isoformat(),
+                        "job_id": job_id,
+                        "class": "routine",
+                        "wall_seconds": 0.25 * 12 * 3600 + 1,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    replayed = datetime(2026, 9, 7, 15, tzinfo=UTC)
+    _record_compute_budget_override(
+        store,
+        job_id,
+        campaign_id="replayed",
+        now=replayed,
+        deadline=replayed + timedelta(hours=10),
+    )
+    marker = json.loads(
+        (tmp_path / COMPUTE_OVERRIDE_RELATIVE).read_text(encoding="utf-8")
+    )
+    assert datetime.fromisoformat(marker["expires_at"]) > wall + timedelta(hours=13)
+    with experiment_compute_lock(store, job_id, label="replayed-finalize"):
+        pass
+    with experiment_compute_lock(
+        store, job_id, label="replayed-completion", completion_reserve=True
+    ):
+        pass
