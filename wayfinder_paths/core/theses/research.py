@@ -172,12 +172,22 @@ def validate_market_capacity(proposal: Proposal, evidence: dict[str, Any]) -> No
                         "to corroborate its contract on its registry-linked issuer website; "
                         "a listing, search match or disclaimer does not verify the contract"
                     )
-                pool = evidence.get("onchain_pools", {}).get(position.instrument_id, {})
+                # Native holdings use the backend registry's wrapped-native
+                # market-data proxy, never an agent-proposed substitute.
+                pool_address = token["address"]
+                if (
+                    identity.get("is_canonical") is True
+                    and identity.get("verification") == "native"
+                    and identity.get("wrapped_native_address")
+                ):
+                    pool_address = identity["wrapped_native_address"]
+                pool_id = f"{token['chain']['code']}_{pool_address}"
+                pool = evidence.get("onchain_pools", {}).get(pool_id, {})
                 reserve = pool.get("liquidity_usd") or 0
                 volume = pool.get("volume_24h_usd") or 0
                 capital = variant.budget_usd * position.capital_bps / 10000
                 if (
-                    pool.get("address") != token["address"]
+                    pool.get("address") != pool_address
                     or pool.get("chain_code") != token["chain"]["code"]
                     or not all(isfinite(n) and n > 0 for n in (reserve, volume))
                     or capital > min(0.005 * reserve, 0.01 * volume)
@@ -186,7 +196,7 @@ def validate_market_capacity(proposal: Proposal, evidence: dict[str, Any]) -> No
                         f"{location}: onchain capital ${capital:g} exceeds the research cap "
                         f"of 0.5% of selected-pool reserves (${reserve:g}) or 1% of its "
                         f"24h volume (${volume:g}); use onchain_list_tokens with the chain "
-                        "and exact address query, reduce capital_bps or omit the leg. "
+                        f"and address query {pool_address}, reduce capital_bps or omit the leg. "
                         "This cap is a sizing proxy, not executable depth or a fill quote"
                     )
             if position.kind in {"perp", "hip3"} or (

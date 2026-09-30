@@ -27,6 +27,9 @@ async def onchain_resolve_token(
             for quotes, execution, and scripts.
         market_data: Include current price, market cap and volume when available.
             These are market snapshots, not chain-local depth or executable quotes.
+
+    Native identities may include wrapped_native_address for pool/history reads.
+    This is a registered pricing proxy, not a change to the asset being held.
     """
     try:
         token = await TOKEN_CLIENT.get_token_details(query, market_data=market_data)

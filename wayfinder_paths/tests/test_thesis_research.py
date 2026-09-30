@@ -321,6 +321,30 @@ def test_canonical_identity_needs_no_issuer_fetch_but_still_needs_pool(
         validate_market_capacity(proposal, research_evidence(results[:2]))
 
 
+@pytest.mark.parametrize("native", [False, True])
+def test_only_registry_native_identity_can_use_wrapped_pool(
+    onchain_case: tuple[Proposal, list[dict[str, Any]]], native: bool
+) -> None:
+    proposal, results = onchain_case
+    wrapped = "0x" + "c" * 40
+    results[0]["identity"].update(
+        is_canonical=True,
+        verification="native" if native else "issuer",
+        wrapped_native_address=wrapped,
+    )
+    results[2]["tokens"][0].update(token_id=f"ethereum_{wrapped}", address=wrapped)
+    evidence = research_evidence(results)
+    if native:
+        validate_market_capacity(proposal, evidence)
+        assert proposal.variants[0].positions[0].instrument_id == results[0]["token_id"]
+        results[2]["tokens"][0]["chain_code"] = "base"
+        with pytest.raises(ValueError, match="sizing proxy"):
+            validate_market_capacity(proposal, research_evidence(results))
+    else:
+        with pytest.raises(ValueError, match="sizing proxy"):
+            validate_market_capacity(proposal, evidence)
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
