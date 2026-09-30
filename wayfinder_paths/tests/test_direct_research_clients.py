@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from typing import Literal
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from mcp.server.fastmcp.tools.base import Tool
 
 from wayfinder_paths.core.clients.direct import DefiLlamaFreeClient as llama_module
 from wayfinder_paths.core.clients.direct import GoldskyDirectClient as goldsky_module
@@ -224,7 +226,9 @@ async def test_defillama_free_protocol_fees_returns_daily_and_weekly(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("data_type", ["dailyFees", "dailyRevenue"])
+@pytest.mark.parametrize(
+    "data_type", ["dailyFees", "dailyRevenue", "dailyHoldersRevenue"]
+)
 async def test_defillama_protocol_fees_preserves_definitions_and_reported_totals(
     monkeypatch: pytest.MonkeyPatch, data_type: str
 ) -> None:
@@ -234,6 +238,7 @@ async def test_defillama_protocol_fees_preserves_definitions_and_reported_totals
         "methodology": {
             "Fees": "Onchain buy-and-burn only; excludes offchain subscription sales.",
             "Revenue": "Onchain buy-and-burn only, not total business revenue.",
+            "HoldersRevenue": "Token buybacks and burns, not a cash yield to every holder.",
         },
         "methodologyURL": "https://example.org/adapter",
         "breakdownMethodology": {"Fees": {"Burn": "USD value of tokens burned."}},
@@ -270,9 +275,37 @@ async def test_defillama_protocol_fees_preserves_definitions_and_reported_totals
 
 
 @pytest.mark.asyncio
+async def test_defillama_protocol_fees_rejects_unknown_metric_before_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lookup = AsyncMock()
+    monkeypatch.setattr(llama_module.DEFILLAMA_FREE_CLIENT, "_get", lookup)
+
+    with pytest.raises(ValueError, match="dailyHoldersRevenue"):
+        await llama_module.DEFILLAMA_FREE_CLIENT.protocol_fees(
+            "example", data_type="dailyProfit"
+        )
+
+    lookup.assert_not_awaited()
+
+
+def test_defillama_tool_schema_exposes_supported_fee_metrics() -> None:
+    tool = Tool.from_function(defillama_free.research_defillama_free)
+
+    assert tool.parameters["properties"]["dataType"]["enum"] == [
+        "dailyFees",
+        "dailyRevenue",
+        "dailyHoldersRevenue",
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("include_breakdown", [False, True])
+@pytest.mark.parametrize("data_type", ["dailyRevenue", "dailyHoldersRevenue"])
 async def test_defillama_tool_keeps_large_chain_history_opt_in(
-    monkeypatch: pytest.MonkeyPatch, include_breakdown: bool
+    monkeypatch: pytest.MonkeyPatch,
+    include_breakdown: bool,
+    data_type: Literal["dailyRevenue", "dailyHoldersRevenue"],
 ) -> None:
     breakdown = [
         {
@@ -283,7 +316,7 @@ async def test_defillama_tool_keeps_large_chain_history_opt_in(
     ]
     metrics = {
         "protocolSlug": "example",
-        "dataType": "dailyRevenue",
+        "dataType": data_type,
         "totals": {"total30d": 120000},
         "dailyRows": [{"date": row["date"], "value": 4000} for row in breakdown],
         "methodology": {"Revenue": "Net protocol fees, not holder distributions."},
@@ -304,11 +337,11 @@ async def test_defillama_tool_keeps_large_chain_history_opt_in(
     response = await defillama_free.research_defillama_free(
         dataset="protocol_fees",
         protocolSlug="example",
-        dataType="dailyRevenue",
+        dataType=data_type,
         **({"includeChainBreakdown": True} if include_breakdown else {}),
     )
 
-    lookup.assert_awaited_once_with("example", data_type="dailyRevenue", days=30)
+    lookup.assert_awaited_once_with("example", data_type=data_type, days=30)
     assert response["ok"]
     assert response["result"]["evidence"] == evidence
     if include_breakdown:

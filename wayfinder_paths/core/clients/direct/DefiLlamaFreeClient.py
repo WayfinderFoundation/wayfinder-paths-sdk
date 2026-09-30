@@ -147,8 +147,10 @@ class DefiLlamaFreeClient:
         days: int = 30,
     ) -> dict[str, Any]:
         normalized_type = str(data_type).strip()
-        if normalized_type not in {"dailyFees", "dailyRevenue"}:
-            raise ValueError("data_type must be dailyFees or dailyRevenue")
+        if normalized_type not in {"dailyFees", "dailyRevenue", "dailyHoldersRevenue"}:
+            raise ValueError(
+                "data_type must be dailyFees, dailyRevenue or dailyHoldersRevenue"
+            )
         response = await self._get(
             f"/summary/fees/{_path_part(protocol_slug, 'protocolSlug')}",
             params={"dataType": normalized_type},

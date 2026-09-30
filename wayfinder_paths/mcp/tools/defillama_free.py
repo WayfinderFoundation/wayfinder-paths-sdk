@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from wayfinder_paths.core.clients.direct.DefiLlamaFreeClient import (
     DEFILLAMA_FREE_CLIENT,
@@ -32,7 +32,7 @@ async def research_defillama_free(
     chain: str = "_",
     coins: str = "_",
     query: str = "_",
-    dataType: str = "dailyFees",
+    dataType: Literal["dailyFees", "dailyRevenue", "dailyHoldersRevenue"] = "dailyFees",
     days: str | int = "30",
     limit: str | int = "25",
     cursor: str = "_",
@@ -48,7 +48,10 @@ async def research_defillama_free(
         chain: Optional for dex_overview and fees_overview.
         coins: Required for current_prices, e.g. ethereum:0xa0b8...
         query: Required for protocol_search.
-        dataType: For protocol_fees: dailyFees or dailyRevenue. Read the returned
+        dataType: For protocol_fees: dailyFees, dailyRevenue or dailyHoldersRevenue.
+            Holder revenue can include buybacks/burns or distributions to eligible
+            stakers; it is not necessarily cash income to every spot holder.
+            Missing data is unavailable, not zero holder value. Read the returned
             provider methodology before interpreting a metric as business revenue.
             Totals are provider-reported periods, not annualized projections.
         days: Lookback days for protocol_fees/protocol_tvl_history.

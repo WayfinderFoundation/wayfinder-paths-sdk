@@ -71,6 +71,13 @@ For named protocols, resolve the slug before fetching protocol data:
 3. `research_defillama_free(dataset="protocol_tvl_history", protocolSlug="<slug>", days="30")`
 4. `research_defillama_free(dataset="protocol_fees", protocolSlug="<slug>", dataType="dailyFees", days="30")`
 5. `research_defillama_free(dataset="protocol_fees", protocolSlug="<slug>", dataType="dailyRevenue", days="30")`
+6. For holder value capture: `research_defillama_free(dataset="protocol_fees", protocolSlug="<slug>", dataType="dailyHoldersRevenue", days="30")`.
+
+Choose only the metrics needed for the comparison; this is not a mandatory call
+sequence for every candidate. Holder revenue can include buybacks/burns or
+distributions to eligible stakers, not a cash yield available to every holder.
+Read the provider methodology and verify the current mechanism in primary docs;
+missing coverage is unavailable evidence, not zero holder value.
 
 Use `fees_overview`, `chains`, `stablecoins`, `dex_overview`, and `open_interest_overview` for macro context, not as a substitute for named protocol data.
 
