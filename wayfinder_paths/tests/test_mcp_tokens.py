@@ -246,6 +246,29 @@ def test_fuzzy_xml_backfills_match_score_from_legacy_confidence():
     )
 
     assert response["tokens"][0]["match_score"] == 72
+    assert "token_id" not in response["tokens"][0]
+
+
+@pytest.mark.parametrize(
+    "token_id",
+    [
+        "ethereum_0x5a98fcbea516cf06857215779fd812ca3bef1b32",
+        "solana_EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "ethereum-ethereum",
+    ],
+)
+def test_fuzzy_xml_preserves_lookup_id_without_certifying_identity(
+    token_id: str,
+) -> None:
+    response = TokenClient()._parse_fuzzy_xml(
+        f"<tokens><token><token_id>{token_id}</token_id>"
+        "<is_canonical>false</is_canonical><verification>unverified</verification>"
+        "</token></tokens>"
+    )
+
+    assert response["tokens"] == [
+        {"token_id": token_id, "is_canonical": False, "verification": "unverified"}
+    ]
 
 
 @pytest.mark.asyncio

@@ -84,7 +84,9 @@ async def onchain_fuzzy_search_tokens(chain_code: str, query: str) -> dict[str, 
     """Fuzzy-search tokens on a chain by symbol, name, or address — use when an exact id isn't known.
 
     If the user names a chain, search that chain, not all chains. This searches
-    tokens, not blockchain names. A match score is not verification or safety.
+    tokens, not blockchain names. Copy a candidate's token_id into
+    onchain_resolve_token(query=...) rather than constructing an ID from its name.
+    A lookup ID or match score is not verification or safety.
 
     Args:
         chain_code: e.g. base or solana. Pass all or _ to search across every chain.

@@ -80,6 +80,7 @@ class GasToken(TypedDict):
 
 
 class FuzzyTokenResult(TypedDict):
+    token_id: NotRequired[str]
     coingecko_id: NotRequired[str]
     address: NotRequired[str]
     chain: NotRequired[str]
@@ -228,7 +229,14 @@ class TokenClient(WayfinderClient):
         tokens: list[FuzzyTokenResult] = []
         for token_elem in root.findall("token"):
             token: FuzzyTokenResult = {}
-            for field in ["coingecko_id", "address", "chain", "name", "symbol"]:
+            for field in [
+                "token_id",
+                "coingecko_id",
+                "address",
+                "chain",
+                "name",
+                "symbol",
+            ]:
                 elem = token_elem.find(field)
                 if elem is not None and elem.text:
                     token[field] = elem.text  # type: ignore[literal-required]
