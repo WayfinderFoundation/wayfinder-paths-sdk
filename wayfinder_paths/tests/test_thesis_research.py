@@ -274,6 +274,29 @@ def test_onchain_evidence_corroborates_contract_and_caps_local_pool(
     assert evidence["onchain_pools"][token_id]["pool_address"] == "0x" + "b" * 40
 
 
+def test_capacity_reports_all_instruments_and_largest_failing_budget(
+    onchain_case: tuple[Proposal, list[dict[str, Any]]],
+) -> None:
+    proposal, results = onchain_case
+    payload = proposal.model_dump()
+    unknown_id = "ethereum_0x" + "c" * 40
+    for variant in payload["variants"]:
+        variant["cash_bps"] -= 200
+        variant["positions"].append(
+            {**variant["positions"][0], "id": "typo", "instrument_id": unknown_id}
+        )
+    # A missing issuer proof must not hide an unrelated address transcription error.
+    evidence = research_evidence([results[0], results[2]])
+    with pytest.raises(ValueError) as error:
+        validate_market_capacity(Proposal.model_validate(payload), evidence)
+    failures = str(error.value).splitlines()
+    assert len(failures) == 2
+    assert failures[0].startswith("100000/no:")
+    assert "registry-linked issuer" in failures[0]
+    assert failures[1].startswith("100000/typo:")
+    assert f"unknown onchain instrument_id {unknown_id!r}" in failures[1]
+
+
 @pytest.mark.parametrize(
     "failure",
     [
@@ -306,7 +329,12 @@ def test_onchain_identity_cannot_be_replaced_with_a_disclaimer(
         page["contentExcerpt"] += "a"
     else:
         results[0]["identity"]["suspicious"] = True
-    with pytest.raises(ValueError, match="registry-linked issuer"):
+    expected = (
+        "unknown onchain instrument_id"
+        if failure == "unresolved"
+        else "registry-linked issuer"
+    )
+    with pytest.raises(ValueError, match=expected):
         validate_market_capacity(proposal, research_evidence(results))
 
 

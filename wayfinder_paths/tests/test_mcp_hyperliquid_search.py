@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+from unittest.mock import AsyncMock
+
 import pytest
 
 from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
+from wayfinder_paths.core.constants.hyperliquid import HyperliquidMarketType
 from wayfinder_paths.mcp.tools.hyperliquid import (
+    _market_search_resources,
     hyperliquid_search_hip4,
     hyperliquid_search_market,
 )
@@ -429,6 +434,113 @@ async def test_search_market_handles_perp_meta_failure_without_error(monkeypatch
         "outcomes": [],
         "warnings": ["perp metadata unavailable; discovery is incomplete"],
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("market_type", "requested"),
+    [
+        (None, {"perp", "spot", "outcome"}),
+        ("perp", {"perp"}),
+        ("hip3", {"perp"}),
+        ("spot", {"spot"}),
+        ("hip4", {"outcome"}),
+    ],
+)
+async def test_search_only_calls_requested_providers(
+    monkeypatch: pytest.MonkeyPatch,
+    market_type: HyperliquidMarketType | None,
+    requested: set[str],
+) -> None:
+    calls = {}
+    for name, method in {
+        "perp": "get_meta_and_asset_ctxs",
+        "spot": "get_spot_assets",
+        "outcome": "get_outcome_markets",
+    }.items():
+        calls[name] = AsyncMock(side_effect=RuntimeError("Provider unavailable"))
+        monkeypatch.setattr(HyperliquidAdapter, method, calls[name])
+    result = await hyperliquid_search_market("BTC", market_type=market_type)
+    assert result["ok"]
+    assert {name for name, call in calls.items() if call.await_count} == requested
+    assert set(result["result"]["warnings"]) == {
+        f"{name} metadata unavailable; discovery is incomplete" for name in requested
+    }
+
+
+@pytest.mark.asyncio
+async def test_unrelated_provider_exception_preserves_available_markets(
+    market_inventory: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        HyperliquidAdapter,
+        "get_outcome_markets",
+        AsyncMock(side_effect=RuntimeError("429")),
+    )
+    result = await hyperliquid_search_market("BTC", limit=1)
+    assert result["ok"]
+    assert result["result"]["perps"][0]["name"] == "BTC-USDC"
+    assert result["result"]["spots"][0]["name"] == "UBTC/USDC"
+    assert result["result"]["outcomes"] == []
+    assert result["result"]["warnings"] == [
+        "outcome metadata unavailable; discovery is incomplete"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_search_cancellation_is_not_reported_as_missing_markets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        HyperliquidAdapter,
+        "get_spot_assets",
+        AsyncMock(side_effect=asyncio.CancelledError()),
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await hyperliquid_search_market("BTC", market_type="spot")
+
+
+@pytest.mark.asyncio
+async def test_parallel_searches_reuse_metadata_until_existing_cache_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetch = AsyncMock(
+        return_value=[{"universe": [{"name": "BTC"}, {"name": "ETH"}]}, []]
+    )
+    monkeypatch.setattr(HyperliquidAdapter, "_post_across_dexes", fetch)
+    responses = await asyncio.gather(
+        *(
+            hyperliquid_search_market(query, market_type="perp")
+            for query in ("BTC", "ETH", "BTC-USDC")
+        )
+    )
+    assert all(response["ok"] for response in responses)
+    assert [response["result"]["perps"][0]["name"] for response in responses] == [
+        "BTC-USDC",
+        "ETH-USDC",
+        "BTC-USDC",
+    ]
+    fetch.assert_awaited_once()
+    adapter, _ = _market_search_resources(asyncio.get_running_loop())
+    await adapter._cache.delete("hl_meta_and_asset_ctxs")
+    await hyperliquid_search_market("BTC", market_type="perp")
+    assert fetch.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_search_does_not_cache_a_failed_provider_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetch = AsyncMock(
+        side_effect=[RuntimeError("429"), [{"universe": [{"name": "BTC"}]}, []]]
+    )
+    monkeypatch.setattr(HyperliquidAdapter, "_post_across_dexes", fetch)
+    failed = await hyperliquid_search_market("BTC", market_type="perp")
+    recovered = await hyperliquid_search_market("BTC", market_type="perp")
+    assert failed["result"]["warnings"]
+    assert recovered["result"]["perps"][0]["name"] == "BTC-USDC"
+    assert recovered["result"]["warnings"] == []
+    assert fetch.await_count == 2
 
 
 @pytest.mark.asyncio

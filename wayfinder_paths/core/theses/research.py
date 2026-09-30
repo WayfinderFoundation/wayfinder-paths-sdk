@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 from tldextract import TLDExtract
 
-from wayfinder_paths.core.theses.models import Proposal
+from wayfinder_paths.core.theses.models import Position, Proposal
 from wayfinder_paths.mcp.polymarket_summary import (
     compact_market_candidate,
     compact_order_book,
@@ -150,90 +150,90 @@ def _issuer_reference(token: dict[str, Any], pages: list[dict[str, Any]]) -> str
 
 
 def validate_market_capacity(proposal: Proposal, evidence: dict[str, Any]) -> None:
-    """Conservative research sizing, not an executable quote or future fill guarantee."""
-    for variant in proposal.variants:
+    """Report every affected instrument; retain the largest-budget failure per ID."""
+    errors: dict[str, str] = {}
+    for variant in sorted(proposal.variants, key=lambda v: v.budget_usd):
         for position in variant.positions:
-            location = f"{variant.budget_usd}/{position.id}"
-            if position.kind == "token" and "/" not in position.instrument_id:
-                token = evidence.get("onchain_tokens", {}).get(
-                    position.instrument_id, {}
-                )
-                identity = token.get("identity", {})
-                if (
-                    not token
-                    or identity.get("suspicious")
-                    or not (
-                        identity.get("is_canonical") is True
-                        or token.get("issuer_reference")
-                    )
-                ):
-                    raise ValueError(
-                        f"{location}: resolve the exact onchain token, then use core_web_fetch "
-                        "to corroborate its contract on its registry-linked issuer website; "
-                        "a listing, search match or disclaimer does not verify the contract"
-                    )
-                # Native holdings use the backend registry's wrapped-native
-                # market-data proxy, never an agent-proposed substitute.
-                pool_address = token["address"]
-                if (
-                    identity.get("is_canonical") is True
-                    and identity.get("verification") == "native"
-                    and identity.get("wrapped_native_address")
-                ):
-                    pool_address = identity["wrapped_native_address"]
-                pool_id = f"{token['chain']['code']}_{pool_address}"
-                pool = evidence.get("onchain_pools", {}).get(pool_id, {})
-                reserve = pool.get("liquidity_usd") or 0
-                volume = pool.get("volume_24h_usd") or 0
-                capital = variant.budget_usd * position.capital_bps / 10000
-                if (
-                    pool.get("address") != pool_address
-                    or pool.get("chain_code") != token["chain"]["code"]
-                    or not all(isfinite(n) and n > 0 for n in (reserve, volume))
-                    or capital > min(0.005 * reserve, 0.01 * volume)
-                ):
-                    raise ValueError(
-                        f"{location}: onchain capital ${capital:g} exceeds the research cap "
-                        f"of 0.5% of selected-pool reserves (${reserve:g}) or 1% of its "
-                        f"24h volume (${volume:g}); use onchain_list_tokens with the chain "
-                        f"and address query {pool_address}, reduce capital_bps or omit the leg. "
-                        "This cap is a sizing proxy, not executable depth or a fill quote"
-                    )
-            if position.kind in {"perp", "hip3"} or (
-                position.kind == "token" and "/" in position.instrument_id
-            ):
-                book = evidence.get("hyperliquid_depth", {}).get(
-                    position.instrument_id, {}
-                )
-                bid = book.get("bid_notional_usd_50bps", 0)
-                ask = book.get("ask_notional_usd_50bps", 0)
-                notional = (
-                    variant.budget_usd
-                    * position.capital_bps
-                    / 10000
-                    * position.leverage
-                )
-                if not all(
-                    isfinite(n) and n > 0 for n in (bid, ask)
-                ) or notional > 0.1 * min(bid, ask):
-                    raise ValueError(
-                        f"{location}: Hyperliquid notional ${notional:g} exceeds 10% of "
-                        f"observed two-sided depth within 50 bps (bids ${bid:g}, asks ${ask:g}); "
-                        "refresh hyperliquid_search_mid_prices(include_depth=true), reduce capital_bps or omit the leg"
-                    )
-            if position.kind != "prediction":
-                continue
-            if (
-                evidence.get("outcomes", {}).get(position.instrument_id)
-                != position.direction
-            ):
-                raise ValueError(
-                    f"{location}: verify the tradable YES/NO outcome token"
-                )
-            depth = evidence.get("ask_depth", {}).get(position.instrument_id, 0)
-            capital = variant.budget_usd * position.capital_bps / 10000
-            if not isfinite(depth) or capital > 0.1 * depth:
-                raise ValueError(
-                    f"{location}: prediction capital ${capital:g} exceeds 10% of "
-                    f"observed ask notional (${depth:g}); reduce capital_bps or omit the leg"
-                )
+            try:
+                _validate_position_capacity(variant.budget_usd, position, evidence)
+            except ValueError as exc:
+                errors[position.instrument_id] = str(exc)
+    if errors:
+        raise ValueError("\n".join(errors.values()))
+
+
+def _validate_position_capacity(
+    budget_usd: int, position: Position, evidence: dict[str, Any]
+) -> None:
+    """Conservative research sizing, not an executable quote or future fill guarantee."""
+    location = f"{budget_usd}/{position.id}"
+    if position.kind == "token" and "/" not in position.instrument_id:
+        token = evidence.get("onchain_tokens", {}).get(position.instrument_id, {})
+        if not token:
+            raise ValueError(
+                f"{location}: unknown onchain instrument_id {position.instrument_id!r}; "
+                "copy the exact ID from onchain_resolve_token. Check every budget for "
+                "transcription errors; never guess or retype a contract address"
+            )
+        identity = token.get("identity", {})
+        if identity.get("suspicious") or not (
+            identity.get("is_canonical") is True or token.get("issuer_reference")
+        ):
+            raise ValueError(
+                f"{location}: resolve the exact onchain token, then use core_web_fetch "
+                "to corroborate its contract on its registry-linked issuer website; "
+                "a listing, search match or disclaimer does not verify the contract"
+            )
+        # Native holdings use the backend registry's wrapped-native
+        # market-data proxy, never an agent-proposed substitute.
+        pool_address = token["address"]
+        if (
+            identity.get("is_canonical") is True
+            and identity.get("verification") == "native"
+            and identity.get("wrapped_native_address")
+        ):
+            pool_address = identity["wrapped_native_address"]
+        pool_id = f"{token['chain']['code']}_{pool_address}"
+        pool = evidence.get("onchain_pools", {}).get(pool_id, {})
+        reserve = pool.get("liquidity_usd") or 0
+        volume = pool.get("volume_24h_usd") or 0
+        capital = budget_usd * position.capital_bps / 10000
+        if (
+            pool.get("address") != pool_address
+            or pool.get("chain_code") != token["chain"]["code"]
+            or not all(isfinite(n) and n > 0 for n in (reserve, volume))
+            or capital > min(0.005 * reserve, 0.01 * volume)
+        ):
+            raise ValueError(
+                f"{location}: onchain capital ${capital:g} exceeds the research cap "
+                f"of 0.5% of selected-pool reserves (${reserve:g}) or 1% of its "
+                f"24h volume (${volume:g}); use onchain_list_tokens with the chain "
+                f"and address query {pool_address}, reduce capital_bps or omit the leg. "
+                "This cap is a sizing proxy, not executable depth or a fill quote"
+            )
+    if position.kind in {"perp", "hip3"} or (
+        position.kind == "token" and "/" in position.instrument_id
+    ):
+        book = evidence.get("hyperliquid_depth", {}).get(position.instrument_id, {})
+        bid = book.get("bid_notional_usd_50bps", 0)
+        ask = book.get("ask_notional_usd_50bps", 0)
+        notional = budget_usd * position.capital_bps / 10000 * position.leverage
+        if not all(isfinite(n) and n > 0 for n in (bid, ask)) or notional > 0.1 * min(
+            bid, ask
+        ):
+            raise ValueError(
+                f"{location}: Hyperliquid notional ${notional:g} exceeds 10% of "
+                f"observed two-sided depth within 50 bps (bids ${bid:g}, asks ${ask:g}); "
+                "refresh hyperliquid_search_mid_prices(include_depth=true), reduce capital_bps or omit the leg"
+            )
+    if position.kind != "prediction":
+        return
+    if evidence.get("outcomes", {}).get(position.instrument_id) != position.direction:
+        raise ValueError(f"{location}: verify the tradable YES/NO outcome token")
+    depth = evidence.get("ask_depth", {}).get(position.instrument_id, 0)
+    capital = budget_usd * position.capital_bps / 10000
+    if not isfinite(depth) or capital > 0.1 * depth:
+        raise ValueError(
+            f"{location}: prediction capital ${capital:g} exceeds 10% of "
+            f"observed ask notional (${depth:g}); reduce capital_bps or omit the leg"
+        )

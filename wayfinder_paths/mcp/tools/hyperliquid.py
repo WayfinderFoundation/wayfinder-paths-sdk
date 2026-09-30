@@ -8,6 +8,7 @@ import re
 import time
 from collections.abc import Callable
 from decimal import Decimal
+from functools import lru_cache
 from typing import Any, Literal
 
 from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
@@ -2298,6 +2299,15 @@ async def hyperliquid_search_mid_prices(
     return ok({"success": success, "prices": canonical})
 
 
+@lru_cache(maxsize=1)
+def _market_search_resources(
+    loop: asyncio.AbstractEventLoop,
+) -> tuple[HyperliquidAdapter, asyncio.Lock]:
+    # Reuse the adapter's existing public metadata TTLs. Scope the lock/cache
+    # to the MCP event loop; repeated asyncio.run() callers must not share it.
+    return HyperliquidAdapter(), asyncio.Lock()
+
+
 @catch_errors
 async def hyperliquid_search_market(
     query: str,
@@ -2314,25 +2324,44 @@ async def hyperliquid_search_market(
 
     Returns canonical asset names. Perp results also include public market
     metadata, funding, 24h notional volume, margin modes and impact prices when
-    available. Impact prices/volume are NOT executable quotes or orderbook depth.
+    available (perp metadata cached up to 60s, spot mappings up to 300s).
+    Impact prices/volume are NOT executable quotes or orderbook depth.
     Missing-provider warnings mean discovery is incomplete, not that a market is absent.
     """
-    adapter = HyperliquidAdapter()
-    (
-        (perp_ok, perp_data),
-        (spot_ok, spot_data),
-        (outcome_ok, outcome_data),
-    ) = await asyncio.gather(
-        adapter.get_meta_and_asset_ctxs(),
-        adapter.get_spot_assets(),
-        adapter.get_outcome_markets(),
-    )
-    if not perp_ok:
-        perp_data = [{"universe": []}, []]
-    if not spot_ok:
-        spot_data = {}
-    if not outcome_ok:
-        outcome_data = []
+    adapter, discovery_lock = _market_search_resources(asyncio.get_running_loop())
+    # Only query requested surfaces. An unavailable outcome provider must not
+    # discard usable spot/perp discovery (or be called for a spot-only lookup).
+    readers = {
+        "perp": adapter.get_meta_and_asset_ctxs,
+        "spot": adapter.get_spot_assets,
+        "outcome": adapter.get_outcome_markets,
+    }
+    selected = {
+        name: read
+        for name, read in readers.items()
+        if market_type is None
+        or name == {"hip3": "perp", "hip4": "outcome"}.get(market_type, market_type)
+    }
+    # Native researchers share one MCP process. Serialize cache misses so a
+    # parallel search burst does not rebuild the same perp universe N times.
+    async with discovery_lock:
+        responses = await asyncio.gather(
+            *(read() for read in selected.values()), return_exceptions=True
+        )
+    data: dict[str, Any] = {}
+    warnings: list[str] = []
+    for name, response in zip(selected, responses, strict=True):
+        if isinstance(response, BaseException):
+            if not isinstance(response, Exception):
+                raise response
+            warnings.append(f"{name} metadata unavailable; discovery is incomplete")
+        elif response[0]:
+            data[name] = response[1]
+        else:
+            warnings.append(f"{name} metadata unavailable; discovery is incomplete")
+    perp_data = data.get("perp", [{"universe": []}, []])
+    spot_data = data.get("spot", {})
+    outcome_data = data.get("outcome", [])
 
     # HIP-3 builder dexes carry a `<dex>:<base>` prefix; core perps don't have
     # a quote suffix, so tack on `-USDC` to render the canonical coin path.
@@ -2481,15 +2510,7 @@ async def hyperliquid_search_market(
             "perps": perp_hits,
             "spots": spot_hits,
             "outcomes": outcome_hits,
-            "warnings": [
-                f"{name} metadata unavailable; discovery is incomplete"
-                for name, available in (
-                    ("perp", perp_ok),
-                    ("spot", spot_ok),
-                    ("outcome", outcome_ok),
-                )
-                if not available
-            ],
+            "warnings": warnings,
         }
     )
 
