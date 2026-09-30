@@ -214,6 +214,56 @@ async def test_defillama_free_protocol_fees_returns_daily_and_weekly(
     assert result["result"]["chainDailyRows"][0]["breakdown"] == {
         "Ethereum": {"Pendle": 100}
     }
+    assert result["result"]["methodology"] is None
+    assert result["result"]["methodologyURL"] is None
+    assert result["result"]["breakdownMethodology"] is None
+    assert result["result"]["totals"] == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("data_type", ["dailyFees", "dailyRevenue"])
+async def test_defillama_protocol_fees_preserves_definitions_and_reported_totals(
+    monkeypatch: pytest.MonkeyPatch, data_type: str
+) -> None:
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.get_body = {
+        "description": "Example protocol",
+        "methodology": {
+            "Fees": "Onchain buy-and-burn only; excludes offchain subscription sales.",
+            "Revenue": "Onchain buy-and-burn only, not total business revenue.",
+        },
+        "methodologyURL": "https://example.org/adapter",
+        "breakdownMethodology": {"Fees": {"Burn": "USD value of tokens burned."}},
+        "total24h": 0,
+        "total7d": 700,
+        "total30d": 2500,
+        "total1y": None,
+        "annualized1y": 30416.67,
+    }
+    monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    response = await llama_module.DEFILLAMA_FREE_CLIENT.protocol_fees(
+        "example", data_type=data_type
+    )
+
+    assert _FakeAsyncClient.calls == [
+        (
+            "GET",
+            "https://api.llama.fi/summary/fees/example",
+            {"params": {"dataType": data_type}},
+        )
+    ]
+    result = response["result"]
+    for key in ("description", "methodology", "methodologyURL", "breakdownMethodology"):
+        assert result[key] == _FakeAsyncClient.get_body[key]
+    assert result["totals"] == {
+        "total24h": 0,
+        "total7d": 700,
+        "total30d": 2500,
+        "total1y": None,
+    }
+    assert result["dailyRows"] == []
+    assert response["evidence"][0]["url"] == response["url"]
 
 
 @pytest.mark.asyncio

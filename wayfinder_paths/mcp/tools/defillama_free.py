@@ -47,7 +47,9 @@ async def research_defillama_free(
         chain: Optional for dex_overview and fees_overview.
         coins: Required for current_prices, e.g. ethereum:0xa0b8...
         query: Required for protocol_search.
-        dataType: For protocol_fees: dailyFees or dailyRevenue.
+        dataType: For protocol_fees: dailyFees or dailyRevenue. Read the returned
+            provider methodology before interpreting a metric as business revenue.
+            Totals are provider-reported periods, not annualized projections.
         days: Lookback days for protocol_fees/protocol_tvl_history.
         limit: Result cap for page-able collection datasets.
         cursor: Page cursor returned by a prior response, or "_".

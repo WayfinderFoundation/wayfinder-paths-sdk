@@ -153,9 +153,9 @@ class DefiLlamaFreeClient:
             f"/summary/fees/{_path_part(protocol_slug, 'protocolSlug')}",
             params={"dataType": normalized_type},
         )
-        result = (
-            response.get("result") if isinstance(response.get("result"), dict) else {}
-        )
+        result = response.get("result")
+        if not isinstance(result, dict):
+            result = {}
         rows = _last_daily_rows(result.get("totalDataChart"), days=days)
         chain_rows = _last_daily_breakdown_rows(
             result.get("totalDataChartBreakdown"), days=days
@@ -163,6 +163,11 @@ class DefiLlamaFreeClient:
         response["result"] = {
             "protocolSlug": protocol_slug,
             "dataType": normalized_type,
+            "description": result.get("description"),
+            "methodology": result.get("methodology"),
+            "methodologyURL": result.get("methodologyURL"),
+            "breakdownMethodology": result.get("breakdownMethodology"),
+            "totals": _overview_totals(result),
             "days": days,
             "dailyRows": rows,
             "weeklyRollups": _weekly_sum_rollups(rows),
