@@ -43,10 +43,6 @@ JOB_LOCK_TIMEOUT_SECONDS = 3
 JOB_LOCK_BUSY_MSG = (
     "Runner Daemon lock is busy, no operations were completed, please try again later"
 )
-SESSION_ENV_KEYS = (
-    "OPENCODE_SESSION_ID",
-    "OPENCODE_SESSIONID",
-)
 
 
 def _safe_job_dirname(name: str) -> str:
@@ -377,26 +373,40 @@ class RunnerDaemon:
             },
         )
 
-    def _bind_runner_session_async(self, name: str) -> None:
+    def _bind_notify_session(self, name: str, caller_session_id: str | None) -> None:
+        """Point the job's chat notifications at the session that last referenced it."""
+        if caller_session_id:
+            self._set_notify_session(self._db, name, caller_session_id)
+            return
         if not is_opencode_instance():
             return
+        db_path = self._paths.db_path
 
         def _bind() -> None:
-            session_id = OPENCODE_CLIENT.find_runner_session()
+            session_id = OPENCODE_CLIENT.find_session_referencing_job(name)
             if not session_id:
                 return
-            result = self._db.get_job(name=name)
-            if not result:
-                return
-            job, _ = result
-            payload = dict(job.payload or {})
-            if payload.get("notify_session_id"):
-                return
-            payload["notify_session_id"] = session_id
-            self._db.update_job(name=name, payload=payload, interval_seconds=None)
-            logger.info(f"Auto-bound job {name} to session {session_id}")
+            # Private connection: see _sync_to_backend_async.
+            db = RunnerDB(db_path)
+            try:
+                self._set_notify_session(db, name, session_id)
+            finally:
+                db.close()
 
-        self._run_side_effect(f"bind-runner-session-{name}", _bind)
+        self._run_side_effect(f"bind-session-{name}", _bind)
+
+    @staticmethod
+    def _set_notify_session(db: RunnerDB, name: str, session_id: str) -> None:
+        result = db.get_job(name=name)
+        if not result:
+            return
+        job, _ = result
+        if job.payload.get("notify_session_id") == session_id:
+            return
+        db.update_job(
+            name=name, payload={**job.payload, "notify_session_id": session_id}
+        )
+        logger.info(f"Bound job {name} to session {session_id}")
 
     def _sync_to_backend_async(self) -> None:
         if not is_opencode_instance():
@@ -440,7 +450,12 @@ class RunnerDaemon:
         status: str,
         error_text: str | None,
     ) -> None:
-        result = self._db.get_job(name=running_process.job_name)
+        # Private connection: this runs on a side-effect thread.
+        db = RunnerDB(self._paths.db_path)
+        try:
+            result = db.get_job(name=running_process.job_name)
+        finally:
+            db.close()
         if not result:
             return
         job, _ = result
@@ -469,6 +484,13 @@ class RunnerDaemon:
         }
         if event is not None:
             payload["event"] = event
+        # Posting bumps the session to newest, which pulls an archived or
+        # deleted chat back into the user's view.
+        if not OPENCODE_CLIENT.is_live_session(session_id):
+            logger.info(
+                f"Skipping chat notify for {job.name}: session {session_id} gone"
+            )
+            return
         notification = json.dumps(payload)
         OPENCODE_CLIENT.send_message(session_id, notification)
 
@@ -764,6 +786,7 @@ class RunnerDaemon:
         interval_seconds: int | None = None,
         cron_expr: str | None = None,
         timezone: str | None = None,
+        caller_session_id: str | None = None,
     ) -> dict[str, Any]:
         if not name:
             return {"ok": False, "error": "name is required"}
@@ -810,13 +833,7 @@ class RunnerDaemon:
             env = payload_norm.get("env")
             if env is not None and not isinstance(env, dict):
                 return {"ok": False, "error": "payload.env must be an object"}
-        session_id = payload_norm.get("notify_session_id")
-        if session_id is None:
-            session_id = next(
-                (os.environ[key] for key in SESSION_ENV_KEYS if os.environ.get(key)),
-                None,
-            )
-        payload_norm["notify_session_id"] = session_id
+        payload_norm.setdefault("notify_session_id", None)
 
         try:
             now = int(time.time())
@@ -830,8 +847,8 @@ class RunnerDaemon:
             )
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
-        if session_id is None:
-            self._bind_runner_session_async(name)
+        if payload_norm["notify_session_id"] is None:
+            self._bind_notify_session(name, caller_session_id)
         self._sync_to_backend_async()
         return {"ok": True, "result": {"job_id": job_id, "name": name}}
 
@@ -843,6 +860,7 @@ class RunnerDaemon:
         interval_seconds: int | None = None,
         cron_expr: str | None = None,
         timezone: str | None = None,
+        caller_session_id: str | None = None,
     ) -> dict[str, Any]:
         schedule_kwargs: dict[str, Any] = {}
         if interval_seconds is not None or cron_expr is not None:
@@ -855,6 +873,14 @@ class RunnerDaemon:
             except ValueError as exc:
                 return {"ok": False, "error": str(exc)}
             schedule_kwargs = _schedule_db_kwargs(schedule, clear_interval_cron=True)
+        if payload is not None and "notify_session_id" not in payload:
+            # A full payload replacement must not silently drop the binding.
+            current = self._db.get_job(name=name)
+            if current:
+                payload = {
+                    **payload,
+                    "notify_session_id": current[0].payload.get("notify_session_id"),
+                }
         try:
             self._db.update_job(
                 name=name,
@@ -874,6 +900,7 @@ class RunnerDaemon:
                     immediate_interval=True,
                 )
                 self._db.set_next_run_at(job_id=job.id, next_run_at=next_run_at)
+        self._bind_notify_session(name, caller_session_id)
         self._sync_to_backend_async()
         return {"ok": True, "result": {"name": name}}
 
@@ -882,7 +909,9 @@ class RunnerDaemon:
         self._sync_to_backend_async()
         return {"ok": True, "result": {"name": name, "status": JobStatus.PAUSED}}
 
-    def ctl_resume_job(self, *, name: str) -> dict[str, Any]:
+    def ctl_resume_job(
+        self, *, name: str, caller_session_id: str | None = None
+    ) -> dict[str, Any]:
         result = self._db.get_job(name=name)
         if not result:
             return {"ok": False, "error": f"Job not found: {name}"}
@@ -895,6 +924,7 @@ class RunnerDaemon:
             immediate_interval=True,
         )
         self._db.set_next_run_at(job_id=job.id, next_run_at=next_run_at)
+        self._bind_notify_session(name, caller_session_id)
         self._sync_to_backend_async()
         return {"ok": True, "result": {"name": name, "status": JobStatus.ACTIVE}}
 
@@ -937,7 +967,9 @@ class RunnerDaemon:
             "result": {"name": name, "signal": sig_name, "killed": killed},
         }
 
-    def ctl_run_once(self, *, name: str) -> dict[str, Any]:
+    def ctl_run_once(
+        self, *, name: str, caller_session_id: str | None = None
+    ) -> dict[str, Any]:
         now = int(time.time())
         result = self._db.get_job(name=name)
         if not result:
@@ -945,6 +977,7 @@ class RunnerDaemon:
         job, state = result
         if state.status != JobStatus.ACTIVE:
             return {"ok": False, "error": f"job is not ACTIVE (status={state.status})"}
+        self._bind_notify_session(name, caller_session_id)
 
         job_dict: dict[str, Any] = {
             "id": job.id,

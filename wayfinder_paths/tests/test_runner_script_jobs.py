@@ -149,7 +149,7 @@ def test_daemon_adds_script_job_with_relative_path(tmp_path: Path) -> None:
     assert not Path(stored).is_absolute()
 
 
-def test_daemon_add_job_uses_runtime_session_without_opencode_scan(
+def test_daemon_add_job_uses_caller_session_without_opencode_scan(
     tmp_path: Path, monkeypatch
 ) -> None:
     p = _paths(tmp_path)
@@ -159,11 +159,12 @@ def test_daemon_add_job_uses_runtime_session_without_opencode_scan(
     script.write_text("print('hi')\n", encoding="utf-8")
 
     daemon = RunnerDaemon(paths=p)
-    monkeypatch.setenv("OPENCODE_SESSION_ID", "ses_env")
+    # The daemon's own env belongs to whichever session started it; ignore it.
+    monkeypatch.setenv("OPENCODE_SESSION_ID", "ses_daemon")
     monkeypatch.setattr(
         OPENCODE_CLIENT,
-        "find_runner_session",
-        lambda: (_ for _ in ()).throw(AssertionError("should not scan")),
+        "find_session_referencing_job",
+        lambda _name: (_ for _ in ()).throw(AssertionError("should not scan")),
     )
     monkeypatch.setattr(daemon, "_sync_to_backend_async", lambda: None)
 
@@ -172,11 +173,12 @@ def test_daemon_add_job_uses_runtime_session_without_opencode_scan(
         job_type="script",
         payload={"script_path": str(script), "args": []},
         interval_seconds=60,
+        caller_session_id="ses_caller",
     )
 
     assert resp["ok"] is True
     job, _ = daemon._db.get_job(name="script-job")
-    assert job.payload["notify_session_id"] == "ses_env"
+    assert job.payload["notify_session_id"] == "ses_caller"
 
 
 def test_daemon_add_job_defers_session_scan_when_session_unknown(
@@ -192,8 +194,12 @@ def test_daemon_add_job_defers_session_scan_when_session_unknown(
     monkeypatch.delenv("OPENCODE_SESSION_ID", raising=False)
     monkeypatch.delenv("OPENCODE_SESSIONID", raising=False)
     monkeypatch.setattr(daemon, "_sync_to_backend_async", lambda: None)
-    bound: list[str] = []
-    monkeypatch.setattr(daemon, "_bind_runner_session_async", bound.append)
+    bound: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        daemon,
+        "_bind_notify_session",
+        lambda name, caller_session_id: bound.append((name, caller_session_id)),
+    )
 
     resp = daemon.ctl_add_job(
         name="script-job",
@@ -203,7 +209,7 @@ def test_daemon_add_job_defers_session_scan_when_session_unknown(
     )
 
     assert resp["ok"] is True
-    assert bound == ["script-job"]
+    assert bound == [("script-job", None)]
 
 
 def test_notify_session_skips_routine_success(tmp_path: Path, monkeypatch) -> None:
@@ -225,6 +231,7 @@ def test_notify_session_skips_routine_success(tmp_path: Path, monkeypatch) -> No
     job, _ = daemon._db.get_job(name="quiet-job")
     calls: list[str] = []
     monkeypatch.setattr(OPENCODE_CLIENT, "healthy", lambda: True)
+    monkeypatch.setattr(OPENCODE_CLIENT, "is_live_session", lambda _session_id: True)
     monkeypatch.setattr(
         OPENCODE_CLIENT,
         "send_message",
@@ -269,6 +276,7 @@ def test_notify_session_posts_failures(tmp_path: Path, monkeypatch) -> None:
     job, _ = daemon._db.get_job(name="loud-job")
     calls: list[str] = []
     monkeypatch.setattr(OPENCODE_CLIENT, "healthy", lambda: True)
+    monkeypatch.setattr(OPENCODE_CLIENT, "is_live_session", lambda _session_id: True)
     monkeypatch.setattr(
         OPENCODE_CLIENT,
         "send_message",
@@ -325,6 +333,7 @@ def test_notify_session_posts_success_with_job_result_marker(
     job, _ = daemon._db.get_job(name="event-job")
     calls: list[str] = []
     monkeypatch.setattr(OPENCODE_CLIENT, "healthy", lambda: True)
+    monkeypatch.setattr(OPENCODE_CLIENT, "is_live_session", lambda _session_id: True)
     monkeypatch.setattr(
         OPENCODE_CLIENT,
         "send_message",
