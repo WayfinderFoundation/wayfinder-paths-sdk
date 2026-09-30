@@ -74,7 +74,9 @@ async def test_polymarket_get_state_uses_adapter_full_state():
     [("Will BTC rally?", "low"), ("Will Bitcoin rally?", "high")],
 )
 @pytest.mark.asyncio
-async def test_polymarket_search_uses_adapter_search(question, confidence):
+async def test_polymarket_search_uses_adapter_search(
+    question: str, confidence: str
+) -> None:
     with (
         patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
         patch(
@@ -123,7 +125,9 @@ async def test_polymarket_search_uses_adapter_search(question, confidence):
     "query", ["Robinhood Chain", "stock tokenization", "Fed hikes"]
 )
 @pytest.mark.asyncio
-async def test_polymarket_search_unrelated_fallback_is_low_confidence(query):
+async def test_polymarket_search_unrelated_fallback_is_low_confidence(
+    query: str,
+) -> None:
     rows = [
         {
             "slug": "will-manuel-bompard-win-the-2027-french-presidential-election",
