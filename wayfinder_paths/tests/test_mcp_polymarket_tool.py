@@ -69,8 +69,12 @@ async def test_polymarket_get_state_uses_adapter_full_state():
         )
 
 
+@pytest.mark.parametrize(
+    "question,confidence",
+    [("Will BTC rally?", "low"), ("Will Bitcoin rally?", "high")],
+)
 @pytest.mark.asyncio
-async def test_polymarket_search_uses_adapter_search():
+async def test_polymarket_search_uses_adapter_search(question, confidence):
     with (
         patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
         patch(
@@ -82,7 +86,7 @@ async def test_polymarket_search_uses_adapter_search():
                         {
                             "slug": "m1",
                             "eventSlug": "e1",
-                            "question": "Will BTC rally?",
+                            "question": question,
                             "yesPrice": 0.42,
                             "noPrice": 0.58,
                             "yesTokenId": "tok_yes",
@@ -103,6 +107,8 @@ async def test_polymarket_search_uses_adapter_search():
         assert out["result"]["summaryMode"] is True
         assert "markets" not in out["result"]
         candidate = out["result"]["candidates"][0]
+        # Confidence is lexical; backend synonym matches remain available for review.
+        assert out["result"]["relevance"]["confidence"] == confidence
         assert candidate["slug"] == "m1"
         assert candidate["outcomes"][0] == {
             "label": "Yes",
@@ -111,6 +117,42 @@ async def test_polymarket_search_uses_adapter_search():
         }
         assert candidate["outcomes"][1]["tokenId"] == "tok_no"
         assert out["result"]["truncation"]["rawAvailableWithSummaryFalse"] is True
+
+
+@pytest.mark.parametrize(
+    "query", ["Robinhood Chain", "stock tokenization", "Fed hikes"]
+)
+@pytest.mark.asyncio
+async def test_polymarket_search_unrelated_fallback_is_low_confidence(query):
+    rows = [
+        {
+            "slug": "will-manuel-bompard-win-the-2027-french-presidential-election",
+            "eventSlug": "next-french-presidential-election",
+            "question": "Will Manuel Bompard win the 2027 French presidential election?",
+            "liquidity": 1_000_000,
+            "active": True,
+        }
+    ]
+    hydrate = AsyncMock(return_value=(False, "not found"))
+    with (
+        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
+        patch("wayfinder_paths.mcp.utils._report_tool_metric"),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.search_markets",
+            new=AsyncMock(return_value=(True, rows)),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.get_event_by_slug",
+            new=hydrate,
+        ),
+    ):
+        out = await polymarket_read("search", query=query)
+
+    assert out["ok"] is True
+    # Preserve recall for semantic matches, but do not certify an unrelated fallback.
+    assert len(out["result"]["candidates"]) == 1
+    assert out["result"]["relevance"]["confidence"] == "low"
+    hydrate.assert_not_awaited()
 
 
 @pytest.mark.asyncio
