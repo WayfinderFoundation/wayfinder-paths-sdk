@@ -36,6 +36,7 @@ async def research_defillama_free(
     days: str | int = "30",
     limit: str | int = "25",
     cursor: str = "_",
+    includeChainBreakdown: bool = False,
 ) -> dict[str, Any]:
     """Call DeFiLlama free APIs directly from the OpenCode runtime.
 
@@ -53,6 +54,10 @@ async def research_defillama_free(
         days: Lookback days for protocol_fees/protocol_tvl_history.
         limit: Result cap for page-able collection datasets.
         cursor: Page cursor returned by a prior response, or "_".
+        includeChainBreakdown: For protocol_fees, include the large per-chain
+            daily breakdown. Defaults to false; aggregate daily rows, reported
+            totals and methodology remain available. Use a short days window
+            when a chain-by-chain comparison is needed.
     """
     normalized = normalize_enum(
         dataset,
@@ -84,13 +89,15 @@ async def research_defillama_free(
     if normalized == "protocol_fees":
         if protocolSlug == "_":
             raise ValueError("protocolSlug is required for dataset=protocol_fees")
-        return ok(
-            await DEFILLAMA_FREE_CLIENT.protocol_fees(
-                protocolSlug,
-                data_type=dataType,
-                days=normalize_int(days, field_name="days", min_value=1),
-            )
+        response = await DEFILLAMA_FREE_CLIENT.protocol_fees(
+            protocolSlug,
+            data_type=dataType,
+            days=normalize_int(days, field_name="days", min_value=1),
         )
+        if not includeChainBreakdown:
+            response["result"].pop("chainDailyRows", None)
+            response["result"]["chainDailyRowsOmitted"] = True
+        return ok(response)
     if normalized == "protocol_tvl_history":
         if protocolSlug == "_":
             raise ValueError(

@@ -76,6 +76,11 @@ Use `fees_overview`, `chains`, `stablecoins`, `dex_overview`, and `open_interest
 
 Label DeFiLlama outputs as DeFiLlama free API data.
 
+`protocol_fees` keeps aggregate daily history, reported period totals and metric
+definitions compact by default. Set `includeChainBreakdown=true` only for a
+chain-by-chain comparison, with a short `days` window; the full breakdown can be
+large. The omitted-breakdown flag does not mean chain data is unavailable.
+
 ## Pendle / PT / YT Flow
 
 For Pendle deployments, fee explosions, PT/YT markets, or yield-trading volume:

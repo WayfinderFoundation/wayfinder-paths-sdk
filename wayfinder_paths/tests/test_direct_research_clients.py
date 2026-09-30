@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
+from unittest.mock import AsyncMock
+
 import httpx
 import pytest
 
 from wayfinder_paths.core.clients.direct import DefiLlamaFreeClient as llama_module
 from wayfinder_paths.core.clients.direct import GoldskyDirectClient as goldsky_module
-from wayfinder_paths.mcp.tools import goldsky_direct
+from wayfinder_paths.mcp.tools import defillama_free, goldsky_direct
 
 
 class _FakeAsyncClient:
@@ -264,6 +267,59 @@ async def test_defillama_protocol_fees_preserves_definitions_and_reported_totals
     }
     assert result["dailyRows"] == []
     assert response["evidence"][0]["url"] == response["url"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_breakdown", [False, True])
+async def test_defillama_tool_keeps_large_chain_history_opt_in(
+    monkeypatch: pytest.MonkeyPatch, include_breakdown: bool
+) -> None:
+    breakdown = [
+        {
+            "date": f"2026-09-{day:02}",
+            "breakdown": {f"Chain {chain}": {"Protocol": 100} for chain in range(40)},
+        }
+        for day in range(1, 31)
+    ]
+    metrics = {
+        "protocolSlug": "example",
+        "dataType": "dailyRevenue",
+        "totals": {"total30d": 120000},
+        "dailyRows": [{"date": row["date"], "value": 4000} for row in breakdown],
+        "methodology": {"Revenue": "Net protocol fees, not holder distributions."},
+        "methodologyURL": "https://example.org/methodology",
+    }
+    evidence = [{"url": "https://api.llama.fi/summary/fees/example"}]
+    lookup = AsyncMock(
+        return_value={
+            "result": {**metrics, "chainDailyRows": breakdown},
+            "evidence": evidence,
+        }
+    )
+    monkeypatch.setattr(defillama_free.DEFILLAMA_FREE_CLIENT, "protocol_fees", lookup)
+    monkeypatch.setattr(
+        "wayfinder_paths.mcp.utils._report_tool_metric", lambda *a, **k: None
+    )
+
+    response = await defillama_free.research_defillama_free(
+        dataset="protocol_fees",
+        protocolSlug="example",
+        dataType="dailyRevenue",
+        **({"includeChainBreakdown": True} if include_breakdown else {}),
+    )
+
+    lookup.assert_awaited_once_with("example", data_type="dailyRevenue", days=30)
+    assert response["ok"]
+    assert response["result"]["evidence"] == evidence
+    if include_breakdown:
+        assert response["result"]["result"] == {**metrics, "chainDailyRows": breakdown}
+        assert len(json.dumps(response, indent=2)) > 50000
+    else:
+        assert response["result"]["result"] == {
+            **metrics,
+            "chainDailyRowsOmitted": True,
+        }
+        assert len(json.dumps(response, indent=2)) < 10000
 
 
 @pytest.mark.asyncio
