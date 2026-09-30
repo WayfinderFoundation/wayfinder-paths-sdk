@@ -152,6 +152,117 @@ async def _mock_spot_assets(self):
     }
 
 
+@pytest.fixture
+def market_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def metadata(self: HyperliquidAdapter) -> tuple[bool, list]:
+        success, data = await _mock_meta_and_asset_ctxs(self)
+        # Put another quote-sharing market first to catch stable-sort ties.
+        data[0]["universe"][:2] = [{"name": "ETH"}, {"name": "BTC"}]
+        data[0]["universe"].append({"name": "xyz:NVDA"})
+        return success, data
+
+    monkeypatch.setattr(HyperliquidAdapter, "get_meta_and_asset_ctxs", metadata)
+    monkeypatch.setattr(HyperliquidAdapter, "get_spot_assets", _mock_spot_assets)
+    monkeypatch.setattr(
+        HyperliquidAdapter, "get_outcome_markets", _mock_outcome_markets
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "bucket"),
+    [("BTC-USDC", "perps"), ("flx:BTC", "perps"), ("UBTC/USDH", "spots")],
+)
+async def test_search_exact_canonical_identity_ranks_first(
+    market_inventory: None, query: str, bucket: str
+) -> None:
+    response = await hyperliquid_search_market(query, limit=1)
+    assert response["ok"]
+    assert [row["name"] for row in response["result"][bucket]] == [query]
+
+
+@pytest.mark.asyncio
+async def test_search_pair_does_not_match_other_underlyings_through_quote(
+    market_inventory: None,
+) -> None:
+    response = await hyperliquid_search_market("BTC-USDC", market_type="perp")
+    assert response["ok"]
+    assert _names(response["result"]["perps"]) == {"BTC-USDC"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["usdc", "usdh", "xyz"])
+async def test_search_ignores_quote_and_dex_tokens(
+    market_inventory: None, query: str
+) -> None:
+    response = await hyperliquid_search_market(query)
+    assert response["ok"]
+    assert response["result"]["perps"] == []
+    assert response["result"]["spots"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["bitcoin", ""])
+async def test_search_hip3_filter_precedes_limit(
+    market_inventory: None, query: str
+) -> None:
+    response = await hyperliquid_search_market(query, market_type="hip3", limit=1)
+    assert response["ok"]
+    assert _names(response["result"]["perps"]) == {"xyz:BTC"}
+    assert response["result"]["spots"] == []
+    assert response["result"]["outcomes"] == []
+
+
+@pytest.mark.asyncio
+async def test_search_perp_filter_precedes_exact_hip3_hit(
+    market_inventory: None,
+) -> None:
+    response = await hyperliquid_search_market("xyz:BTC", market_type="perp", limit=1)
+    assert response["ok"]
+    assert _names(response["result"]["perps"]) == {"BTC-USDC"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["bitcoin", ""])
+async def test_search_spot_filter_keeps_only_spot_bucket(
+    market_inventory: None, query: str
+) -> None:
+    response = await hyperliquid_search_market(query, market_type="spot", limit=1)
+    assert response["ok"]
+    assert _names(response["result"]["spots"]) == {"UBTC/USDC"}
+    assert response["result"]["perps"] == []
+    assert response["result"]["outcomes"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "bucket", "expected"),
+    [
+        ("bitcoin", "spots", {"UBTC/USDC", "UBTC/USDH"}),
+        ("kinetiq", "spots", {"KNTQ/USDH"}),
+        ("nvidia", "perps", {"xyz:NVDA"}),
+        ("oil futures", "perps", {"xyz:BRENTOIL", "flx:OIL", "cash:WTI"}),
+    ],
+)
+async def test_search_preserves_alias_and_subsequence_matching(
+    market_inventory: None, query: str, bucket: str, expected: set[str]
+) -> None:
+    response = await hyperliquid_search_market(query, limit=20)
+    assert response["ok"]
+    assert expected <= _names(response["result"][bucket])
+
+
+@pytest.mark.asyncio
+async def test_search_hip4_text_still_matches_comparison_aliases(
+    market_inventory: None,
+) -> None:
+    response = await hyperliquid_search_market("above", market_type="hip4", limit=1)
+    assert response["ok"]
+    assert response["result"]["outcomes"] == [_btc_bucket_market()]
+    assert response["result"]["perps"] == []
+    assert response["result"]["spots"] == []
+
+
 @pytest.mark.asyncio
 async def test_search_includes_public_market_context_without_wallet_reads(monkeypatch):
     async def metadata(self):

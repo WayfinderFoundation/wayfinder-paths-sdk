@@ -6,6 +6,7 @@ import difflib
 import math
 import re
 import time
+from collections.abc import Callable
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -2305,7 +2306,7 @@ async def hyperliquid_search_market(
 ) -> dict[str, Any]:
     """
     Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets by a simple query string. An empty
-    query returns the first `limit` items from each bucket unfiltered.
+    query returns the first `limit` items from each selected bucket.
 
     query: A simple string containing asset names, for example: btc, eth, oil. Prefer non empty queries for efficiency.
     limit: Max number of results to return per category.
@@ -2347,19 +2348,48 @@ async def hyperliquid_search_market(
     spots = list(spot_data) if isinstance(spot_data, dict) else []
     outcome_data = outcome_data if isinstance(outcome_data, list) else []
 
+    # Filter the universe before ranking/limiting so another market type cannot
+    # displace a valid result, including when browsing with an empty query.
+    match market_type:
+        case "perp":
+            perps = [name for name in perps if ":" not in name]
+            spots, outcome_data = [], []
+        case "hip3":
+            perps = [name for name in perps if ":" in name]
+            spots, outcome_data = [], []
+        case "spot":
+            perps, outcome_data = [], []
+        case "hip4":
+            perps, spots = [], []
+
     perp_hits: list[dict[str, Any]]
     if not query.strip():
         perp_hits = [{"name": p} for p in perps[:limit]]
         spot_hits = [{"name": s} for s in spots[:limit]]
         outcome_hits = outcome_data[:limit]
     else:
+
+        def underlying(name: str) -> str:
+            return name.rsplit(":", 1)[-1].split("/", 1)[0].removesuffix("-usdc")
+
         terms = {
             a
             for token in query.lower().split()
             for a in MARKET_SEARCH_ALIASES.get(token, {token})
         }
+        market_terms = {
+            alias
+            for token in map(underlying, query.lower().split())
+            for alias in MARKET_SEARCH_ALIASES.get(token, {token})
+        }
 
-        def score(text: str) -> float:
+        def score(text: str, *, market_name: bool) -> float:
+            if market_name:
+                # Exact canonical identity outranks aliases/fuzzy symbols. Quote
+                # currencies and builder dex names are not underlying matches.
+                if text.lower() == query.strip().lower():
+                    return 2.0
+                text = underlying(text.lower())
             # matches / min(len_a, len_b) — rewards covering the shorter string
             # fully. HL token symbols are short and often vowel-stripped (KNTQ
             # for kinetiq, kBONK for bonk), so subsequence-style matching is the
@@ -2368,7 +2398,7 @@ async def hyperliquid_search_market(
             # candidates can be ranked-out downstream.
             candidate_tokens = [c for c in re.split(r"[^a-z0-9]+", text.lower()) if c]
             best = 0.0
-            for term in terms:
+            for term in market_terms if market_name else terms:
                 for ct in candidate_tokens:
                     sm = difflib.SequenceMatcher(None, term, ct)
                     matches = sum(b.size for b in sm.get_matching_blocks())
@@ -2377,8 +2407,12 @@ async def hyperliquid_search_market(
                         best = max(best, matches / denom)
             return best
 
-        def top(items, text_of):
-            scored = ((item, score(text_of(item))) for item in items)
+        def top[T](
+            items: list[T], text_of: Callable[[T], str], *, market_name: bool = False
+        ) -> list[T]:
+            scored = (
+                (item, score(text_of(item), market_name=market_name)) for item in items
+            )
             kept = sorted(
                 ((it, s) for it, s in scored if s >= MARKET_SEARCH_MIN_MATCH_SCORE),
                 key=lambda r: r[1],
@@ -2408,21 +2442,9 @@ async def hyperliquid_search_market(
                 .replace("<", " below ")
             )
 
-        perp_hits = [{"name": p} for p in top(perps, lambda p: p)][:limit]
-        spot_hits = [{"name": s} for s in top(spots, lambda s: s)][:limit]
-        outcome_hits = top(outcome_data, outcome_text)[:limit]
-
-    match market_type:
-        case "perp":
-            perp_hits = [h for h in perp_hits if ":" not in h["name"]]
-            spot_hits, outcome_hits = [], []
-        case "hip3":
-            perp_hits = [h for h in perp_hits if ":" in h["name"]]
-            spot_hits, outcome_hits = [], []
-        case "spot":
-            perp_hits, outcome_hits = [], []
-        case "hip4":
-            perp_hits, spot_hits = [], []
+        perp_hits = [{"name": p} for p in top(perps, lambda p: p, market_name=True)]
+        spot_hits = [{"name": s} for s in top(spots, lambda s: s, market_name=True)]
+        outcome_hits = top(outcome_data, outcome_text)
 
     # Reuse the public data already fetched above; no wallet access or extra requests.
     contexts = (
