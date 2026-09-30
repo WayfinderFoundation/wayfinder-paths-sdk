@@ -8,6 +8,7 @@ from urllib.parse import quote
 import httpx
 
 BASE_URL = "https://api.llama.fi"
+COINS_BASE_URL = "https://coins.llama.fi"
 STABLECOINS_BASE_URL = "https://stablecoins.llama.fi"
 YIELDS_BASE_URL = "https://yields.llama.fi"
 TIMEOUT_SECONDS = 20
@@ -274,7 +275,9 @@ class DefiLlamaFreeClient:
         return _enforce_response_budget(response)
 
     async def current_prices(self, coins: str) -> dict[str, Any]:
-        return await self._get(f"/prices/current/{_path_part(coins, 'coins')}")
+        return await self._get(
+            f"/prices/current/{_path_part(coins, 'coins')}", base_url=COINS_BASE_URL
+        )
 
     async def dex_overview(
         self,

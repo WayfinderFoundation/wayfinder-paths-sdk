@@ -44,6 +44,8 @@ async def research_defillama_free(
         dataset: protocols, protocol_search, protocol, tvl, protocol_fees,
             protocol_tvl_history, chains, stablecoins, yields_pools,
             current_prices, dex_overview, fees_overview, or open_interest_overview.
+            protocol returns metadata/current chain TVL, not bulk historical
+            arrays. Use protocol_tvl_history with days for bounded TVL history.
         protocolSlug: Required for protocol/tvl/protocol_fees/protocol_tvl_history.
         chain: Optional for dex_overview and fees_overview.
         coins: Required for current_prices, e.g. ethereum:0xa0b8...
@@ -84,7 +86,26 @@ async def research_defillama_free(
     if normalized == "protocol":
         if protocolSlug == "_":
             raise ValueError("protocolSlug is required for dataset=protocol")
-        return ok(await DEFILLAMA_FREE_CLIENT.protocol(protocolSlug))
+        response = await DEFILLAMA_FREE_CLIENT.protocol(protocolSlug)
+        metadata = response["result"]
+        if not isinstance(metadata, dict):
+            raise ValueError("DeFiLlama protocol response is not an object")
+        history_fields = ("tvl", "chainTvls", "tokens", "tokensInUsd")
+        return ok(
+            {
+                **response,
+                "result": {
+                    **{
+                        key: value
+                        for key, value in metadata.items()
+                        if key not in history_fields
+                    },
+                    "historicalFieldsOmitted": [
+                        key for key in history_fields if key in metadata
+                    ],
+                },
+            }
+        )
     if normalized == "tvl":
         if protocolSlug == "_":
             raise ValueError("protocolSlug is required for dataset=tvl")

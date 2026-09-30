@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Literal
+from typing import Any, Literal
 from unittest.mock import AsyncMock
 
 import httpx
@@ -15,7 +15,7 @@ from wayfinder_paths.mcp.tools import defillama_free, goldsky_direct
 
 class _FakeAsyncClient:
     calls: list[tuple[str, str, dict]] = []
-    get_body = {"data": []}
+    get_body: dict[str, Any] | list[dict[str, Any]] = {"data": []}
     post_body = {"data": {"ok": True}}
 
     def __init__(self, *args, **kwargs) -> None:
@@ -52,6 +52,29 @@ async def test_defillama_free_uses_direct_api(monkeypatch: pytest.MonkeyPatch) -
     assert result["provider"] == "defillama_free"
     assert result["evidence"][0]["clientDirect"] is True
     assert result["evidence"][0]["attributionRequired"] is True
+
+
+@pytest.mark.asyncio
+async def test_defillama_current_prices_uses_coins_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.get_body = {"coins": {"coingecko:ethereum": {"price": 2000}}}
+    monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    response = await llama_module.DEFILLAMA_FREE_CLIENT.current_prices(
+        "coingecko:ethereum"
+    )
+
+    assert _FakeAsyncClient.calls == [
+        (
+            "GET",
+            "https://coins.llama.fi/prices/current/coingecko:ethereum",
+            {"params": {}},
+        )
+    ]
+    assert response["result"] == _FakeAsyncClient.get_body
+    assert response["evidence"][0]["url"].startswith("https://coins.llama.fi/")
 
 
 @pytest.mark.asyncio
@@ -353,6 +376,50 @@ async def test_defillama_tool_keeps_large_chain_history_opt_in(
             "chainDailyRowsOmitted": True,
         }
         assert len(json.dumps(response, indent=2)) < 10000
+
+
+@pytest.mark.asyncio
+async def test_defillama_protocol_tool_keeps_metadata_without_bulk_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metadata = {
+        "name": "Example",
+        "address": "base:0x123",
+        "url": "https://example.org",
+        "description": "Protocol fundamentals",
+        "methodology": "Count deposits, exclude borrowed assets.",
+        "currentChainTvls": {"Base": 1234, "staking": 50},
+        "treasury": "https://example.org/treasury",
+    }
+    rows = [{"date": index, "totalLiquidityUSD": 1000} for index in range(2000)]
+    histories = {
+        "tvl": rows,
+        "chainTvls": {"Base": {"tvl": rows}},
+        "tokens": rows,
+        "tokensInUsd": rows,
+    }
+    evidence = [
+        {"provider": "defillama_free", "url": "https://api.llama.fi/protocol/example"}
+    ]
+    lookup = AsyncMock(
+        return_value={"result": {**metadata, **histories}, "evidence": evidence}
+    )
+    monkeypatch.setattr(llama_module.DEFILLAMA_FREE_CLIENT, "protocol", lookup)
+    monkeypatch.setattr(
+        "wayfinder_paths.mcp.utils._report_tool_metric", lambda *a, **k: None
+    )
+
+    response = await defillama_free.research_defillama_free(
+        dataset="protocol", protocolSlug="example"
+    )
+
+    lookup.assert_awaited_once_with("example")
+    assert response["ok"]
+    assert response["result"]["evidence"] == evidence
+    result = response["result"]["result"]
+    assert result == {**metadata, "historicalFieldsOmitted": list(histories)}
+    assert len(json.dumps(response)) < 3000
+    assert lookup.return_value["result"] == {**metadata, **histories}
 
 
 @pytest.mark.asyncio

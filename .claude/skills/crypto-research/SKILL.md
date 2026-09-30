@@ -83,6 +83,12 @@ Use `fees_overview`, `chains`, `stablecoins`, `dex_overview`, and `open_interest
 
 Label DeFiLlama outputs as DeFiLlama free API data.
 
+`protocol` returns protocol metadata, methodology and current chain TVL without
+the large historical arrays listed in `historicalFieldsOmitted`. Omission is not
+missing provider data. Use `protocol_tvl_history` with a bounded `days` window
+for aggregate history and chain changes; the Python client's `protocol()` still
+returns the full provider payload when bulk analysis is needed.
+
 `protocol_fees` keeps aggregate daily history, reported period totals and metric
 definitions compact by default. Set `includeChainBreakdown=true` only for a
 chain-by-chain comparison, with a short `days` window; the full breakdown can be
