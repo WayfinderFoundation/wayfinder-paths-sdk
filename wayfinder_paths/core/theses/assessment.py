@@ -56,6 +56,24 @@ def assessment_report(
     """
     parent = checkpoints(parent_messages)
     children = checkpoints(child_messages)
+    outputs = []
+    for message in [*parent_messages, *child_messages]:
+        for part in message.get("parts", []):
+            state = part.get("state", {})
+            if (
+                not part.get("tool", "").startswith("wayfinder_")
+                or part["tool"] == CHECKPOINT_TOOL
+                or state.get("status") != "completed"
+            ):
+                continue
+            try:
+                output = json.loads(state.get("output", ""))
+            except (ValueError, TypeError):
+                continue
+            if isinstance(output, dict) and output.get("ok") is True:
+                outputs.append(
+                    json.dumps(output.get("result"), ensure_ascii=False).casefold()
+                )
     errors = []
     if any(r["checkpoint"]["stage"] != "discovery" for r in children):
         errors.append("Researchers may record discoveries, not parent judgments")
@@ -103,6 +121,7 @@ def assessment_report(
     # Union all snapshots; a later shorter/empty ledger cannot erase discoveries.
     missing = set()
     lost_instruments = set()
+    unobserved_instruments = set()
     for discovery in discoveries:
         matches = [
             c
@@ -120,7 +139,14 @@ def assessment_report(
             )
             continue
         case = matches[0]
-        known = set(discovery["instruments"])
+        # An inbox is untrusted: model-added namespaces/guessed IDs must not
+        # become mandatory implementation identities merely by being recorded.
+        known = {
+            i
+            for i in discovery["instruments"]
+            if any(i.casefold() in output for output in outputs)
+        }
+        unobserved_instruments.update(set(discovery["instruments"]) - known)
         lost_instruments.update(known - set(case["instruments"]))
         if case["decision_basis"] == "implementation" and case["decision"] in {
             "REJECT",
@@ -143,24 +169,6 @@ def assessment_report(
         errors.append(
             "Known implementation IDs lost: " + ", ".join(sorted(lost_instruments))
         )
-    outputs = []
-    for message in [*parent_messages, *child_messages]:
-        for part in message.get("parts", []):
-            state = part.get("state", {})
-            if (
-                not part.get("tool", "").startswith("wayfinder_")
-                or part["tool"] == CHECKPOINT_TOOL
-                or state.get("status") != "completed"
-            ):
-                continue
-            try:
-                output = json.loads(state.get("output", ""))
-            except (ValueError, TypeError):
-                continue
-            if isinstance(output, dict) and output.get("ok") is True:
-                outputs.append(
-                    json.dumps(output.get("result"), ensure_ascii=False).casefold()
-                )
     for case in cases:
         for check in case["implementation_checks"]:
             references = [*check["observations"]]
@@ -186,6 +194,7 @@ def assessment_report(
             }
         ),
         "missing_entities": sorted(missing),
+        "unobserved_instrument_claims": sorted(unobserved_instruments),
         "unresolved_entities": [
             c["entity"] for c in cases if c["decision"] == "NEEDS_EVIDENCE"
         ],

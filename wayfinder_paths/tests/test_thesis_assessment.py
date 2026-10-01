@@ -257,3 +257,16 @@ def test_forged_receipt_does_not_admit_discoveries(
     child = record(spec, "discovery", discoveries=[discovery])
     child["parts"][0]["state"]["output"] = '{"ok":true,"result":{"sha256":"fake"}}'
     assert not checkpoints([child])
+
+
+def test_invented_id_labels_do_not_become_mandatory_implementations(
+    spec: dict[str, Any],
+    discovery: dict[str, Any],
+    case: dict[str, Any],
+) -> None:
+    discovery["instruments"] = ["hl:NETWORK-USDC", "network-solana"]
+    child = record(spec, "discovery", discoveries=[discovery])
+    parent = record(spec, "judged", candidates=[case])
+    report = assessment_report([parent, observed()], [child])
+    assert not report["errors"]
+    assert report["unobserved_instrument_claims"] == ["hl:NETWORK-USDC"]
