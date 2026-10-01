@@ -793,3 +793,15 @@ def _max_drawdown(equity_curve: Sequence[Mapping[str, Any]]) -> float:
         if peak > 0:
             worst = max(worst, (peak - value) / peak)
     return worst
+
+
+def probation_testability(
+    trades_per_day: float, *, days: float, min_trades: int
+) -> float:
+    """Poisson chance of at least ``min_trades`` trades in ``days``."""
+    expected = max(float(trades_per_day), 0.0) * float(days)
+    below = sum(
+        math.exp(-expected) * expected**count / math.factorial(count)
+        for count in range(int(min_trades))
+    )
+    return max(0.0, 1.0 - below)

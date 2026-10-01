@@ -23,7 +23,7 @@ from wayfinder_paths.jobs.bundles import copy_job_bundle
 from wayfinder_paths.jobs.capital import capital_at
 from wayfinder_paths.jobs.compute_lock import job_state_lock
 from wayfinder_paths.jobs.constitution import load_constitution
-from wayfinder_paths.jobs.economics import block_bootstrap_lcb
+from wayfinder_paths.jobs.economics import block_bootstrap_lcb, probation_testability
 from wayfinder_paths.jobs.execution.job import _load_job_yaml
 from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
 from wayfinder_paths.jobs.execution.validation import (
@@ -638,12 +638,7 @@ def probation_horizon_days(
         return None
     rate = float(trade_count) / float(day_count)
     for days in range(int(floor_days), int(cap_days) + 1):
-        expected = rate * days
-        below = sum(
-            math.exp(-expected) * expected**count / math.factorial(count)
-            for count in range(int(min_trades))
-        )
-        if 1.0 - below >= confidence:
+        if probation_testability(rate, days=days, min_trades=min_trades) >= confidence:
             return days
     return None
 

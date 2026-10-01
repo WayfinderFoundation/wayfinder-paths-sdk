@@ -30,6 +30,7 @@ from wayfinder_paths.jobs.compute_lock import (
 from wayfinder_paths.jobs.evolution_campaign import (
     _archive_campaign_candidate,
     _attempt_cap,
+    _cadence,
     _candidate_handoff,
     _candidate_has_typed_search_space,
     _certification_fold_bounds,
@@ -64,11 +65,13 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _protected_fold_verdict,
     _prune_risky_trials,
     _quick_entry_signature,
+    _ranked_score,
     _record_compute_budget_override,
     _rejected_submission,
     _require_train_profit,
     _research_context_instruction,
     _risk_ceiling_scale,
+    _run_evolution_optuna,
     _same_family_nonwins,
     _screen_confidence,
     _screen_slice_report,
@@ -8516,6 +8519,83 @@ def test_entry_overlap_needs_enough_entries_and_signature_keeps_opens() -> None:
     signature = _quick_entry_signature(fills)
     assert len(signature) == 3
     assert signature == _quick_entry_signature(list(reversed(fills)))
+
+
+def _entries(*days: int) -> list[dict[str, Any]]:
+    start = datetime(2026, 5, 1, tzinfo=UTC)
+    return [
+        {
+            "timestamp": (start + timedelta(days=day, hours=12)).isoformat(),
+            "raw": {"intent_action": action},
+        }
+        for day in days
+        for action in ("OPEN", "CLOSE")
+    ]
+
+
+def test_cadence_scores_bursts_below_steady_books_with_the_same_count() -> None:
+    start, end = datetime(2026, 5, 1, tzinfo=UTC), datetime(2026, 7, 30, tzinfo=UTC)
+    steady = _cadence(_entries(*range(0, 90, 6)), start, end, {})
+    burst = _cadence(_entries(*range(10, 40, 2)), start, end, {})
+    assert steady["entries"] == burst["entries"] == 15
+    assert steady["entries_per_day"] == burst["entries_per_day"]
+    assert steady["window_coverage"] == 1.0
+    assert burst["window_coverage"] < 0.6
+    short = _cadence(_entries(1, 3), start, start + timedelta(days=10), {})
+    assert short["window_coverage"] is None
+
+
+def test_ranked_score_charges_untestable_cadence_only_when_weighted() -> None:
+    def candidate(coverage: float | None, rate: float) -> dict[str, Any]:
+        return {
+            "objective": {"net_log_growth": 0.07, "max_drawdown_pct": 0.02},
+            "dev": {
+                "validation": {
+                    "cadence": {"entries_per_day": rate, "window_coverage": coverage}
+                }
+            },
+        }
+
+    bursty, steady = candidate(0.3, 0.17), candidate(1.0, 0.17)
+    assert _ranked_score(bursty, {}) == _ranked_score(steady, {}) == pytest.approx(0.05)
+    weighted = {"frequency_objective_weight": 0.03}
+    assert _ranked_score(steady, weighted) == pytest.approx(0.05)
+    assert _ranked_score(bursty, weighted) == pytest.approx(0.05 - 0.03 * 0.7)
+    # Without a measured window the Poisson chance at the entry rate stands in.
+    rare = candidate(None, 0.05)
+    assert 0.05 - 0.03 < _ranked_score(rare, weighted) < 0.05 - 0.02
+
+
+def test_tuning_selects_on_frequency_score_when_weighted(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+    stamps = pd.date_range("2026-07-01", periods=2, freq="35D", tz="UTC")
+
+    def fake_search(*_args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            runs=[
+                {"params": {"x": 1}, "net_return": 0.10, "trade_count": 4},
+                {"params": {"x": 9}, "net_return": 0.08, "trade_count": 40},
+            ],
+            invalid=[],
+            ranked=[{"params": {"x": 1}}],
+        )
+
+    monkeypatch.setattr(evolution_campaign, "run_optuna_search", fake_search)
+    dataset = SimpleNamespace(bars=SimpleNamespace(timestamps=list(stamps)))
+    grid, tuning = _run_evolution_optuna(
+        {"script": "strategy.py", "spec": {}},
+        dataset,
+        {"x": {"type": "int", "low": 1, "high": 9}},
+        trials=2,
+        bars=0,
+        timeout=None,
+        frequency_policy={"frequency_objective_weight": 0.05},
+    )
+    assert captured["objectives"] == ["net_return", "max_drawdown_pct", "trade_count"]
+    assert tuning["selection_key"] == "frequency_score"
+    sparse, active = grid.runs
+    assert active["frequency_score"] > sparse["frequency_score"]
 
 
 def test_unbuildable_seed_falls_back_to_de_novo_instead_of_wedging(

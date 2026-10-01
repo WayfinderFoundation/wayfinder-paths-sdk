@@ -61,6 +61,7 @@ from wayfinder_paths.jobs.economics import (
     daily_log_returns,
     objective_vector,
     paired_daily_deltas,
+    probation_testability,
 )
 from wayfinder_paths.jobs.evidence import verify_job_evidence_refs
 from wayfinder_paths.jobs.evolution_diagnostics import (
@@ -4944,6 +4945,9 @@ def _evaluate_candidate(
             raise TransientInfrastructureError(str(exc)) from exc
         return {"status": "invalid", "evidence": {"error": str(exc)[:500]}}
     compact = _compact_result(result)
+    compact["cadence"] = _cadence(
+        result.trades, quick.bars.timestamps[0], quick.bars.timestamps[-1], policy
+    )
     if not result.validation.get("execution_valid"):
         return {
             "status": "low_fidelity_rejected",
@@ -5809,11 +5813,18 @@ def _run_evolution_optuna(
     bars: int,
     timeout: float | None,
     max_drawdown_pct: float | None = None,
+    frequency_policy: Mapping[str, Any] | None = None,
 ) -> tuple[ExecutionGridResult, dict[str, Any]]:
     search_data = _tail(dataset, bars) if bars > 0 else dataset
     started = perf_counter()
     specialized = bool(declared_regimes(search_space))
     rank_by = "regime_score" if specialized else "net_return"
+    frequency_weight = float(
+        (frequency_policy or {}).get("frequency_objective_weight") or 0.0
+    )
+    objectives = [] if specialized else ["net_return", "max_drawdown_pct"]
+    if objectives and frequency_weight:
+        objectives.append("trade_count")
     grid = run_optuna_search(
         subject["script"],
         search_data,
@@ -5823,12 +5834,28 @@ def _run_evolution_optuna(
         n_trials=trials,
         seed=_OPTUNA_SEED,
         timeout=timeout,
-        objectives=[] if specialized else ["net_return", "max_drawdown_pct"],
+        objectives=objectives,
     )
     risk_pruned = 0
     if max_drawdown_pct is not None:
         grid, risk_pruned = _prune_risky_trials(grid, max_drawdown_pct)
+    selection: dict[str, str] = {}
+    if not specialized and frequency_weight:
+        stamps = search_data.bars.timestamps
+        days = max((stamps[-1] - stamps[0]).total_seconds() / 86_400.0, 1e-9)
+        for row in grid.runs:
+            # A fill-count proxy: entries are about half the fills.
+            testability = probation_testability(
+                float(row.get("trade_count") or 0) / 2.0 / days,
+                days=_frequency_window_days(frequency_policy or {}),
+                min_trades=_frequency_min_entries(frequency_policy or {}),
+            )
+            row["frequency_score"] = float(row.get("net_return") or 0.0) - (
+                frequency_weight * (1.0 - testability)
+            )
+        selection["selection_key"] = "frequency_score"
     return grid, {
+        **selection,
         "status": "complete" if grid.ranked else "no_valid_trials",
         "risk_pruned": risk_pruned,
         "max_drawdown_pct": max_drawdown_pct,
@@ -6209,7 +6236,7 @@ def _claim_full_dev(
             for item in state["candidates"]
             if item.get("status") in {"quick_complete", "full_dev_running"}
         ]
-        eligible.sort(key=_candidate_score, reverse=True)
+        eligible.sort(key=lambda item: _ranked_score(item, policy), reverse=True)
         if policy.get("full_dev_family_diversity"):
             eligible = _diversified_full_dev_order(
                 eligible,
@@ -6508,7 +6535,7 @@ def _claim_proposal(
             for item in state["candidates"]
             if item.get("status") in {"dev_frontier", "proposal_running"}
         ]
-        eligible.sort(key=_candidate_score, reverse=True)
+        eligible.sort(key=lambda item: _ranked_score(item, policy), reverse=True)
         if not remaining or not eligible:
             return None
         candidate = eligible[0]
@@ -7324,6 +7351,14 @@ def campaign_prompt_block(
             + ". Continuous per-bar rebalancing is dead on arrival; cite "
             "/baseline/economics when sizing cadence. "
             if cost_budget
+            else ""
+        ) + (
+            f"Ranking rewards steady cadence: probation needs "
+            f"{_frequency_min_entries(policy)} trades inside any "
+            f"{_frequency_window_days(policy)}-day window, so a book that "
+            "trades in one burst and then sits idle for months ranks lower; "
+            "prefer triggers that recur across symbols and regimes. "
+            if float(policy.get("frequency_objective_weight") or 0.0)
             else ""
         )
         failure_target = (
@@ -8292,11 +8327,16 @@ def _full_dev(
             bars=search_bars,
             timeout=search_timeout,
             max_drawdown_pct=_tuning_drawdown_ceiling(root),
+            frequency_policy=policy,
         )
         selected, plateau = _plateau_select(
             grid,
             _typed_search_dimensions(candidate_search),
-            str(getattr(grid, "rank_by", None) or "net_return"),
+            str(
+                tuning.get("selection_key")
+                or getattr(grid, "rank_by", None)
+                or "net_return"
+            ),
         )
         tuning["plateau"] = plateau
         if selected is not None:
@@ -8388,6 +8428,12 @@ def _full_dev(
     )
     compact_validation["forensics"] = _validation_forensics(
         validation_result, validation
+    )
+    compact_validation["cadence"] = _cadence(
+        validation_result.trades,
+        validation.bars.timestamps[0],
+        validation.bars.timestamps[-1],
+        policy,
     )
     # The validation window is judged against what this campaign's search
     # would have produced from noise: its daily log returns must clear the
@@ -8712,6 +8758,12 @@ def _protected_fold_full_dev(
         "haircut": validation_haircut,
         "exits": receipt_exits({"trades": base_trades}),
         "forensics": _validation_forensics(synthetic, certificate_dataset),
+        "cadence": _cadence(
+            base_trades,
+            certificate_dataset.bars.timestamps[0],
+            certificate_dataset.bars.timestamps[-1],
+            policy,
+        ),
     }
     result_plan = {
         **evaluation_plan,
@@ -9885,6 +9937,79 @@ def _behavior(
         "direction_bias": round(direction, 4),
         "average_hold_bars": round(hold, 2),
         "trades_per_asset_30d": round(density, 2),
+    }
+
+
+def _ranked_score(candidate: dict[str, Any], policy: Mapping[str, Any]) -> float:
+    """The candidate score less a cadence penalty: a book that would leave
+    most probation windows short of the trade minimum cannot be judged in
+    its trial, however good its backtest."""
+    weight = float(policy.get("frequency_objective_weight") or 0.0)
+    testability = _testability(candidate, policy) if weight else None
+    penalty = 0.0 if testability is None else weight * (1.0 - testability)
+    return _candidate_score(candidate) - penalty
+
+
+def _testability(
+    candidate: Mapping[str, Any], policy: Mapping[str, Any]
+) -> float | None:
+    """Share of probation-length windows holding the trade minimum: measured
+    on the latest evaluated window when it spans at least one, else Poisson
+    at its entry rate."""
+    validation = (candidate.get("dev") or {}).get("validation") or {}
+    cadence = validation.get("cadence") or (candidate.get("quick") or {}).get("cadence")
+    if not cadence:
+        return None
+    if cadence.get("window_coverage") is not None:
+        return float(cadence["window_coverage"])
+    return probation_testability(
+        float(cadence.get("entries_per_day") or 0.0),
+        days=_frequency_window_days(policy),
+        min_trades=_frequency_min_entries(policy),
+    )
+
+
+def _frequency_window_days(policy: Mapping[str, Any]) -> int:
+    return int(policy.get("frequency_window_days") or 28)
+
+
+def _frequency_min_entries(policy: Mapping[str, Any]) -> int:
+    return int(policy.get("frequency_min_entries") or 3)
+
+
+def _cadence(
+    trades: Sequence[Mapping[str, Any]],
+    start: Any,
+    end: Any,
+    policy: Mapping[str, Any],
+) -> dict[str, Any]:
+    first, last = pd.Timestamp(start), pd.Timestamp(end)
+    entries = sorted(
+        stamp
+        for stamp in (
+            pd.Timestamp(trade["timestamp"])
+            for trade in trades
+            if (trade.get("raw") or {}).get("intent_action") == "OPEN"
+        )
+        if first <= stamp <= last
+    )
+    days = max((last - first).total_seconds() / 86_400.0, 1e-9)
+    window = pd.Timedelta(days=_frequency_window_days(policy))
+    minimum = _frequency_min_entries(policy)
+    coverage = None
+    if last - first >= window:
+        starts = pd.date_range(first, last - window, freq="1D")
+        series = pd.Series(1, index=pd.DatetimeIndex(entries)) if entries else None
+        hits = sum(
+            series is not None and int(series[begin : begin + window].sum()) >= minimum
+            for begin in starts
+        )
+        coverage = round(hits / len(starts), 4)
+    return {
+        "days": round(days, 2),
+        "entries": len(entries),
+        "entries_per_day": round(len(entries) / days, 4),
+        "window_coverage": coverage,
     }
 
 

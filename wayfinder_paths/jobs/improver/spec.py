@@ -228,6 +228,13 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         # With family diversity on, at most this many policy-kernel books take
         # full development per campaign ahead of designed books (None: no cap).
         "full_dev_policy_kernel_cap": None,
+        # Cadence as an objective: full-development and finalist ranking (and
+        # the inner tuning pick) subtract weight x (1 - share of
+        # frequency_window_days windows holding frequency_min_entries entries).
+        # 0 keeps ranking on the risk/return score alone.
+        "frequency_objective_weight": 0.0,
+        "frequency_window_days": 28,
+        "frequency_min_entries": 3,
         # Full development also requires a profitable train window, so a book
         # that wins only on validation cannot take a finalist slot.
         "full_dev_requires_train_profit": False,
