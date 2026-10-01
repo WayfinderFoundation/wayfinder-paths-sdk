@@ -76,6 +76,7 @@ class LiquidationConfig:
     maintenance_margin_by_symbol: Mapping[str, float] = field(default_factory=dict)
     liquidation_buffer: float = 0.001
     initial_capital: float = DEFAULT_INITIAL_CAPITAL
+    intrabar: bool = False
 
     @classmethod
     def from_params(cls, params: Mapping[str, Any]) -> LiquidationConfig | None:
@@ -94,6 +95,7 @@ class LiquidationConfig:
             initial_capital=float(
                 params.get("initial_capital") or DEFAULT_INITIAL_CAPITAL
             ),
+            intrabar=bool(params.get("liquidation_intrabar", False)),
         )
 
     def rate_for(self, symbol: str) -> float:
@@ -440,6 +442,21 @@ async def _run_tick_inner(
             reference_prices=reference_prices,
         )
 
+    # With only OHLC we cannot prove a protective fill preceded liquidation.
+    # The opt-in intrabar model therefore resolves a breach first; the default
+    # close-only model retains its historical ordering below.
+    breached = False
+    if liquidation is not None and liquidation.intrabar and state.ledger.positions:
+        breached = await _check_liquidation(
+            brokers=brokers,
+            state=state,
+            bars_by_symbol=bars_by_symbol,
+            config=liquidation,
+            timestamp=bar_iso,
+            trace=trace,
+            result=result,
+        )
+
     await _evaluate_brackets(
         brokers=brokers,
         state=state,
@@ -467,17 +484,19 @@ async def _run_tick_inner(
         blocked_entry_symbols=effective_blocked_symbols,
     )
 
-    if liquidation is not None and state.ledger.positions:
-        # After settlement + funding + brackets, before decide(): legacy
-        # ordering, and a breach means decide() never runs on this bar.
-        breached = await _check_liquidation(
-            brokers=brokers,
-            state=state,
-            bars_by_symbol=bars_by_symbol,
-            config=liquidation,
-            timestamp=bar_iso,
-            trace=trace,
-            result=result,
+    if liquidation is not None and (state.ledger.positions or breached):
+        # A breach means decide() never runs on this bar.
+        breached = breached or (
+            not liquidation.intrabar
+            and await _check_liquidation(
+                brokers=brokers,
+                state=state,
+                bars_by_symbol=bars_by_symbol,
+                config=liquidation,
+                timestamp=bar_iso,
+                trace=trace,
+                result=result,
+            )
         )
         if breached:
             state.last_processed_bar_ts = bar_iso
@@ -1482,7 +1501,11 @@ def _apply_market_event(
             filled_size=position.size,
             avg_price=value,
             reduce_only=True,
-            raw={"market_event": event.to_dict()},
+            raw={
+                "market_event": event.to_dict(),
+                "intent_action": "SETTLE",
+                "intent_metadata": {"position_side": position.side},
+            },
             timestamp=timestamp,
         )
         _record_fill(fill, state=state, trace=trace, result=result)
@@ -1504,24 +1527,27 @@ async def _check_liquidation(
     trace: ExecutionTrace,
     result: TickResult,
 ) -> bool:
-    """Faithful port of the legacy total-wipe liquidation model
-    (core/backtesting/backtester.py). Equity and maintenance requirement are
-    computed at bar closes (legacy uses single per-bar prices; intrabar
-    low/high is not checked). On breach every position is force-closed and
-    equity pins to exactly 0 for the rest of the run."""
+    """Total-wipe liquidation: close prices by default, adverse OHLC extrema
+    when explicitly enabled. A breach forces every position closed and pins
+    equity to zero. Intrabar mode is deliberately conservative, not an exact
+    exchange liquidation-price or intrabar-path reconstruction."""
     equity = config.initial_capital + state.ledger.realized_pnl
     maintenance_requirement = 0.0
     for symbol, position in state.ledger.positions.items():
         bar = bars_by_symbol.get(symbol)
         close = bar.close if bar is not None else position.avg_price
         direction = 1 if position.side == "long" else -1
+        if config.intrabar and bar is not None:
+            close = bar.low if direction == 1 else bar.high
         equity += direction * (close - position.avg_price) * position.size
         if close > 0:
             maintenance_requirement += abs(position.size * close) * config.rate_for(
                 symbol
             )
     breached = (
-        equity > 0  # legacy gate: portfolio_value > 0
+        (
+            config.intrabar or equity > 0
+        )  # opted-in conservative model also catches insolvent gaps
         and maintenance_requirement > 0
         and equity < maintenance_requirement * (1 + config.liquidation_buffer)
     )

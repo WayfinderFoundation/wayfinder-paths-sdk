@@ -1298,7 +1298,9 @@ def _stats(
         "volatility_ann": _volatility_ann(returns, periods_per_year),
         "cagr": cagr,
         "return_ann": cagr,
-        "calmar": abs(cagr / max_drawdown_pct) if max_drawdown_pct else 0.0,
+        "calmar": (abs(cagr / max_drawdown_pct) if max_drawdown_pct else 0.0)
+        if cagr is not None
+        else None,
         "max_drawdown_duration_s": dd_durations["max"],
         "avg_drawdown_duration_s": dd_durations["avg"],
         "avg_drawdown": (
@@ -1348,13 +1350,18 @@ def _cagr(
     end: float,
     period_count: int,
     periods_per_year: float | None,
-) -> float:
+) -> float | None:
     if not periods_per_year or period_count <= 0 or start <= 0:
         return 0.0
     years = period_count / periods_per_year
     if years <= 0 or end < 0:
         return 0.0
-    return float((end / start) ** (1 / years) - 1)
+    try:
+        return float((end / start) ** (1 / years) - 1)
+    except OverflowError:
+        # Annualizing a large gain over a short partial-history window can
+        # exceed float range. The observed return remains meaningful.
+        return None
 
 
 def _per_trade_stats(exit_pnls: list[float]) -> dict[str, Any]:
