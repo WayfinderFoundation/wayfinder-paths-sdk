@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import ast
+import hashlib
+import importlib
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -105,3 +109,78 @@ def test_evolution_snapshots_only_selectable_starters(
     assert [row["starter_id"] for row in snapshots] == [active.id]
     assert snapshots[0]["research_evidence_reset"] is True
     assert not (campaign_root / "starters" / retired.id).exists()
+
+
+def test_current_cards_match_the_launched_code_and_parameters(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(starters, "_spawn_starter_dataset_fetch", skip_fetch)
+    store = JobStore(repo_root=tmp_path)
+    for definition in starters.STARTER_DEFINITIONS:
+        if not definition.selectable:
+            continue
+        evidence = definition.research_evidence
+        provenance = evidence["provenance"]
+        module = importlib.import_module(definition.module)
+        tree = ast.parse(Path(module.__file__).read_text())
+        if isinstance(tree.body[0], ast.Expr) and isinstance(
+            tree.body[0].value, ast.Constant
+        ):
+            tree.body = tree.body[1:]
+        assert (
+            hashlib.sha256(ast.dump(tree).encode()).hexdigest()
+            == provenance["implementation_ast_sha256"]
+        )
+        params = definition.configured_params()
+        assert (
+            hashlib.sha256(json.dumps(params, sort_keys=True).encode()).hexdigest()
+            == provenance["strategy_params_sha256"]
+        )
+        created = starters.create_starter_job(
+            definition.id, store=store, compile_job=False
+        )
+        assert created["created"] is True
+        job = store.load(definition.id)
+        for key, value in params.items():
+            assert job.execution_params[key] == value
+        assert job.execution_params["lookback_bars"] == starters.starter_lookback_bars(
+            definition
+        )
+        assert store.read_json(definition.id, "results/backtest/starter_evidence.json")[
+            "research_evidence"
+        ] == json.loads(json.dumps(created["starter"]["research_evidence"]))
+
+
+def test_revising_a_starter_does_not_upgrade_an_existing_jobs_code_or_card(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    current = starters.get_starter("diversified-trend-sleeves-15m")
+    old = replace(
+        current,
+        module="wayfinder_paths.jobs.strategies.mixed_sleeve_momentum",
+        params={
+            k: v
+            for k, v in current.params.items()
+            if k not in {"risk_window_bars", "max_sleeve_gross"}
+        },
+        research_evidence={"strategy_revision": "old-recorded-revision"},
+    )
+    monkeypatch.setattr(starters, "_spawn_starter_dataset_fetch", skip_fetch)
+    monkeypatch.setattr(starters, "STARTER_DEFINITIONS", (old,))
+    store = JobStore(repo_root=tmp_path)
+    starters.create_starter_job(old.id, store=store, compile_job=False)
+    root = store.job_dir(old.id)
+    paths = [
+        root / "job.yaml",
+        root / "workspace/src/strategy.py",
+        root / "results/backtest/starter_evidence.json",
+    ]
+    before = [p.read_bytes() for p in paths]
+    monkeypatch.setattr(starters, "STARTER_DEFINITIONS", (current,))
+    reopened = starters.create_starter_job(current.id, store=store, compile_job=False)
+    assert reopened["created"] is False
+    assert (
+        reopened["starter"]["research_evidence"]["strategy_revision"]
+        == "old-recorded-revision"
+    )
+    assert [p.read_bytes() for p in paths] == before

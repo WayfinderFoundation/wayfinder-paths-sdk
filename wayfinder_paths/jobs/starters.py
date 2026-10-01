@@ -33,7 +33,7 @@ from wayfinder_paths.jobs.strategies._starter_utils import (
     RANKING_STOP_DEFAULTS,
 )
 
-STARTER_CATALOG_VERSION = "2.0.0"
+STARTER_CATALOG_VERSION = "2.1.0"
 STARTER_STRATEGY_INCEPTION_AT = "2026-08-24T00:00:00+00:00"
 # Catalog launch policy: every off-the-shelf starter launches with the agent
 # loop ON in intervene mode. Fleet evidence (two launches of the identical
@@ -525,6 +525,7 @@ _FUNDING_OI_DIVERGENCE_CAUTIONS = (
 STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
     StarterDefinition(
         id="bullish-regime-rotation-5m",
+        selectable=False,
         name="Bullish Regime Rotation · 5m",
         family="regime_rotation",
         summary=(
@@ -605,17 +606,18 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
         name="Diversified Trend Sleeves · 15m",
         family="cross_sectional_momentum",
         summary=(
-            "Runs four independent relative-trend sleeves across underused crypto "
-            "markets, so no single leader decides the whole portfolio."
+            "Runs four relative-trend sleeves, sizing each by its trailing "
+            "relative volatility and capping each sleeve's gross exposure."
         ),
         timeframe="15m",
-        module="wayfinder_paths.jobs.strategies.mixed_sleeve_momentum",
+        module="wayfinder_paths.jobs.strategies.risk_balanced_sleeves",
         symbols=("HYPE", "DOGE", "ZEC", "SUI", "MORPHO", "AAVE", "PAXG", "AVAX"),
         crypto_assets=("HYPE", "DOGE", "ZEC", "SUI", "MORPHO", "AAVE", "PAXG", "AVAX"),
         tokenized_equities=(),
         rules=(
             "Compare trailing 3-day returns within HYPE/DOGE, ZEC/SUI, MORPHO/AAVE, and PAXG/AVAX.",
-            "Long each sleeve winner and short its loser at 12.5% per leg; gross 100%, net 0%.",
+            "Long each sleeve winner and short its loser equally; allocate inverse 20-day relative volatility, capped at 35% gross per sleeve.",
+            "Gross exposure is at most 100%, net 0%; capped allocation remains in cash rather than being redistributed.",
             "Re-rank every 48 hours on a 00:00 UTC completed bar.",
         ),
         params={
@@ -626,6 +628,8 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
                 ["PAXG", "AVAX"],
             ],
             "momentum_bars": 288,
+            "risk_window_bars": 1920,
+            "max_sleeve_gross": 0.35,
             "rebalance_bars": 192,
             "rebalance_offset": 0,
             "weight_per_leg": 0.125,
@@ -637,43 +641,105 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
             "stop_cooldown_seconds": 0,
         },
         research_evidence={
-            **_DIVERSE_INTRADAY_RESEARCH_METHOD,
-            "strategy_revision": "2.0.0",
-            "strategy_family": "cross-sectional sleeve momentum",
-            "sharpe": 2.6780,
-            "max_drawdown": -0.1107,
-            "chronological_fold_method": (
-                "fixed-parameter continuous jobs_v1 path divided into four "
-                "contiguous quarters"
-            ),
-            "chronological_fold_returns": [0.1534, 0.1117, 0.3104, 0.0977],
-            "phase_robustness": {
-                "rebalance_phases_passing_return_and_sharpe_target": 159,
-                "rebalance_phases_checked": 192,
-                "full_period_sharpe_median": 2.0398,
-            },
+            "strategy_revision": "2.1.0",
+            "source": "Verified Hydromancer/Hyperliquid candles and hourly funding; quiet archive "
+            "intervals carry the previous close at zero volume without invented fills.",
+            "window_start": "2025-09-27 00:15:00+00:00",
+            "window_end": "2026-09-27 00:00:00+00:00",
+            "evidence_role": "inspected_historical_development_not_sealed",
+            "costs": {"taker_fee_bps_per_side": 4.5, "slippage_bps_per_side": 7.0},
+            "funding_included": True,
+            "funding": "Verified hourly settlements by signed exposure; no zero-fill of missing "
+            "funding.",
+            "fill_model": "Completed-bar decisions, next-bar fills, OHLC stops; passive orders "
+            "require strict trade-through.",
+            "return_after_costs_and_funding": 0.7981238934487129,
+            "sharpe": 2.6822238778203613,
+            "max_drawdown": -0.09410183890458439,
             "jobs_v1_engine": {
-                "return_after_fees_and_slippage": 0.8443,
-                "sharpe": 2.6780,
-                "max_drawdown": -0.1107,
-                "trade_count": 889,
-                "total_fees_usd": 674.93,
-                "stop_count": 0,
-                "full_period_vs_no_stop": "unchanged",
-                "chronological_folds_non_regressing": 4,
-                "funding_included": False,
+                "return_after_fees_and_slippage": 0.7981238934487129,
+                "sharpe": 2.6822238778203613,
+                "sortino": 3.761030482304074,
+                "max_drawdown": -0.09410183890458439,
+                "trade_count": 956,
+                "total_fees_usd": 720.363906053441,
+                "total_funding_usd": -81.47478394890821,
+                "funding_included": True,
                 "trace_valid": True,
+            },
+            "jobs_v1_leverage_sweep": {
+                "leverage_semantics": "target_exposure",
+                "account_halt_simulated": False,
+                "qualification_scope": "default_1x_only",
+                "results": STARTER_LEVERAGE_RESULTS["diversified-trend-sleeves-15m"],
+            },
+            "qualification": {
+                "profile": "starter-paper-2026-09",
+                "quick_screen_passed": True,
+                "full_development_passed": True,
+                "paper_admission_passed": True,
+                "reference": "cash",
+                "leverage": 1,
+                "forward_probation": "not_run",
+                "live_promotion": "not_authorized",
+                "policy_overrides": {
+                    "full_dev_haircut_blocking": False,
+                    "cost_hurdle_multiple": 1.25,
+                    "screen_slice_max_loss": 0.04,
+                    "tail_weight": 0,
+                    "max_tail_loss": None,
+                    "recent_week": "warning_only_for_paper",
+                },
+                "validation": {
+                    "net_return": 0.12813529385859979,
+                    "sharpe": 2.657558216388672,
+                    "max_drawdown_pct": -0.08794801382718277,
+                    "trade_count": 222,
+                },
+                "positive_folds": 3,
+                "fold_count": 4,
+                "paired_incumbent_delta": {
+                    "confidence": 0.9,
+                    "estimate": 0.1504531018963993,
+                    "lcb": -0.0365393254595867,
+                    "p_value": 0.1277445109780439,
+                    "paired_days": 120,
+                    "t_stat": 1.0158941386375195,
+                },
+                "haircut": {
+                    "cleared": False,
+                    "expected_max_t": 2.6268,
+                    "t_stat": 1.0158941386375195,
+                    "trials": 132,
+                },
+                "warnings": ["audit-slice utility delta -0.0315 below floor -0.005"],
+                "note": "User-approved post-hoc paper profile; production governance "
+                "defaults and live-promotion authority are unchanged. "
+                "Historical acceptance is not proof of forward edge.",
+            },
+            "provenance": {
+                "evaluation_sdk": "5d465ec483f3d36ff64d27c832ed07665c52c60e",
+                "script_sha256": "114c1b900360d31178d53de00959b498dd628f30b5ff5a383701b5eb094d095e",
+                "implementation_ast_sha256": "41d1734d14f583a09ce3c7dc65e31f03984bde9b77d444a95cedc6c3e39e14f9",
+                "strategy_params_sha256": "e25e5a9d65d91c4008e2d46f0e3e754f9314712ba06d128de6c9c6d8a62d59cb",
+                "bars_sha256": "3bb7ce2badd89574fed6be18a2443507227d9f745b356b638edc97462dd5b558",
+                "features_sha256": {
+                    "funding": "e45b29054433012310aa4693813834216f8e6e5fc39d2cfcc0b175d94c301fa3"
+                },
+                "qualification_receipt_sha256": "d69e05307e9829f8f6bd23d8b9ef4fe3ca380edb1f514c6c7cd9691b3f42135c",
+                "vitals_receipt_sha256": "353621104ddf81243ef83773ec8dfd422ca3545739c690bf8257d9822bc16988",
             },
         },
         strategy_inception_at="2026-09-04T00:00:00+00:00",
         cautions=(
-            "Funding is not included and four short legs can create material carry costs.",
-            "The evidence spans roughly eleven months and includes an exceptional ZEC trend; forward diversification may be weaker.",
-            "Only the default 1x setting stayed within the -20% account-halt threshold in the leverage sweep.",
+            "Risk balancing improved the training walk-forward comparison, but July–September validation was weaker than the original; this is not uniform improvement.",
+            "The final historical week had negative utility; it remains a paper-admission warning, not evidence of forward readiness.",
+            "Historical qualification uses the named starter-paper-2026-09 profile at 1x. Inspect the leverage sweep before changing risk; account-halt monitors are not simulated.",
         ),
     ),
     StarterDefinition(
         id="diversified-momentum-taker-15m",
+        selectable=False,
         name="Diversified Momentum Taker · 15m",
         family="cross_sectional_momentum",
         summary=(
@@ -764,6 +830,7 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
     ),
     StarterDefinition(
         id="crypto-gold-regime-relay-15m",
+        selectable=False,
         name="Crypto–Gold Regime Relay · 15m",
         family="regime_rotation",
         summary=(
@@ -831,6 +898,7 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
     ),
     StarterDefinition(
         id="mixed-rsi-snapback-1h",
+        selectable=False,
         name="Mixed RSI Snapback · 1h",
         family="mean_reversion",
         summary=(
@@ -905,38 +973,98 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
             "weight_per_leg": 0.25,
         },
         research_evidence={
-            **_RESEARCH_METHOD,
-            "window_start": "2025-11-13T14:00:00+00:00",
-            "calendar_days": 276.4,
-            "return_after_costs_and_funding": 0.0690,
-            "funding_return_contribution": -0.0003,
-            "sharpe": 2.13,
-            "max_drawdown": -0.0151,
-            "chronological_fold_returns": [0.0188, 0.0121, 0.0142, 0.0222],
-            "signal_check": {
-                "horizon_hours": 12,
-                "training_events": 66,
-                "training_excess_return": 0.0062,
-                "training_t_stat": 2.85,
-                "reserved_tail_events": 19,
-                "reserved_tail_excess_return": 0.0050,
-                "reserved_tail_t_stat": 1.35,
-            },
+            "strategy_revision": "2.1.0",
+            "source": "Verified Hydromancer/Hyperliquid candles and hourly funding; quiet archive "
+            "intervals carry the previous close at zero volume without invented fills.",
+            "window_start": "2025-09-27 01:00:00+00:00",
+            "window_end": "2026-09-27 00:00:00+00:00",
+            "evidence_role": "inspected_historical_development_not_sealed",
+            "costs": {"taker_fee_bps_per_side": 4.5, "slippage_bps_per_side": 7.0},
+            "funding_included": True,
+            "funding": "Verified hourly settlements by signed exposure; no zero-fill of missing "
+            "funding.",
+            "fill_model": "Completed-bar decisions, next-bar fills, OHLC stops; passive orders "
+            "require strict trade-through.",
+            "return_after_costs_and_funding": 0.04502426433658124,
+            "sharpe": 1.172650626871838,
+            "max_drawdown": -0.017505793334040773,
             "jobs_v1_engine": {
-                "return_after_fees_and_slippage": 0.0584,
-                "sharpe": 1.85,
-                "max_drawdown": -0.0162,
-                "trade_count": 164,
-                "total_fees_usd": 190.41,
-                "stop_count": 0,
-                "full_period_vs_no_stop": "unchanged",
-                "chronological_folds_non_regressing": 4,
-                "funding_included": False,
+                "return_after_fees_and_slippage": 0.04502426433658124,
+                "sharpe": 1.172650626871838,
+                "sortino": 0.5845276218193008,
+                "max_drawdown": -0.017505793334040773,
+                "trade_count": 188,
+                "total_fees_usd": 217.15835412322355,
+                "total_funding_usd": -4.513876876383198,
+                "funding_included": True,
                 "trace_valid": True,
+            },
+            "jobs_v1_leverage_sweep": {
+                "leverage_semantics": "target_exposure",
+                "account_halt_simulated": False,
+                "qualification_scope": "default_1x_only",
+                "results": STARTER_LEVERAGE_RESULTS["mixed-bollinger-pullback-1h"],
+            },
+            "qualification": {
+                "profile": "starter-paper-2026-09",
+                "quick_screen_passed": True,
+                "full_development_passed": True,
+                "paper_admission_passed": True,
+                "reference": "cash",
+                "leverage": 1,
+                "forward_probation": "not_run",
+                "live_promotion": "not_authorized",
+                "policy_overrides": {
+                    "full_dev_haircut_blocking": False,
+                    "cost_hurdle_multiple": 1.25,
+                    "screen_slice_max_loss": 0.04,
+                    "tail_weight": 0,
+                    "max_tail_loss": None,
+                    "recent_week": "warning_only_for_paper",
+                },
+                "validation": {
+                    "net_return": 0.002410172016045653,
+                    "sharpe": 0.32247615890144987,
+                    "max_drawdown_pct": -0.017504253883972958,
+                    "trade_count": 54,
+                },
+                "positive_folds": 2,
+                "fold_count": 4,
+                "paired_incumbent_delta": {
+                    "confidence": 0.9,
+                    "estimate": 0.011798732853549375,
+                    "lcb": -0.018380975352982158,
+                    "p_value": 0.27944111776447106,
+                    "paired_days": 120,
+                    "t_stat": 0.6384126097166788,
+                },
+                "haircut": {
+                    "cleared": False,
+                    "expected_max_t": 2.5444,
+                    "t_stat": 0.6384126097166788,
+                    "trials": 104,
+                },
+                "warnings": [],
+                "note": "User-approved post-hoc paper profile; production governance "
+                "defaults and live-promotion authority are unchanged. "
+                "Historical acceptance is not proof of forward edge.",
+            },
+            "provenance": {
+                "evaluation_sdk": "5d465ec483f3d36ff64d27c832ed07665c52c60e",
+                "script_sha256": "6fea5b56096207e5185a89e7a1d773c792cd0402202156343171850f203c8b3d",
+                "implementation_ast_sha256": "dfa6a3e52939d4eaaf59dd82023643f35dca093dcf7c02959d94269c61033e16",
+                "strategy_params_sha256": "0bad5cdc4527aaeee442b56eec92afbbd8fbaf91f6e37e03d1d2f4262b9706a8",
+                "bars_sha256": "8d40668ffb3290c86d298b2cb522793726272d72f5e4c467b23568d6c7ab2586",
+                "features_sha256": {
+                    "funding": "422881945a2bc45f780447e069144aed6d503029714a54fccff038e549a1fa7d"
+                },
+                "qualification_receipt_sha256": "5a647c1385af717a9646be6f0ef54409d0047b05d934c56cab97be23d6e95ff4",
+                "vitals_receipt_sha256": "ee600d77a08c3b464369b13041edb1c3e18b1c96b286951c0851f04063994296",
             },
         },
         cautions=(
-            "The 72-hour lookback was materially stronger than nearby lookbacks; treat this as a paper hypothesis and monitor decay.",
+            "The tested 36-hour holding revision failed broader validation; the qualified original 12-hour timeout is retained.",
+            "Historical paper admission is not forward proof; the latest validation return was only 0.24% after costs and funding.",
         ),
     ),
     StarterDefinition(
@@ -955,12 +1083,12 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
         rules=(
             "Enter long when RSI(7) is below 20 and close remains above SMA(200).",
             "Require current hourly volume above its trailing 24-hour median.",
-            "Exit when RSI(7) rises above 50 or after 72 completed bars; target 25% per leg.",
+            "Exit when RSI(7) rises above 60 or after 72 completed bars; target 25% per leg.",
         ),
         params={
             "rsi_period": 7,
             "entry_rsi": 20.0,
-            "exit_rsi": 50.0,
+            "exit_rsi": 60.0,
             "trend_sma_period": 200,
             "volume_median_bars": 24,
             "volume_multiple": 1.0,
@@ -968,38 +1096,98 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
             "weight_per_leg": 0.25,
         },
         research_evidence={
-            **_RESEARCH_METHOD,
-            "window_start": "2025-11-25T17:00:00+00:00",
-            "calendar_days": 264.2,
-            "return_after_costs_and_funding": 0.1214,
-            "funding_return_contribution": 0.0006,
-            "sharpe": 3.15,
-            "max_drawdown": -0.0263,
-            "chronological_fold_returns": [0.0377, 0.0158, 0.0344, 0.0284],
-            "signal_check": {
-                "horizon_hours": 8,
-                "training_events": 51,
-                "training_excess_return": 0.0076,
-                "training_t_stat": 3.10,
-                "reserved_tail_events": 5,
-                "reserved_tail_excess_return": -0.0024,
-                "reserved_tail_t_stat": -0.41,
-            },
+            "strategy_revision": "2.1.0",
+            "source": "Verified Hydromancer/Hyperliquid candles and hourly funding; quiet archive "
+            "intervals carry the previous close at zero volume without invented fills.",
+            "window_start": "2025-09-27 01:00:00+00:00",
+            "window_end": "2026-09-27 00:00:00+00:00",
+            "evidence_role": "inspected_historical_development_not_sealed",
+            "costs": {"taker_fee_bps_per_side": 4.5, "slippage_bps_per_side": 7.0},
+            "funding_included": True,
+            "funding": "Verified hourly settlements by signed exposure; no zero-fill of missing "
+            "funding.",
+            "fill_model": "Completed-bar decisions, next-bar fills, OHLC stops; passive orders "
+            "require strict trade-through.",
+            "return_after_costs_and_funding": 0.1686610607790553,
+            "sharpe": 2.58441898568479,
+            "max_drawdown": -0.02238199380436111,
             "jobs_v1_engine": {
-                "return_after_fees_and_slippage": 0.1230,
-                "sharpe": 3.14,
-                "max_drawdown": -0.0275,
-                "trade_count": 104,
-                "total_fees_usd": 124.52,
-                "stop_count": 0,
-                "full_period_vs_no_stop": "unchanged",
-                "chronological_folds_non_regressing": 4,
-                "funding_included": False,
+                "return_after_fees_and_slippage": 0.1686610607790553,
+                "sharpe": 2.58441898568479,
+                "sortino": 1.3502602516650113,
+                "max_drawdown": -0.02238199380436111,
+                "trade_count": 137,
+                "total_fees_usd": 168.72149643556574,
+                "total_funding_usd": -3.7508345120663904,
+                "funding_included": True,
                 "trace_valid": True,
+            },
+            "jobs_v1_leverage_sweep": {
+                "leverage_semantics": "target_exposure",
+                "account_halt_simulated": False,
+                "qualification_scope": "default_1x_only",
+                "results": STARTER_LEVERAGE_RESULTS["mixed-volume-capitulation-1h"],
+            },
+            "qualification": {
+                "profile": "starter-paper-2026-09",
+                "quick_screen_passed": True,
+                "full_development_passed": True,
+                "paper_admission_passed": True,
+                "reference": "cash",
+                "leverage": 1,
+                "forward_probation": "not_run",
+                "live_promotion": "not_authorized",
+                "policy_overrides": {
+                    "full_dev_haircut_blocking": False,
+                    "cost_hurdle_multiple": 1.25,
+                    "screen_slice_max_loss": 0.04,
+                    "tail_weight": 0,
+                    "max_tail_loss": None,
+                    "recent_week": "warning_only_for_paper",
+                },
+                "validation": {
+                    "net_return": 0.02088553509981983,
+                    "sharpe": 1.7349199982530263,
+                    "max_drawdown_pct": -0.01610989790139703,
+                    "trade_count": 41,
+                },
+                "positive_folds": 4,
+                "fold_count": 4,
+                "paired_incumbent_delta": {
+                    "confidence": 0.9,
+                    "estimate": 0.06657236273287633,
+                    "lcb": 0.03162671650023077,
+                    "p_value": 0.001996007984031936,
+                    "paired_days": 120,
+                    "t_stat": 2.4285564248019167,
+                },
+                "haircut": {
+                    "cleared": False,
+                    "expected_max_t": 2.6268,
+                    "t_stat": 2.4285564248019167,
+                    "trials": 132,
+                },
+                "warnings": [],
+                "note": "User-approved post-hoc paper profile; production governance "
+                "defaults and live-promotion authority are unchanged. "
+                "Historical acceptance is not proof of forward edge.",
+            },
+            "provenance": {
+                "evaluation_sdk": "5d465ec483f3d36ff64d27c832ed07665c52c60e",
+                "script_sha256": "54185f66f4680f07dcf8131308b2904f5fb205c092e08e178fa97cfefc7f3bb3",
+                "implementation_ast_sha256": "da8b1f69ad045f9777b6997562addff83fba8055137ca7617768a024fcbfde88",
+                "strategy_params_sha256": "da34299da39bc83078b9237951e76d1a00fad078a8b884d87fd2bd37209b4d88",
+                "bars_sha256": "e0cc3ef03676fdca7821da62084acb90a64636ee45d790c2c88a273ef0be7e51",
+                "features_sha256": {
+                    "funding": "488f9c75ff879c9f5ad61bdb57b89734fb09185bf2117e248a534da636eedfd7"
+                },
+                "qualification_receipt_sha256": "c63c2e4fc1e1b4ba67cfcacdc207046cbca676be7113cb80156d30ea93a62491",
+                "vitals_receipt_sha256": "7cc3aede77b2db5db514ccdf22fdbb712f482a7865f53fe985c00e3ce460cf5c",
             },
         },
         cautions=(
-            "The sparse raw trigger did not independently confirm in the reserved tail; forward evidence is especially important.",
+            "The RSI-60 revision improved all three training-fold metrics, but one of those three folds remained negative.",
+            "Current cards include verified funding and 7 bps taker slippage. Historical paper qualification is not proof of forward edge.",
         ),
     ),
     StarterDefinition(
@@ -1018,12 +1206,12 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
         rules=(
             "Enter only when RSI(7) is below 20, close remains above SMA(200), and hourly volume exceeds its trailing 24-hour median.",
             "Rest an ALO bid 0.05 ATR(24) below the completed close for one hour; require 1 bp candle trade-through before counting a maker fill.",
-            "Allocate 50% to HYPE and 25% to each equity perp; exit above RSI 50 or after 72 hours, with a fill-relative catastrophe stop and 24-hour stop cooldown.",
+            "Allocate 50% to HYPE and 25% to each equity perp; exit above RSI 60 or after 72 hours, with a fill-relative catastrophe stop and 24-hour stop cooldown.",
         ),
         params={
             "rsi_period": 7,
             "entry_rsi": 20.0,
-            "exit_rsi": 50.0,
+            "exit_rsi": 60.0,
             "trend_sma_period": 200,
             "volume_median_bars": 24,
             "volume_multiple": 1.0,
@@ -1041,93 +1229,109 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
             "maker_trade_through_bps": 1.0,
         },
         research_evidence={
-            "source": (
-                "Hydromancer Reservoir 1-second Hyperliquid HYPE and HIP-3 "
-                "COIN/TSLA candles"
-            ),
-            "window_start": "2025-11-25T17:00:00+00:00",
-            "window_end": "2026-08-18T23:00:00+00:00",
-            "calendar_days": 266.25,
-            "fill_model": (
-                "decision on completed 1h close; post-only order first eligible "
-                "on the next bar; require 1bp trade-through beyond the limit"
-            ),
+            "strategy_revision": "2.1.0",
+            "source": "Verified Hydromancer/Hyperliquid candles and hourly funding; quiet archive "
+            "intervals carry the previous close at zero volume without invented fills.",
+            "window_start": "2025-09-27 01:00:00+00:00",
+            "window_end": "2026-09-27 00:00:00+00:00",
+            "evidence_role": "inspected_historical_development_not_sealed",
             "costs": {
-                "maker_fee_bps_per_entry": 1.5,
-                "taker_fee_bps_per_exit": 4.5,
-                "taker_slippage_bps_per_exit": 3.5,
+                "taker_fee_bps_per_side": 4.5,
+                "slippage_bps_per_side": 7.0,
+                "maker_fee_bps": 1.5,
+                "maker_trade_through_bps": 1.0,
             },
-            "funding_included": False,
-            "funding": "not included; carry remains a live risk",
-            "validation": (
-                "development through 2026-01-19; four fixed chronological "
-                "validation folds through 2026-06-21; one untouched reserved "
-                "tail through 2026-08-18"
-            ),
-            "strategy_family": "passive diversified mean reversion",
-            "sharpe": 3.67,
-            "max_drawdown": -0.0149,
-            "chronological_fold_returns": [0.0962, 0.0134, 0.0231, 0.0290],
-            "walk_forward": {
-                "oos_positive_folds": 4,
-                "fold_count": 4,
-                "oos_return_mean": 0.0404,
-                "oos_sharpe_mean": 4.13,
-                "newest_fold_return": 0.0290,
-                "newest_fold_sharpe": 3.74,
-            },
-            "allocation_robustness": {
-                "40_30_30": {
-                    "return_after_fees_and_slippage": 0.1554,
-                    "sharpe": 3.79,
-                    "positive_validation_folds": 4,
-                },
-                "60_20_20": {
-                    "return_after_fees_and_slippage": 0.2074,
-                    "sharpe": 3.96,
-                    "positive_validation_folds": 4,
-                },
-            },
-            "reserved_tail": {
-                "window_start": "2026-06-21T16:00:00+00:00",
-                "window_end": "2026-08-18T23:00:00+00:00",
-                "return_after_fees_and_slippage": 0.0155,
-                "sharpe": 2.54,
-                "max_drawdown": -0.0060,
-                "trade_count": 16,
-                "trace_valid": True,
-            },
-            "recent_120_day_replay": {
-                "window_start": "2026-04-21T00:00:00+00:00",
-                "return_after_fees_and_slippage": 0.0664,
-                "sharpe": 3.41,
-                "max_drawdown": -0.0124,
-                "trade_count": 38,
-            },
+            "funding_included": True,
+            "funding": "Verified hourly settlements by signed exposure; no zero-fill of missing "
+            "funding.",
+            "fill_model": "Completed-bar decisions, next-bar fills, OHLC stops; passive orders "
+            "require strict trade-through.",
+            "return_after_costs_and_funding": 0.26473681349337497,
+            "sharpe": 2.7457660959669457,
+            "max_drawdown": -0.04024753555332018,
             "jobs_v1_engine": {
-                "return_after_fees_and_slippage": 0.1995,
-                "sharpe": 3.666,
-                "max_drawdown": -0.0149,
-                "trade_count": 78,
-                "total_fees_usd": 77.31,
-                "maker_entry_fills": 39,
-                "taker_exit_fills": 39,
-                "expired_entry_orders": 4,
-                "stop_count": 0,
-                "full_period_vs_no_stop": "unchanged",
-                "chronological_folds_non_regressing": 4,
-                "funding_included": False,
+                "return_after_fees_and_slippage": 0.26473681349337497,
+                "sharpe": 2.7457660959669457,
+                "sortino": 1.295780564200395,
+                "max_drawdown": -0.04024753555332018,
+                "trade_count": 101,
+                "total_fees_usd": 102.8451534664202,
+                "total_funding_usd": -4.033294184985762,
+                "funding_included": True,
                 "trace_valid": True,
+            },
+            "jobs_v1_leverage_sweep": {
+                "leverage_semantics": "target_exposure",
+                "account_halt_simulated": False,
+                "qualification_scope": "default_1x_only",
+                "results": STARTER_LEVERAGE_RESULTS["balanced-passive-capitulation-1h"],
+            },
+            "qualification": {
+                "profile": "starter-paper-2026-09",
+                "quick_screen_passed": True,
+                "full_development_passed": True,
+                "paper_admission_passed": True,
+                "reference": "cash",
+                "leverage": 1,
+                "forward_probation": "not_run",
+                "live_promotion": "not_authorized",
+                "policy_overrides": {
+                    "full_dev_haircut_blocking": False,
+                    "cost_hurdle_multiple": 1.25,
+                    "screen_slice_max_loss": 0.04,
+                    "tail_weight": 0,
+                    "max_tail_loss": None,
+                    "recent_week": "warning_only_for_paper",
+                },
+                "validation": {
+                    "net_return": 0.02034200182791901,
+                    "sharpe": 1.3945697393125154,
+                    "max_drawdown_pct": -0.019558930717481115,
+                    "trade_count": 29,
+                },
+                "positive_folds": 3,
+                "fold_count": 4,
+                "paired_incumbent_delta": {
+                    "confidence": 0.9,
+                    "estimate": 0.06937743332118514,
+                    "lcb": 0.016754429557028154,
+                    "p_value": 0.023952095808383235,
+                    "paired_days": 120,
+                    "t_stat": 1.7420595661876024,
+                },
+                "haircut": {
+                    "cleared": False,
+                    "expected_max_t": 2.6268,
+                    "t_stat": 1.7420595661876024,
+                    "trials": 132,
+                },
+                "warnings": [],
+                "note": "User-approved post-hoc paper profile; production governance "
+                "defaults and live-promotion authority are unchanged. "
+                "Historical acceptance is not proof of forward edge.",
+            },
+            "provenance": {
+                "evaluation_sdk": "5d465ec483f3d36ff64d27c832ed07665c52c60e",
+                "script_sha256": "54185f66f4680f07dcf8131308b2904f5fb205c092e08e178fa97cfefc7f3bb3",
+                "implementation_ast_sha256": "da8b1f69ad045f9777b6997562addff83fba8055137ca7617768a024fcbfde88",
+                "strategy_params_sha256": "7e11a05320968aed339b23b2b5b12653c52c098dc67268a1495c64b5989a7fb3",
+                "bars_sha256": "a00693eb8a2af63a6b5acbf4f4a250b9c91f8b9c42d4d224e567e3f20d607061",
+                "features_sha256": {
+                    "funding": "f1b9c2a7080e6ba236531c2689448981aef4a7436029ee63a0e8766b15b62638"
+                },
+                "qualification_receipt_sha256": "b226663ae921bafaad7b0a84df76f6f883cf28e6df667da36d68e341fc625eb1",
+                "vitals_receipt_sha256": "fffddaf5a0321f6c64c1e8cc7f14e9c800931fb2d8ec0746244a21e4a7c55d31",
             },
         },
         cautions=(
-            "Funding is not included in the replay and can reduce live returns.",
+            "The RSI-60 revision improved all three training-fold metrics and passed historical paper admission, but its full-year drawdown rose to 4.02% and Sharpe fell to 2.75 versus the RSI-50 original.",
             "Candle trade-through is conservative about touch fills but cannot reproduce exact queue position or partial fills.",
             "Live ALO routing is intentionally disabled until durable venue fill/cancel reconciliation is available.",
         ),
     ),
     StarterDefinition(
         id="mixed-momentum-rank-1h",
+        selectable=False,
         name="Mixed Momentum Rank · 1h",
         family="cross_sectional_momentum",
         summary=(
@@ -1184,6 +1388,7 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
     ),
     StarterDefinition(
         id="crypto-momentum-persistence-4h",
+        selectable=False,
         name="Crypto Momentum Persistence · 4h",
         family="cross_sectional_momentum",
         summary=(
@@ -1323,36 +1528,100 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
             "stop_max_pct": 0.52,
         },
         research_evidence={
-            **_RESEARCH_METHOD,
-            "window_start": "2025-12-02T15:00:00+00:00",
-            "calendar_days": 257.4,
-            "return_after_costs_and_funding": 0.3375,
-            "funding_return_contribution": -0.0031,
-            "sharpe": 1.97,
-            "max_drawdown": -0.1158,
-            "chronological_fold_returns": [0.1136, -0.0545, 0.1963, 0.0619],
+            "strategy_revision": "2.1.0",
+            "source": "Verified Hydromancer/Hyperliquid candles and hourly funding; quiet archive "
+            "intervals carry the previous close at zero volume without invented fills.",
+            "window_start": "2025-09-27 00:15:00+00:00",
+            "window_end": "2026-09-27 00:00:00+00:00",
+            "evidence_role": "inspected_historical_development_not_sealed",
+            "costs": {"taker_fee_bps_per_side": 4.5, "slippage_bps_per_side": 7.0},
+            "funding_included": True,
+            "funding": "Verified hourly settlements by signed exposure; no zero-fill of missing "
+            "funding.",
+            "fill_model": "Completed-bar decisions, next-bar fills, OHLC stops; passive orders "
+            "require strict trade-through.",
+            "return_after_costs_and_funding": 0.2935306808312228,
+            "sharpe": 1.2684932482151052,
+            "max_drawdown": -0.15470199107563368,
             "jobs_v1_engine": {
-                "return_after_fees_and_slippage": 0.2587,
-                "sharpe": 1.49,
-                "max_drawdown": -0.1146,
-                "trade_count": 120,
-                "total_fees_usd": 141.12,
-                "stop_count": 2,
-                "full_period_vs_no_stop": "improved",
-                "chronological_folds_non_regressing": 4,
-                "no_stop_baseline": {
-                    "return_after_fees_and_slippage": 0.2541,
-                    "sharpe": 1.46,
-                    "max_drawdown": -0.1170,
-                },
-                "funding_included": False,
+                "return_after_fees_and_slippage": 0.2935306808312228,
+                "sharpe": 1.2684932482151052,
+                "sortino": 1.4845286903146269,
+                "max_drawdown": -0.15470199107563368,
+                "trade_count": 135,
+                "total_fees_usd": 158.6069031200341,
+                "total_funding_usd": -64.03557800062421,
+                "funding_included": True,
                 "trace_valid": True,
+            },
+            "jobs_v1_leverage_sweep": {
+                "leverage_semantics": "target_exposure",
+                "account_halt_simulated": False,
+                "qualification_scope": "default_1x_only",
+                "results": STARTER_LEVERAGE_RESULTS["mixed-sleeve-momentum-15m"],
+            },
+            "qualification": {
+                "profile": "starter-paper-2026-09",
+                "quick_screen_passed": True,
+                "full_development_passed": True,
+                "paper_admission_passed": True,
+                "reference": "cash",
+                "leverage": 1,
+                "forward_probation": "not_run",
+                "live_promotion": "not_authorized",
+                "policy_overrides": {
+                    "full_dev_haircut_blocking": False,
+                    "cost_hurdle_multiple": 1.25,
+                    "screen_slice_max_loss": 0.04,
+                    "tail_weight": 0,
+                    "max_tail_loss": None,
+                    "recent_week": "warning_only_for_paper",
+                },
+                "validation": {
+                    "net_return": 0.08074180491550242,
+                    "sharpe": 1.8258551483101348,
+                    "max_drawdown_pct": -0.06847645849609292,
+                    "trade_count": 31,
+                },
+                "positive_folds": 3,
+                "fold_count": 4,
+                "paired_incumbent_delta": {
+                    "confidence": 0.9,
+                    "estimate": 0.22482105909695152,
+                    "lcb": 0.08403293676551428,
+                    "p_value": 0.021956087824351298,
+                    "paired_days": 120,
+                    "t_stat": 1.8658340882699591,
+                },
+                "haircut": {
+                    "cleared": False,
+                    "expected_max_t": 2.5444,
+                    "t_stat": 1.8658340882699591,
+                    "trials": 104,
+                },
+                "warnings": ["audit-slice utility delta -0.0122 below floor -0.005"],
+                "note": "User-approved post-hoc paper profile; production governance "
+                "defaults and live-promotion authority are unchanged. "
+                "Historical acceptance is not proof of forward edge.",
+            },
+            "provenance": {
+                "evaluation_sdk": "5d465ec483f3d36ff64d27c832ed07665c52c60e",
+                "script_sha256": "4c0e5b15c92e1b3202102fa701c1650dcbf0a15265d18b553b0c1df018edb8d5",
+                "implementation_ast_sha256": "e954b0b1877eada4231aefeb444c4706d86087b3de29ffaea14b79d43b0c9996",
+                "strategy_params_sha256": "506edcc21a4568629dd7f66b659b0a1a94de9cb27f1572e65f55d4c35acb02f2",
+                "bars_sha256": "dd10eed2808941b5add760ca1d48fc38634ef03cb7bc2c69b87174a11fad8b7a",
+                "features_sha256": {
+                    "funding": "20645e91fdf93c5ce96d4978438b3d5a596619f1e40d659c0b38fd94004a4bf4"
+                },
+                "qualification_receipt_sha256": "81f98d388412a7164b902f37d8256a942751840309f10c8a1c34edac23519185",
+                "vitals_receipt_sha256": "7e2542ae74f0c3609dd151a5606ce1885d8051cbdbf00c38f28e9b587f0c6b0a",
             },
         },
         cautions=("One of four chronological folds was negative.",),
     ),
     StarterDefinition(
         id="mixed-low-vol-rank-15m",
+        selectable=False,
         name="Mixed Low-Volatility Rank · 15m",
         family="low_volatility_ranking",
         summary=(
@@ -1400,6 +1669,7 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
     ),
     StarterDefinition(
         id="hype-passive-rsi-full-5m",
+        selectable=False,
         name="HYPE Passive RSI · Full Exit · 5m",
         family="maker_mean_reversion",
         summary=(
@@ -1496,6 +1766,7 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
     ),
     StarterDefinition(
         id="hype-passive-rsi-staged-5m",
+        selectable=False,
         name="HYPE Passive RSI · Staged Exit · 5m",
         family="maker_mean_reversion",
         summary=(
@@ -1595,6 +1866,7 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
     ),
     StarterDefinition(
         id="btc-eth-relative-strength-1d",
+        selectable=False,
         name="BTC / ETH Relative Strength · 1d",
         family="relative_value_pair",
         summary=(
@@ -1672,6 +1944,7 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
     ),
     StarterDefinition(
         id="bch-ltc-relative-strength-1d",
+        selectable=False,
         name="BCH / LTC Relative Strength · 1d",
         family="relative_value_pair",
         summary=(
@@ -1750,6 +2023,7 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
     ),
     StarterDefinition(
         id="diversified-liquidation-flush-maker-15m",
+        selectable=False,
         name="Diversified Liquidation Flush Maker · 15m",
         family="liquidation_flush",
         summary=(

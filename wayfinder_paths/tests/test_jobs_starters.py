@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -240,146 +241,91 @@ def dataset_fetch_spawns(monkeypatch) -> list[dict[str, Any]]:
     return calls
 
 
-def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
+@pytest.fixture
+def historical_catalog(monkeypatch):
+    """Provisioning compatibility under a prior catalogue, not today's offer list.
+
+    Retirement is covered separately; these tests retain the old pair/maker
+    job shapes so narrowing the selector does not delete that coverage.
+    """
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.starters.STARTER_DEFINITIONS",
+        tuple(replace(item, selectable=True) for item in STARTER_DEFINITIONS),
+    )
+
+
+def test_starter_catalog_offers_only_current_qualified_paper_revisions() -> None:
     catalog = starter_catalog()
-    assert len(catalog) == 18
-    assert {item["timeframe"] for item in catalog} == {
-        "5m",
-        "15m",
-        "1h",
-        "4h",
-        "1d",
+    assert {item["id"] for item in catalog} == {
+        "diversified-trend-sleeves-15m",
+        "mixed-bollinger-pullback-1h",
+        "mixed-volume-capitulation-1h",
+        "balanced-passive-capitulation-1h",
+        "mixed-sleeve-momentum-15m",
+        "diversified-funding-oi-divergence-taker-15m",
     }
-    assert [item["timeframe"] for item in catalog].count("5m") == 3
-    assert [item["timeframe"] for item in catalog].count("15m") == 7
-    assert [item["timeframe"] for item in catalog].count("1h") == 5
-    assert [item["timeframe"] for item in catalog].count("4h") == 1
-    assert [item["timeframe"] for item in catalog].count("1d") == 2
     for item in catalog:
-        assert item["crypto_assets"]
+        assert item["selectable"] is True
+        assert item["default_mode"] == "paper"
+        assert item["execution_contract"] == "jobs_v1"
         assert set(item["symbols"]) == set(item["crypto_assets"]) | set(
             item["tokenized_equities"]
         )
-        assert item["default_mode"] == "paper"
-        assert item["execution_contract"] == "jobs_v1"
-        assert item["family"] in {
-            "cross_sectional_momentum",
-            "maker_mean_reversion",
-            "mean_reversion",
-            "low_volatility_ranking",
-            "regime_rotation",
-            "relative_value_pair",
-            "funding_divergence",
-            "liquidation_flush",
-        }
-        assert isinstance(item["cautions"], list)
-        assert item["strategy_inception_at"]
         assert item["risk_limits"]["pause_after_consecutive_losses"] == 5
         assert 0 < item["params"]["stop_min_pct"] <= item["params"]["stop_max_pct"]
         assert item["params"]["native_stop_required"] is True
         assert item["risk_controls"]["account_halt"]["flatten_on_breach"] is False
-        assert item["leverage_control"] == {
-            "minimum": 1,
-            "maximum": 5,
-            "step": 1,
-            "default": 1,
-            "operator_owned": True,
-        }
-        assert item["research_evidence"]["risk_overlay_backtest_status"] == "validated"
+        assert item["leverage_control"]["operator_owned"] is True
+        evidence = item["research_evidence"]
+        assert evidence["strategy_revision"] == "2.1.0"
+        assert evidence["funding_included"] is True
         assert (
-            item["research_evidence"]["risk_overlay_backtest_scope"]
-            == "per_position_ohlc_stops"
+            evidence["evidence_role"] == "inspected_historical_development_not_sealed"
         )
-        funded_return = item["research_evidence"].get("return_after_costs_and_funding")
-        if item["research_evidence"].get("funding_included") is False:
-            assert funded_return is None
-        else:
-            assert funded_return is not None and funded_return > 0
-        engine = item["research_evidence"]["jobs_v1_engine"]
+        engine = evidence["jobs_v1_engine"]
         assert engine["return_after_fees_and_slippage"] > 0
-        assert engine["funding_included"] is False
-        assert engine["trace_valid"] is True
-        if item["family"] == "liquidation_flush":
-            # The flush buys into cascades by construction; its only stop in
-            # the evidence year is the 2025-10-10 wick. A single stop may cost
-            # the full period at most 0.5% against the no-stop path and may
-            # regress at most one quarter; the evidence records the delta.
-            assert engine["full_period_vs_no_stop"] in {
-                "unchanged",
-                "improved",
-                "regressed",
-            }
-            assert engine["no_stop_return_delta"] >= -0.005
-            assert engine["stop_count"] <= 1
-            assert 3 <= engine["chronological_folds_non_regressing"] <= 4
-        else:
-            assert engine["full_period_vs_no_stop"] in {"unchanged", "improved"}
-            if item["family"] == "maker_mean_reversion":
-                assert 0 <= engine["chronological_folds_non_regressing"] <= 4
-            else:
-                assert engine["chronological_folds_non_regressing"] == 4
-        assert engine["stop_count"] >= 0
-        sweep = item["research_evidence"]["jobs_v1_leverage_sweep"]
+        assert (
+            engine["return_after_fees_and_slippage"]
+            == evidence["return_after_costs_and_funding"]
+        )
+        assert engine["funding_included"] is engine["trace_valid"] is True
+        gate = evidence["qualification"]
+        assert (
+            gate["quick_screen_passed"]
+            is gate["full_development_passed"]
+            is gate["paper_admission_passed"]
+            is True
+        )
+        assert gate["profile"] == "starter-paper-2026-09"
+        assert gate["reference"] == "cash"
+        assert gate["leverage"] == 1
+        assert gate["forward_probation"] == "not_run"
+        assert gate["live_promotion"] == "not_authorized"
+        sweep = evidence["jobs_v1_leverage_sweep"]
         assert sweep["leverage_semantics"] == "target_exposure"
         assert sweep["account_halt_simulated"] is False
         assert [row["leverage"] for row in sweep["results"]] == [1, 2, 3, 4, 5]
-        assert all(row["liquidation_count"] == 0 for row in sweep["results"])
-        assert all(
-            row["within_account_halt_threshold"]
-            == (row["max_drawdown"] >= row["account_halt_threshold"])
-            for row in sweep["results"]
-        )
-        assert sweep["results"][0]["return_after_fees_and_slippage"] == pytest.approx(
-            engine["return_after_fees_and_slippage"], abs=0.0001
-        )
+        for row in sweep["results"]:
+            assert row["within_account_halt_threshold"] == (
+                row["max_drawdown"] >= row["account_halt_threshold"]
+            )
+        for key in (
+            "return_after_fees_and_slippage",
+            "sharpe",
+            "max_drawdown",
+            "trade_count",
+            "total_fees_usd",
+        ):
+            assert sweep["results"][0][key] == engine[key]
+        # Replacing evidence must not retain claims from an untested old revision.
+        assert "no_stop_baseline" not in engine
+        assert "chronological_folds_non_regressing" not in engine
 
-    by_id = {item["id"]: item for item in catalog}
-    new_intraday_ids = {
-        "bullish-regime-rotation-5m",
-        "diversified-trend-sleeves-15m",
-        "diversified-momentum-taker-15m",
-        "crypto-gold-regime-relay-15m",
-    }
-    for starter_id in new_intraday_ids:
-        engine = by_id[starter_id]["research_evidence"]["jobs_v1_engine"]
-        assert by_id[starter_id]["strategy_inception_at"] == (
-            "2026-09-04T00:00:00+00:00"
-        )
-        assert by_id[starter_id]["research_evidence"]["strategy_revision"] == "2.0.0"
-        assert engine["return_after_fees_and_slippage"] > 0.15
-        assert engine["sharpe"] > 1.4
-        assert (
-            engine["max_drawdown"] >= by_id[starter_id]["risk_limits"]["max_drawdown"]
-        )
-    bull_regimes = by_id["bullish-regime-rotation-5m"]["research_evidence"][
-        "hyperliquid_mechanism_check"
-    ]
-    assert bull_regimes["btc_bull_regime_return"] > 0
-    assert bull_regimes["btc_bear_regime_return"] >= 0
-    assert by_id["mixed-rsi-snapback-1h"]["strategy_inception_at"] == (
-        "2026-08-24T00:00:00+00:00"
-    )
-    assert (
-        by_id["mixed-rsi-snapback-1h"]["research_evidence"]["strategy_revision"]
-        == "1.8.0"
-    )
-    crypto_momentum = by_id["crypto-momentum-persistence-4h"]
-    assert crypto_momentum["params"]["score_volatility_bars"] == 168
-    assert crypto_momentum["params"]["broad_bull_momentum_threshold"] == 0.10
-    assert crypto_momentum["params"]["broad_bull_weight_shift"] == 0.175
-    assert crypto_momentum["robustness_plan"]["walk_forward"] == {
-        "train_bars": 1440,
-        "test_bars": 360,
-        "folds": 4,
-    }
-    assert crypto_momentum["research_evidence"]["sharpe"] > 1.0
-    assert all(
-        sharpe > 1.0
-        for sharpe in crypto_momentum["research_evidence"][
-            "rebalance_phase_sharpes"
-        ].values()
-    )
-    expected_stops = {
+
+def test_all_starter_stop_contracts_remain_inspectable() -> None:
+    by_id = {definition.id: definition.to_dict() for definition in STARTER_DEFINITIONS}
+    assert len(by_id) == 18
+    expected = {
         "mixed-rsi-snapback-1h": (5.0, 0.08, 0.15),
         "mixed-momentum-rank-1h": (8.0, 0.15, 0.30),
         "crypto-momentum-persistence-4h": (12.0, 0.25, 0.50),
@@ -394,52 +340,18 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
         "diversified-momentum-taker-15m": (20.0, 0.60, 0.80),
         "crypto-gold-regime-relay-15m": (12.0, 0.25, 0.50),
     }
-    for starter_id, expected in expected_stops.items():
+    for starter_id, stops in expected.items():
         params = by_id[starter_id]["params"]
         assert (
-            params["stop_atr_multiple"],
-            params["stop_min_pct"],
-            params["stop_max_pct"],
-        ) == expected
-
-    pairs = {
-        item["id"]: item
-        for item in catalog
-        if item["research_evidence"].get("strategy_family")
-        == "cross-sectional pair momentum"
-    }
-    assert set(pairs) == {
-        "btc-eth-relative-strength-1d",
-        "bch-ltc-relative-strength-1d",
-    }
-    assert all(len(item["symbols"]) == 2 for item in pairs.values())
-    assert all(
-        item["risk_controls"]["pair_group_stop"]["cross_symbol_atomic"] is False
-        for item in pairs.values()
-    )
-    assert all(not item["tokenized_equities"] for item in pairs.values())
-    assert all(
-        item["research_evidence"]["price_mean_reversion_gate"]["verdict"] == "REJECT"
-        for item in pairs.values()
-    )
-
-    makers = [item for item in catalog if item["family"] == "maker_mean_reversion"]
-    assert {item["id"] for item in makers} == {
-        "balanced-passive-capitulation-1h",
-        "hype-passive-rsi-full-5m",
-        "hype-passive-rsi-staged-5m",
-    }
-    assert all(item["risk_limits"]["max_drawdown"] == -0.08 for item in makers)
-    assert all(
-        item["risk_controls"]["per_position_stop"]["take_profit"] for item in makers
-    )
-    assert all(
-        item["research_evidence"]["recent_120_day_replay"][
-            "return_after_fees_and_slippage"
-        ]
-        > 0
-        for item in makers
-    )
+            tuple(
+                params[k] for k in ("stop_atr_multiple", "stop_min_pct", "stop_max_pct")
+            )
+            == stops
+        )
+    for starter_id in ("btc-eth-relative-strength-1d", "bch-ltc-relative-strength-1d"):
+        item = by_id[starter_id]
+        assert len(item["symbols"]) == 2
+        assert item["risk_controls"]["pair_group_stop"]["cross_symbol_atomic"] is False
 
 
 # Live-driver window per starter (strategy warmup_bars + 20-bar margin).
@@ -463,7 +375,7 @@ EXPECTED_STARTER_LOOKBACK_BARS = {
     "btc-eth-relative-strength-1d": 184,
     "bch-ltc-relative-strength-1d": 184,
     "bullish-regime-rotation-5m": 1464,
-    "diversified-trend-sleeves-15m": 792,
+    "diversified-trend-sleeves-15m": 1944,
     "diversified-momentum-taker-15m": 792,
     "crypto-gold-regime-relay-15m": 984,
     "diversified-liquidation-flush-maker-15m": 216,
@@ -606,6 +518,7 @@ def test_starter_catalog_params_expose_lookback_bars() -> None:
         )
 
 
+@pytest.mark.usefixtures("historical_catalog")
 def test_create_starter_sets_driver_lookback_above_warmup(tmp_path) -> None:
     store = JobStore(repo_root=tmp_path)
     create_starter_job("mixed-sleeve-momentum-15m", store=store, compile_job=False)
@@ -616,6 +529,7 @@ def test_create_starter_sets_driver_lookback_above_warmup(tmp_path) -> None:
     assert lookback > strategy.warmup_bars  # 2884: momentum_bars 2880 + 4
 
 
+@pytest.mark.usefixtures("historical_catalog")
 def test_feed_starters_declare_their_feeds_and_stand_without_them(tmp_path) -> None:
     store = JobStore(repo_root=tmp_path)
     expected_feeds = {
@@ -1102,6 +1016,7 @@ def test_pair_relative_strength_closes_an_orphan_leg_immediately() -> None:
     ]
 
 
+@pytest.mark.usefixtures("historical_catalog")
 def test_create_starter_materializes_job_and_forward_inception(tmp_path) -> None:
     store = JobStore(repo_root=tmp_path)
     result = create_starter_job(
@@ -1203,6 +1118,8 @@ def test_create_starter_materializes_job_and_forward_inception(tmp_path) -> None
 def test_every_starter_launches_with_agent_loop_intervene(tmp_path) -> None:
     store = JobStore(repo_root=tmp_path)
     for definition in STARTER_DEFINITIONS:
+        if not definition.selectable:
+            continue
         create_starter_job(definition.id, store=store, compile_job=False)
         job = store.load(definition.id)
         assert job.agent_loop.enabled is True, definition.id
@@ -1216,6 +1133,7 @@ def test_every_starter_launches_with_agent_loop_intervene(tmp_path) -> None:
         ), definition.id
 
 
+@pytest.mark.usefixtures("historical_catalog")
 def test_create_starter_honors_explicit_agent_mode_override(tmp_path) -> None:
     store = JobStore(repo_root=tmp_path)
     create_starter_job(
@@ -1252,6 +1170,7 @@ def test_create_starter_honors_explicit_agent_mode_override(tmp_path) -> None:
     assert store.load("improve-alias").agent_loop.mode == "intervene"
 
 
+@pytest.mark.usefixtures("historical_catalog")
 def test_create_starter_reuses_its_canonical_job_id(tmp_path) -> None:
     store = JobStore(repo_root=tmp_path)
     first = create_starter_job(
@@ -1275,6 +1194,7 @@ def test_create_starter_reuses_its_canonical_job_id(tmp_path) -> None:
     assert second["leverage_warning"] is None
 
 
+@pytest.mark.usefixtures("historical_catalog")
 def test_create_starter_reuse_tolerates_out_of_range_leverage(tmp_path) -> None:
     """Reopen must never brick on a job whose recorded leverage drifted
     outside the starter dial (hand edit, governance clamp): clamp + warn."""
@@ -1291,6 +1211,7 @@ def test_create_starter_reuse_tolerates_out_of_range_leverage(tmp_path) -> None:
     assert "clamped to 5" in reused["leverage_warning"]
 
 
+@pytest.mark.usefixtures("historical_catalog")
 def test_create_starter_spawns_detached_dataset_fetch(
     tmp_path, dataset_fetch_spawns
 ) -> None:
@@ -1324,6 +1245,23 @@ def test_create_starter_spawns_detached_dataset_fetch(
     assert len(dataset_fetch_spawns) == 1
 
 
+@pytest.mark.parametrize(
+    "starter_id", ["btc-eth-relative-strength-1d", "bch-ltc-relative-strength-1d"]
+)
+@pytest.mark.usefixtures("historical_catalog")
+def test_daily_starter_dataset_covers_warmup_and_research_window(
+    tmp_path: Path,
+    dataset_fetch_spawns: list[dict[str, Any]],
+    starter_id: str,
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    result = create_starter_job(starter_id, store=store, compile_job=False)
+    depth = int(result["job"]["execution_params"]["lookback_bars"])
+    assert dataset_fetch_spawns[0]["kwargs"]["days"] >= depth + 120
+    assert result["dataset_fetch"]["days"] == dataset_fetch_spawns[0]["kwargs"]["days"]
+
+
+@pytest.mark.usefixtures("historical_catalog")
 def test_create_starter_skips_dataset_fetch_when_bars_exist(
     tmp_path, dataset_fetch_spawns
 ) -> None:
@@ -1350,6 +1288,7 @@ def test_create_starter_skips_dataset_fetch_when_bars_exist(
     assert skipped["reason"] == "dataset_exists"
 
 
+@pytest.mark.usefixtures("historical_catalog")
 def test_create_starter_skips_dataset_fetch_when_op_already_running(
     tmp_path, monkeypatch
 ) -> None:
@@ -1380,6 +1319,7 @@ def test_create_starter_skips_dataset_fetch_when_op_already_running(
     assert skipped["reason"] == "fetch_already_running"
 
 
+@pytest.mark.usefixtures("historical_catalog")
 def test_create_starter_survives_dataset_fetch_spawn_failure(
     tmp_path, monkeypatch
 ) -> None:
@@ -1402,6 +1342,7 @@ def test_create_starter_survives_dataset_fetch_spawn_failure(
     assert failed["error"] == "no child processes"
 
 
+@pytest.mark.usefixtures("historical_catalog")
 def test_missing_bars_error_reports_in_progress_dataset_fetch(tmp_path) -> None:
     store = JobStore(repo_root=tmp_path)
     create_starter_job("mixed-rsi-snapback-1h", store=store, compile_job=False)
@@ -1456,6 +1397,7 @@ def _write_fetch_status(store: JobStore, job_id: str, status: dict[str, Any]) ->
     return ops_dir
 
 
+@pytest.mark.usefixtures("historical_catalog")
 def test_snapshot_reports_dataset_needed_before_fetch_op_exists(
     tmp_path, monkeypatch
 ) -> None:
@@ -1467,6 +1409,7 @@ def test_snapshot_reports_dataset_needed_before_fetch_op_exists(
     assert scorecard["dataset_fetch"] == {"status": "needed"}
 
 
+@pytest.mark.usefixtures("historical_catalog")
 def test_snapshot_reports_running_dataset_fetch(tmp_path, monkeypatch) -> None:
     store = JobStore(repo_root=tmp_path)
     create_starter_job("mixed-rsi-snapback-1h", store=store, compile_job=False)
@@ -1491,6 +1434,7 @@ def test_snapshot_reports_running_dataset_fetch(tmp_path, monkeypatch) -> None:
     ("state", "expected"),
     [("done", "done"), ("failed", "failed"), ("killed", "failed"), ("lost", "failed")],
 )
+@pytest.mark.usefixtures("historical_catalog")
 def test_snapshot_reports_finished_dataset_fetch(
     tmp_path, monkeypatch, state: str, expected: str
 ) -> None:
@@ -1515,6 +1459,7 @@ def test_snapshot_reports_finished_dataset_fetch(
     }
 
 
+@pytest.mark.usefixtures("historical_catalog")
 def test_snapshot_resolves_stale_running_fetch_via_result_file(
     tmp_path, monkeypatch
 ) -> None:
@@ -1536,6 +1481,7 @@ def test_snapshot_resolves_stale_running_fetch_via_result_file(
     assert scorecard["dataset_fetch"] == {"status": "done"}
 
 
+@pytest.mark.usefixtures("historical_catalog")
 def test_snapshot_omits_dataset_fetch_when_bars_exist_and_no_op(
     tmp_path, monkeypatch
 ) -> None:
@@ -1592,6 +1538,7 @@ def test_starter_leverage_rejects_values_outside_discrete_dial(value) -> None:
         validate_starter_leverage(value)
 
 
+@pytest.mark.usefixtures("historical_catalog")
 def test_live_pair_compiles_at_protection_monitor_cadence(
     tmp_path, monkeypatch
 ) -> None:

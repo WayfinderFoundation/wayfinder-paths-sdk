@@ -945,7 +945,19 @@ def test_candidate_search_space_accepts_shorthand_and_names_untyped_keys(
         _load_candidate_search_space(root, required=True)
 
 
-def test_starter_seeds_are_stamped_with_universe_compatibility(tmp_path) -> None:
+def test_starter_seeds_are_stamped_with_universe_compatibility(
+    tmp_path, monkeypatch
+) -> None:
+    from dataclasses import replace
+
+    from wayfinder_paths.jobs import evolution_campaign
+
+    # Compatibility is independent of which historical templates are offered.
+    monkeypatch.setattr(
+        evolution_campaign,
+        "STARTER_DEFINITIONS",
+        tuple(replace(item, selectable=True) for item in STARTER_DEFINITIONS),
+    )
     store, job_id = _investigative_job(tmp_path)
     job_path = store.job_dir(job_id) / "job.yaml"
     job_data = yaml.safe_load(job_path.read_text(encoding="utf-8"))
@@ -7616,9 +7628,22 @@ def test_starter_bar_params_rescale_to_the_job_interval(tmp_path) -> None:
     assert _starter_bar_ratio({"timeframe": ""}, root) == 1.0
 
 
-def test_adapted_starter_recomputes_warmup_after_bar_rescale(tmp_path) -> None:
+def test_adapted_starter_recomputes_warmup_after_bar_rescale(
+    tmp_path, monkeypatch
+) -> None:
+    from dataclasses import replace
+
+    from wayfinder_paths.jobs import evolution_campaign
+    from wayfinder_paths.jobs.starters import get_starter
     from wayfinder_paths.jobs.strategies.regime_rotation import build_strategy
 
+    # Exercise the old 5m template's adaptation contract without re-offering
+    # a retired starter in the actual catalogue.
+    monkeypatch.setattr(
+        evolution_campaign,
+        "STARTER_DEFINITIONS",
+        (replace(get_starter("bullish-regime-rotation-5m"), selectable=True),),
+    )
     store, job_id = _evaluatable_job(tmp_path)
     root = store.job_dir(job_id)
     symbols = ["BNB", "PAXG", "HYPE", "ZEC", "MORPHO"]
