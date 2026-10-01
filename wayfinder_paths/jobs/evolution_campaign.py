@@ -7179,14 +7179,27 @@ def campaign_prompt_block(
     manifest = store.read_json(job_id, str(state["manifest"]), default={}) or {}
     candidates = state.get("candidates") or []
     running = [item for item in candidates if item.get("status") == "quick_running"]
-    if running:
-        return {
+    running_block = (
+        {
             "status": "blocked",
             "campaign_id": state["campaign_id"],
             "reason": (
                 f"candidate {running[0].get('candidate_id')} evaluation is running"
             ),
         }
+        if running
+        else None
+    )
+    # With overlap on, the next fresh design slot is written while one screen
+    # runs (its own screen queues on the compute lock); repairs, redesign and
+    # finalization still wait for every result.
+    overlap = (
+        bool((manifest.get("policy") or {}).get("overlap_generation"))
+        and len(running) == 1
+        and state.get("stage") == "generate"
+    )
+    if running_block is not None and not overlap:
+        return running_block
     if state.get("stage") == COMPOSE_STAGE and current < deadline:
         return _compose_prompt_block(store, job_id, state, manifest)
     if state.get("stage") in {"design", COMPOSE_STAGE}:
@@ -7625,6 +7638,10 @@ def campaign_prompt_block(
     awaiting_evaluation = _awaiting_evaluation(state, policy)
     deadline_elapsed = current >= deadline
     draining = deadline - CAMPAIGN_DRAIN <= current < deadline
+    if running_block is not None and (
+        awaiting_evaluation or deadline_elapsed or draining or len(candidates) >= budget
+    ):
+        return running_block
     if not deadline_elapsed and not draining and _redesign_due(state, policy):
         return _redesign_prompt_block(store, job_id, state, manifest)
     designed = str(state.get("schema_version") or "") == SCHEMA_VERSION

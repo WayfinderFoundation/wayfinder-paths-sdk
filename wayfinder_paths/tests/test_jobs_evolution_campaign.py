@@ -31,6 +31,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _archive_campaign_candidate,
     _attempt_cap,
     _cadence,
+    _candidate,
     _candidate_handoff,
     _candidate_has_typed_search_space,
     _certification_fold_bounds,
@@ -3294,6 +3295,43 @@ def test_next_action_isolates_one_candidate_per_stage_session(tmp_path) -> None:
         "campaign_id": state["campaign_id"],
         "reason": f"candidate {state['candidates'][0]['candidate_id']} evaluation is running",
     }
+
+
+def test_overlap_generation_writes_the_next_slot_while_one_screen_runs(
+    tmp_path,
+) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    state = start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    working = datetime(2026, 8, 25, 13, tzinfo=UTC)
+    first = prepare_candidate(
+        store,
+        job_id,
+        family="breakout",
+        summary="first slot",
+        now=working,
+    )
+    state = campaign_status(store, job_id)
+    _candidate(state, first["candidate_id"])["status"] = "quick_running"
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+    blocked = campaign_prompt_block(store, job_id, now=working)
+    assert blocked["status"] == "blocked"
+
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    manifest["policy"]["overlap_generation"] = True
+    store.write_json(job_id, str(state["manifest"]), manifest)
+    overlapped = campaign_prompt_block(store, job_id, now=working)
+    assert overlapped.get("status") != "blocked"
+    assert 'action="evolution_prepare"' in overlapped["next_action"]
+
+    # A second screen in flight, or a candidate awaiting its own launch,
+    # still waits.
+    state = campaign_status(store, job_id)
+    state["candidates"].append({**state["candidates"][0], "candidate_id": "x2"})
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+    assert campaign_prompt_block(store, job_id, now=working)["status"] == "blocked"
+    state["candidates"][-1]["status"] = "prepared"
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+    assert campaign_prompt_block(store, job_id, now=working)["status"] == "blocked"
 
 
 def test_stage_context_carries_bounded_candidate_evidence(tmp_path) -> None:

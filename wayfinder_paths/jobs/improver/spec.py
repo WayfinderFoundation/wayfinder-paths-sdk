@@ -233,6 +233,8 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         # frequency_window_days windows holding frequency_min_entries entries).
         # 0 keeps ranking on the risk/return score alone.
         "frequency_objective_weight": 0.0,
+        # Write the next fresh design slot while one quick screen runs.
+        "overlap_generation": False,
         "frequency_window_days": 28,
         "frequency_min_entries": 3,
         # Full development also requires a profitable train window, so a book
