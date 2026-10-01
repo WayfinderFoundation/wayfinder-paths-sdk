@@ -42,6 +42,7 @@ async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     return ok(
         {
             "stage": checkpoint.stage,
+            "schema_version": checkpoint.schema_version,
             "sha256": hashlib.sha256(checkpoint.receipt_json().encode()).hexdigest(),
             "candidate_count": len(checkpoint.candidates) + len(checkpoint.decisions),
             "discovery_count": len(checkpoint.discoveries),

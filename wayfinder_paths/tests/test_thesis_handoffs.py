@@ -5,7 +5,9 @@ from copy import deepcopy
 import pytest
 
 from wayfinder_paths.core.theses.assessment import (
+    DISCOVERY_TOOL,
     assessment_report,
+    checkpoints,
     projected_records,
     research_notebook,
 )
@@ -40,7 +42,46 @@ def test_v5_worker_can_append_handoff_without_repeating_frozen_spec() -> None:
 
 def test_legacy_worker_still_requires_spec() -> None:
     with pytest.raises(ValueError, match="require spec"):
-        DiscoveryCheckpoint()
+        DiscoveryCheckpoint(schema_version=3)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", [3, 5])
+@pytest.mark.parametrize("explicit", [True, False])
+async def test_worker_receipts_preserve_explicit_and_omitted_versions(
+    spec: dict, version: int, explicit: bool
+) -> None:
+    from wayfinder_paths.mcp.tools.thesis_checkpoint import research_thesis_discovery
+
+    raw = {"spec": spec} if version == 3 else {"discoveries": []}
+    if explicit:
+        raw["schema_version"] = version
+    checkpoint = DiscoveryCheckpoint.model_validate({**raw, "schema_version": version})
+    output = await research_thesis_discovery(checkpoint)
+    if version == 3:
+        # Historical receipts had no effective-version field.
+        output["result"].pop("schema_version")
+    else:
+        assert DiscoveryCheckpoint.model_validate(raw).schema_version == 5
+        assert output["result"]["schema_version"] == 5
+    message = {
+        "parts": [
+            {
+                "tool": DISCOVERY_TOOL,
+                "state": {
+                    "status": "completed",
+                    "input": {"checkpoint": raw},
+                    "output": json.dumps(output),
+                },
+            }
+        ]
+    }
+    records = checkpoints([message])
+    assert len(records) == 1
+    assert records[0]["checkpoint"]["schema_version"] == version
+    output["result"]["schema_version"] = 3 if version == 5 else 5
+    message["parts"][0]["state"]["output"] = json.dumps(output)
+    assert not checkpoints([message])
 
 
 @pytest.fixture

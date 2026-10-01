@@ -31,16 +31,30 @@ def checkpoints(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             ):
                 continue
             try:
+                output = json.loads(state.get("output", ""))
+                if not isinstance(output, dict) or output.get("ok") is not True:
+                    continue
+                receipt = output.get("result")
+                if not isinstance(receipt, dict):
+                    continue
                 payload = state.get("input", {}).get("checkpoint")
                 if part.get("tool") == DISCOVERY_TOOL:
+                    if isinstance(payload, dict):
+                        # Older omitted-version worker inputs meant v3. New
+                        # receipts record the effective default so both replay.
+                        payload = {
+                            "schema_version": receipt.get("schema_version", 3),
+                            **payload,
+                        }
                     payload = DiscoveryCheckpoint.model_validate(payload).model_dump()
                 checkpoint = ResearchCheckpoint.model_validate(payload)
-                output = json.loads(state.get("output", ""))
             except (ValidationError, ValueError, TypeError):
                 continue
-            if not isinstance(output, dict) or output.get("ok") is not True:
+            if (
+                receipt.get("schema_version", checkpoint.schema_version)
+                != checkpoint.schema_version
+            ):
                 continue
-            receipt = output.get("result")
             digests = {
                 hashlib.sha256(checkpoint.model_dump_json().encode()).hexdigest(),
                 hashlib.sha256(checkpoint.receipt_json().encode()).hexdigest(),
@@ -87,7 +101,7 @@ def checkpoints(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 if "discovery_dispositions" not in state["input"]["checkpoint"]:
                     legacy.pop("discovery_dispositions")
                     digests.add(hashlib.sha256(to_json(legacy)).hexdigest())
-            if not isinstance(receipt, dict) or receipt.get("sha256") not in digests:
+            if receipt.get("sha256") not in digests:
                 continue
             records.append(
                 {

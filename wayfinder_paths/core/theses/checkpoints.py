@@ -296,7 +296,7 @@ class ResearchCheckpoint(Contract):
 class DiscoveryCheckpoint(Contract):
     """Separate worker input: judgments/portfolios are structurally impossible."""
 
-    schema_version: Literal[3, 5] = 3
+    schema_version: Literal[3, 5] = 5
     stage: Literal["discovery"] = "discovery"
     spec: ThesisSpec | None = None
     discoveries: Annotated[list[Discovery], Field(max_length=120)] = []
