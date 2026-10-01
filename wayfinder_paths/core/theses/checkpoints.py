@@ -33,7 +33,7 @@ class ImplementationCheck(Contract):
     status: Literal["viable", "rejected", "not_found", "incompatible", "unverified"]
     reason: Text
     # Human-readable observations; independent reads establish IDs, not conclusions.
-    observations: Annotated[list[Text], Field(min_length=1, max_length=6)]
+    observations: Annotated[list[Text], Field(max_length=6)] = []
 
     @model_validator(mode="after")
     def validate_implementation(self) -> Self:

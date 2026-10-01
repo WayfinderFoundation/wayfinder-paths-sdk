@@ -79,10 +79,11 @@ def record(
     candidates: Sequence[dict[str, Any]] = (),
     dispositions: Sequence[dict[str, Any]] = (),
     session: str | None = None,
+    schema_version: int = 2,
 ) -> dict[str, Any]:
     checkpoint = ResearchCheckpoint.model_validate(
         {
-            "schema_version": 2,
+            "schema_version": schema_version,
             "stage": stage,
             "spec": spec,
             "discoveries": list(discoveries),
@@ -370,3 +371,25 @@ def test_v2_receipts_before_dispositions_remain_readable(spec: dict[str, Any]) -
         }
     )
     assert len(checkpoints([message])) == 1
+
+
+def test_valid_inventory_is_not_missing_when_worker_omits_version_tag(
+    spec: dict[str, Any],
+    discovery: dict[str, Any],
+    case: dict[str, Any],
+) -> None:
+    child = record(
+        spec, "discovery", discoveries=[discovery], session="worker", schema_version=1
+    )
+    parent = record(spec, "judged", candidates=[case])
+    assert not assessment_report([parent, observed()], [child])["errors"]
+
+
+def test_implementation_reason_does_not_require_duplicate_observation_prose(
+    spec: dict[str, Any],
+    case: dict[str, Any],
+) -> None:
+    for check in case["implementation_checks"]:
+        del check["observations"]
+    parent = record(spec, "judged", candidates=[case])
+    assert not assessment_report([parent, observed()], [])["errors"]

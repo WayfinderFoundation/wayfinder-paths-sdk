@@ -102,11 +102,7 @@ def assessment_report(
                 if m.get("info", {}).get("sessionID") == session_id
             ]
         )
-        if not any(
-            r["checkpoint"]["stage"] == "discovery"
-            and r["checkpoint"]["schema_version"] == 2
-            for r in records
-        ):
+        if not any(r["checkpoint"]["stage"] == "discovery" for r in records):
             errors.append(
                 f"Research child {session_id} did not record its discovery inventory"
             )
