@@ -1,9 +1,13 @@
 import asyncio
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from wayfinder_paths.core.clients.direct.DefiLlamaFreeClient import DefiLlamaFreeClient
+from wayfinder_paths.core.clients.direct.DefiLlamaFreeClient import (
+    DefiLlamaFreeClient,
+    _enforce_response_budget,
+)
 from wayfinder_paths.mcp.tools import thesis_quantification as tool
 from wayfinder_paths.tests.test_thesis_quantification import variant
 
@@ -34,6 +38,62 @@ async def test_catalog_failure_does_not_poison_cache():
         await client.protocols()
     assert await client.protocols() == {"result": []}
     assert client._get.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("description", ["", "Revenue venue 市場 " * 70])
+async def test_catalog_pages_fit_rendered_output_without_losing_candidates(
+    description: str,
+) -> None:
+    client = DefiLlamaFreeClient()
+    client._get = AsyncMock(
+        return_value={
+            "url": "https://api.llama.fi/protocols",
+            "result": [
+                {
+                    "name": f"Venue {index}",
+                    "slug": f"venue-{index}",
+                    "category": "Derivatives",
+                    "description": description,
+                }
+                for index in range(130)
+            ],
+        }
+    )
+    cursor = "_"
+    slugs = []
+    while True:
+        response = await client.protocol_search(
+            "_", category="Derivatives", limit=100, cursor=cursor
+        )
+        rendered = json.dumps({"ok": True, "result": response}, indent=2)
+        assert len(rendered.encode()) < 50 * 1024
+        assert len(rendered.splitlines()) < 2000
+        page = response["result"]["page"]
+        rows = response["result"]["matches"]
+        assert rows
+        assert page["returned"] == len(rows)
+        slugs.extend(row["slug"] for row in rows)
+        if not page["hasMore"]:
+            break
+        assert int(page["nextCursor"]) == len(slugs)
+        cursor = page["nextCursor"]
+    assert slugs == [f"venue-{index}" for index in range(130)]
+    assert client._get.await_count == 1
+
+
+def test_oversized_single_row_reports_gap_not_empty_skipped_page() -> None:
+    response = _enforce_response_budget(
+        {
+            "result": {
+                "items": [{"description": "x" * 60_000}],
+                "page": {"cursor": "0", "nextCursor": "1", "hasMore": True},
+            }
+        }
+    )
+    assert response["result"]["truncated"]
+    assert "page" not in response["result"]
+    assert response["result"]["items"] == []
 
 
 @pytest.mark.asyncio

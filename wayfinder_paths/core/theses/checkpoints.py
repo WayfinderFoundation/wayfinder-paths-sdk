@@ -298,7 +298,13 @@ class DiscoveryCheckpoint(Contract):
 
     schema_version: Literal[3, 5] = 3
     stage: Literal["discovery"] = "discovery"
-    spec: ThesisSpec
+    spec: ThesisSpec | None = None
     discoveries: Annotated[list[Discovery], Field(max_length=120)] = []
     research_cases: Annotated[list[ResearchCase], Field(max_length=10)] = []
     handoff: Handoff | None = None
+
+    @model_validator(mode="after")
+    def require_legacy_spec(self) -> Self:
+        if self.schema_version < 5 and self.spec is None:
+            raise ValueError("Legacy discovery checkpoints require spec")
+        return self

@@ -9,7 +9,11 @@ from wayfinder_paths.core.theses.assessment import (
     projected_records,
     research_notebook,
 )
-from wayfinder_paths.core.theses.checkpoints import ReviewCheckpoint
+from wayfinder_paths.core.theses.checkpoints import (
+    DiscoveryCheckpoint,
+    ResearchCheckpoint,
+    ReviewCheckpoint,
+)
 from wayfinder_paths.core.theses.review import REVIEW_TOOL, review_report
 from wayfinder_paths.tests import test_thesis_assessment
 from wayfinder_paths.tests.test_thesis_draft import receipt
@@ -17,6 +21,25 @@ from wayfinder_paths.tests.test_thesis_draft import receipt
 case = test_thesis_assessment.case
 discovery = test_thesis_assessment.discovery
 spec = test_thesis_assessment.spec
+
+
+def test_v5_worker_can_append_handoff_without_repeating_frozen_spec() -> None:
+    worker = DiscoveryCheckpoint(
+        schema_version=5,
+        handoff={
+            "case_entities": ["network"],
+            "unresolved_entities": [],
+            "reason": "Complete",
+        },
+    )
+    checkpoint = ResearchCheckpoint.model_validate(worker.model_dump())
+    assert checkpoint.spec is None
+    assert checkpoint.handoff.case_entities == ["network"]
+
+
+def test_legacy_worker_still_requires_spec() -> None:
+    with pytest.raises(ValueError, match="require spec"):
+        DiscoveryCheckpoint()
 
 
 @pytest.fixture

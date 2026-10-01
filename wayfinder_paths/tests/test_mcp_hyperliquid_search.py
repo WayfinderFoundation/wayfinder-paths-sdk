@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -183,6 +184,53 @@ async def test_market_browsing_pages_after_type_filter(market_inventory):
     assert _names(first["perps"]).isdisjoint(_names(second["perps"]))
     assert all(":" in name for name in _names(first["perps"]) | _names(second["perps"]))
     assert not second["spots"]
+
+
+@pytest.mark.asyncio
+async def test_large_perp_browse_uses_bounded_pages_without_skipping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    names = [f"xyz:STOCK{index}" for index in range(110)]
+    monkeypatch.setattr(
+        HyperliquidAdapter,
+        "get_meta_and_asset_ctxs",
+        AsyncMock(
+            return_value=(
+                True,
+                [
+                    {"universe": [{"name": name, "maxLeverage": 20} for name in names]},
+                    [
+                        {
+                            "midPx": "100",
+                            "markPx": "100",
+                            "oraclePx": "100",
+                            "funding": "0.00001",
+                            "openInterest": "1000",
+                            "dayNtlVlm": "100000",
+                        }
+                        for _ in names
+                    ],
+                ],
+            )
+        ),
+    )
+    offset = 0
+    found = []
+    while True:
+        result = await hyperliquid_search_market(
+            "", limit=100, market_type="hip3", offset=offset
+        )
+        rendered = json.dumps(result, indent=2)
+        assert len(rendered.encode()) < 50 * 1024
+        assert len(rendered.splitlines()) < 2000
+        found.extend(row["name"] for row in result["result"]["perps"])
+        page = result["result"]["pagination"]["perps"]
+        assert page["limit"] == 25
+        if page["next_offset"] is None:
+            break
+        offset = page["next_offset"]
+        assert offset == len(found)
+    assert found == names
 
 
 @pytest.mark.asyncio

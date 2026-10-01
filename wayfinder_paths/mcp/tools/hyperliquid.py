@@ -2320,7 +2320,8 @@ async def hyperliquid_search_market(
     query browses each selected bucket using limit/offset.
 
     query: A simple string containing asset names, for example: btc, eth, oil. Prefer non empty queries for efficiency.
-    limit: Max number of results to return per category.
+    limit: Max number of results to return per category. Detailed perp/HIP-3
+        pages return at most 25 to fit the agent's output budget; follow next_offset.
     offset: Zero-based offset into each filtered, ranked category. Use pagination.next_offset.
     market_type: optional filter — "perp", "hip3", "spot", or "hip4". Buckets the caller filters out come back empty.
 
@@ -2484,20 +2485,25 @@ async def hyperliquid_search_market(
         spot_hits = [{"name": s} for s in top(spots, lambda s: s, market_name=True)]
         outcome_hits = top(outcome_data, outcome_text)
 
+    # Detailed perp rows otherwise overflow OpenCode's tool output at limit=100.
+    # Keep the whole filtered universe reachable through the existing cursor.
+    perp_limit = min(limit, 25)
     pagination = {
         name: {
             "total": len(hits),
             "offset": offset,
-            "limit": limit,
-            "next_offset": offset + limit if offset + limit < len(hits) else None,
+            "limit": page_limit,
+            "next_offset": (
+                offset + page_limit if offset + page_limit < len(hits) else None
+            ),
         }
-        for name, hits in (
-            ("perps", perp_hits),
-            ("spots", spot_hits),
-            ("outcomes", outcome_hits),
+        for name, hits, page_limit in (
+            ("perps", perp_hits, perp_limit),
+            ("spots", spot_hits, limit),
+            ("outcomes", outcome_hits, limit),
         )
     }
-    perp_hits = perp_hits[offset : offset + limit]
+    perp_hits = perp_hits[offset : offset + perp_limit]
     spot_hits = spot_hits[offset : offset + limit]
     outcome_hits = outcome_hits[offset : offset + limit]
     # Reuse the public data already fetched above; no wallet access or extra requests.

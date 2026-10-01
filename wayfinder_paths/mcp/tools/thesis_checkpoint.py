@@ -62,9 +62,10 @@ async def research_thesis_discovery(checkpoint: DiscoveryCheckpoint) -> dict:
     Return a compact handoff referencing recorded entity keys, not the full inbox.
     This stores assertions only in the transcript, never parent judgments,
     files, trades or independently verified evidence.
-    Use schema_version=5. Save cases progressively, then finish with handoff:
+    Use schema_version=5; omit spec when the parent's interpretation is unchanged.
+    Save cases progressively, then finish with handoff:
     case_entities lists EVERY saved ranked key; unresolved_entities lists remaining
-    inventory keys; reason explains gaps (or that research is complete). An inbox
+    inventory keys; reason briefly explains gaps (or that research is complete). An inbox
     without ranked cases is not a completed assessment. Do not repeat case essays.
     """
     return await research_thesis_checkpoint(

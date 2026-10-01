@@ -18,7 +18,9 @@ TIMEOUT_SECONDS = 20
 ATTRIBUTION = "Data from DeFiLlama free API"
 DEFAULT_PAGE_LIMIT = 25
 MAX_PAGE_LIMIT = 100
-MAX_RESPONSE_CHARACTERS = 250_000
+# Leave room for MCP's envelope within OpenCode's 50 KiB / 2,000-line limit.
+MAX_RESPONSE_CHARACTERS = 40_000
+MAX_RESPONSE_LINES = 1_600
 OVERVIEW_PARAMS = {
     "excludeTotalDataChart": "true",
     "excludeTotalDataChartBreakdown": "true",
@@ -757,35 +759,39 @@ def _number(value: Any) -> float:
 
 
 def _enforce_response_budget(response: dict[str, Any]) -> dict[str, Any]:
-    rendered = json.dumps(response, default=str, separators=(",", ":"))
-    if len(rendered) <= MAX_RESPONSE_CHARACTERS:
-        return response
-
-    result = response.get("result")
-    if not isinstance(result, dict) or not isinstance(result.get("items"), list):
+    while True:
+        # Measure the pretty-printed tool response, not compact provider JSON.
+        rendered = json.dumps({"ok": True, "result": response}, default=str, indent=2)
+        if (
+            len(rendered) <= MAX_RESPONSE_CHARACTERS
+            and rendered.count("\n") < MAX_RESPONSE_LINES
+        ):
+            return response
+        result = response.get("result")
+        if (
+            isinstance(result, dict)
+            and isinstance(result.get("items"), list)
+            and len(result["items"]) > 1
+        ):
+            result["items"] = result["items"][: len(result["items"]) // 2]
+            page = result.get("page")
+            if isinstance(page, dict):
+                offset = _cursor_offset(str(page.get("cursor") or "0"))
+                page["returned"] = len(result["items"])
+                page["nextCursor"] = str(offset + len(result["items"]))
+                page["hasMore"] = True
+            continue
+        # One oversized row cannot be paged. Report unavailable output explicitly
+        # rather than returning an empty page with a cursor that skips the row.
         response["result"] = {
             "truncated": True,
             "reason": "response_exceeds_budget",
             "maxResponseCharacters": MAX_RESPONSE_CHARACTERS,
+            "maxResponseLines": MAX_RESPONSE_LINES,
             "actualCharacters": len(rendered),
             "rawPayloadOmitted": True,
             "attribution": ATTRIBUTION,
         }
+        if isinstance(result, dict) and isinstance(result.get("items"), list):
+            response["result"]["items"] = []
         return response
-
-    while len(result["items"]) > 1 and len(rendered) > MAX_RESPONSE_CHARACTERS:
-        result["items"] = result["items"][: max(1, len(result["items"]) // 2)]
-        page = result.get("page")
-        if isinstance(page, dict):
-            offset = _cursor_offset(str(page.get("cursor") or "0"))
-            page["returned"] = len(result["items"])
-            page["nextCursor"] = str(offset + len(result["items"]))
-            page["hasMore"] = True
-        rendered = json.dumps(response, default=str, separators=(",", ":"))
-
-    if len(rendered) > MAX_RESPONSE_CHARACTERS:
-        result["items"] = []
-        result["truncated"] = True
-        result["reason"] = "response_exceeds_budget"
-        result["maxResponseCharacters"] = MAX_RESPONSE_CHARACTERS
-    return response
