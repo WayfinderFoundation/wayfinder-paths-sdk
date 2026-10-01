@@ -167,7 +167,13 @@ async def test_worker_receipt_counts_research_separately_from_parent_judgments(
         raw["research_cases"] = []
     if not include_handoff:
         raw["handoff"] = None
-    checkpoint = DiscoveryCheckpoint.model_validate(raw)
+    checkpoint = DiscoveryCheckpoint.model_validate(
+        {
+            key: value
+            for key, value in raw.items()
+            if key in DiscoveryCheckpoint.model_fields
+        }
+    )
     response = await research_thesis_discovery(checkpoint)
     assert response["ok"] is True
     assert response["result"]["candidate_count"] == 0
