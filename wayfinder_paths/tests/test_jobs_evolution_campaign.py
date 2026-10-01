@@ -6,6 +6,7 @@ import math
 import shutil
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -945,7 +946,19 @@ def test_candidate_search_space_accepts_shorthand_and_names_untyped_keys(
         _load_candidate_search_space(root, required=True)
 
 
-def test_starter_seeds_are_stamped_with_universe_compatibility(tmp_path) -> None:
+def test_starter_seeds_are_stamped_with_universe_compatibility(
+    tmp_path, monkeypatch
+) -> None:
+    from dataclasses import replace
+
+    from wayfinder_paths.jobs import evolution_campaign
+
+    # Compatibility is independent of which historical templates are offered.
+    monkeypatch.setattr(
+        evolution_campaign,
+        "STARTER_DEFINITIONS",
+        tuple(replace(item, selectable=True) for item in STARTER_DEFINITIONS),
+    )
     store, job_id = _investigative_job(tmp_path)
     job_path = store.job_dir(job_id) / "job.yaml"
     job_data = yaml.safe_load(job_path.read_text(encoding="utf-8"))
@@ -1598,6 +1611,12 @@ def test_owner_compute_budget_override_is_written_journaled_and_honoured(
     writes an expiring machine marker, journals it, and the start's own
     compute lock honours it."""
     store, job_id = _job(tmp_path, "majors-5m-lab")
+    # This tests a wall-clock compute lease, not the separate model-pricing
+    # gate. Otherwise the same test fails solely because of the hour CI runs.
+    improver_path = store.job_dir(job_id) / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"]["pricing_schedule"] = {"blocked_windows_utc": []}
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
     # The ledger and the marker are judged against wall-clock time.
     now = datetime.now(UTC).replace(microsecond=0)
     budget_path = tmp_path / EVOLUTION_BUDGET_RELATIVE
@@ -7616,16 +7635,44 @@ def test_starter_bar_params_rescale_to_the_job_interval(tmp_path) -> None:
     assert _starter_bar_ratio({"timeframe": ""}, root) == 1.0
 
 
-def test_adapted_starter_recomputes_warmup_after_bar_rescale(tmp_path) -> None:
-    from wayfinder_paths.jobs.strategies.regime_rotation import build_strategy
+@pytest.mark.parametrize(
+    "starter_id,interval,param,expected_bars,expected_warmup",
+    [
+        ("bullish-regime-rotation-5m", "15m", "slow_sma_bars", 480, 484),
+        ("diversified-trend-sleeves-15m", "5m", "risk_window_bars", 5760, 5764),
+    ],
+)
+def test_adapted_starter_recomputes_warmup_after_bar_rescale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    starter_id: str,
+    interval: str,
+    param: str,
+    expected_bars: int,
+    expected_warmup: int,
+) -> None:
+    import importlib
+    from dataclasses import replace
 
+    from wayfinder_paths.jobs import evolution_campaign
+    from wayfinder_paths.jobs.execution.primitives import resolve_compute_window
+    from wayfinder_paths.jobs.starters import get_starter
+
+    definition = get_starter(starter_id)
+    # Historical templates remain testable without re-offering them; the new
+    # trend revision must also rescale its volatility window, not just momentum.
+    monkeypatch.setattr(
+        evolution_campaign,
+        "STARTER_DEFINITIONS",
+        (replace(definition, selectable=True),),
+    )
     store, job_id = _evaluatable_job(tmp_path)
     root = store.job_dir(job_id)
-    symbols = ["BNB", "PAXG", "HYPE", "ZEC", "MORPHO"]
+    symbols = list(definition.symbols)
     job_path = root / "job.yaml"
     job_data = yaml.safe_load(job_path.read_text(encoding="utf-8"))
     job_data["execution_spec"]["data_contract"].update(
-        {"bar_interval": "15m", "symbols": symbols}
+        {"bar_interval": interval, "symbols": symbols}
     )
     job_data["execution_params"]["symbols"] = symbols
     job_path.write_text(yaml.safe_dump(job_data, sort_keys=False), encoding="utf-8")
@@ -7642,11 +7689,9 @@ def test_adapted_starter_recomputes_warmup_after_bar_rescale(tmp_path) -> None:
     state = start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
     manifest = store.read_json(job_id, str(state["manifest"]))
     starter = next(
-        row
-        for row in manifest["starter_seeds"]
-        if row["starter_id"] == "bullish-regime-rotation-5m"
+        row for row in manifest["starter_seeds"] if row["starter_id"] == starter_id
     )
-    candidate_root = root / "adapted-bull-starter"
+    candidate_root = root / "adapted-starter"
     seeded = _materialize_candidate_seed(
         store,
         job_id,
@@ -7654,12 +7699,14 @@ def test_adapted_starter_recomputes_warmup_after_bar_rescale(tmp_path) -> None:
         candidate_root=candidate_root,
         plan={"source": "starter_seed", "parents": [], "starter": starter},
     )
-    params = _read_bundle_params(store, job_id, "adapted-bull-starter")
-    actual = build_strategy(params).warmup_bars
+    params = _read_bundle_params(store, job_id, "adapted-starter")
+    strategy = importlib.import_module(definition.module).build_strategy(params)
+    actual = strategy.warmup_bars
 
-    assert params["slow_sma_bars"] == 480
-    assert seeded == params["warmup_bars"] == actual == 484
+    assert params[param] == expected_bars
+    assert seeded == params["warmup_bars"] == actual == expected_warmup
     assert params["lookback_bars"] == actual + STARTER_LOOKBACK_MARGIN_BARS
+    assert resolve_compute_window(params, strategy).size == actual
 
 
 def _screened_campaign(tmp_path, *, checkpoint: bool = True):

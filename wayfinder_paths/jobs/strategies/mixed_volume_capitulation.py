@@ -118,9 +118,11 @@ class MixedVolumeCapitulationStrategy:
                 "starter_trend_sma",
                 "starter_volume_median",
             ),
+            require_all=False,
         )
-        if rows is None:
+        if not rows:
             return []
+        complete = len(rows) == len(symbols)
 
         weights: dict[str, float] = {}
         maker_entries: list[str] = []
@@ -137,7 +139,8 @@ class MixedVolumeCapitulationStrategy:
                 or position.bars_held >= int(self.params["max_hold_bars"]) - 1
             )
             should_enter = (
-                position is None
+                complete
+                and position is None
                 and rsi < float(self.params["entry_rsi"])
                 and close > trend_sma
                 and volume > volume_median * float(self.params["volume_multiple"])
@@ -160,7 +163,7 @@ class MixedVolumeCapitulationStrategy:
             intents = [self._market_close(ctx, symbol) for symbol in exit_symbols]
             intents.extend(self._maker_entries(ctx, rows, maker_entries, brackets))
             return intents
-        return target_weights_to_intents(
+        intents = target_weights_to_intents(
             ctx,
             weights,
             venue=str(self.params["venue"]),
@@ -168,6 +171,15 @@ class MixedVolumeCapitulationStrategy:
             min_trade_notional=float(self.params["min_trade_notional"]),
             brackets=brackets,
         )
+        if complete:
+            return intents
+        return [
+            intent
+            for intent in intents
+            if intent["symbol"] in rows
+            and weights[intent["symbol"]] == 0
+            and intent.get("reduce_only")
+        ]
 
     def _market_close(self, ctx: ExecutionContext, symbol: str) -> dict[str, Any]:
         position = ctx.ledger.positions[symbol]
