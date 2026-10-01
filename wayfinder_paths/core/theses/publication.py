@@ -146,6 +146,24 @@ def validate_proposal(
             "One variant per distinct allocation suffices. Missing history is an explicit "
             "limitation, not zero risk or a reason by itself to recommend cash"
         )
+    if evidence.get("require_implementation_comparisons"):
+        tokens = evidence.get("onchain_tokens", {})
+        compared = {
+            tokens.get(i, {}).get("token_id") or i
+            for i in evidence.get("implementation_comparisons", {})
+        }
+        missing_comparisons = {
+            p.instrument_id
+            for v in checked.variants
+            for p in v.positions
+            if (tokens.get(p.instrument_id, {}).get("token_id") or p.instrument_id)
+            not in compared
+        }
+        if missing_comparisons:
+            errors.append(
+                "Compare selected implementations with research_quantify_portfolio(compare_implementations=true), including closest alternatives: "
+                + ", ".join(sorted(missing_comparisons))
+            )
     if errors:
         raise ValueError("\n".join(dict.fromkeys(errors)))
     assert proposal is not None

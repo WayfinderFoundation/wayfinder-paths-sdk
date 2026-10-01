@@ -9,7 +9,7 @@ from wayfinder_paths.core.theses.assessment import (
     checkpoints,
     research_notebook,
 )
-from wayfinder_paths.core.theses.checkpoints import ResearchCheckpoint
+from wayfinder_paths.core.theses.checkpoints import ResearchCheckpoint, ReviewCheckpoint
 from wayfinder_paths.core.theses.draft import (
     draft_context,
     draft_status,
@@ -21,11 +21,71 @@ from wayfinder_paths.core.theses.quantification import (
     allocation_key,
     quantify_variants,
 )
+from wayfinder_paths.core.theses.review import REVIEW_TOOL
 from wayfinder_paths.core.theses.sizing import construction_errors, size_variant
 from wayfinder_paths.tests import test_thesis_assessment, test_thesis_targets
 
 spec = test_thesis_assessment.spec
 target = test_thesis_targets.target
+
+
+def test_v5_requires_review_receipt_and_implementation_comparisons(run):
+    parent, child = run
+    for index, message in enumerate(parent):
+        for part in message.get("parts", []):
+            if part.get("tool") == CHECKPOINT_TOOL:
+                cp = part["state"]["input"]["checkpoint"]
+                cp["schema_version"] = 5
+                parent[index] = receipt(cp, part["state"]["time"]["end"])
+    status = draft_status(parent, child)
+    assert any("research_thesis_review" in e for e in status["errors"])
+    assert any("Compare selected implementations" in e for e in status["errors"])
+    cp = ReviewCheckpoint(findings=[])
+    child.append(
+        {
+            "info": {
+                "agent": "thesis-reviewer",
+                "sessionID": "reviewer",
+                "finish": "stop",
+            },
+            "parts": [
+                {
+                    "tool": REVIEW_TOOL,
+                    "state": {
+                        "status": "completed",
+                        "time": {"end": 20},
+                        "input": {"checkpoint": cp.model_dump()},
+                        "output": json.dumps(
+                            {
+                                "ok": True,
+                                "result": {
+                                    "sha256": hashlib.sha256(
+                                        cp.model_dump_json().encode()
+                                    ).hexdigest()
+                                },
+                            }
+                        ),
+                    },
+                }
+            ],
+        }
+    )
+    parent.append(
+        observation(
+            "wayfinder_research_quantify_portfolio",
+            {
+                "implementation_comparisons": {
+                    "BTC-USDC": {
+                        "observations": {
+                            "depth": {"BTC-USDC": {"ask_notional_usd_50bps": 100000}}
+                        }
+                    }
+                }
+            },
+            21,
+        )
+    )
+    assert draft_status(parent, child)["ready"]
 
 
 def receipt(payload, number, session="parent", agent="thesis-research"):

@@ -38,6 +38,7 @@ async def research_defillama_free(
     cursor: str = "_",
     includeChainBreakdown: bool = False,
     category: str = "_",
+    protocolSlugs: list[str] | None = None,
 ) -> dict[str, Any]:
     """Call DeFiLlama free APIs directly from the OpenCode runtime.
 
@@ -52,7 +53,9 @@ async def research_defillama_free(
         coins: Required for current_prices, e.g. ethereum:0xa0b8...
         query: Text search for protocol_search; optional when category is given.
         category: Exact DeFiLlama category (case insensitive), applied before pagination.
-        dataType: For protocol_fees: dailyFees, dailyRevenue or dailyHoldersRevenue.
+        protocolSlugs: Optional exact returned slugs for fees_overview, filtered
+            before pagination. Use bulk overview before per-finalist histories.
+        dataType: For protocol_fees/fees_overview: dailyFees, dailyRevenue or dailyHoldersRevenue.
             Holder revenue can include buybacks/burns or distributions to eligible
             stakers; it is not necessarily cash income to every spot holder.
             Missing data is unavailable, not zero holder value. Read the returned
@@ -176,6 +179,8 @@ async def research_defillama_free(
                 None if chain == "_" else chain,
                 limit=page_limit,
                 cursor=cursor,
+                data_type=dataType,
+                protocol_slugs=protocolSlugs,
             )
         )
     if normalized == "open_interest_overview":

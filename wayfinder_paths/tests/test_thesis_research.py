@@ -87,6 +87,7 @@ def test_observed_outcomes_and_latest_book_not_market_liquidity() -> None:
         "onchain_tokens": {},
         "onchain_pools": {},
         "quantified_allocations": {},
+        "implementation_comparisons": {},
     }
 
 

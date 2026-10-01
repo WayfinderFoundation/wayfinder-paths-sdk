@@ -172,6 +172,7 @@ async def test_defillama_free_fees_overview_compacts_and_pages(
                 "params": {
                     "excludeTotalDataChart": "true",
                     "excludeTotalDataChartBreakdown": "true",
+                    "dataType": "dailyFees",
                 }
             },
         )

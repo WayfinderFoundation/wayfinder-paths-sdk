@@ -37,7 +37,21 @@ def research_evidence(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
     onchain_pools: dict[str, dict[str, Any]] = {}
     pages: list[dict[str, Any]] = []
     quantified_allocations: dict[str, dict[str, Any]] = {}
+    implementation_comparisons: dict[str, dict[str, Any]] = {}
+    results = [
+        read
+        for result in results
+        for read in [
+            result,
+            *(
+                c["observations"]
+                for c in result.get("implementation_comparisons", {}).values()
+                if c.get("observations")
+            ),
+        ]
+    ]
     for result in results:
+        implementation_comparisons.update(result.get("implementation_comparisons", {}))
         for portfolio in result.get("portfolio_quantification", {}).get(
             "portfolios", []
         ):
@@ -155,6 +169,7 @@ def research_evidence(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "onchain_tokens": onchain_tokens,
         "onchain_pools": onchain_pools,
         "quantified_allocations": quantified_allocations,
+        "implementation_comparisons": implementation_comparisons,
     }
 
 

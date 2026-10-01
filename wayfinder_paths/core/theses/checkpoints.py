@@ -94,8 +94,67 @@ class CandidateCase(CaseResearch):
     case_basis: CaseBasis | None = None
 
 
+class CaseReference(Contract):
+    session_id: Identifier
+    checkpoint_id: Identifier
+    entity: Identifier
+
+
+class CaseDecision(Contract):
+    """Parent judgment over immutable research; changes never overwrite its source."""
+
+    research_ref: CaseReference
+    entity: Identifier
+    decision: Literal["KEEP", "ALTERNATIVE", "REJECT", "NEEDS_EVIDENCE"]
+    decision_basis: Literal["economic", "implementation", "portfolio", "unresolved"]
+    reason: Text
+    implementation_checks: list[ImplementationCheck] = []
+    updated_research: ResearchCase | None = None
+
+
+class Handoff(Contract):
+    case_entities: list[Identifier]
+    unresolved_entities: list[Identifier]
+    reason: Text
+
+
+class HandoffGap(Contract):
+    session_id: Identifier
+    reason: Text
+
+
+class ReviewFinding(Contract):
+    id: Identifier
+    entity: Identifier
+    blocking: bool
+    issue: Text
+    required_change: Text
+
+
+class ReviewCheckpoint(Contract):
+    findings: Annotated[list[ReviewFinding], Field(max_length=24)]
+
+    @model_validator(mode="after")
+    def unique_findings(self) -> Self:
+        if len({f.id for f in self.findings}) != len(self.findings):
+            raise ValueError("Review finding IDs must be unique")
+        return self
+
+
+class ReviewResolution(Contract):
+    review_session_id: Identifier
+    finding_id: Identifier
+    action: Literal["evidence", "changed", "removed", "accepted"]
+    reason: Text
+    # IDs of successful public tool parts, not model-authored citations.
+    evidence_part_ids: list[Identifier] = []
+
+
+V5_FIELDS = {"decisions", "handoff", "handoff_gaps", "review_resolutions"}
+
+
 class ResearchCheckpoint(Contract):
-    schema_version: Literal[1, 2, 3, 4] = 1
+    schema_version: Literal[1, 2, 3, 4, 5] = 1
     stage: Literal["interpretation", "discovery", "provisional", "judged", "draft"]
     spec: ThesisSpec | None = None
     discoveries: Annotated[list[Discovery], Field(max_length=120)] = []
@@ -107,12 +166,17 @@ class ResearchCheckpoint(Contract):
     research_cases: Annotated[list[ResearchCase], Field(max_length=10)] = []
     construction: Construction | None = None
     draft: DraftUpdate | None = None
+    decisions: Annotated[list[CaseDecision], Field(max_length=12)] = []
+    handoff: Handoff | None = None
+    handoff_gaps: list[HandoffGap] = []
+    review_resolutions: list[ReviewResolution] = []
 
     def receipt_json(self) -> str:
         # Preserve bytes of v3 receipts; v1/v2 compatibility lives in the reader.
-        return self.model_dump_json(
-            exclude={"construction", "draft"} if self.schema_version < 4 else set()
-        )
+        excluded = V5_FIELDS if self.schema_version < 5 else set()
+        if self.schema_version < 4:
+            excluded = excluded | {"construction", "draft"}
+        return self.model_dump_json(exclude=excluded)
 
     @model_validator(mode="after")
     def validate_checkpoint(self) -> Self:
@@ -129,7 +193,13 @@ class ResearchCheckpoint(Contract):
             errors.append(
                 "Construction and incremental drafts require schema_version=4"
             )
-        if self.schema_version == 4:
+        if self.schema_version < 5 and any(getattr(self, key) for key in V5_FIELDS):
+            errors.append("Compact decisions and handoffs require schema_version=5")
+        if self.handoff is not None and self.stage != "discovery":
+            errors.append("Only discovery checkpoints contain a worker handoff")
+        if self.decisions and self.stage != "judged":
+            errors.append("Compact decisions belong in judged checkpoints")
+        if self.schema_version >= 4:
             if self.stage != "discovery" and self.construction is None:
                 errors.append("Parent checkpoints require the inferred construction")
             if (self.stage == "draft") != (self.draft is not None):
@@ -148,7 +218,9 @@ class ResearchCheckpoint(Contract):
                     errors.extend(
                         construction_errors(self.draft.variant, self.construction)
                     )
-        entities = [case.entity.casefold() for case in self.candidates]
+        entities = [case.entity.casefold() for case in self.candidates] + [
+            decision.entity.casefold() for decision in self.decisions
+        ]
         if len(set(entities)) != len(entities):
             errors.append("Group implementations of the same economic entity")
         dispositions = [
@@ -157,7 +229,12 @@ class ResearchCheckpoint(Contract):
         if len(dispositions) != len(set(dispositions)):
             errors.append("Each discovery key has one disposition")
         if self.schema_version >= 2 and self.stage == "judged":
-            if not self.candidates and not self.discovery_dispositions:
+            if (
+                not self.candidates
+                and not self.discovery_dispositions
+                and not self.decisions
+                and not self.review_resolutions
+            ):
                 errors.append(
                     "A judged checkpoint must retain the assessment ledger or update dispositions"
                 )
@@ -219,8 +296,9 @@ class ResearchCheckpoint(Contract):
 class DiscoveryCheckpoint(Contract):
     """Separate worker input: judgments/portfolios are structurally impossible."""
 
-    schema_version: Literal[3] = 3
+    schema_version: Literal[3, 5] = 3
     stage: Literal["discovery"] = "discovery"
     spec: ThesisSpec
     discoveries: Annotated[list[Discovery], Field(max_length=120)] = []
     research_cases: Annotated[list[ResearchCase], Field(max_length=10)] = []
+    handoff: Handoff | None = None

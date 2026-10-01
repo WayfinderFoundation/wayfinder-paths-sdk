@@ -137,6 +137,7 @@ from wayfinder_paths.mcp.tools.strategies import core_run_strategy
 from wayfinder_paths.mcp.tools.thesis_checkpoint import (
     research_thesis_checkpoint,
     research_thesis_discovery,
+    research_thesis_review,
 )
 from wayfinder_paths.mcp.tools.thesis_quantification import research_quantify_portfolio
 from wayfinder_paths.mcp.tools.tokens import (
@@ -255,6 +256,7 @@ def build_mcp(
     mcp.tool()(research_quantify_portfolio)
     mcp.tool()(research_thesis_checkpoint)
     mcp.tool()(research_thesis_discovery)
+    mcp.tool()(research_thesis_review)
     mcp.tool()(research_search_lending)
     mcp.tool()(research_search_perp)
     mcp.tool()(research_search_borrow_routes)

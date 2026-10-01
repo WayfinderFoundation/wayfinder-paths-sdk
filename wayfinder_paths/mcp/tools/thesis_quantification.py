@@ -2,6 +2,8 @@
 
 import asyncio
 import time
+from collections import OrderedDict
+from copy import deepcopy
 from math import isfinite
 from typing import Annotated, Any
 
@@ -21,6 +23,11 @@ from wayfinder_paths.mcp.polymarket_summary import (
     compact_order_book,
 )
 from wayfinder_paths.mcp.utils import catch_errors, ok
+
+# Public observations only. Bounded, memory-only; execution always needs fresh quotes.
+_market_cache: OrderedDict[
+    tuple[str, str, str, int, int], tuple[float, dict[str, Any]]
+] = OrderedDict()
 
 
 async def _read_market(position: Position, start: int, end: int) -> dict[str, Any]:
@@ -167,6 +174,8 @@ async def research_quantify_portfolio(
     variants: Annotated[list[Variant], Field(min_length=1, max_length=4)],
     lookback_days: Annotated[int, Field(ge=14, le=90)] = 90,
     construction: Construction | None = None,
+    alternatives: Annotated[list[Position], Field(max_length=12)] | None = None,
+    compare_implementations: bool = False,
 ) -> dict:
     """Measure draft portfolios before final sizing; reuse the returned metrics in review.
 
@@ -181,19 +190,30 @@ async def research_quantify_portfolio(
     fetched by trusted code, never supplied by the model. Missing/short history
     stays unavailable; it does not mean zero risk or an unsuitable investment.
     All return/risk numbers are fractions, not percentages. No forecasts or trades.
+    alternatives: Hypothetical positions for closest competing implementations,
+        using the SAME position schema. These are measured, never added to portfolios.
+    compare_implementations: Include public depth/pool observations for holdings
+        and alternatives. Compare funding-free spot with costly longs; a spot short
+        is incompatible. Use actual per-budget notional, not volume as capacity.
+        Read at most 12 distinct instruments including alternatives. Reuses public
+        histories for five minutes; depth is refreshed on each comparison call.
     """
     # Direct Python callers need the same validation as MCP's generated schema.
     variants = [Variant.model_validate(v) for v in variants]
+    alternatives = [Position.model_validate(p) for p in alternatives or []]
     if construction is not None:
         construction = Construction.model_validate(construction)
         variants = [size_variant(v, construction) for v in variants]
     if not 1 <= len(variants) <= 4 or not 14 <= lookback_days <= 90:
         raise ValueError("Use 1–4 variants and 14–90 days")
-    positions = {p.instrument_id: p for v in variants for p in v.positions}
+    positions = {
+        p.instrument_id: p
+        for p in [*(p for v in variants for p in v.positions), *alternatives]
+    }
     if len(positions) > 12:
         raise ValueError("Quantify at most 12 distinct finalist instruments at once")
-    for variant in variants:
-        for position in variant.positions:
+    for group in [*(v.positions for v in variants), alternatives]:
+        for position in group:
             other = positions[position.instrument_id]
             if position.kind != other.kind or (
                 position.kind == "prediction" and position.direction != other.direction
@@ -213,7 +233,29 @@ async def research_quantify_portfolio(
         async with semaphore:
             try:
                 async with asyncio.timeout_at(deadline):
-                    result = await _read_market(position, start, end)
+                    key = (
+                        position.kind,
+                        position.instrument_id,
+                        position.direction,
+                        start,
+                        end,
+                    )
+                    cached = _market_cache.get(key)
+                    if cached and time.monotonic() - cached[0] < 300:
+                        result = deepcopy(cached[1])
+                        _market_cache.move_to_end(key)
+                    else:
+                        result = await _read_market(position, start, end)
+                        result["retrieved_at_ms"] = as_of
+                        if (
+                            result.get("prices")
+                            and position.kind != "prediction"
+                            and not result.get("history_error")
+                            and not result.get("funding", {}).get("error")
+                        ):
+                            _market_cache[key] = (time.monotonic(), deepcopy(result))
+                            while len(_market_cache) > 64:
+                                _market_cache.popitem(last=False)
             except (
                 httpx.HTTPError,
                 RequestException,
@@ -238,8 +280,82 @@ async def research_quantify_portfolio(
             return position.instrument_id, result
 
     markets = dict(await asyncio.gather(*(read(p) for p in positions.values())))
+    comparisons: dict[str, Any] = {}
+    if compare_implementations:
+        # Reuse the existing public market tools and their normalization/evidence.
+        from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_search_mid_prices
+        from wayfinder_paths.mcp.tools.tokens import onchain_list_tokens
+
+        async def liquidity(position: Position) -> None:
+            instrument = position.instrument_id
+            async with semaphore:
+                try:
+                    async with asyncio.timeout_at(
+                        min(deadline + 20, asyncio.get_running_loop().time() + 20)
+                    ):
+                        if position.kind == "prediction":
+                            data = {
+                                "book": markets[instrument].get("book"),
+                                "market": markets[instrument].get("market"),
+                                "summaryMode": True,
+                            }
+                        elif position.kind == "token" and "/" not in instrument:
+                            token = markets[instrument].get("resolved_token")
+                            if not token:
+                                raise ValueError(
+                                    "Identity unresolved; lookup before comparing pools"
+                                )
+                            response = await onchain_list_tokens(
+                                chain_code=token["chain"]["code"],
+                                token_id=instrument,
+                                limit=5,
+                            )
+                            if not response.get("ok"):
+                                raise ValueError(str(response.get("error")))
+                            data = response["result"]
+                        else:
+                            response = await hyperliquid_search_mid_prices(
+                                asset_names=[instrument], include_depth=True
+                            )
+                            if not response.get("ok"):
+                                raise ValueError(str(response.get("error")))
+                            data = response["result"]
+                        comparisons[instrument] = {
+                            "observations": data,
+                            "retrieved_at_ms": int(time.time() * 1000),
+                        }
+                except (
+                    httpx.HTTPError,
+                    RequestException,
+                    ClientError,
+                    ServerError,
+                    ValueError,
+                    KeyError,
+                    TypeError,
+                    TimeoutError,
+                ) as exc:
+                    comparisons[instrument] = {
+                        "unavailable": str(exc)[:200] or "Liquidity read timed out"
+                    }
+
+        await asyncio.gather(*(liquidity(p) for p in positions.values()))
+        for instrument, position in positions.items():
+            comparisons[instrument]["notional_by_budget"] = {
+                str(v.budget_usd): v.budget_usd * p.capital_bps / 10000 * p.leverage
+                for v in variants
+                for p in [
+                    next(
+                        (p for p in v.positions if p.instrument_id == instrument),
+                        position,
+                    )
+                ]
+            }
+            comparisons[instrument]["capacity_note"] = (
+                "Observed book/pool is a screening snapshot, not total asset capacity or a sized execution quote. Never infer capacity from daily volume."
+            )
     return ok(
         {
+            "implementation_comparisons": comparisons,
             **(
                 {"sized_variants": [v.model_dump(mode="json") for v in variants]}
                 if construction is not None

@@ -2,12 +2,14 @@
 
 import hashlib
 import json
+from copy import deepcopy
 from typing import Any
 
 from pydantic import ValidationError
 from pydantic_core import to_json
 
 from wayfinder_paths.core.theses.checkpoints import (
+    V5_FIELDS,
     CandidateCase,
     DiscoveryCheckpoint,
     ResearchCheckpoint,
@@ -48,7 +50,8 @@ def checkpoints(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 digests.add(
                     hashlib.sha256(
                         checkpoint.model_dump_json(
-                            exclude={"discovery_dispositions", "construction", "draft"}
+                            exclude=V5_FIELDS
+                            | {"discovery_dispositions", "construction", "draft"}
                         ).encode()
                     ).hexdigest()
                 )
@@ -56,7 +59,8 @@ def checkpoints(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 # Preserve byte ordering of receipts issued before ResearchCase
                 # was extracted. Never use raw, unvalidated input as a digest.
                 legacy = checkpoint.model_dump(
-                    mode="json", exclude={"research_cases", "construction", "draft"}
+                    mode="json",
+                    exclude=V5_FIELDS | {"research_cases", "construction", "draft"},
                 )
                 fields = (
                     "entity",
@@ -96,6 +100,74 @@ def checkpoints(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(records, key=lambda r: r["completed_at_ms"] or 0)
 
 
+def projected_records(
+    parent_messages: list[dict[str, Any]], child_messages: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    """Resolve compact decisions only against validated receipts in this session tree."""
+    parent, children = checkpoints(parent_messages), checkpoints(child_messages)
+    sources = {
+        (r["session_id"], r["id"], c["entity"].casefold()): (c, r["completed_at_ms"])
+        for r in [*parent, *children]
+        for c in r["checkpoint"]["research_cases"]
+    }
+    errors_by_entity: dict[str, list[str]] = {}
+    for record in parent:
+        cp = record["checkpoint"]
+        for candidate in cp["candidates"]:
+            errors_by_entity.pop(candidate["entity"].casefold(), None)
+        for decision in cp["decisions"]:
+            key = decision["entity"].casefold()
+            ref = decision["research_ref"]
+            source = sources.get(
+                (ref["session_id"], ref["checkpoint_id"], ref["entity"].casefold())
+            )
+            if source is None or (source[1] or 0) > (record["completed_at_ms"] or 0):
+                errors_by_entity[key] = [
+                    f"{decision['entity']}: research_ref is not an earlier saved case in this run"
+                ]
+                continue
+            payload = {
+                **deepcopy(decision["updated_research"] or source[0]),
+                **{
+                    k: v
+                    for k, v in decision.items()
+                    if k not in {"research_ref", "updated_research"}
+                },
+            }
+            try:
+                # Reuse the existing judgment checks, including viable alternatives.
+                validated = ResearchCheckpoint.model_validate(
+                    {
+                        "schema_version": 5,
+                        "stage": "judged",
+                        "construction": cp["construction"],
+                        "candidates": [payload],
+                    }
+                )
+            except ValidationError as exc:
+                errors_by_entity[key] = [
+                    f"{decision['entity']}: {e['msg']}"
+                    for e in exc.errors(include_input=False)
+                ]
+                continue
+            errors_by_entity.pop(key, None)
+            cp["candidates"].append(validated.candidates[0].model_dump())
+            if ref["entity"].casefold() != decision["entity"].casefold():
+                cp["discovery_dispositions"].append(
+                    {
+                        "entities": [ref["entity"]],
+                        "status": "assessed",
+                        "candidate_entity": decision["entity"],
+                        "reason": "Explicit research reference",
+                    }
+                )
+    return (
+        parent,
+        children,
+        [error for errors in errors_by_entity.values() for error in errors],
+    )
+
+
 def assessment_report(
     parent_messages: list[dict[str, Any]],
     child_messages: list[dict[str, Any]],
@@ -106,8 +178,7 @@ def assessment_report(
     discovery recall, causal reasoning, or the truth of an agent's rejection reason.
     Child checkpoints can add discoveries, never judge or authorize a portfolio.
     """
-    parent = checkpoints(parent_messages)
-    children = checkpoints(child_messages)
+    parent, children, errors = projected_records(parent_messages, child_messages)
     outputs = []
     for message in [*parent_messages, *child_messages]:
         for part in message.get("parts", []):
@@ -126,7 +197,6 @@ def assessment_report(
                 outputs.append(
                     json.dumps(output.get("result"), ensure_ascii=False).casefold()
                 )
-    errors = []
     if any(r["checkpoint"]["stage"] != "discovery" for r in children):
         errors.append("Researchers may record discoveries, not parent judgments")
     research_sessions = {
@@ -134,6 +204,11 @@ def assessment_report(
         for m in child_messages
         if m.get("info", {}).get("agent") == "thesis-researcher"
         and m["info"].get("sessionID")
+    }
+    handoff_gaps = {
+        g["session_id"]: g["reason"]
+        for r in parent
+        for g in r["checkpoint"]["handoff_gaps"]
     }
     for session_id in research_sessions:
         records = checkpoints(
@@ -143,10 +218,45 @@ def assessment_report(
                 if m.get("info", {}).get("sessionID") == session_id
             ]
         )
-        if not any(r["checkpoint"]["stage"] == "discovery" for r in records):
+        if session_id not in handoff_gaps and not any(
+            r["checkpoint"]["stage"] == "discovery" for r in records
+        ):
             errors.append(
                 f"Research child {session_id} did not record its discovery inventory"
             )
+    incomplete_handoffs = []
+    if any(r["checkpoint"]["schema_version"] >= 5 for r in parent):
+        for session_id in research_sessions:
+            records = [r for r in children if r["session_id"] == session_id]
+            manifests = [
+                r["checkpoint"]["handoff"]
+                for r in records
+                if r["checkpoint"]["handoff"]
+            ]
+            ranked_keys = {
+                c["entity"].casefold()
+                for r in records
+                for c in r["checkpoint"]["research_cases"]
+            }
+            inventory = {
+                c["entity"].casefold()
+                for r in records
+                for kind in ("discoveries", "research_cases")
+                for c in r["checkpoint"][kind]
+            }
+            manifest = manifests[-1] if manifests else None
+            complete = bool(
+                manifest is not None
+                and {k.casefold() for k in manifest["case_entities"]} == ranked_keys
+                and {k.casefold() for k in manifest["unresolved_entities"]}
+                == inventory - ranked_keys
+            )
+            if not complete:
+                incomplete_handoffs.append(session_id)
+                if session_id not in handoff_gaps:
+                    errors.append(
+                        f"Research child {session_id}: incomplete handoff; resume once or record handoff_gaps explicitly"
+                    )
     judgments = [
         r["checkpoint"]
         for r in parent
@@ -288,6 +398,8 @@ def assessment_report(
         "unresolved_entities": [
             c["entity"] for c in cases if c["decision"] == "NEEDS_EVIDENCE"
         ],
+        "incomplete_handoffs": incomplete_handoffs,
+        "handoff_gaps": handoff_gaps,
         "semantic_review_required": True,
     }
 
@@ -312,13 +424,14 @@ def research_notebook(
         not fields or set(fields) - CandidateCase.model_fields.keys()
     ):
         raise ValueError("fields must name existing research/candidate fields")
+    parent, children, errors = projected_records(parent_messages, child_messages)
     records = sorted(
-        [*checkpoints(parent_messages), *checkpoints(child_messages)],
+        [*parent, *children],
         key=lambda r: r["completed_at_ms"] or 0,
     )
     dispositions = {
         key.casefold(): disposition
-        for record in checkpoints(parent_messages)
+        for record in parent
         if record["checkpoint"]["stage"] == "judged"
         for disposition in record["checkpoint"]["discovery_dispositions"]
         for key in disposition["entities"]
@@ -338,6 +451,7 @@ def research_notebook(
                         "ranked": False,
                         "decision": None,
                         "records": [],
+                        "research_refs": [],
                     },
                 )
                 row["instruments"] = sorted(
@@ -346,6 +460,14 @@ def research_notebook(
                 row["ranked"] |= kind != "discoveries"
                 if kind == "candidates":
                     row["decision"] = case["decision"]
+                if kind == "research_cases":
+                    row["research_refs"].append(
+                        {
+                            "session_id": record["session_id"],
+                            "checkpoint_id": record["id"],
+                            "entity": case["entity"],
+                        }
+                    )
                 row["records"].append(
                     {
                         "checkpoint_id": record["id"],
@@ -372,12 +494,14 @@ def research_notebook(
                         k: v for k, v in record["case"].items() if k in fields
                     }
         return {
+            "errors": errors,
             "cases": [rows[key] for key in requested if key in rows],
             "missing": [key for key in requested if key not in rows],
             "evidence_verified": False,
         }
     keys = sorted(rows)
     return {
+        "errors": errors,
         "total": len(keys),
         "items": [
             {k: v for k, v in rows[key].items() if k != "records"}

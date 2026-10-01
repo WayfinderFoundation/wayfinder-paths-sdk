@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from wayfinder_paths.core.theses.assessment import assessment_report, checkpoints
+from wayfinder_paths.core.theses.assessment import assessment_report, projected_records
 from wayfinder_paths.core.theses.models import BUDGETS, Construction
 from wayfinder_paths.core.theses.publication import validate_proposal
 from wayfinder_paths.core.theses.research import (
@@ -14,18 +14,19 @@ from wayfinder_paths.core.theses.research import (
     research_evidence,
 )
 from wayfinder_paths.core.theses.response import parse_proposal_response
+from wayfinder_paths.core.theses.review import review_report
 
 
 def draft_context(
     parent_messages: list[dict[str, Any]], child_messages: list[dict[str, Any]]
 ) -> tuple[dict[str, Any], dict[str, Any], str | None]:
-    records = checkpoints(parent_messages)
+    records, _, projection_errors = projected_records(parent_messages, child_messages)
     payload: dict[str, Any] = {}
     components: dict[str, dict[str, Any]] = {}
     variants: dict[int, dict[str, Any]] = {}
     construction = None
     current = None
-    errors = []
+    errors = list(projection_errors)
     modern = [r for r in records if r["checkpoint"]["schema_version"] >= 4]
     if modern and modern[0]["checkpoint"]["stage"] != "interpretation":
         errors.append(
@@ -169,6 +170,11 @@ def draft_context(
         "read_entities": sorted(reviewed),
         "unread_selected": unread,
     }
+    if any(r["checkpoint"]["schema_version"] >= 5 for r in records):
+        evidence["require_implementation_comparisons"] = True
+        review = review_report(parent_messages, child_messages, records, selected)
+        evidence["review"].update(review)
+        errors.extend(review["errors"])
     evidence["draft_errors"] = list(dict.fromkeys(errors))
     sessions = {r["session_id"] for r in records}
     reference = None

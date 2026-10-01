@@ -17,6 +17,13 @@ from wayfinder_paths.mcp.polymarket_summary import compact_order_book
 from wayfinder_paths.mcp.tools import thesis_quantification as tool
 
 
+@pytest.fixture(autouse=True)
+def clear_public_cache():
+    tool._market_cache.clear()
+    yield
+    tool._market_cache.clear()
+
+
 def variant(**changes):
     position = Position.model_validate(
         {

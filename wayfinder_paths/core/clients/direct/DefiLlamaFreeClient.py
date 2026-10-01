@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import quote
@@ -37,6 +40,11 @@ class DefiLlamaFreeClient:
     This intentionally does not call the Wayfinder backend.
     """
 
+    def __init__(self) -> None:
+        self._catalog: dict[str, Any] | None = None
+        self._catalog_expires = 0.0
+        self._catalog_lock = asyncio.Lock()
+
     async def _get(
         self,
         path: str,
@@ -66,7 +74,15 @@ class DefiLlamaFreeClient:
         }
 
     async def protocols(self) -> dict[str, Any]:
-        return await self._get("/protocols")
+        async with self._catalog_lock:
+            if self._catalog is None or time.monotonic() >= self._catalog_expires:
+                catalog = await self._get("/protocols")
+                if not isinstance(catalog.get("result"), list):
+                    raise ValueError("DeFiLlama catalog response is not a list")
+                self._catalog = catalog
+                self._catalog_expires = time.monotonic() + 300
+            # Pagination/compaction mutates the response, never the shared cache.
+            return deepcopy(self._catalog)
 
     async def protocols_page(
         self, *, limit: int = DEFAULT_PAGE_LIMIT, cursor: str = "_"
@@ -308,20 +324,50 @@ class DefiLlamaFreeClient:
         *,
         limit: int = DEFAULT_PAGE_LIMIT,
         cursor: str = "_",
+        data_type: str = "dailyFees",
+        protocol_slugs: list[str] | None = None,
     ) -> dict[str, Any]:
+        if data_type not in {"dailyFees", "dailyRevenue", "dailyHoldersRevenue"}:
+            raise ValueError("Unsupported fees data_type")
+        params = {**OVERVIEW_PARAMS, "dataType": data_type}
         if chain:
             response = await self._get(
                 f"/overview/fees/{_path_part(chain, 'chain')}",
-                params=OVERVIEW_PARAMS,
+                params=params,
             )
         else:
-            response = await self._get("/overview/fees", params=OVERVIEW_PARAMS)
-        return _compact_overview_response(
+            response = await self._get("/overview/fees", params=params)
+        result = response.get("result")
+        if not isinstance(result, dict) or not isinstance(
+            result.get("protocols"), list
+        ):
+            raise ValueError("DeFiLlama fees overview unavailable")
+        missing = []
+        if protocol_slugs:
+            wanted = {slug.casefold() for slug in protocol_slugs}
+            result["protocols"] = [
+                p
+                for p in result["protocols"]
+                if isinstance(p, dict)
+                and str(p.get("slug") or p.get("module") or "").casefold() in wanted
+            ]
+            found = {
+                str(p.get("slug") or p.get("module") or "").casefold()
+                for p in result["protocols"]
+            }
+            missing = sorted(wanted - found)
+        response = _compact_overview_response(
             response,
             dataset="fees_overview",
             limit=limit,
             cursor=cursor,
         )
+        response["result"].update(
+            dataType=data_type,
+            unavailableSlugs=missing,
+            coverageNote="Missing/null is unavailable, not zero. Overview totals cover the provider universe, not the filtered shortlist. Read finalist methodology before interpreting holder revenue.",
+        )
+        return response
 
     async def open_interest_overview(
         self,
