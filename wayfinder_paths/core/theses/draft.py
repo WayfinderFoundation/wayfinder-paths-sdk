@@ -216,11 +216,18 @@ def draft_status(
         errors = str(exc).splitlines()
     ready = not errors and reference is not None
     review = dict(evidence["review"])
-    observations = review.get("public_observations", [])
+    # Fresh correction reads should not require paging through the whole run.
+    # Sort only the presentation; publication still audits every observation.
+    observations = sorted(
+        review.get("public_observations", []),
+        key=lambda row: row.get("completed_at_ms") or 0,
+        reverse=True,
+    )
     review["public_observations"] = observations[offset : offset + limit]
     review["public_observations_page"] = {
         "total": len(observations),
         "next_offset": offset + limit if offset + limit < len(observations) else None,
+        "order": "newest_first",
     }
     return {
         "ready": ready,

@@ -163,6 +163,7 @@ def test_status_evidence_ids_are_identifiable_paged_and_not_silently_lost(
                     "tool": "wayfinder_core_web_fetch",
                     "state": {
                         "status": "completed",
+                        "time": {"end": index + 10},
                         "input": {
                             "urls": [f"https://example.test/venue-{index}"],
                             "query": "fee capture",
@@ -181,15 +182,56 @@ def test_status_evidence_ids_are_identifiable_paged_and_not_silently_lost(
         }
     )
     first = draft_status(parent, child)["review"]
-    assert first["public_observations_page"] == {"total": 31, "next_offset": 25}
+    assert first["public_observations_page"] == {
+        "total": 31,
+        "next_offset": 25,
+        "order": "newest_first",
+    }
     second = draft_status(parent, child, offset=25)["review"]
     assert second["public_observations_page"]["next_offset"] is None
     rows = first["public_observations"] + second["public_observations"]
-    assert [row["part_id"] for row in rows] == [f"read-{i}" for i in range(31)]
-    assert "https://example.test/venue-0" in rows[0]["request_summary"]
+    assert [row["part_id"] for row in rows] == [
+        f"read-{i}" for i in reversed(range(31))
+    ]
+    assert "https://example.test/venue-30" in rows[0]["request_summary"]
     assert "unrelated_config" not in json.dumps(rows)
     # Paging the model's view never limits the evidence used by publication.
     assert len(draft_context(parent, child)[1]["review"]["public_observations"]) == 31
+
+
+def test_case_projection_keeps_classification_and_identifies_current_assessment(
+    compact_run: tuple[list[dict], list[dict]],
+) -> None:
+    parent, child = compact_run
+    update = deepcopy(parent[0]["parts"][0]["state"]["input"]["checkpoint"])
+    updated_research = deepcopy(
+        child[0]["parts"][0]["state"]["input"]["checkpoint"]["research_cases"][0]
+    )
+    updated_research["case_basis"] = "narrative"
+    update["decisions"][0].update(
+        updated_research=updated_research,
+        decision_basis="portfolio",
+        reason="Observed catalyst, not a fee claim",
+    )
+    parent.append(receipt(update, 3))
+    original = deepcopy((parent, child))
+    row = research_notebook(parent, child, entities=["network"], fields=["reason"])[
+        "cases"
+    ][0]
+    assert len(row["records"]) == 3  # Preserve research and both parent judgments.
+    assert [r["current_assessment"] for r in row["records"]] == [False, False, True]
+    assert row["records"][0]["case"]["case_basis"] == "economic"
+    assert row["records"][-1]["case"] == {
+        "effect_order": updated_research["effect_order"],
+        "case_basis": "narrative",
+        "decision": "KEEP",
+        "decision_basis": "portfolio",
+        "reason": "Observed catalyst, not a fee claim",
+    }
+    # A historical page must never label its last old verdict as current.
+    historical = research_notebook(parent, child, entities=["network"], limit=2)
+    assert not any(r["current_assessment"] for r in historical["cases"][0]["records"])
+    assert (parent, child) == original
 
 
 @pytest.mark.parametrize(

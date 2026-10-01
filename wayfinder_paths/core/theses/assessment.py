@@ -498,6 +498,12 @@ def research_notebook(
             row = rows[key]
             if key in dispositions:
                 row["disposition"] = dispositions[key]
+            current = next(
+                (r for r in reversed(row["records"]) if r["kind"] == "candidates"),
+                None,
+            )
+            for record in row["records"]:
+                record["current_assessment"] = record is current
             count = len(row["records"])
             row["record_count"] = count
             row["next_offset"] = offset + limit if offset + limit < count else None
@@ -505,7 +511,11 @@ def research_notebook(
             if fields is not None:
                 for record in row["records"]:
                     record["case"] = {
-                        k: v for k, v in record["case"].items() if k in fields
+                        k: v
+                        for k, v in record["case"].items()
+                        if k in fields
+                        or k
+                        in {"case_basis", "effect_order", "decision", "decision_basis"}
                     }
         return {
             "errors": errors,
