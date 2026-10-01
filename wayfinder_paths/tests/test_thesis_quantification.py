@@ -207,7 +207,8 @@ async def test_spot_history_resolves_lookup_id_and_uses_completed_daily_window(
 ):
     token = {
         "token_id": "base_0xabc",
-        "chain": {"id": 8453},
+        "address": "0xabc",
+        "chain": {"id": 8453, "code": "base"},
         "identity": {"is_canonical": False},
     }
     rows = [
@@ -232,6 +233,59 @@ async def test_spot_history_resolves_lookup_id_and_uses_completed_daily_window(
         "base_0xabc", "1d", chain_id=8453, start_ms=0, end_ms=2 * DAY_MS
     )
     assert result["prices"] == {0: 2, DAY_MS: 2}
+    assert result["resolved_token"] == {
+        **token,
+        "symbol": None,
+        "name": None,
+        "lookup_id": "aerodrome-finance-base",
+    }
+
+
+@pytest.mark.asyncio
+async def test_quantification_retains_spot_identity_when_history_is_unavailable():
+    token = {
+        "token_id": "base_0xabc",
+        "address": "0xabc",
+        "chain": {"id": 8453, "code": "base"},
+        "identity": {"suspicious": False},
+    }
+    with (
+        patch.object(
+            tool.TOKEN_CLIENT, "get_token_details", AsyncMock(return_value=token)
+        ),
+        patch.object(
+            tool.TOKEN_CLIENT, "get_candles", AsyncMock(side_effect=TimeoutError)
+        ),
+        patch("wayfinder_paths.mcp.utils._report_tool_metric"),
+    ):
+        result = await tool.research_quantify_portfolio(
+            [variant(kind="token", instrument_id="project-base")]
+        )
+    asset = result["result"]["portfolio_quantification"]["assets"]["project-base"]
+    assert asset["resolved_token"]["token_id"] == "base_0xabc"
+    assert asset["resolved_token"]["lookup_id"] == "project-base"
+    assert asset["history_error"] == "Spot history timed out"
+    assert asset["coverage_fraction"] == 0
+
+
+@pytest.mark.asyncio
+async def test_quantification_does_not_publish_conflicting_spot_identity():
+    with (
+        patch.object(
+            tool.TOKEN_CLIENT,
+            "get_token_details",
+            AsyncMock(return_value={"identity": {"suspicious": True}}),
+        ),
+        patch.object(tool.TOKEN_CLIENT, "get_candles", AsyncMock()) as candles,
+        patch("wayfinder_paths.mcp.utils._report_tool_metric"),
+    ):
+        result = await tool.research_quantify_portfolio(
+            [variant(kind="token", instrument_id="project-base")]
+        )
+    asset = result["result"]["portfolio_quantification"]["assets"]["project-base"]
+    assert "conflicting identity" in asset["error"]
+    assert "resolved_token" not in asset
+    candles.assert_not_awaited()
 
 
 @pytest.mark.asyncio

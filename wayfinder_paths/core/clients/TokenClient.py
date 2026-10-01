@@ -65,6 +65,7 @@ class TokenDetails(TypedDict):
     query: NotRequired[str]
     query_type: NotRequired[str]
     metadata: NotRequired[TokenMetadata]
+    identity: NotRequired[dict[str, Any]]
     image_url: NotRequired[str | None]
 
 

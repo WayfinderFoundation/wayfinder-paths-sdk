@@ -52,26 +52,34 @@ def research_evidence(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
                     hyperliquid_markets[name] = (
                         "hip3" if kind == "perp" and ":" in name else kind
                     )
-        resolution = result.get("resolved_token") or result
-        if (
-            resolution.get("token_id")
-            and resolution.get("address")
-            and resolution.get("chain")
-        ):
-            token = {
-                key: resolution.get(key) or {}
-                for key in (
-                    "token_id",
-                    "address",
-                    "chain",
-                    "identity",
-                    "symbol",
-                    "name",
-                )
-            }
-            onchain_tokens[resolution["token_id"]] = token
-            if resolution.get("lookup_id"):
-                onchain_tokens[resolution["lookup_id"]] = token
+        resolutions = [result.get("resolved_token") or result]
+        resolutions.extend(
+            asset["resolved_token"]
+            for asset in result.get("portfolio_quantification", {})
+            .get("assets", {})
+            .values()
+            if asset.get("resolved_token")
+        )
+        for resolution in resolutions:
+            if (
+                resolution.get("token_id")
+                and resolution.get("address")
+                and resolution.get("chain")
+            ):
+                token = {
+                    key: resolution.get(key) or {}
+                    for key in (
+                        "token_id",
+                        "address",
+                        "chain",
+                        "identity",
+                        "symbol",
+                        "name",
+                    )
+                }
+                onchain_tokens[resolution["token_id"]] = token
+                if resolution.get("lookup_id"):
+                    onchain_tokens[resolution["lookup_id"]] = token
         if result.get("chain_code"):
             for token in result.get("tokens", []):
                 if (
@@ -215,7 +223,8 @@ def _validate_position_capacity(
         if not token:
             raise ValueError(
                 f"{location}: unknown onchain instrument_id {position.instrument_id!r}; "
-                "use an ID returned by onchain_resolve_token. A chain-scoped lookup "
+                "use an ID resolved by onchain_resolve_token, onchain_list_tokens "
+                "or research_quantify_portfolio. A chain-scoped lookup "
                 "ID is sufficient; no contract address or issuer-page proof is required"
             )
         identity = token.get("identity", {})

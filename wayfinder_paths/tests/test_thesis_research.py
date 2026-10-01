@@ -490,6 +490,37 @@ def test_pool_tool_resolution_is_sufficient_without_a_duplicate_lookup(onchain_c
     validate_market_capacity(proposal, evidence)
 
 
+def test_quantification_resolution_is_sufficient_without_a_duplicate_lookup(
+    onchain_case,
+):
+    proposal, results = onchain_case
+    resolution = {**results[0], "lookup_id": "project-ethereum"}
+    report = {
+        "portfolio_quantification": {
+            "assets": {
+                "project-ethereum": {
+                    "resolved_token_id": resolution["token_id"],
+                    "resolved_token": resolution,
+                }
+            }
+        }
+    }
+    evidence = research_evidence([report])
+    validate_market_capacity(proposal, evidence, screen_capacity=False)
+    assert (
+        evidence["onchain_tokens"]["project-ethereum"]
+        == evidence["onchain_tokens"][resolution["token_id"]]
+    )
+    # A name or ID alone is not a successful identity lookup.
+    del report["portfolio_quantification"]["assets"]["project-ethereum"][
+        "resolved_token"
+    ]
+    with pytest.raises(ValueError, match="unknown onchain"):
+        validate_market_capacity(
+            proposal, research_evidence([report]), screen_capacity=False
+        )
+
+
 def test_lookup_aliases_cannot_split_a_position_to_evade_capacity(onchain_case):
     proposal, results = onchain_case
     results[0]["lookup_id"] = "project-ethereum"
