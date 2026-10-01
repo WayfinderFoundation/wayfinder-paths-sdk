@@ -150,6 +150,33 @@ def test_compact_decision_reuses_original_without_mutation(compact_run):
     ]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "include_cases,include_handoff", [(True, False), (True, True), (False, True)]
+)
+async def test_worker_receipt_counts_research_separately_from_parent_judgments(
+    compact_run: tuple[list[dict], list[dict]],
+    include_cases: bool,
+    include_handoff: bool,
+) -> None:
+    from wayfinder_paths.mcp.tools.thesis_checkpoint import research_thesis_discovery
+
+    _, child = compact_run
+    raw = deepcopy(child[0]["parts"][0]["state"]["input"]["checkpoint"])
+    if not include_cases:
+        raw["research_cases"] = []
+    if not include_handoff:
+        raw["handoff"] = None
+    checkpoint = DiscoveryCheckpoint.model_validate(raw)
+    response = await research_thesis_discovery(checkpoint)
+    assert response["ok"] is True
+    assert response["result"]["candidate_count"] == 0
+    assert response["result"]["research_case_count"] == int(include_cases)
+    assert response["result"]["handoff_recorded"] is include_handoff
+    assert "research_cases" not in response["result"]  # Do not echo full essays.
+    assert response["result"]["execution_authorized"] is False
+
+
 def test_status_evidence_ids_are_identifiable_paged_and_not_silently_lost(
     compact_run: tuple[list[dict], list[dict]],
 ) -> None:

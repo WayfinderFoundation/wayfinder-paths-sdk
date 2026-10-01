@@ -30,6 +30,8 @@ async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     Inputs remain agent assertions: only independent public tool reads verify them.
     This tool does not write files, publish a portfolio, fetch data or access wallets.
     The transcript stores the input; a small receipt avoids duplicating the ledger.
+    Receipt counts cover this call only: research_case_count counts ranked research,
+    candidate_count counts parent judgments, and handoff_recorded confirms a manifest.
     Prefer decisions=[{research_ref:{session_id,checkpoint_id,entity},entity,
     decision,decision_basis,reason,implementation_checks}] using notebook references.
     Original research is resolved in code. Only provide updated_research when facts
@@ -46,6 +48,8 @@ async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
             "sha256": hashlib.sha256(checkpoint.receipt_json().encode()).hexdigest(),
             "candidate_count": len(checkpoint.candidates) + len(checkpoint.decisions),
             "discovery_count": len(checkpoint.discoveries),
+            "research_case_count": len(checkpoint.research_cases),
+            "handoff_recorded": checkpoint.handoff is not None,
             "execution_authorized": False,
             "evidence_verified": False,
         }
@@ -70,6 +74,11 @@ async def research_thesis_discovery(checkpoint: DiscoveryCheckpoint) -> dict:
     case_entities lists EVERY saved ranked key; unresolved_entities lists remaining
     inventory keys; reason briefly explains gaps (or that research is complete). An inbox
     without ranked cases is not a completed assessment. Do not repeat case essays.
+    The receipt's research_case_count confirms ranked cases in this call;
+    candidate_count is for parent judgments and is always zero for this worker tool.
+    handoff_recorded confirms a manifest, including a handoff-only write. These are
+    per-call counts, not the cumulative notebook inventory; zero new cases in a
+    handoff-only receipt does not erase previously saved research.
     """
     return await research_thesis_checkpoint(
         ResearchCheckpoint.model_validate(checkpoint.model_dump())
