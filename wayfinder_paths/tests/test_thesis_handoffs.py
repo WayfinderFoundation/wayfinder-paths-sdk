@@ -316,20 +316,35 @@ def review(blocking=True):
 
 
 @pytest.mark.parametrize(
-    "blocking,action,refs,valid",
+    "blocking,action,refs,updated_at,valid",
     [
-        (True, "accepted", [], False),
-        (False, "accepted", [], True),
-        (True, "changed", [], False),
-        (True, "evidence", ["invented"], False),
-        (True, "evidence", ["public"], True),
-        (True, "removed", [], False),
+        (True, "accepted", [], [], False),
+        (False, "accepted", [], [], True),
+        (True, "changed", [], [], False),
+        (True, "changed", ["public"], [], False),
+        (True, "changed", ["public"], [2], False),
+        (True, "changed", ["public"], [4], True),
+        (True, "changed", ["public"], [6], False),
+        (True, "changed", ["public"], [4, 6], True),
+        (True, "evidence", ["invented"], [], False),
+        (True, "evidence", ["public"], [], True),
+        (True, "removed", [], [], False),
     ],
 )
 def test_findings_require_substantive_resolution(
-    compact_run, blocking, action, refs, valid
-):
+    compact_run: tuple[list[dict], list[dict]],
+    blocking: bool,
+    action: str,
+    refs: list[str],
+    updated_at: list[int],
+    valid: bool,
+) -> None:
     parent, child = compact_run
+    original_child = deepcopy(child)
+    for timestamp in updated_at:
+        decision = deepcopy(parent[0]["parts"][0]["state"]["input"]["checkpoint"])
+        decision["decisions"][0]["reason"] = "Corrected implementation comparison"
+        parent.append(receipt(decision, timestamp))
     parent.append(
         receipt(
             {
@@ -380,6 +395,7 @@ def test_findings_require_substantive_resolution(
         parent, [*child, review(blocking)], records, {"NETWORK-USDC"}
     )
     assert (not report["errors"]) == valid
+    assert child == original_child
 
 
 def test_worker_cannot_issue_review(compact_run):

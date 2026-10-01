@@ -143,6 +143,24 @@ def review_report(
                 for ref in refs
             )
             # A label/weight-only edit without cited public observations cannot close a finding.
+            if action == "changed" and case is not None:
+                # The original worker record stays immutable, but the parent's
+                # decision must reflect its correction, not just the final prose.
+                updated_case = any(
+                    c["entity"].casefold() == finding["entity"].casefold()
+                    for r in records
+                    if (finding["completed_at_ms"] or 0)
+                    <= (r["completed_at_ms"] or 0)
+                    <= resolved_at
+                    for c in r["checkpoint"]["candidates"]
+                )
+                valid &= updated_case
+                if not updated_case:
+                    errors.append(
+                        f"Review finding {key[1]} ({finding['entity']}): upsert the "
+                        "corrected decision before resolving changed; use "
+                        "updated_research when the original case facts changed"
+                    )
         else:
             valid = False
         finding["resolution"] = resolution or None
