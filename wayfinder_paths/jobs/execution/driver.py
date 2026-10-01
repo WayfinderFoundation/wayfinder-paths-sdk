@@ -22,8 +22,6 @@ from wayfinder_paths.jobs.capital import (
 from wayfinder_paths.jobs.capital_transfers import settle_pending_withdrawal
 from wayfinder_paths.jobs.defense import (
     add_defense_features,
-    defense_feature_warmup_bars,
-    defense_policy,
 )
 from wayfinder_paths.jobs.execution.engine import (
     EngineState,
@@ -53,7 +51,10 @@ from wayfinder_paths.jobs.execution.primitives import (
 )
 from wayfinder_paths.jobs.execution.protection import monitor_native_protection
 from wayfinder_paths.jobs.execution.risk import RISK_STATE_PATH, check_risk_halt
-from wayfinder_paths.jobs.execution.simulator import _load_strategy
+from wayfinder_paths.jobs.execution.simulator import (
+    _load_strategy,
+    live_feature_warmup_bars,
+)
 from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
 from wayfinder_paths.jobs.execution.venues import (
     RestingOrderCancelBroker,
@@ -74,9 +75,7 @@ from wayfinder_paths.jobs.models import (
     WayfinderJob,
 )
 from wayfinder_paths.jobs.regime import (
-    REGIME_FEATURE_WARMUP_BARS,
     add_portfolio_regime_feature,
-    declared_regimes,
 )
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.trade_forensics import (
@@ -381,14 +380,7 @@ async def tick_job(
     # (or legacy lookback_bars) sizes the live fetch exactly like the replay
     # slice, so decide() sees the same bounded history in both.
     strategy_lookback_bars = resolve_compute_window(params, strategy).live_depth
-    feature_warmup = max(
-        REGIME_FEATURE_WARMUP_BARS if declared_regimes(params) else 0,
-        (
-            defense_feature_warmup_bars(bar_interval_seconds(bar_interval))
-            if defense_policy(params)["enabled"]
-            else 0
-        ),
-    )
+    feature_warmup = live_feature_warmup_bars(params, bar_interval)
     shadow_lookback_bars = 0
     try:
         from wayfinder_paths.jobs.candidate_shadow import (
