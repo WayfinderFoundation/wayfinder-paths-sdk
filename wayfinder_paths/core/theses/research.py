@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from math import isfinite
 from typing import Any
 
@@ -15,6 +16,7 @@ RESEARCH_EVIDENCE_TOOLS = frozenset(
     {
         "polymarket_read",
         "hyperliquid_search_mid_prices",
+        "hyperliquid_search_market",
         "onchain_resolve_token",
         "onchain_list_tokens",
         "core_web_fetch",
@@ -30,6 +32,7 @@ def research_evidence(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
     event_urls: set[str] = set()
     fetched_urls: set[str] = set()
     hyperliquid_depth: dict[str, dict[str, Any]] = {}
+    hyperliquid_markets: dict[str, str] = {}
     onchain_tokens: dict[str, dict[str, Any]] = {}
     onchain_pools: dict[str, dict[str, Any]] = {}
     pages: list[dict[str, Any]] = []
@@ -40,6 +43,15 @@ def research_evidence(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
         ):
             quantified_allocations[portfolio["allocation_key"]] = portfolio
         hyperliquid_depth.update(result.get("depth", {}))
+        for bucket, kind in (("perps", "perp"), ("spots", "token")):
+            for market in result.get(bucket, []):
+                name = market.get("name")
+                if name and market.get("market", {}).get("is_delisted"):
+                    hyperliquid_markets[name] = "delisted"
+                elif name:
+                    hyperliquid_markets[name] = (
+                        "hip3" if kind == "perp" and ":" in name else kind
+                    )
         resolution = result.get("resolved_token") or result
         if (
             resolution.get("token_id")
@@ -48,7 +60,14 @@ def research_evidence(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
         ):
             token = {
                 key: resolution.get(key) or {}
-                for key in ("token_id", "address", "chain", "identity")
+                for key in (
+                    "token_id",
+                    "address",
+                    "chain",
+                    "identity",
+                    "symbol",
+                    "name",
+                )
             }
             onchain_tokens[resolution["token_id"]] = token
             if resolution.get("lookup_id"):
@@ -124,6 +143,7 @@ def research_evidence(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "event_urls": sorted(event_urls),
         "fetched_urls": sorted(fetched_urls),
         "hyperliquid_depth": hyperliquid_depth,
+        "hyperliquid_markets": hyperliquid_markets,
         "onchain_tokens": onchain_tokens,
         "onchain_pools": onchain_pools,
         "quantified_allocations": quantified_allocations,
@@ -145,8 +165,14 @@ def missing_source_reads(proposal: Proposal, evidence: dict[str, Any]) -> list[s
     ]
 
 
-def validate_market_capacity(proposal: Proposal, evidence: dict[str, Any]) -> None:
-    """Report every affected instrument; retain the largest-budget failure per ID."""
+def validate_market_capacity(
+    proposal: Proposal, evidence: dict[str, Any], *, screen_capacity: bool = True
+) -> None:
+    """Validate identity; optionally enforce the legacy conservative sizing screen.
+
+    New targets pass screen_capacity=False: liquidity heuristics are readiness
+    warnings, not portfolio weight limits. Historical callers keep their behavior.
+    """
     errors: dict[str, str] = {}
     for variant in sorted(proposal.variants, key=lambda v: v.budget_usd):
         resolved_ids: set[tuple[str, str]] = set()
@@ -163,7 +189,12 @@ def validate_market_capacity(proposal: Proposal, evidence: dict[str, Any]) -> No
                 continue
             resolved_ids.add(key)
             try:
-                _validate_position_capacity(variant.budget_usd, position, evidence)
+                _validate_position_capacity(
+                    variant.budget_usd,
+                    position,
+                    evidence,
+                    screen_capacity=screen_capacity,
+                )
             except ValueError as exc:
                 errors[position.instrument_id] = str(exc)
     if errors:
@@ -171,7 +202,11 @@ def validate_market_capacity(proposal: Proposal, evidence: dict[str, Any]) -> No
 
 
 def _validate_position_capacity(
-    budget_usd: int, position: Position, evidence: dict[str, Any]
+    budget_usd: int,
+    position: Position,
+    evidence: dict[str, Any],
+    *,
+    screen_capacity: bool = True,
 ) -> None:
     """Conservative research sizing, not an executable quote or future fill guarantee."""
     location = f"{budget_usd}/{position.id}"
@@ -189,6 +224,8 @@ def _validate_position_capacity(
                 f"{location}: resolved token is flagged as a suspicious identity; "
                 "choose a non-conflicting instrument"
             )
+        if not screen_capacity:
+            return
         # Native holdings use the backend registry's wrapped-native
         # market-data proxy, never an agent-proposed substitute.
         pool_address = token["address"]
@@ -220,6 +257,13 @@ def _validate_position_capacity(
         position.kind == "token" and "/" in position.instrument_id
     ):
         book = evidence.get("hyperliquid_depth", {}).get(position.instrument_id, {})
+        if not screen_capacity:
+            kind = evidence.get("hyperliquid_markets", {}).get(position.instrument_id)
+            if kind != position.kind and not (kind is None and book):
+                raise ValueError(
+                    f"{location}: verify exact Hyperliquid instrument and market type"
+                )
+            return
         bid = book.get("bid_notional_usd_50bps", 0)
         ask = book.get("ask_notional_usd_50bps", 0)
         notional = budget_usd * position.capital_bps / 10000 * position.leverage
@@ -235,6 +279,8 @@ def _validate_position_capacity(
         return
     if evidence.get("outcomes", {}).get(position.instrument_id) != position.direction:
         raise ValueError(f"{location}: verify the tradable YES/NO outcome token")
+    if not screen_capacity:
+        return
     depth = evidence.get("ask_depth", {}).get(position.instrument_id, 0)
     capital = budget_usd * position.capital_bps / 10000
     if not isfinite(depth) or capital > 0.1 * depth:
@@ -242,3 +288,60 @@ def _validate_position_capacity(
             f"{location}: prediction capital ${capital:g} exceeds 10% of "
             f"observed ask notional (${depth:g}); reduce capital_bps or omit the leg"
         )
+
+
+def validate_full_allocation(proposal: Proposal) -> None:
+    """New invested targets are fully allocated; legacy empty failure stays readable."""
+    for variant in proposal.variants:
+        if variant.positions and variant.cash_bps:
+            raise ValueError(
+                f"{variant.budget_usd}: target positions must allocate 10000 bps with cash_bps=0; "
+                "compare aligned alternatives instead of leaving idle cash. Do not mechanically "
+                "rescale rejected weights or increase leverage to hide the gap"
+            )
+
+
+def execution_readiness(proposal: Proposal, evidence: dict[str, Any]) -> dict[str, Any]:
+    """Advisory, timestamped local diagnostics. Never trading permission or fill proof."""
+    variants = []
+    for variant in proposal.variants:
+        positions = []
+        for position in variant.positions:
+            warnings = []
+            try:
+                _validate_position_capacity(variant.budget_usd, position, evidence)
+            except ValueError as exc:
+                warnings.append(str(exc))
+            positions.append(
+                {
+                    "instrument_id": position.instrument_id,
+                    "capital_usd": variant.budget_usd * position.capital_bps / 10000,
+                    "notional_usd": variant.budget_usd
+                    * position.capital_bps
+                    / 10000
+                    * position.leverage,
+                    "screen": "warning" if warnings else "passed",
+                    "warnings": warnings,
+                }
+            )
+        variants.append(
+            {
+                "budget_usd": variant.budget_usd,
+                "status": "execution_pending" if positions else "not_constructed",
+                "positions": positions,
+                "outstanding_checks": [
+                    "Fresh size-specific route/quote, slippage and fees",
+                    "Venue eligibility, collateral/funding and wallet approvals",
+                    "User approval of the final executable plan",
+                ]
+                if positions
+                else [],
+            }
+        )
+    return {
+        "assessed_at": datetime.now(UTC).isoformat(),
+        "execution_authorized": False,
+        "method": "Liquidity percentages are screening heuristics, not executable capacity. "
+        "Observation times are those in the source transcript, not assessed_at.",
+        "variants": variants,
+    }

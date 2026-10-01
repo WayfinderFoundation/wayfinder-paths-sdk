@@ -209,6 +209,9 @@ async def test_defillama_free_protocol_search_compacts_matches(
             "change_1d": None,
             "change_7d": None,
             "url": None,
+            "description": None,
+            "gecko_id": None,
+            "address": None,
         }
     ]
 

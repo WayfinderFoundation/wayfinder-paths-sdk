@@ -10,6 +10,11 @@ flows remain outside this SDK module.
 `wayfinder_paths.core.theses.models.Proposal` accepts exactly four independently
 specified variants: $100, $1,000, $10,000 and $100,000. Allocated capital plus
 cash must equal 10,000 basis points. Gross exposure cannot exceed 2× capital.
+The v1 model remains readable for historical partial-cash portfolios. New invested
+targets additionally pass `validate_full_allocation`: positions allocate all
+10,000 bps and cash is zero. Empty variants represent **Not constructed**, never
+a successful cash recommendation. Capital/collateral is distinct from notional;
+fees and gas are costs, not idle-cash sleeves.
 Spot and prediction shares are fully funded; only perps may be short or levered.
 Prediction instruments identify the purchased outcome token; NO is not a short
 of the YES token. Each position belongs to a stated thesis component.
@@ -18,6 +23,28 @@ Proposals contain intent, assumptions, evidence, counterarguments and
 invalidation conditions, never executable transactions. Callers must resolve
 instrument identities against their venue, including verifying prediction
 outcomes, before constructing `MarketHistory`.
+
+## Research progress and execution readiness
+
+`research_thesis_checkpoint` validates a compact interpretation, entity-level
+candidate ledger and optional provisional proposal. It returns only a receipt;
+the existing OpenCode transcript stores the input. The parent alone has permission
+to use it in the thesis workflow. Checkpoint assertions never enter
+`RESEARCH_EVIDENCE_TOOLS` and cannot certify identity, source reads or quantification.
+
+New-target validation calls `validate_market_capacity(..., screen_capacity=False)`:
+exact identity, duplicate-alias and outcome checks remain hard requirements.
+Selected-pool reserves/turnover and compact order-book percentages are screening
+heuristics, not whole-asset capacity or hard target weights. `execution_readiness`
+reports their warnings separately at each budget, including capital and notional.
+Every invested target remains execution-pending, even when its screen passes.
+Fresh size-specific route/quote, costs, eligibility, wallet and approval checks
+are still required. This report **never** authorizes execution. Legacy callers
+retain conservative screening by default; no signing boundary is relaxed.
+
+Discovery uses existing tools: DeFiLlama protocol search now filters by category
+before pagination and retains descriptions/provider IDs; Hyperliquid browsing
+pages each filtered/ranked bucket with `offset`. No new catalog service is added.
 
 ## Lookup IDs and pre-publication quantification
 

@@ -83,6 +83,7 @@ def test_observed_outcomes_and_latest_book_not_market_liquidity() -> None:
         "event_urls": ["https://polymarket.com/event/fed"],
         "fetched_urls": [],
         "hyperliquid_depth": {},
+        "hyperliquid_markets": {},
         "onchain_tokens": {},
         "onchain_pools": {},
         "quantified_allocations": {},

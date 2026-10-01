@@ -37,6 +37,7 @@ async def research_defillama_free(
     limit: str | int = "25",
     cursor: str = "_",
     includeChainBreakdown: bool = False,
+    category: str = "_",
 ) -> dict[str, Any]:
     """Call DeFiLlama free APIs directly from the OpenCode runtime.
 
@@ -49,7 +50,8 @@ async def research_defillama_free(
         protocolSlug: Required for protocol/tvl/protocol_fees/protocol_tvl_history.
         chain: Optional for dex_overview and fees_overview.
         coins: Required for current_prices, e.g. ethereum:0xa0b8...
-        query: Required for protocol_search.
+        query: Text search for protocol_search; optional when category is given.
+        category: Exact DeFiLlama category (case insensitive), applied before pagination.
         dataType: For protocol_fees: dailyFees, dailyRevenue or dailyHoldersRevenue.
             Holder revenue can include buybacks/burns or distributions to eligible
             stakers; it is not necessarily cash income to every spot holder.
@@ -80,9 +82,11 @@ async def research_defillama_free(
             )
         )
     if normalized == "protocol_search":
-        if query == "_":
-            raise ValueError("query is required for dataset=protocol_search")
-        return ok(await DEFILLAMA_FREE_CLIENT.protocol_search(query, page_limit))
+        return ok(
+            await DEFILLAMA_FREE_CLIENT.protocol_search(
+                query, page_limit, cursor=cursor, category=category
+            )
+        )
     if normalized == "protocol":
         if protocolSlug == "_":
             raise ValueError("protocolSlug is required for dataset=protocol")

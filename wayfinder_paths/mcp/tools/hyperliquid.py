@@ -2313,13 +2313,15 @@ async def hyperliquid_search_market(
     query: str,
     limit: int = 10,
     market_type: HyperliquidMarketType | None = None,
+    offset: int = 0,
 ) -> dict[str, Any]:
     """
     Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets by a simple query string. An empty
-    query returns the first `limit` items from each selected bucket.
+    query browses each selected bucket using limit/offset.
 
     query: A simple string containing asset names, for example: btc, eth, oil. Prefer non empty queries for efficiency.
     limit: Max number of results to return per category.
+    offset: Zero-based offset into each filtered, ranked category. Use pagination.next_offset.
     market_type: optional filter — "perp", "hip3", "spot", or "hip4". Buckets the caller filters out come back empty.
 
     Returns canonical asset names. Perp results also include public market
@@ -2328,6 +2330,8 @@ async def hyperliquid_search_market(
     Impact prices/volume are NOT executable quotes or orderbook depth.
     Missing-provider warnings mean discovery is incomplete, not that a market is absent.
     """
+    if not 1 <= limit <= 100 or offset < 0:
+        raise ValueError("limit must be 1..100 and offset must be nonnegative")
     adapter, discovery_lock = _market_search_resources(asyncio.get_running_loop())
     # Only query requested surfaces. An unavailable outcome provider must not
     # discard usable spot/perp discovery (or be called for a spot-only lookup).
@@ -2393,9 +2397,9 @@ async def hyperliquid_search_market(
 
     perp_hits: list[dict[str, Any]]
     if not query.strip():
-        perp_hits = [{"name": p} for p in perps[:limit]]
-        spot_hits = [{"name": s} for s in spots[:limit]]
-        outcome_hits = outcome_data[:limit]
+        perp_hits = [{"name": p} for p in perps]
+        spot_hits = [{"name": s} for s in spots]
+        outcome_hits = outcome_data
     else:
 
         def underlying(name: str) -> str:
@@ -2452,7 +2456,7 @@ async def hyperliquid_search_market(
                 key=lambda r: r[1],
                 reverse=True,
             )
-            return [it for it, _ in kept[:limit]]
+            return [it for it, _ in kept]
 
         def outcome_text(market: dict[str, Any]) -> str:
             sides = (
@@ -2480,6 +2484,22 @@ async def hyperliquid_search_market(
         spot_hits = [{"name": s} for s in top(spots, lambda s: s, market_name=True)]
         outcome_hits = top(outcome_data, outcome_text)
 
+    pagination = {
+        name: {
+            "total": len(hits),
+            "offset": offset,
+            "limit": limit,
+            "next_offset": offset + limit if offset + limit < len(hits) else None,
+        }
+        for name, hits in (
+            ("perps", perp_hits),
+            ("spots", spot_hits),
+            ("outcomes", outcome_hits),
+        )
+    }
+    perp_hits = perp_hits[offset : offset + limit]
+    spot_hits = spot_hits[offset : offset + limit]
+    outcome_hits = outcome_hits[offset : offset + limit]
     # Reuse the public data already fetched above; no wallet access or extra requests.
     contexts = (
         perp_data[1]
@@ -2511,6 +2531,7 @@ async def hyperliquid_search_market(
             "spots": spot_hits,
             "outcomes": outcome_hits,
             "warnings": warnings,
+            "pagination": pagination,
         }
     )
 

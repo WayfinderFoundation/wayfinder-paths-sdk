@@ -174,6 +174,18 @@ def market_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_market_browsing_pages_after_type_filter(market_inventory):
+    first = (await hyperliquid_search_market("", limit=2, market_type="hip3"))["result"]
+    second = (
+        await hyperliquid_search_market("", limit=2, market_type="hip3", offset=2)
+    )["result"]
+    assert first["pagination"]["perps"]["next_offset"] == 2
+    assert _names(first["perps"]).isdisjoint(_names(second["perps"]))
+    assert all(":" in name for name in _names(first["perps"]) | _names(second["perps"]))
+    assert not second["spots"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("query", "bucket"),
     [("BTC-USDC", "perps"), ("flx:BTC", "perps"), ("UBTC/USDH", "spots")],
@@ -428,7 +440,7 @@ async def test_search_market_handles_perp_meta_failure_without_error(monkeypatch
     res = await hyperliquid_search_market("bitcoin", limit=10, market_type="perp")
 
     assert res["ok"]
-    assert res["result"] == {
+    assert {k: v for k, v in res["result"].items() if k != "pagination"} == {
         "perps": [],
         "spots": [],
         "outcomes": [],

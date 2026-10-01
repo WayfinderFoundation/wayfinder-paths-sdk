@@ -90,11 +90,16 @@ class DefiLlamaFreeClient:
         )
         return _enforce_response_budget(response)
 
-    async def protocol_search(self, query: str, limit: int = 10) -> dict[str, Any]:
+    async def protocol_search(
+        self, query: str, limit: int = 10, *, cursor: str = "_", category: str = "_"
+    ) -> dict[str, Any]:
         response = await self.protocols()
         normalized = str(query).strip().lower()
-        if not normalized:
-            raise ValueError("query is required")
+        if normalized == "_":
+            normalized = ""
+        category_filter = category.strip().casefold()
+        if not normalized and category_filter in {"", "_"}:
+            raise ValueError("query or category is required")
         protocols = response.get("result")
         if not isinstance(protocols, list):
             protocols = []
@@ -103,36 +108,33 @@ class DefiLlamaFreeClient:
         for protocol in protocols:
             if not isinstance(protocol, dict):
                 continue
+            if (
+                category_filter not in {"", "_"}
+                and str(protocol.get("category") or "").casefold() != category_filter
+            ):
+                continue
             haystack = " ".join(
                 str(protocol.get(key) or "")
                 for key in ("name", "slug", "symbol", "category", "description")
             ).lower()
             if normalized not in haystack:
                 continue
-            matches.append(
-                {
-                    "name": protocol.get("name"),
-                    "slug": protocol.get("slug"),
-                    "symbol": protocol.get("symbol"),
-                    "category": protocol.get("category"),
-                    "chains": protocol.get("chains"),
-                    "tvl": protocol.get("tvl"),
-                    "change_1d": protocol.get("change_1d"),
-                    "change_7d": protocol.get("change_7d"),
-                    "url": protocol.get("url"),
-                }
-            )
-            if len(matches) >= max(1, min(int(limit), 25)):
-                break
+            matches.append(_compact_protocol(protocol))
 
-        return {
-            **response,
-            "result": {
-                "query": query,
-                "matches": matches,
-                "count": len(matches),
-            },
-        }
+        page = _paged_result(
+            dataset="protocol_search",
+            source_url=response["url"],
+            items=matches,
+            limit=limit,
+            cursor=cursor,
+        )
+        # Preserve the original matches/count fields for existing callers.
+        response["result"] = {**page, "query": query, "category": category}
+        response = _enforce_response_budget(response)
+        result = response["result"]
+        result["matches"] = result.pop("items", [])
+        result["count"] = len(result["matches"])
+        return response
 
     async def protocol(self, protocol_slug: str) -> dict[str, Any]:
         return await self._get(f"/protocol/{_path_part(protocol_slug, 'protocolSlug')}")
@@ -577,6 +579,11 @@ def _compact_protocol(protocol: dict[str, Any]) -> dict[str, Any]:
         "change_1d": protocol.get("change_1d"),
         "change_7d": protocol.get("change_7d"),
         "url": protocol.get("url"),
+        "description": str(protocol["description"])[:1000]
+        if protocol.get("description")
+        else None,
+        "gecko_id": protocol.get("gecko_id"),
+        "address": protocol.get("address"),
     }
 
 
@@ -720,7 +727,7 @@ def _enforce_response_budget(response: dict[str, Any]) -> dict[str, Any]:
         }
         return response
 
-    while result["items"] and len(rendered) > MAX_RESPONSE_CHARACTERS:
+    while len(result["items"]) > 1 and len(rendered) > MAX_RESPONSE_CHARACTERS:
         result["items"] = result["items"][: max(1, len(result["items"]) // 2)]
         page = result.get("page")
         if isinstance(page, dict):

@@ -30,6 +30,7 @@ def test_build_mcp_registers_tools() -> None:
         "hyperliquid_get_state",
         "polymarket_read",
         "research_quantify_portfolio",
+        "research_thesis_checkpoint",
         "contracts_call",
         "sports_snapshot",
         "sports_backtest_state",
