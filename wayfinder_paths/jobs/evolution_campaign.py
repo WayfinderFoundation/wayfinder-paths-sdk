@@ -501,7 +501,12 @@ def _record_compute_budget_override(
     op of this campaign reads the marker, so a start that bypassed the budget
     is not stranded at its next lock; it outlives the deadline by a margin
     for finalization and is journaled on the job."""
-    expires_at = (deadline + timedelta(hours=4)).isoformat()
+    # The compute lock judges the marker on the wall clock, while ``now`` is
+    # the campaign clock (a replayed date on the bench): carry the campaign's
+    # lifetime onto the wall clock or a replayed campaign's marker is born
+    # expired.
+    lifetime = deadline - now + timedelta(hours=4)
+    expires_at = (datetime.now(UTC).replace(microsecond=0) + lifetime).isoformat()
     atomic_write_json(
         store.repo_root / COMPUTE_OVERRIDE_RELATIVE,
         {
