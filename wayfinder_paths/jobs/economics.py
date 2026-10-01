@@ -26,9 +26,13 @@ from typing import Any
 
 import pandas as pd
 
-from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+from wayfinder_paths.jobs.execution.primitives import (
+    ExecutionSpec,
+    resolve_compute_window,
+)
 from wayfinder_paths.jobs.execution.simulator import (
     PreparedExecutionDataset,
+    _load_strategy,
     simulate_execution,
 )
 from wayfinder_paths.jobs.execution.walk_forward import _slice
@@ -258,6 +262,14 @@ def _block_bootstrap_totals(
     return totals
 
 
+def _live_depth(
+    script: str | Path | Callable[..., Any], params: Mapping[str, Any]
+) -> int:
+    return resolve_compute_window(
+        dict(params), _load_strategy(script, dict(params))
+    ).live_depth
+
+
 def paired_fold_evaluation(
     *,
     baseline_script: str | Path | Callable[..., Any],
@@ -274,8 +286,13 @@ def paired_fold_evaluation(
     evaluation = constitution["evaluation"]
     weights = constitution["objective"]["weights"]
     target_regimes = declared_regimes(candidate_params)
+    # Each fold opens with at least the history live hands either side (its
+    # declared window), or the gate scores indicators live never computes.
     effective_warmup = max(
-        int(warmup_bars), REGIME_FEATURE_WARMUP_BARS if target_regimes else 0
+        int(warmup_bars),
+        REGIME_FEATURE_WARMUP_BARS if target_regimes else 0,
+        _live_depth(candidate_script, candidate_params),
+        _live_depth(baseline_script, baseline_params),
     )
     regime_labels: dict[pd.Timestamp, str] = {}
     if target_regimes:
