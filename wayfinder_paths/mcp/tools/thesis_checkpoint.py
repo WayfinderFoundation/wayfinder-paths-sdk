@@ -2,7 +2,10 @@
 
 import hashlib
 
-from wayfinder_paths.core.theses.checkpoints import ResearchCheckpoint
+from wayfinder_paths.core.theses.checkpoints import (
+    DiscoveryCheckpoint,
+    ResearchCheckpoint,
+)
 from wayfinder_paths.mcp.utils import catch_errors, ok
 
 
@@ -10,10 +13,9 @@ from wayfinder_paths.mcp.utils import catch_errors, ok
 async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     """Record typed research progress, NOT verified evidence or execution approval.
 
-    Use schema_version=2. Workers submit discovery inventories BEFORE ranking and
-    append newly found relevant entities/implementations before returning. Parent
-    submits interpretation, merged discovery, provisional draft, and full judged
-    ledger. Every discovered entity needs a disposition, including NEEDS_EVIDENCE.
+    Parent only; use schema_version=3. Submit interpretation, discoveries,
+    provisional draft and judged ledger. Assess every ranked research case and
+    final holding; unranked leads remain visible without invented dispositions.
     Use discovery_dispositions to link differing worker entity keys to assessed
     candidate_entity keys, or briefly mark unranked leads out_of_scope/needs_evidence.
     Do not duplicate full candidate essays for the entire discovery inbox.
@@ -34,4 +36,23 @@ async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
             "execution_authorized": False,
             "evidence_verified": False,
         }
+    )
+
+
+@catch_errors
+async def research_thesis_discovery(checkpoint: DiscoveryCheckpoint) -> dict:
+    """Record discoveries and up to ten evidence-backed ranked research cases.
+
+    Append new leads/implementations before ranking. Record comparisons in
+    research_cases: case_basis (economic/narrative/mixed/hedge/event), mechanism,
+    value_capture, dated support, counterevidence, closest_alternative and gaps.
+    No minimum count. Category membership alone does not qualify a ranked case.
+    Narrative cases need evidence of attention/capital flows, timing and
+    invalidation, not invented revenue. Every ranked case needs a parent decision.
+    Return a compact handoff referencing recorded entity keys, not the full inbox.
+    This stores assertions only in the transcript, never parent judgments,
+    files, trades or independently verified evidence.
+    """
+    return await research_thesis_checkpoint(
+        ResearchCheckpoint.model_validate(checkpoint.model_dump())
     )

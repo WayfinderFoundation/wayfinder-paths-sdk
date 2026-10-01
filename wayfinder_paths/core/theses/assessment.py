@@ -5,10 +5,17 @@ import json
 from typing import Any
 
 from pydantic import ValidationError
+from pydantic_core import to_json
 
-from wayfinder_paths.core.theses.checkpoints import ResearchCheckpoint
+from wayfinder_paths.core.theses.checkpoints import (
+    CandidateCase,
+    DiscoveryCheckpoint,
+    ResearchCheckpoint,
+)
 
 CHECKPOINT_TOOL = "wayfinder_research_thesis_checkpoint"
+DISCOVERY_TOOL = "wayfinder_research_thesis_discovery"
+CHECKPOINT_TOOLS = {CHECKPOINT_TOOL, DISCOVERY_TOOL}
 
 
 def checkpoints(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -17,14 +24,15 @@ def checkpoints(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for part in message.get("parts", []):
             state = part.get("state", {})
             if (
-                part.get("tool") != CHECKPOINT_TOOL
+                part.get("tool") not in CHECKPOINT_TOOLS
                 or state.get("status") != "completed"
             ):
                 continue
             try:
-                checkpoint = ResearchCheckpoint.model_validate(
-                    state.get("input", {}).get("checkpoint")
-                )
+                payload = state.get("input", {}).get("checkpoint")
+                if part.get("tool") == DISCOVERY_TOOL:
+                    payload = DiscoveryCheckpoint.model_validate(payload).model_dump()
+                checkpoint = ResearchCheckpoint.model_validate(payload)
                 output = json.loads(state.get("output", ""))
             except (ValidationError, ValueError, TypeError):
                 continue
@@ -43,11 +51,41 @@ def checkpoints(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         ).encode()
                     ).hexdigest()
                 )
+            if checkpoint.schema_version < 3:
+                # Preserve byte ordering of receipts issued before ResearchCase
+                # was extracted. Never use raw, unvalidated input as a digest.
+                legacy = checkpoint.model_dump(mode="json", exclude={"research_cases"})
+                fields = (
+                    "entity",
+                    "name",
+                    "mechanism",
+                    "observed_identifiers",
+                    "sources",
+                    "instruments",
+                    "effect_order",
+                    "value_capture",
+                    "support",
+                    "counterevidence",
+                    "closest_alternative",
+                    "decision",
+                    "reason",
+                    "gaps",
+                    "decision_basis",
+                    "implementation_checks",
+                )
+                legacy["candidates"] = [
+                    {key: case[key] for key in fields} for case in legacy["candidates"]
+                ]
+                digests.add(hashlib.sha256(to_json(legacy)).hexdigest())
+                if "discovery_dispositions" not in state["input"]["checkpoint"]:
+                    legacy.pop("discovery_dispositions")
+                    digests.add(hashlib.sha256(to_json(legacy)).hexdigest())
             if not isinstance(receipt, dict) or receipt.get("sha256") not in digests:
                 continue
             records.append(
                 {
                     "id": part.get("id"),
+                    "session_id": message.get("info", {}).get("sessionID"),
                     "completed_at_ms": state.get("time", {}).get("end"),
                     "checkpoint": checkpoint.model_dump(),
                 }
@@ -59,7 +97,7 @@ def assessment_report(
     parent_messages: list[dict[str, Any]],
     child_messages: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Every admitted discovery survives to judgment, including known implementations.
+    """Preserve discoveries; require assessments for ranked cases and known implementations.
 
     Raw search mentions still require semantic triage. This gate cannot certify
     discovery recall, causal reasoning, or the truth of an agent's rejection reason.
@@ -73,7 +111,7 @@ def assessment_report(
             state = part.get("state", {})
             if (
                 not part.get("tool", "").startswith("wayfinder_")
-                or part["tool"] == CHECKPOINT_TOOL
+                or part["tool"] in CHECKPOINT_TOOLS
                 or state.get("status") != "completed"
             ):
                 continue
@@ -110,7 +148,7 @@ def assessment_report(
         r["checkpoint"]
         for r in parent
         if r["checkpoint"]["stage"] == "judged"
-        and r["checkpoint"]["schema_version"] == 2
+        and r["checkpoint"]["schema_version"] >= 2
     ]
     # Checkpoints are an append-only transcript. Corrections upsert by key;
     # omitting an unchanged case/link cannot erase its earlier assessment.
@@ -125,19 +163,34 @@ def assessment_report(
         for entity in d["entities"]
     }
     if not cases:
-        errors.append(
-            "Record a v2 judged checkpoint with the complete candidate ledger"
-        )
+        errors.append("Record a judged checkpoint with the complete candidate ledger")
     discoveries = [
         d
         for r in [*parent, *children]
-        for d in [*r["checkpoint"]["discoveries"], *r["checkpoint"]["candidates"]]
+        for d in [
+            *r["checkpoint"]["discoveries"],
+            *r["checkpoint"]["research_cases"],
+            *r["checkpoint"]["candidates"],
+        ]
     ]
+    # New runs distinguish the broad inbox from ranked comparisons. Legacy
+    # traces retain their original accounting semantics when replayed.
+    ranked = {
+        d["entity"].casefold()
+        for r in [*parent, *children]
+        for d in [*r["checkpoint"]["research_cases"], *r["checkpoint"]["candidates"]]
+    }
+    required = (
+        ranked
+        if any(r["checkpoint"]["schema_version"] == 3 for r in parent)
+        else {d["entity"].casefold() for d in discoveries}
+    )
     # Union all snapshots; a later shorter/empty ledger cannot erase discoveries.
     missing = set()
     unobserved_instruments = set()
     deferred: set[str] = set()
     excluded: set[str] = set()
+    unassessed: set[str] = set()
     for disposition in dispositions.values():
         if (
             disposition["status"] == "assessed"
@@ -150,6 +203,8 @@ def assessment_report(
         key = discovery["entity"].casefold()
         disposition = dispositions.get(key)
         if disposition and disposition["status"] != "assessed":
+            if key in ranked:
+                errors.append(f"{key}: ranked cases require a candidate assessment")
             if key in case_by_entity:
                 errors.append(
                     f"{key}: discovery disposition conflicts with its candidate assessment"
@@ -163,7 +218,10 @@ def assessment_report(
             disposition["candidate_entity"].casefold() if disposition else key
         )
         if case is None:
-            missing.add(discovery["entity"])
+            if key in required:
+                missing.add(discovery["entity"])
+            else:
+                unassessed.add(discovery["entity"])
             continue
         # An inbox is untrusted: model-added namespaces/guessed IDs must not
         # become mandatory implementation identities merely by being recorded.
@@ -219,6 +277,7 @@ def assessment_report(
             }
         ),
         "missing_entities": sorted(missing),
+        "unassessed_discoveries": sorted(unassessed),
         "unobserved_instrument_claims": sorted(unobserved_instruments),
         "unobserved_comparison_claims": unobserved_comparisons,
         "deferred_discoveries": sorted(deferred),
@@ -228,3 +287,112 @@ def assessment_report(
         ],
         "semantic_review_required": True,
     }
+
+
+def research_notebook(
+    parent_messages: list[dict[str, Any]],
+    child_messages: list[dict[str, Any]],
+    *,
+    entities: list[str] | None = None,
+    fields: list[str] | None = None,
+    offset: int = 0,
+    limit: int = 25,
+) -> dict[str, Any]:
+    """A compact index or selected original cases; never an LLM re-summary."""
+    if (
+        offset < 0
+        or not 1 <= limit <= 100
+        or (entities is not None and len(entities) > 10)
+    ):
+        raise ValueError("Use offset>=0, limit 1..100 and at most ten entity keys")
+    if fields is not None and (
+        not fields or set(fields) - CandidateCase.model_fields.keys()
+    ):
+        raise ValueError("fields must name existing research/candidate fields")
+    records = sorted(
+        [*checkpoints(parent_messages), *checkpoints(child_messages)],
+        key=lambda r: r["completed_at_ms"] or 0,
+    )
+    dispositions = {
+        key.casefold(): disposition
+        for record in checkpoints(parent_messages)
+        if record["checkpoint"]["stage"] == "judged"
+        for disposition in record["checkpoint"]["discovery_dispositions"]
+        for key in disposition["entities"]
+    }
+    rows: dict[str, dict[str, Any]] = {}
+    for record in records:
+        checkpoint = record["checkpoint"]
+        for kind in ("discoveries", "research_cases", "candidates"):
+            for case in checkpoint[kind]:
+                key = case["entity"].casefold()
+                row = rows.setdefault(
+                    key,
+                    {
+                        "entity": key,
+                        "name": case["name"],
+                        "instruments": [],
+                        "ranked": False,
+                        "decision": None,
+                        "records": [],
+                    },
+                )
+                row["instruments"] = sorted(
+                    set(row["instruments"]) | set(case["instruments"])
+                )
+                row["ranked"] |= kind != "discoveries"
+                if kind == "candidates":
+                    row["decision"] = case["decision"]
+                row["records"].append(
+                    {
+                        "checkpoint_id": record["id"],
+                        "session_id": record["session_id"],
+                        "kind": kind,
+                        "case": case,
+                    }
+                )
+    if entities is not None:
+        requested = list(dict.fromkeys(e.casefold() for e in entities))
+        for key in requested:
+            if key not in rows:
+                continue
+            row = rows[key]
+            if key in dispositions:
+                row["disposition"] = dispositions[key]
+            count = len(row["records"])
+            row["record_count"] = count
+            row["next_offset"] = offset + limit if offset + limit < count else None
+            row["records"] = row["records"][offset : offset + limit]
+            if fields is not None:
+                for record in row["records"]:
+                    record["case"] = {
+                        k: v for k, v in record["case"].items() if k in fields
+                    }
+        return {
+            "cases": [rows[key] for key in requested if key in rows],
+            "missing": [key for key in requested if key not in rows],
+            "evidence_verified": False,
+        }
+    keys = sorted(rows)
+    return {
+        "total": len(keys),
+        "items": [
+            {k: v for k, v in rows[key].items() if k != "records"}
+            for key in keys[offset : offset + limit]
+        ],
+        "next_offset": offset + limit if offset + limit < len(keys) else None,
+        "discovery_dispositions": [
+            {**dispositions[key], "entities": [key]}
+            for key in keys[offset : offset + limit]
+            if key in dispositions
+        ],
+        "evidence_verified": False,
+    }
+
+
+if __name__ == "__main__":
+    # Native OpenCode tool passes only its verified session tree over stdin.
+    import sys
+
+    request = json.load(sys.stdin)
+    print(json.dumps(research_notebook(**request)))

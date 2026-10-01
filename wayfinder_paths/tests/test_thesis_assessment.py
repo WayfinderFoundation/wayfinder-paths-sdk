@@ -447,3 +447,121 @@ def test_unselected_unresolved_comparison_is_a_warning_not_forced_hydration(
     report = assessment_report([parent], [])
     assert not report["errors"]
     assert len(report["unobserved_comparison_claims"]) == 2
+
+
+def test_v3_preserves_unranked_but_requires_every_ranked_case(
+    spec: dict[str, Any], discovery: dict[str, Any], case: dict[str, Any]
+) -> None:
+    from wayfinder_paths.core.theses.assessment import research_notebook
+
+    case = {**case, "case_basis": "economic"}
+    parent = record(spec, "judged", candidates=[case], schema_version=3)
+    lead = {**discovery, "entity": "unranked"}
+    child = record(
+        spec, "discovery", discoveries=[lead], session="worker", schema_version=3
+    )
+    report = assessment_report([parent, observed()], [child])
+    assert not report["errors"]
+    assert report["unassessed_discoveries"] == ["unranked"]
+    notebook = research_notebook([parent], [child], limit=1)
+    assert notebook["total"] == 2
+    assert notebook["next_offset"] == 1
+    assert "records" not in notebook["items"][0]
+    assert research_notebook([parent], [child], entities=["unranked"])["cases"][0][
+        "records"
+    ]
+
+    state = child["parts"][0]["state"]
+    raw = state["input"]["checkpoint"]
+    raw["research_cases"] = [
+        {
+            k: v
+            for k, v in {**case, "entity": "unranked"}.items()
+            if k
+            not in {"decision", "decision_basis", "reason", "implementation_checks"}
+        }
+    ]
+    parsed = ResearchCheckpoint.model_validate(raw)
+    state["output"] = json.dumps(
+        {
+            "ok": True,
+            "result": {
+                "sha256": hashlib.sha256(parsed.model_dump_json().encode()).hexdigest()
+            },
+        }
+    )
+    report = assessment_report([parent, observed()], [child])
+    assert report["missing_entities"] == ["unranked"]
+    # An empty later snapshot cannot erase the promoted comparison.
+    empty = record(spec, "discovery", session="worker", schema_version=3)
+    assert assessment_report([parent, observed()], [child, empty])[
+        "missing_entities"
+    ] == ["unranked"]
+
+
+@pytest.mark.parametrize(
+    "extra", [{"stage": "judged"}, {"candidates": []}, {"proposal": {}}]
+)
+def test_worker_schema_cannot_record_parent_judgments(
+    spec: dict[str, Any], extra: dict[str, Any]
+) -> None:
+    from wayfinder_paths.core.theses.checkpoints import DiscoveryCheckpoint
+
+    with pytest.raises(ValidationError):
+        DiscoveryCheckpoint.model_validate({"spec": spec, **extra})
+
+
+@pytest.mark.asyncio
+async def test_worker_receipt_and_parallel_inventory_updates(
+    spec: dict[str, Any], discovery: dict[str, Any], case: dict[str, Any]
+) -> None:
+    from wayfinder_paths.core.theses.assessment import DISCOVERY_TOOL, research_notebook
+    from wayfinder_paths.core.theses.checkpoints import (
+        DiscoveryCheckpoint,
+        ResearchCase,
+    )
+    from wayfinder_paths.mcp.tools.thesis_checkpoint import research_thesis_discovery
+
+    research = {k: v for k, v in case.items() if k in ResearchCase.model_fields}
+    research["case_basis"] = "narrative"
+    children = []
+    for session, instrument in (("a", "NETWORK-USDC"), ("b", "network-solana")):
+        checkpoint = DiscoveryCheckpoint(
+            spec=spec,
+            discoveries=[{**discovery, "instruments": [instrument]}],
+            research_cases=[research],
+        )
+        children.append(
+            {
+                "info": {"sessionID": session, "agent": "thesis-researcher"},
+                "parts": [
+                    {
+                        "tool": DISCOVERY_TOOL,
+                        "state": {
+                            "status": "completed",
+                            "time": {"compacted": 123},
+                            "input": {"checkpoint": checkpoint.model_dump()},
+                            "output": json.dumps(
+                                await research_thesis_discovery(checkpoint)
+                            ),
+                        },
+                    }
+                ],
+            }
+        )
+    rows = research_notebook([], children, entities=["network"])["cases"]
+    assert rows[0]["instruments"] == ["NETWORK-USDC", "network-solana"]
+    assert {r["session_id"] for r in rows[0]["records"]} == {"a", "b"}
+    assert all(
+        r["checkpoint"]["research_cases"][0]["case_basis"] == "narrative"
+        for r in checkpoints(children)
+    )
+    page = research_notebook(
+        [], children, entities=["network", "missing"], fields=["sources"], limit=1
+    )
+    assert page["missing"] == ["missing"]
+    assert page["cases"][0]["record_count"] == 4
+    assert page["cases"][0]["next_offset"] == 1
+    assert set(page["cases"][0]["records"][0]["case"]) == {"sources"}
+    with pytest.raises(ValueError, match="fields"):
+        research_notebook([], children, fields=["invented"])

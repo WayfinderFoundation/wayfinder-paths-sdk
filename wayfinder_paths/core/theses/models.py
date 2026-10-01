@@ -102,3 +102,10 @@ class Proposal(Contract):
         if any(p.component_id not in ids for v in self.variants for p in v.positions):
             raise ValueError("Unknown thesis component")
         return self
+
+
+class PortfolioSections(Contract):
+    """Validated sections for diagnostics, never a publishable proposal."""
+
+    components: list[Component] = []
+    variants: list[Variant] = []

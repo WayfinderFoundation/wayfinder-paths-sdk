@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from math import isfinite
 from typing import Any
 
-from wayfinder_paths.core.theses.models import Position, Proposal
+from wayfinder_paths.core.theses.models import PortfolioSections, Position, Proposal
 from wayfinder_paths.mcp.polymarket_summary import (
     compact_market_candidate,
     compact_order_book,
@@ -158,7 +158,9 @@ def research_evidence(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def missing_source_reads(proposal: Proposal, evidence: dict[str, Any]) -> list[str]:
+def missing_source_reads(
+    proposal: Proposal | PortfolioSections, evidence: dict[str, Any]
+) -> list[str]:
     """A cited source was read, not a certification of its truth or relevance."""
     # Match citations against independently fetched URLs, allowing display-only
     # omission of the scheme/trailing slash without accepting a different page.
@@ -185,7 +187,10 @@ def missing_source_reads(proposal: Proposal, evidence: dict[str, Any]) -> list[s
 
 
 def validate_market_capacity(
-    proposal: Proposal, evidence: dict[str, Any], *, screen_capacity: bool = True
+    proposal: Proposal | PortfolioSections,
+    evidence: dict[str, Any],
+    *,
+    screen_capacity: bool = True,
 ) -> None:
     """Validate identity; optionally enforce the legacy conservative sizing screen.
 
@@ -310,7 +315,7 @@ def _validate_position_capacity(
         )
 
 
-def validate_full_allocation(proposal: Proposal) -> None:
+def validate_full_allocation(proposal: Proposal | PortfolioSections) -> None:
     """New invested targets are fully allocated; legacy empty failure stays readable."""
     for variant in proposal.variants:
         if variant.positions and variant.cash_bps:

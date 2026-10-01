@@ -55,25 +55,39 @@ class DiscoveryDisposition(Contract):
         return self
 
 
-class CandidateCase(Discovery):
+CaseBasis = Literal["economic", "narrative", "mixed", "hedge", "event"]
+
+
+class CaseResearch(Discovery):
     effect_order: Literal[1, 2, 3]
     value_capture: Text
     support: Text
     counterevidence: Text
     closest_alternative: Text
+    gaps: Annotated[list[Text], Field(max_length=6)]
+
+
+class ResearchCase(CaseResearch):
+    """A ranked comparison, not the parent's investment decision."""
+
+    case_basis: CaseBasis
+
+
+class CandidateCase(CaseResearch):
     decision: Literal["KEEP", "ALTERNATIVE", "REJECT", "NEEDS_EVIDENCE"]
     reason: Text
-    gaps: Annotated[list[Text], Field(max_length=6)]
     decision_basis: (
         Literal["economic", "implementation", "portfolio", "unresolved"] | None
     ) = None
     implementation_checks: Annotated[
         list[ImplementationCheck], Field(max_length=12)
     ] = []
+    # Historical receipts predate an explicit investment basis.
+    case_basis: CaseBasis | None = None
 
 
 class ResearchCheckpoint(Contract):
-    schema_version: Literal[1, 2] = 1
+    schema_version: Literal[1, 2, 3] = 1
     stage: Literal["interpretation", "discovery", "provisional", "judged"]
     spec: ThesisSpec
     discoveries: Annotated[list[Discovery], Field(max_length=120)] = []
@@ -82,6 +96,7 @@ class ResearchCheckpoint(Contract):
     ] = []
     candidates: Annotated[list[CandidateCase], Field(max_length=120)] = []
     proposal: Proposal | None = None
+    research_cases: Annotated[list[ResearchCase], Field(max_length=10)] = []
 
     @model_validator(mode="after")
     def validate_checkpoint(self) -> Self:
@@ -93,12 +108,14 @@ class ResearchCheckpoint(Contract):
         ]
         if len(dispositions) != len(set(dispositions)):
             raise ValueError("Each discovery key has one disposition")
-        if self.schema_version == 2 and self.stage == "judged":
+        if self.schema_version >= 2 and self.stage == "judged":
             if not self.candidates and not self.discovery_dispositions:
                 raise ValueError(
                     "A judged checkpoint must retain the assessment ledger or update dispositions"
                 )
             for case in self.candidates:
+                if self.schema_version == 3 and case.case_basis is None:
+                    raise ValueError(f"{case.entity}: specify case_basis")
                 if case.decision_basis is None:
                     raise ValueError(
                         f"{case.entity}: specify the exposure decision_basis"
@@ -141,3 +158,13 @@ class ResearchCheckpoint(Contract):
         if self.proposal is not None:
             validate_full_allocation(self.proposal)
         return self
+
+
+class DiscoveryCheckpoint(Contract):
+    """Separate worker input: judgments/portfolios are structurally impossible."""
+
+    schema_version: Literal[3] = 3
+    stage: Literal["discovery"] = "discovery"
+    spec: ThesisSpec
+    discoveries: Annotated[list[Discovery], Field(max_length=120)] = []
+    research_cases: Annotated[list[ResearchCase], Field(max_length=10)] = []

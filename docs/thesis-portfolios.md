@@ -32,6 +32,20 @@ the existing OpenCode transcript stores the input. The parent alone has permissi
 to use it in the thesis workflow. Checkpoint assertions never enter
 `RESEARCH_EVIDENCE_TOOLS` and cannot certify identity, source reads or quantification.
 
+V3 researchers use `research_thesis_discovery`, whose input cannot contain a
+portfolio or parent judgment. They record the broad discovery inbox plus up to
+ten ranked `research_cases` per call, without a minimum count. Cases identify an
+economic, narrative, mixed, hedge or event basis. The parent must assess every
+ranked case and final holding; other leads remain explicitly unassessed.
+Category membership is a lead, not a selection reason. Narrative cases require
+dated attention/capital-flow or catalyst evidence, comparison and invalidation.
+
+The harness's `thesis_notebook` tool reads only its runtime-derived parent/child
+session tree and invokes the SDK's `research_notebook` projection. It returns a
+paginated compact index or original cases by exact entity keys, preserving
+implementations and provenance. It writes no second ledger or trace files.
+Legacy v1/v2 checkpoint receipts remain readable with their original semantics.
+
 New-target validation calls `validate_market_capacity(..., screen_capacity=False)`:
 exact identity, duplicate-alias and outcome checks remain hard requirements.
 Selected-pool reserves/turnover and compact order-book percentages are screening
