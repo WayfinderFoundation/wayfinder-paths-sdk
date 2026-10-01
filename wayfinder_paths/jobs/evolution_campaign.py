@@ -1290,7 +1290,9 @@ SIGNAL_RECIPE_NOTES = (
     "it in precompute() with compile_signal_expression and pass the def "
     "object to library_signal_on_bars. Import both with: from "
     "wayfinder_paths.jobs.signal_library import compile_signal_expression, "
-    "library_signal_on_bars."
+    "library_signal_on_bars. window_coverage_28d is the share of 28-day "
+    "windows with 3+ events: under about 0.6 the trigger fires in bursts and "
+    "a book on it alone sits idle through most probation windows."
 )
 
 
@@ -1320,6 +1322,7 @@ _PACK_SIGNAL_KEYS = (
     "edge_net_maker_bps",
     "execution_hint",
     "events",
+    "window_coverage_28d",
     "expression",
     "min_bars",
     "source",
@@ -1852,6 +1855,7 @@ def _select_validated_rows(
             "execution_hint": hint,
             "events": events,
             "events_per_day": round(density, 3),
+            "window_coverage_28d": row.get("window_coverage_28d"),
             "folds_agreeing": row.get("folds_agreeing"),
             "t_stat_by_slice": {
                 label: round(value, 3) for label, value in slice_t.items()
