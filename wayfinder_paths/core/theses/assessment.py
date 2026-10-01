@@ -40,21 +40,24 @@ def checkpoints(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 continue
             receipt = output.get("result")
             digests = {
-                hashlib.sha256(checkpoint.model_dump_json().encode()).hexdigest()
+                hashlib.sha256(checkpoint.model_dump_json().encode()).hexdigest(),
+                hashlib.sha256(checkpoint.receipt_json().encode()).hexdigest(),
             }
             # Read v2 receipts issued before compact dispositions were added.
             if "discovery_dispositions" not in state["input"]["checkpoint"]:
                 digests.add(
                     hashlib.sha256(
                         checkpoint.model_dump_json(
-                            exclude={"discovery_dispositions"}
+                            exclude={"discovery_dispositions", "construction", "draft"}
                         ).encode()
                     ).hexdigest()
                 )
             if checkpoint.schema_version < 3:
                 # Preserve byte ordering of receipts issued before ResearchCase
                 # was extracted. Never use raw, unvalidated input as a digest.
-                legacy = checkpoint.model_dump(mode="json", exclude={"research_cases"})
+                legacy = checkpoint.model_dump(
+                    mode="json", exclude={"research_cases", "construction", "draft"}
+                )
                 fields = (
                     "entity",
                     "name",
@@ -182,7 +185,7 @@ def assessment_report(
     }
     required = (
         ranked
-        if any(r["checkpoint"]["schema_version"] == 3 for r in parent)
+        if any(r["checkpoint"]["schema_version"] >= 3 for r in parent)
         else {d["entity"].casefold() for d in discoveries}
     )
     # Union all snapshots; a later shorter/empty ledger cannot erase discoveries.
@@ -395,4 +398,17 @@ if __name__ == "__main__":
     import sys
 
     request = json.load(sys.stdin)
-    print(json.dumps(research_notebook(**request)))
+    view = request.pop("view", "cases")
+    if view in {"status", "draft"}:
+        from wayfinder_paths.core.theses.draft import draft_status
+
+        result = draft_status(
+            request["parent_messages"],
+            request["child_messages"],
+            include_proposal=view == "draft",
+        )
+    elif view == "cases":
+        result = research_notebook(**request)
+    else:
+        raise ValueError("Unknown notebook view")
+    print(json.dumps(result))

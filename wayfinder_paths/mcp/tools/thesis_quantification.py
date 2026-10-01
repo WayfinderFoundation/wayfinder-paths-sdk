@@ -13,8 +13,9 @@ from requests import RequestException
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
 from wayfinder_paths.core.clients.HyperliquidDataClient import HYPERLIQUID_DATA_CLIENT
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
-from wayfinder_paths.core.theses.models import Position, Variant
+from wayfinder_paths.core.theses.models import Construction, Position, Variant
 from wayfinder_paths.core.theses.quantification import DAY_MS, quantify_variants
+from wayfinder_paths.core.theses.sizing import size_variant
 from wayfinder_paths.mcp.polymarket_summary import (
     compact_market_candidate,
     compact_order_book,
@@ -165,9 +166,14 @@ async def _read_market(position: Position, start: int, end: int) -> dict[str, An
 async def research_quantify_portfolio(
     variants: Annotated[list[Variant], Field(min_length=1, max_length=4)],
     lookback_days: Annotated[int, Field(ge=14, le=90)] = 90,
+    construction: Construction | None = None,
 ) -> dict:
     """Measure draft portfolios before final sizing; reuse the returned metrics in review.
 
+    Supply the frozen construction to size matched-relative dollar exposure in
+    code before measuring it. Reuse the returned sized_variants exactly in draft
+    checkpoints and update prose for changed weights. No holdings or leverage are
+    added/removed; missing hedge or infeasible minimums require parent correction.
     Submit the proposal's variants (one per distinct allocation suffices). Resolves
     lookup IDs internally and shares price/funding reads across all budgets.
     Returns historical returns, volatility, drawdowns, aligned correlations,
@@ -178,6 +184,9 @@ async def research_quantify_portfolio(
     """
     # Direct Python callers need the same validation as MCP's generated schema.
     variants = [Variant.model_validate(v) for v in variants]
+    if construction is not None:
+        construction = Construction.model_validate(construction)
+        variants = [size_variant(v, construction) for v in variants]
     if not 1 <= len(variants) <= 4 or not 14 <= lookback_days <= 90:
         raise ValueError("Use 1–4 variants and 14–90 days")
     positions = {p.instrument_id: p for v in variants for p in v.positions}
@@ -231,11 +240,16 @@ async def research_quantify_portfolio(
     markets = dict(await asyncio.gather(*(read(p) for p in positions.values())))
     return ok(
         {
+            **(
+                {"sized_variants": [v.model_dump(mode="json") for v in variants]}
+                if construction is not None
+                else {}
+            ),
             "portfolio_quantification": {
                 "as_of_ms": as_of,
                 "start_ms": start,
                 "end_ms": end,
                 **quantify_variants(variants, markets),
-            }
+            },
         }
     )

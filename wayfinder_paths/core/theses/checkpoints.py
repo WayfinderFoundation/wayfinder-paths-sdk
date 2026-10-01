@@ -4,8 +4,16 @@ from typing import Annotated, Literal, Self
 
 from pydantic import Field, model_validator
 
-from wayfinder_paths.core.theses.models import Contract, Identifier, Proposal, Text
+from wayfinder_paths.core.theses.models import (
+    Construction,
+    Contract,
+    DraftUpdate,
+    Identifier,
+    Proposal,
+    Text,
+)
 from wayfinder_paths.core.theses.research import validate_full_allocation
+from wayfinder_paths.core.theses.sizing import construction_errors
 
 
 class ThesisSpec(Contract):
@@ -87,9 +95,9 @@ class CandidateCase(CaseResearch):
 
 
 class ResearchCheckpoint(Contract):
-    schema_version: Literal[1, 2, 3] = 1
-    stage: Literal["interpretation", "discovery", "provisional", "judged"]
-    spec: ThesisSpec
+    schema_version: Literal[1, 2, 3, 4] = 1
+    stage: Literal["interpretation", "discovery", "provisional", "judged", "draft"]
+    spec: ThesisSpec | None = None
     discoveries: Annotated[list[Discovery], Field(max_length=120)] = []
     discovery_dispositions: Annotated[
         list[DiscoveryDisposition], Field(max_length=480)
@@ -97,10 +105,49 @@ class ResearchCheckpoint(Contract):
     candidates: Annotated[list[CandidateCase], Field(max_length=120)] = []
     proposal: Proposal | None = None
     research_cases: Annotated[list[ResearchCase], Field(max_length=10)] = []
+    construction: Construction | None = None
+    draft: DraftUpdate | None = None
+
+    def receipt_json(self) -> str:
+        # Preserve bytes of v3 receipts; v1/v2 compatibility lives in the reader.
+        return self.model_dump_json(
+            exclude={"construction", "draft"} if self.schema_version < 4 else set()
+        )
 
     @model_validator(mode="after")
     def validate_checkpoint(self) -> Self:
         errors = []
+        if self.spec is None and (
+            self.schema_version < 4 or self.stage == "interpretation"
+        ):
+            errors.append("An interpretation (and legacy checkpoint) requires spec")
+        if self.schema_version < 4 and (
+            self.construction is not None
+            or self.draft is not None
+            or self.stage == "draft"
+        ):
+            errors.append(
+                "Construction and incremental drafts require schema_version=4"
+            )
+        if self.schema_version == 4:
+            if self.stage != "discovery" and self.construction is None:
+                errors.append("Parent checkpoints require the inferred construction")
+            if (self.stage == "draft") != (self.draft is not None):
+                errors.append("Only draft checkpoints contain a draft update")
+            if self.stage == "draft" and self.proposal is not None:
+                errors.append("Record a small draft update, not a complete proposal")
+            if self.draft and self.construction:
+                if (
+                    self.draft.metadata
+                    and self.draft.metadata.intent != self.construction.intent
+                ):
+                    errors.append(
+                        "Proposal intent conflicts with the inferred construction"
+                    )
+                if self.draft.variant:
+                    errors.extend(
+                        construction_errors(self.draft.variant, self.construction)
+                    )
         entities = [case.entity.casefold() for case in self.candidates]
         if len(set(entities)) != len(entities):
             errors.append("Group implementations of the same economic entity")
@@ -115,7 +162,7 @@ class ResearchCheckpoint(Contract):
                     "A judged checkpoint must retain the assessment ledger or update dispositions"
                 )
             for case in self.candidates:
-                if self.schema_version == 3 and case.case_basis is None:
+                if self.schema_version >= 3 and case.case_basis is None:
                     errors.append(f"{case.entity}: specify case_basis")
                 if case.decision_basis is None:
                     errors.append(f"{case.entity}: specify the exposure decision_basis")
@@ -153,6 +200,13 @@ class ResearchCheckpoint(Contract):
         ):
             errors.append("Not constructed is not a provisional investment portfolio")
         if self.proposal is not None:
+            if self.construction:
+                for variant in self.proposal.variants:
+                    errors.extend(
+                        construction_errors(
+                            variant, self.construction, intent=self.proposal.intent
+                        )
+                    )
             try:
                 validate_full_allocation(self.proposal)
             except ValueError as exc:

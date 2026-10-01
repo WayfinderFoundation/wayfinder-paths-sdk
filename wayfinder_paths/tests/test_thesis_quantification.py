@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from wayfinder_paths.core.clients.TokenClient import TokenClient
-from wayfinder_paths.core.theses.models import Position, Variant
+from wayfinder_paths.core.theses.models import Construction, Position, Variant
 from wayfinder_paths.core.theses.quantification import (
     DAY_MS,
     allocation_key,
@@ -184,6 +184,40 @@ async def test_batch_shares_market_reads_across_all_budgets_and_returns_observed
         allocation_key(drafts[0])
     }
     assert report["assets"]["BTC-USDC"]["coverage_fraction"] == pytest.approx(2 / 90)
+
+
+@pytest.mark.asyncio
+async def test_construction_sizes_before_measuring_and_returns_exact_draft():
+    long = variant(instrument_id="AI-USDC", capital_bps=7000).positions[0]
+    short = variant(direction="short", capital_bps=3000).positions[0]
+    short = short.model_copy(update={"id": "benchmark"})
+    draft = Variant(
+        budget_usd=100, cash_bps=0, rationale="Fixture", positions=[long, short]
+    )
+    construction = Construction(
+        mode="matched_relative",
+        benchmark="Bitcoin",
+        benchmark_direction="short",
+        benchmark_instrument_id="BTC-USDC",
+    )
+    with (
+        patch.object(
+            tool,
+            "_read_market",
+            AsyncMock(return_value={"prices": {0: 100, DAY_MS: 110}}),
+        ) as read,
+        patch("wayfinder_paths.mcp.utils._report_tool_metric"),
+    ):
+        result = await tool.research_quantify_portfolio(
+            [draft], construction=construction
+        )
+    assert result["ok"]
+    assert read.await_count == 2
+    sized = Variant.model_validate(result["result"]["sized_variants"][0])
+    assert [p.capital_bps for p in sized.positions] == [5000, 5000]
+    report = result["result"]["portfolio_quantification"]["portfolios"][0]
+    assert report["allocation_key"] == allocation_key(sized)
+    assert report["metrics"]["price_return"] == pytest.approx(0)
 
 
 @pytest.mark.asyncio

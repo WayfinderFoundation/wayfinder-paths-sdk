@@ -364,7 +364,7 @@ def test_v2_receipts_before_dispositions_remain_readable(spec: dict[str, Any]) -
             "result": {
                 "sha256": hashlib.sha256(
                     checkpoint.model_dump_json(
-                        exclude={"discovery_dispositions"}
+                        exclude={"discovery_dispositions", "construction", "draft"}
                     ).encode()
                 ).hexdigest(),
             },

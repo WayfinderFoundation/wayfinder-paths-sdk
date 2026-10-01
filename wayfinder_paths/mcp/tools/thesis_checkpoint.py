@@ -13,8 +13,11 @@ from wayfinder_paths.mcp.utils import catch_errors, ok
 async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     """Record typed research progress, NOT verified evidence or execution approval.
 
-    Parent only; use schema_version=3. Submit interpretation, discoveries,
-    provisional draft and judged ledger. Assess every ranked research case and
+    Parent only; use schema_version=4 and an inferred construction. Record the
+    interpretation, then small draft updates (metadata/components or ONE variant)
+    and incremental judgments. Use thesis_notebook(view="status") before finishing
+    with its proposal_ref; no complete portfolio JSON rewrite is required.
+    Assess every ranked research case and
     final holding; unranked leads remain visible without invented dispositions.
     Use discovery_dispositions to link differing worker entity keys to assessed
     candidate_entity keys, or briefly mark unranked leads out_of_scope/needs_evidence.
@@ -30,7 +33,7 @@ async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     return ok(
         {
             "stage": checkpoint.stage,
-            "sha256": hashlib.sha256(checkpoint.model_dump_json().encode()).hexdigest(),
+            "sha256": hashlib.sha256(checkpoint.receipt_json().encode()).hexdigest(),
             "candidate_count": len(checkpoint.candidates),
             "discovery_count": len(checkpoint.discoveries),
             "execution_authorized": False,

@@ -16,6 +16,32 @@ class Contract(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False, frozen=True)
 
 
+class Construction(Contract):
+    """Agent-inferred objective, not an evaluator-supplied asset hint."""
+
+    mode: Literal["directional", "matched_relative"]
+    benchmark: Text | None = None
+    benchmark_instrument_id: Identifier | None = None
+    benchmark_direction: Literal["long", "short"] | None = None
+
+    @model_validator(mode="after")
+    def validate_benchmark(self) -> Self:
+        if self.mode == "directional":
+            if any(
+                (self.benchmark, self.benchmark_instrument_id, self.benchmark_direction)
+            ):
+                raise ValueError("Directional construction has no benchmark leg")
+        elif not self.benchmark or not self.benchmark_direction:
+            raise ValueError(
+                "Relative construction requires a named benchmark and direction"
+            )
+        return self
+
+    @property
+    def intent(self) -> Literal["absolute", "relative"]:
+        return "relative" if self.mode == "matched_relative" else "absolute"
+
+
 class Component(Contract):
     id: Identifier
     title: Annotated[str, Field(min_length=1, max_length=120)]
@@ -81,12 +107,15 @@ class Variant(Contract):
         return self
 
 
-class Proposal(Contract):
+class ProposalMetadata(Contract):
     schema_version: Literal[1] = 1
     title: Annotated[str, Field(min_length=1, max_length=120)]
     interpretation: Text
     intent: Literal["absolute", "relative"]
     assumptions: Annotated[list[Text], Field(min_length=1, max_length=8)]
+
+
+class Proposal(ProposalMetadata):
     components: Annotated[list[Component], Field(min_length=1, max_length=8)]
     variants: Annotated[list[Variant], Field(min_length=4, max_length=4)]
 
@@ -109,3 +138,25 @@ class PortfolioSections(Contract):
 
     components: list[Component] = []
     variants: list[Variant] = []
+
+
+class DraftUpdate(Contract):
+    """Small parent-only updates; the transcript remains the sole draft store."""
+
+    metadata: ProposalMetadata | None = None
+    components: Annotated[list[Component], Field(max_length=8)] = []
+    remove_components: Annotated[list[Identifier], Field(max_length=8)] = []
+    variant: Variant | None = None
+
+    @model_validator(mode="after")
+    def validate_update(self) -> Self:
+        if not (
+            self.metadata or self.components or self.remove_components or self.variant
+        ):
+            raise ValueError("Provide metadata, components or one budget variant")
+        ids = [c.id for c in self.components]
+        if len(set(ids)) != len(ids) or set(ids) & set(self.remove_components):
+            raise ValueError(
+                "Update each component once; do not update and remove it together"
+            )
+        return self
