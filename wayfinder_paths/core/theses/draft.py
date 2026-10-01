@@ -144,11 +144,18 @@ def draft_context(
         for key in d["entities"]
     }
     reviewed |= {links[key] for key in reviewed if key in links}
-    selected = {p["instrument_id"] for v in variants.values() for p in v["positions"]}
+    identities = {
+        key: token["token_id"] for key, token in evidence["onchain_tokens"].items()
+    }
+    selected = {
+        identities.get(p["instrument_id"], p["instrument_id"])
+        for v in variants.values()
+        for p in v["positions"]
+    }
     unread = sorted(
         key
         for key, case in cases.items()
-        if set(case["instruments"]) & selected
+        if {identities.get(i, i) for i in case["instruments"]} & selected
         and case["decision"] == "KEEP"
         and key not in reviewed
     )

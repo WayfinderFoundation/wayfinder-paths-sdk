@@ -268,6 +268,33 @@ def test_index_only_review_does_not_pass(run):
     assert status["review"]["unread_selected"] == ["bitcoin"]
 
 
+@pytest.mark.parametrize("read_case", [True, False])
+def test_review_coverage_follows_observed_lookup_aliases(run, read_case):
+    parent, child = run
+    case = deepcopy(checkpoints(parent)[-1]["checkpoint"])
+    case["candidates"][0]["instruments"] = ["bitcoin-provider-id"]
+    parent.append(receipt(case, 11))
+    parent.append(
+        observation(
+            "wayfinder_onchain_resolve_token",
+            {
+                "token_id": "BTC-USDC",
+                "lookup_id": "bitcoin-provider-id",
+                "address": "0xabc",
+                "chain": {"id": 1, "code": "ethereum"},
+            },
+            12,
+        )
+    )
+    if not read_case:
+        child[0]["parts"][0]["state"]["output"] = json.dumps(
+            research_notebook(parent, [])
+        )
+    status = draft_status(parent, child)
+    assert status["ready"] is read_case
+    assert status["review"]["unread_selected"] == ([] if read_case else ["bitcoin"])
+
+
 def test_construction_cannot_drift_but_can_be_restored(run):
     parent, child = run
     base = {
