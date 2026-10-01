@@ -393,3 +393,57 @@ def test_implementation_reason_does_not_require_duplicate_observation_prose(
         del check["observations"]
     parent = record(spec, "judged", candidates=[case])
     assert not assessment_report([parent, observed()], [])["errors"]
+
+
+def test_judgment_corrections_upsert_without_erasing_earlier_alias_links(
+    spec: dict[str, Any],
+    discovery: dict[str, Any],
+    case: dict[str, Any],
+) -> None:
+    child = record(
+        spec, "discovery", discoveries=[{**discovery, "entity": "worker-alias"}]
+    )
+    first = record(
+        spec,
+        "judged",
+        candidates=[case],
+        dispositions=[
+            {
+                "entities": ["worker-alias"],
+                "status": "assessed",
+                "candidate_entity": "network",
+                "reason": "Same network",
+            }
+        ],
+    )
+    update = record(
+        spec,
+        "judged",
+        candidates=[{**case, "decision": "KEEP", "decision_basis": "economic"}],
+    )
+    links_only = record(
+        spec,
+        "judged",
+        dispositions=[
+            {
+                "entities": ["other-lead"],
+                "status": "needs_evidence",
+                "reason": "Uninvestigated",
+            }
+        ],
+    )
+    report = assessment_report([first, update, links_only, observed()], [child])
+    assert not report["errors"]
+    assert report["assessed_entities"] == 1
+    assert report["kept_instruments"] == ["NETWORK-USDC", "network-solana"]
+
+
+def test_unselected_unresolved_comparison_is_a_warning_not_forced_hydration(
+    spec: dict[str, Any],
+    case: dict[str, Any],
+) -> None:
+    case.update(decision="NEEDS_EVIDENCE", decision_basis="unresolved")
+    parent = record(spec, "judged", candidates=[case])
+    report = assessment_report([parent], [])
+    assert not report["errors"]
+    assert len(report["unobserved_comparison_claims"]) == 2

@@ -162,6 +162,32 @@ def test_source_reads_only_require_invested_components(proposal: Proposal) -> No
     assert missing_source_reads(proposal, {}) == []
 
 
+@pytest.mark.parametrize(
+    ("citation", "fetched", "accepted"),
+    [
+        ("revenue.near.org confirms revenue", "https://revenue.near.org/", True),
+        ("venice.ai/lp/vvv returned text", "https://venice.ai/lp/vvv", True),
+        ("[source](https://example.com/path/)", "https://example.com/path", True),
+        ("example.com.evil/path", "https://example.com", False),
+        ("https://evil.com/example.com", "https://example.com", False),
+        ("user@example.com", "https://example.com", False),
+        ("sub.example.com", "https://example.com", False),
+        ("example.com/unread", "https://example.com", False),
+        ("example.com/path-extra", "https://example.com/path", False),
+        ("example.com/path?unread=yes", "https://example.com/path", False),
+        ("example.com", "https://other.com", False),
+    ],
+)
+def test_source_citation_display_format(
+    proposal: Proposal, citation: str, fetched: str, accepted: bool
+) -> None:
+    component = proposal.components[0].model_copy(update={"evidence": [citation]})
+    proposal = proposal.model_copy(update={"components": [component]})
+    assert missing_source_reads(proposal, {"fetched_urls": [fetched]}) == (
+        [] if accepted else ["policy"]
+    )
+
+
 def test_later_closed_market_invalidates_outcome() -> None:
     candidate = {"tradable": True, "outcomes": [{"label": "No", "tokenId": "123"}]}
     evidence = research_evidence(

@@ -17,6 +17,8 @@ async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     Use discovery_dispositions to link differing worker entity keys to assessed
     candidate_entity keys, or briefly mark unranked leads out_of_scope/needs_evidence.
     Do not duplicate full candidate essays for the entire discovery inbox.
+    Later judged checkpoints upsert cases and dispositions by entity key; send
+    changed entries without repeating unchanged ones. Omission never deletes them.
     Implementation-driven exclusions must compare known alternatives, including
     spot versus perp where applicable, instead of rejecting the whole exposure.
     Inputs remain agent assertions: only independent public tool reads verify them.

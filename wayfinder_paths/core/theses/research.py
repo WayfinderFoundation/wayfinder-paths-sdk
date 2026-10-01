@@ -160,15 +160,26 @@ def research_evidence(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
 
 def missing_source_reads(proposal: Proposal, evidence: dict[str, Any]) -> list[str]:
     """A cited source was read, not a certification of its truth or relevance."""
-    fetched_urls = set(evidence.get("fetched_urls", []))
+    # Match citations against independently fetched URLs, allowing display-only
+    # omission of the scheme/trailing slash without accepting a different page.
+    fetched_sources = [
+        re.compile(
+            r"(?<![\w./:@%-])(?:https?://)?"
+            + re.escape(re.sub(r"^https?://", "", url).rstrip("/"))
+            + r"/?(?=$|[\s<>\]\),;])"
+        )
+        for url in set(evidence.get("fetched_urls", []))
+        if url.startswith(("https://", "http://"))
+    ]
     invested = {p.component_id for v in proposal.variants for p in v.positions}
     return [
         c.id
         for c in proposal.components
         if c.id in invested
         and not any(
-            set(re.findall(r"https?://[^\s<>\])]+", citation)) & fetched_urls
+            source.search(citation)
             for citation in c.evidence
+            for source in fetched_sources
         )
     ]
 

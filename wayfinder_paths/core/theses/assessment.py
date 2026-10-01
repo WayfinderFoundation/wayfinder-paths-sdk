@@ -106,22 +106,25 @@ def assessment_report(
             errors.append(
                 f"Research child {session_id} did not record its discovery inventory"
             )
-    judged = next(
-        (
-            r["checkpoint"]
-            for r in reversed(parent)
-            if r["checkpoint"]["stage"] == "judged"
-            and r["checkpoint"]["schema_version"] == 2
-        ),
-        None,
-    )
-    cases = judged["candidates"] if judged else []
+    judgments = [
+        r["checkpoint"]
+        for r in parent
+        if r["checkpoint"]["stage"] == "judged"
+        and r["checkpoint"]["schema_version"] == 2
+    ]
+    # Checkpoints are an append-only transcript. Corrections upsert by key;
+    # omitting an unchanged case/link cannot erase its earlier assessment.
+    case_by_entity = {
+        case["entity"].casefold(): case for j in judgments for case in j["candidates"]
+    }
+    cases = list(case_by_entity.values())
     dispositions = {
         entity.casefold(): d
-        for d in (judged or {}).get("discovery_dispositions", [])
+        for j in judgments
+        for d in j["discovery_dispositions"]
         for entity in d["entities"]
     }
-    if judged is None:
+    if not cases:
         errors.append(
             "Record a v2 judged checkpoint with the complete candidate ledger"
         )
@@ -135,7 +138,6 @@ def assessment_report(
     unobserved_instruments = set()
     deferred: set[str] = set()
     excluded: set[str] = set()
-    case_by_entity = {c["entity"].casefold(): c for c in cases}
     for disposition in dispositions.values():
         if (
             disposition["status"] == "assessed"
@@ -188,14 +190,22 @@ def assessment_report(
                 )
     if missing:
         errors.append("Discoveries missing assessment: " + ", ".join(sorted(missing)))
+    unobserved_comparisons = []
     for case in cases:
         for check in case["implementation_checks"]:
             if check["status"] in {"viable", "rejected"} and not any(
                 check["instrument_id"].casefold() in output for output in outputs
             ):
-                errors.append(
-                    f"{case['entity']}: compared implementation ID was not observed in successful public reads"
+                unobserved_comparisons.append(
+                    {"entity": case["entity"], "instrument_id": check["instrument_id"]}
                 )
+                if case["decision_basis"] == "implementation" and case["decision"] in {
+                    "REJECT",
+                    "ALTERNATIVE",
+                }:
+                    errors.append(
+                        f"{case['entity']}: compared implementation ID was not observed in successful public reads"
+                    )
     return {
         "errors": list(dict.fromkeys(errors)),
         "discovery_keys": len({d["entity"].casefold() for d in discoveries}),
@@ -210,6 +220,7 @@ def assessment_report(
         ),
         "missing_entities": sorted(missing),
         "unobserved_instrument_claims": sorted(unobserved_instruments),
+        "unobserved_comparison_claims": unobserved_comparisons,
         "deferred_discoveries": sorted(deferred),
         "out_of_scope_discoveries": sorted(excluded),
         "unresolved_entities": [

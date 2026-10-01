@@ -94,9 +94,9 @@ class ResearchCheckpoint(Contract):
         if len(dispositions) != len(set(dispositions)):
             raise ValueError("Each discovery key has one disposition")
         if self.schema_version == 2 and self.stage == "judged":
-            if not self.candidates:
+            if not self.candidates and not self.discovery_dispositions:
                 raise ValueError(
-                    "A judged checkpoint must retain the assessment ledger"
+                    "A judged checkpoint must retain the assessment ledger or update dispositions"
                 )
             for case in self.candidates:
                 if case.decision_basis is None:
