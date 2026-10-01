@@ -112,6 +112,20 @@ def quantify_variants(variants: list[Variant], markets: dict[str, dict]) -> dict
                     p.capital_bps for p in legs if p.kind == "prediction"
                 ),
                 "metrics": price_metrics(equity),
+                "risk_warnings": (
+                    [
+                        "Independent per-leg stops do not preserve a matched-relative payoff. "
+                        "Equal stop percentages do not synchronize exits: in a broad drawdown, "
+                        "a long can stop while a profitable benchmark short remains open. "
+                        "A coordinated unwind is a separate execution requirement, not implemented "
+                        "or simulated by these diagnostics; no atomic exit is guaranteed.",
+                        "Matched dollar notionals are not verified beta neutrality. "
+                        "Do not claim all broad-market sensitivity has been removed.",
+                    ]
+                    if {"long", "short"} <= {p.direction for p in legs}
+                    and any(p.stop_loss_pct is not None for p in legs)
+                    else []
+                ),
                 "missing_history": [
                     p.instrument_id
                     for p, series in zip(legs, prices, strict=True)

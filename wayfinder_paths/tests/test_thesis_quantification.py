@@ -92,6 +92,38 @@ def test_no_shares_are_not_a_short_of_yes():
     assert portfolio["prediction_capital_bps"] == 5000
 
 
+@pytest.mark.parametrize("short_stop", [0.3, 0.5])
+def test_equal_or_unequal_leg_stops_do_not_claim_a_coordinated_relative_exit(
+    short_stop: float,
+) -> None:
+    draft = variant(stop_loss_pct=0.5)
+    short = variant(
+        id="benchmark",
+        instrument_id="OTHER-USDC",
+        direction="short",
+        stop_loss_pct=short_stop,
+    ).positions[0]
+    draft = draft.model_copy(
+        update={"positions": [*draft.positions, short], "cash_bps": 0}
+    )
+    markets = {
+        "BTC-USDC": {"prices": {0: 100, DAY_MS: 40}},
+        "OTHER-USDC": {"prices": {0: 100, DAY_MS: 80}},
+    }
+    portfolio = quantify_variants([draft], markets)["portfolios"][0]
+    # Un-stopped price P&L is still measured. A long loss does not stop a winning short.
+    assert portfolio["metrics"]["price_return"] == pytest.approx(-0.2)
+    assert (
+        "Equal stop percentages do not synchronize exits"
+        in portfolio["risk_warnings"][0]
+    )
+    assert "not verified beta neutrality" in portfolio["risk_warnings"][1]
+    long_only = quantify_variants([variant(stop_loss_pct=0.5)], markets)["portfolios"][
+        0
+    ]
+    assert long_only["risk_warnings"] == []
+
+
 def test_zero_outcome_is_a_real_loss_not_a_missing_price():
     draft = variant(kind="prediction", instrument_id="123", direction="no")
     result = quantify_variants([draft], {"123": {"prices": {0: 0.4, DAY_MS: 0}}})
