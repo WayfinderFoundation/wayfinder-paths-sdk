@@ -49,7 +49,7 @@ STARTER_LEVERAGE_DEFAULT = 1
 STARTER_LEVERAGE_MINIMUM = 1
 STARTER_LEVERAGE_MAXIMUM = 5
 STARTER_LEVERAGE_STEP = 1
-# Evidence-window owner policy: starter backtests/validation replay 120 days.
+# Evidence target, in addition to each strategy's indicator warmup history.
 STARTER_DATASET_DAYS = 120
 # Slack on top of the strategy's warmup gate so the live driver's sliding
 # window always clears warmup even when the feed drops a few leading bars.
@@ -1088,7 +1088,7 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
         params={
             "rsi_period": 7,
             "entry_rsi": 20.0,
-            "exit_rsi": 60.0,
+            "exit_rsi": 60,
             "trend_sma_period": 200,
             "volume_median_bars": 24,
             "volume_multiple": 1.0,
@@ -1211,7 +1211,7 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
         params={
             "rsi_period": 7,
             "entry_rsi": 20.0,
-            "exit_rsi": 60.0,
+            "exit_rsi": 60,
             "trend_sma_period": 200,
             "volume_median_bars": 24,
             "volume_multiple": 1.0,
@@ -2174,6 +2174,7 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
     ),
     StarterDefinition(
         id="diversified-funding-oi-divergence-taker-15m",
+        selectable=False,
         name="Diversified Funding / OI Divergence Taker · 15m",
         family="funding_divergence",
         summary=(
@@ -2276,7 +2277,9 @@ def get_starter(starter_id: str) -> StarterDefinition:
     raise KeyError(f"unknown starter strategy: {starter_id}")
 
 
-def _spawn_starter_dataset_fetch(store: JobStore, job_id: str) -> dict[str, Any]:
+def _spawn_starter_dataset_fetch(
+    store: JobStore, job_id: str, *, days: int = STARTER_DATASET_DAYS
+) -> dict[str, Any]:
     """Self-provision the starter's market dataset as a detached fetch.
 
     Launch stays fast (the child fetches bars minutes later into
@@ -2298,7 +2301,7 @@ def _spawn_starter_dataset_fetch(store: JobStore, job_id: str) -> dict[str, Any]
             "fetch_dataset",
             {
                 "job_id": job_id,
-                "days": STARTER_DATASET_DAYS,
+                "days": days,
                 "exchange": "hyperliquid",
                 "quote": "USDC",
                 "include_funding": True,
@@ -2318,11 +2321,11 @@ def _spawn_starter_dataset_fetch(store: JobStore, job_id: str) -> dict[str, Any]
             {
                 "type": "starter_dataset_fetch_spawned",
                 "op": "fetch_dataset",
-                "days": STARTER_DATASET_DAYS,
+                "days": days,
                 "pid": status.get("pid"),
             },
         )
-        return {"spawned": True, "days": STARTER_DATASET_DAYS, "pid": status.get("pid")}
+        return {"spawned": True, "days": days, "pid": status.get("pid")}
     except Exception as exc:  # noqa: BLE001 — never block or fail the launch
         try:
             store.append_journal(
@@ -2361,12 +2364,20 @@ def create_starter_job(
         recorded_evidence = store.read_json(
             existing.id, "results/backtest/starter_evidence.json", default=None
         )
-        starter_evidence = (
-            recorded_evidence
-            if isinstance(recorded_evidence, dict)
+        if (
+            isinstance(recorded_evidence, dict)
             and recorded_evidence.get("id") == definition.id
-            else definition.to_dict()
-        )
+        ):
+            starter_evidence = recorded_evidence
+        else:
+            # A legacy job without a saved card has no evidence tying it to
+            # today's revision. Do not give it today's performance numbers.
+            starter_evidence = definition.to_dict()
+            starter_evidence["params"] = copy.deepcopy(existing.execution_params)
+            starter_evidence["research_evidence"] = {
+                "status": "unavailable",
+                "reason": "This existing job has no recorded starter evidence card.",
+            }
         return {
             "created": False,
             "job": existing.to_dict(),
@@ -2429,6 +2440,20 @@ def create_starter_job(
             leverage=selected_leverage,
         ),
     }
+    # A fresh backtest must use the card's cost assumptions, not the generic
+    # harness's cheaper slippage default. Existing jobs return above unchanged.
+    costs = definition.research_evidence.get("costs", {})
+    job.execution_params["fee_bps"] = float(
+        costs.get("taker_fee_bps_per_side", job.execution_params["fee_bps"])
+    )
+    job.execution_params["slippage_bps"] = float(
+        costs.get(
+            "slippage_bps_per_side",
+            costs.get(
+                "taker_slippage_bps_per_side", job.execution_params["slippage_bps"]
+            ),
+        )
+    )
     job.controller["starter"] = {
         "id": definition.id,
         "catalog_version": STARTER_CATALOG_VERSION,
@@ -2470,5 +2495,11 @@ def create_starter_job(
 
         result["compile"] = JobCompiler(store=store).compile(job)
         sync_all_jobs(store=store)
-    result["dataset_fetch"] = _spawn_starter_dataset_fetch(store, job.id)
+    # Preserve 120 days of usable evidence after the strategy warms up.
+    dataset_days = STARTER_DATASET_DAYS + math.ceil(
+        job.execution_params["lookback_bars"] * interval_seconds / 86_400
+    )
+    result["dataset_fetch"] = _spawn_starter_dataset_fetch(
+        store, job.id, days=dataset_days
+    )
     return result

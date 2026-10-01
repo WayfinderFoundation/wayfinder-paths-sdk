@@ -1,7 +1,39 @@
 # Starter catalogue recertification — September 2026
 
-Status: in progress. This is an update to existing starters and their cards,
-not a separate research catalogue. No deployment or live promotion has occurred.
+Status: draft, pending receipt recovery and current-base historical evaluation.
+This updates existing starters and their cards, not a separate catalogue.
+No deployment or live promotion has occurred.
+
+## October 1 base update
+
+The catalog-only branch starts at `wayfinder-jobs-v1` commit `42532ca9`, including
+the bounded-window and forward-parity changes in #834. It does **not** bring
+the older research branch's gate-policy, feed-replay or simulator changes into
+production. The results below remain recorded evidence from evaluation SDK
+`5d465ec483f3d36ff64d27c832ed07665c52c60e`, not new-base certification.
+
+Five starters remain selectable; thirteen are retired from new selection and
+evolution seeding. Funding/OI Divergence is among the retired entries because
+its recertification was unfinished, not because a completed test disproved it.
+
+Compatibility changes and checks:
+
+- Keep exact evaluated parameters (`exit_rsi: 60`, not a newly hashed `60.0`).
+- Use each card's taker costs on new jobs, including 7 bps slippage.
+- Fetch 120 days plus the declared warmup history, rather than consuming part
+  of the evaluation window with warmup.
+- Preserve all stable IDs and existing job parameters, scripts and recorded
+  cards; the revised trend uses a separate module. Shared independent-leg exit
+  handling is corrected so a missing peer does not suppress a healthy exit.
+- Test bounded indicators, actual per-tick live-mode replay, and evolution's
+  rescaling of the new 20-day volatility window from 15m to 5m bars. Synthetic
+  compatibility tests require nonzero decisions; they are not profit evidence.
+
+Before merge: recover the original raw receipts and frozen data from the paths
+below (currently absent), verify their hashes, then replay the five fixed
+revisions and the production 30-day parity check on the current engine. Do not
+silently carry historical gate passes across SDK revisions or replace receipt
+hashes with hashes of newly generated artifacts.
 
 ## Decision rule
 
@@ -42,7 +74,7 @@ the leverage sweep is risk information, not qualification at higher leverage.
 Production governance defaults, owner authority and live promotion are not
 changed by this catalogue refresh. These distinctions are also in card data.
 
-## Completed selections
+## Recorded historical selections
 
 All figures below are continuous shared-engine historical returns after fees,
 slippage and verified funding, not hand-reconstructed P&L.
@@ -61,10 +93,10 @@ week warning. The passive change improved the training-test comparison and
 annual return, but increased annual drawdown and reduced annual Sharpe. Neither
 is described as an improvement in every period or every metric.
 
-Funding/OI original vital statistics and the remaining repair comparisons are
-still running. The final list must not be declared complete until those
-receipts have been reviewed. Currently unsuccessful originals remain hidden;
-an improved version must qualify before its card returns.
+Funding/OI original vital statistics and the remaining repair comparisons were
+unfinished when work stopped; no evaluation is currently running. Unqualified
+or unsuccessful originals remain hidden. An improved version must qualify
+before its card returns.
 
 ## Integrity and backwards compatibility
 
@@ -79,7 +111,9 @@ Parameter-only changes affect new jobs; old jobs retain their stored parameters
 and original card evidence. Retirement also preserves stable-ID lookup and
 existing-job reopening.
 
-Local reproducibility artifacts are under
+The original report recorded reproducibility artifacts under
 `.wayfinder_runs/research/starter_recertification/`: `catalog-manual-studies-20260927-v1`,
 `catalog-revisions-20260927-v1`, `catalog-vitals-20260927-v1`, and
-`recent-week-warning-reassessment-v2`. Original failed receipts are retained.
+`recent-week-warning-reassessment-v2`. Those paths are currently absent; the
+cards retain the recorded hashes, but hash strings alone do not recover or
+independently verify the receipts. This is why the refresh remains a draft.

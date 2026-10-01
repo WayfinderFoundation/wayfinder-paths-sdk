@@ -86,6 +86,26 @@ def test_revision_specific_leverage_evidence_takes_precedence() -> None:
     assert updated_sweep["results"][0]["net_return"] == 0.01
 
 
+def test_reopen_without_saved_card_does_not_claim_latest_performance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    definition = starters.get_starter("mixed-volume-capitulation-1h")
+    monkeypatch.setattr(starters, "_spawn_starter_dataset_fetch", skip_fetch)
+    store = JobStore(repo_root=tmp_path)
+    starters.create_starter_job(definition.id, store=store, compile_job=False)
+    store.write_json(definition.id, "results/backtest/starter_evidence.json", {})
+    job = store.load(definition.id)
+    job.execution_params["exit_rsi"] = 50
+    store.save(job)
+    before = (store.job_dir(job.id) / "job.yaml").read_bytes()
+    reopened = starters.create_starter_job(job.id, store=store, compile_job=False)
+    assert reopened["created"] is False
+    assert reopened["starter"]["params"]["exit_rsi"] == 50
+    assert reopened["starter"]["research_evidence"]["status"] == "unavailable"
+    assert "jobs_v1_engine" not in reopened["starter"]["research_evidence"]
+    assert (store.job_dir(job.id) / "job.yaml").read_bytes() == before
+
+
 def test_missing_new_leverage_evidence_does_not_resurrect_old_sweep() -> None:
     original = starters.get_starter("mixed-volume-capitulation-1h")
     revised = replace(original, research_evidence={"jobs_v1_leverage_sweep": {}})
@@ -130,17 +150,25 @@ def test_current_cards_match_the_launched_code_and_parameters(
         assert (
             hashlib.sha256(ast.dump(tree).encode()).hexdigest()
             == provenance["implementation_ast_sha256"]
-        )
+        ), definition.id
         params = definition.configured_params()
         assert (
             hashlib.sha256(json.dumps(params, sort_keys=True).encode()).hexdigest()
             == provenance["strategy_params_sha256"]
-        )
+        ), definition.id
         created = starters.create_starter_job(
             definition.id, store=store, compile_job=False
         )
         assert created["created"] is True
         job = store.load(definition.id)
+        assert (
+            job.execution_params["fee_bps"]
+            == evidence["costs"]["taker_fee_bps_per_side"]
+        )
+        assert (
+            job.execution_params["slippage_bps"]
+            == evidence["costs"]["slippage_bps_per_side"]
+        )
         for key, value in params.items():
             assert job.execution_params[key] == value
         assert job.execution_params["lookback_bars"] == starters.starter_lookback_bars(

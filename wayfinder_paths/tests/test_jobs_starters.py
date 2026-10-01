@@ -262,7 +262,6 @@ def test_starter_catalog_offers_only_current_qualified_paper_revisions() -> None
         "mixed-volume-capitulation-1h",
         "balanced-passive-capitulation-1h",
         "mixed-sleeve-momentum-15m",
-        "diversified-funding-oi-divergence-taker-15m",
     }
     for item in catalog:
         assert item["selectable"] is True
@@ -1224,19 +1223,19 @@ def test_create_starter_spawns_detached_dataset_fetch(
             "op": "fetch_dataset",
             "kwargs": {
                 "job_id": "mixed-rsi-snapback-1h",
-                "days": 120,
+                "days": 130,
                 "exchange": "hyperliquid",
                 "quote": "USDC",
                 "include_funding": True,
             },
         }
     ]
-    assert result["dataset_fetch"] == {"spawned": True, "days": 120, "pid": 4242}
+    assert result["dataset_fetch"] == {"spawned": True, "days": 130, "pid": 4242}
     events = _journal_events(store, "mixed-rsi-snapback-1h")
     spawned = next(
         event for event in events if event["type"] == "starter_dataset_fetch_spawned"
     )
-    assert spawned["days"] == 120
+    assert spawned["days"] == 130
     assert spawned["op"] == "fetch_dataset"
     assert spawned["ts"]
 

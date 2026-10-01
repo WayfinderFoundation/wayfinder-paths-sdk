@@ -1,14 +1,19 @@
 """Contracts for the risk-balanced starter revision, not profitability tests."""
 
+from typing import Any
+
 import pandas as pd
 import pytest
 
-from wayfinder_paths.jobs.execution.primitives import PositionRecord
-from wayfinder_paths.jobs.strategies.risk_balanced_sleeves import build_strategy
+from wayfinder_paths.jobs.execution.primitives import ExecutionContext, PositionRecord
+from wayfinder_paths.jobs.strategies.risk_balanced_sleeves import (
+    RiskBalancedSleeves,
+    build_strategy,
+)
 from wayfinder_paths.tests.test_jobs_starters import _context
 
 
-def _strategy():
+def _strategy() -> RiskBalancedSleeves:
     return build_strategy(
         {
             "symbols": ["A", "B", "C", "D"],
@@ -22,7 +27,7 @@ def _strategy():
     )
 
 
-def _intent_context():
+def _intent_context() -> tuple[RiskBalancedSleeves, ExecutionContext]:
     strategy = _strategy()
     return strategy, _context(
         strategy,
@@ -50,7 +55,7 @@ def test_pair_neutrality_caps_and_cash_residual() -> None:
 
 
 @pytest.mark.parametrize("leverage", [1, 2, 5])
-def test_leverage_applied_once_and_openings_keep_native_stops(leverage) -> None:
+def test_leverage_applied_once_and_openings_keep_native_stops(leverage: int) -> None:
     strategy, ctx = _intent_context()
     baseline = {row["symbol"]: row for row in strategy.decide(ctx)}
     ctx.params["leverage"] = leverage
@@ -127,6 +132,6 @@ def test_precompute_is_causal_and_missing_peer_does_not_invent_volatility() -> N
     "params",
     [{"risk_window_bars": 1}, {"max_sleeve_gross": 0}, {"max_sleeve_gross": 1.1}],
 )
-def test_invalid_risk_parameters_are_rejected(params) -> None:
+def test_invalid_risk_parameters_are_rejected(params: dict[str, Any]) -> None:
     with pytest.raises(ValueError, match="Invalid risk"):
         build_strategy(params)
