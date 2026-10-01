@@ -87,10 +87,10 @@ For each candidate:
   regime (the recipe names the feature and code to declare and gate on); a
   `passive_only` or `mechanism_required` ref enters with a post-only resting
   limit per its recipe, never at the close. A `library: population` ref
-  carries `expression`: build it with `compile_signal_expression` from
-  `wayfinder_paths.jobs.signal_library` and pass the def object to
-  `library_signal_on_bars`. Exits, stops and sizing are yours; the trigger
-  is not.
+  carries `expression`: build it with `compile_signal_expression` and pass
+  the def object to `library_signal_on_bars`; import both from
+  `wayfinder_paths.jobs.signal_library`. Exits, stops and sizing are yours;
+  the trigger is not.
 - If `candidate.json` carries `mechanism_refs`, implement exactly that grid
   row: a post-only resting entry at `entry_offset_atr` ATR beyond the signal
   close with `expires_after_bars = entry_ttl_bars`, a passive reduce-only

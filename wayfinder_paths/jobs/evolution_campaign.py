@@ -1286,8 +1286,9 @@ SIGNAL_RECIPE_NOTES = (
     "exit with a passive reduce-only take-profit, never at the close. A "
     "library: population entry is a composed def: its expression is DSL "
     "source over f and wayfinder_paths.jobs.signal_library.SIGNAL_DSL; build "
-    "it in precompute() with compile_signal_expression (from "
-    "wayfinder_paths.jobs.signal_library) and pass the def object to "
+    "it in precompute() with compile_signal_expression and pass the def "
+    "object to library_signal_on_bars. Import both with: from "
+    "wayfinder_paths.jobs.signal_library import compile_signal_expression, "
     "library_signal_on_bars."
 )
 
@@ -4958,6 +4959,7 @@ def _evaluate_candidate(
         "execution_calibration": calibration,
         "tuning_eligible": search_space is not None,
         "quick_simulation_ran": True,
+        "quick_entries": _quick_entry_signature(result.trades),
     }
     if candidate.get("reference_bundle"):
         receipt = result_receipt(
@@ -6209,7 +6211,11 @@ def _claim_full_dev(
         ]
         eligible.sort(key=_candidate_score, reverse=True)
         if policy.get("full_dev_family_diversity"):
-            eligible = _diversified_full_dev_order(eligible, state["candidates"])
+            eligible = _diversified_full_dev_order(
+                eligible,
+                state["candidates"],
+                kernel_cap=policy.get("full_dev_policy_kernel_cap"),
+            )
         if not remaining or not eligible:
             return None
         tuning_limit = int(policy["inner_optuna_finalists"])
@@ -6263,38 +6269,54 @@ def _full_dev_family(candidate: Mapping[str, Any]) -> str:
 
 
 def _diversified_full_dev_order(
-    eligible: list[dict[str, Any]], candidates: list[dict[str, Any]]
+    eligible: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    *,
+    kernel_cap: int | None = None,
 ) -> list[dict[str, Any]]:
     """Keep the score order but spend full-development slots across families:
     a family already developed this campaign goes behind every family that
     has not been, so one screen-dominant family (e.g. a policy kernel that
     inverts on validation) cannot take every slot."""
-    developed = {
-        _full_dev_family(item)
+    spent = [
+        item
         for item in candidates
         if item.get("dev") or item.get("full_dev_failure_codes") is not None
-    }
+    ]
+    developed = {_full_dev_family(item) for item in spent}
     running = [item for item in eligible if item.get("status") == "full_dev_running"]
-    # Two revisions of one recipe screen identically; the second is spent only
-    # when nothing else is left.
-    seen = {
-        _quick_fingerprint(item)
-        for item in candidates
-        if item.get("dev") or item.get("full_dev_failure_codes") is not None
-    } | {_quick_fingerprint(item) for item in running}
+    # Two revisions of one recipe screen identically (or nearly: a tweak
+    # that drops two of sixteen entries); the second is spent only when
+    # nothing else is left.
+    seen = [*spent, *running]
+    # Kernel books screen best and rarely survive validation; each kernel id
+    # is its own family, so without a cap they took half the slots.
+    kernel_room = (
+        None
+        if kernel_cap is None
+        else int(kernel_cap) - sum(map(_is_policy_kernel, seen))
+    )
     twins: list[dict[str, Any]] = []
     distinct: list[dict[str, Any]] = []
     for item in eligible:
         if item in running:
             continue
-        fingerprint = _quick_fingerprint(item)
-        if fingerprint is not None and fingerprint in seen:
+        if any(_quick_twins(item, other) for other in seen):
             twins.append(item)
             continue
-        seen.add(fingerprint)
+        seen.append(item)
+        if kernel_room is not None and _is_policy_kernel(item):
+            if kernel_room <= 0:
+                twins.append(item)
+                continue
+            kernel_room -= 1
         distinct.append(item)
     fresh = [item for item in distinct if _full_dev_family(item) not in developed]
     return running + fresh + [item for item in distinct if item not in fresh] + twins
+
+
+def _is_policy_kernel(candidate: Mapping[str, Any]) -> bool:
+    return candidate.get("parent_source") == "policy_kernel"
 
 
 def _quick_fingerprint(candidate: Mapping[str, Any]) -> tuple[Any, ...] | None:
@@ -6305,6 +6327,41 @@ def _quick_fingerprint(candidate: Mapping[str, Any]) -> tuple[Any, ...] | None:
         round(float(stats["net_return"]), 10),
         stats.get("trade_count"),
         round(float(stats.get("total_fees") or 0.0), 8),
+    )
+
+
+QUICK_ENTRY_CAP = 400
+NEAR_TWIN_OVERLAP = 0.8
+_NEAR_TWIN_MIN_ENTRIES = 5
+
+
+def _quick_entry_signature(fills: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Short hashes of the screen's entries (bar, symbol, side) for near-twin
+    detection; hashed so a few hundred entries cost a few kilobytes."""
+    entries = sorted(
+        {
+            f"{fill.get('timestamp')}|{fill.get('symbol')}|{fill.get('side')}"
+            for fill in fills
+            if (fill.get("raw") or {}).get("intent_action") == "OPEN"
+        }
+    )[:QUICK_ENTRY_CAP]
+    return [hashlib.sha1(entry.encode()).hexdigest()[:10] for entry in entries]
+
+
+def _entry_overlap(a: Sequence[str], b: Sequence[str]) -> float:
+    left, right = set(a), set(b)
+    if min(len(left), len(right)) < _NEAR_TWIN_MIN_ENTRIES:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _quick_twins(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    fingerprint = _quick_fingerprint(a)
+    if fingerprint is not None and fingerprint == _quick_fingerprint(b):
+        return True
+    return (
+        _entry_overlap(a.get("quick_entries") or (), b.get("quick_entries") or ())
+        >= NEAR_TWIN_OVERLAP
     )
 
 

@@ -39,6 +39,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _complexity_budget,
     _diversified_full_dev_order,
     _economic_gate_child,
+    _entry_overlap,
     _failure_mode_summary,
     _fleet_campaign_turn,
     _focus_rank,
@@ -62,6 +63,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _pooled_fold_stats,
     _protected_fold_verdict,
     _prune_risky_trials,
+    _quick_entry_signature,
     _record_compute_budget_override,
     _rejected_submission,
     _require_train_profit,
@@ -5830,6 +5832,7 @@ def test_bundle_owned_feature_is_gated_and_reaches_probation_the_same_way(
         if row["candidate_id"] == candidate["candidate_id"]
     )
     assert entry["metadata"]["quick"]["stats"]["trade_count"] >= 1
+    assert result["quick_entries"]
     receipt = result["attempt_receipt"]
     quick_entry = next(t for t in receipt["trades"] if not t.get("reduce_only"))
 
@@ -8425,6 +8428,94 @@ def test_full_dev_order_spends_behavior_twins_last() -> None:
     order = _diversified_full_dev_order(eligible, [developed, *eligible])
     # c15 re-instantiated c04's recipe and c18 duplicates c17: both go last.
     assert [item["candidate_id"] for item in order] == ["c17", "c16", "c15", "c18"]
+
+
+def _screened(
+    candidate_id: str,
+    family: str,
+    net_return: float,
+    *,
+    kernel: bool = False,
+    entries: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "candidate_id": candidate_id,
+        "family": family,
+        "status": "quick_complete",
+        "parent_source": "policy_kernel" if kernel else "de_novo",
+        "quick": {
+            "stats": {
+                "net_return": net_return,
+                "trade_count": len(entries or []) or 20,
+                "total_fees": net_return / 10,
+            }
+        },
+        "quick_entries": entries or [],
+    }
+
+
+def test_full_dev_order_caps_policy_kernels_per_campaign() -> None:
+    eligible = [
+        _screened("k1", "cross_sectional_rank_a", 2.6, kernel=True),
+        _screened("k2", "cross_sectional_momentum_b", 1.9, kernel=True),
+        _screened("k3", "sleeve_momentum_c", 0.9, kernel=True),
+        _screened("d1", "maker_mean_reversion", 0.3),
+        _screened("d2", "breakout", 0.2),
+    ]
+    capped = _diversified_full_dev_order(eligible, eligible, kernel_cap=1)
+    assert [item["candidate_id"] for item in capped] == ["k1", "d1", "d2", "k2", "k3"]
+    uncapped = _diversified_full_dev_order(eligible, eligible)
+    assert [item["candidate_id"] for item in uncapped] == [
+        "k1",
+        "k2",
+        "k3",
+        "d1",
+        "d2",
+    ]
+    # A kernel already developed this campaign uses the cap.
+    spent = {
+        **_screened("k0", "cross_sectional_rank_z", 3.0, kernel=True),
+        "dev": {"validation": {}},
+    }
+    after = _diversified_full_dev_order(eligible, [spent, *eligible], kernel_cap=1)
+    assert [item["candidate_id"] for item in after] == ["d1", "d2", "k1", "k2", "k3"]
+
+
+def test_full_dev_order_spends_entry_overlap_twins_last() -> None:
+    shared = [f"e{index}" for index in range(14)]
+    eligible = [
+        _screened("c02", "maker_mean_reversion", 0.21, entries=[*shared, "x1", "x2"]),
+        _screened("c11", "maker_mean_reversion_v2", 0.19, entries=shared),
+        _screened("c05", "breakout", 0.10, entries=[f"b{i}" for i in range(9)]),
+    ]
+    order = _diversified_full_dev_order(eligible, eligible)
+    # c11 takes 14 of c02's 16 entries (0.875): a near-twin despite different
+    # quick stats, so it goes behind c05.
+    assert [item["candidate_id"] for item in order] == ["c02", "c05", "c11"]
+
+    half = [*shared[:7], *[f"y{index}" for index in range(7)]]
+    distinct = [eligible[0], {**eligible[1], "quick_entries": half}, eligible[2]]
+    assert [
+        item["candidate_id"] for item in _diversified_full_dev_order(distinct, distinct)
+    ] == ["c02", "c11", "c05"]
+
+
+def test_entry_overlap_needs_enough_entries_and_signature_keeps_opens() -> None:
+    assert _entry_overlap(["a", "b"], ["a", "b"]) == 0.0
+    assert _entry_overlap(list("abcde"), list("abcdf")) == 4 / 6
+    fills = [
+        {
+            "timestamp": f"2026-08-0{day}T00:00:00+00:00",
+            "symbol": "ETH",
+            "side": "buy",
+            "raw": {"intent_action": action},
+        }
+        for day in range(1, 4)
+        for action in ("OPEN", "CLOSE")
+    ]
+    signature = _quick_entry_signature(fills)
+    assert len(signature) == 3
+    assert signature == _quick_entry_signature(list(reversed(fills)))
 
 
 def test_unbuildable_seed_falls_back_to_de_novo_instead_of_wedging(

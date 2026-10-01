@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from wayfinder_paths.jobs import research, signal_library
 from wayfinder_paths.jobs.research import (
     bh_qvalues,
     event_path_stats,
@@ -648,3 +649,15 @@ def test_every_library_signal_is_exact_on_its_declared_window() -> None:
         if problem:
             shortfalls.append(problem)
     assert shortfalls == []
+
+
+def test_library_signal_helpers_import_from_signal_library() -> None:
+    frame = _bars(_wavy_closes(400))
+    assert signal_library.library_signal_warmup_bars(
+        "rsi14_le_30", "4h", bar_seconds=3600
+    ) == research.library_signal_warmup_bars("rsi14_le_30", "4h", bar_seconds=3600)
+    assert signal_library.library_signal_on_bars(
+        frame, "rsi14_le_30", "4h", bar_seconds=3600
+    ).equals(
+        research.library_signal_on_bars(frame, "rsi14_le_30", "4h", bar_seconds=3600)
+    )
