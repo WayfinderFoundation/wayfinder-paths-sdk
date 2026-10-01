@@ -14,7 +14,10 @@ import pandas as pd
 
 from wayfinder_paths.jobs.compute_lock import heavy_compute_lock
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
-from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+from wayfinder_paths.jobs.execution.primitives import (
+    ExecutionSpec,
+    resolve_compute_window,
+)
 from wayfinder_paths.jobs.execution.simulator import (
     PreparedExecutionDataset,
     _load_strategy,
@@ -472,10 +475,12 @@ def _run_scenarios(
 
 
 def _strategy_warmup_bars(script: Path, params: dict[str, Any]) -> int:
-    configured = int(params.get("lookback_bars") or 0)
     strategy = _load_strategy(script, params)
+    configured = int(params.get("lookback_bars") or 0)
     declared = int(getattr(strategy, "warmup_bars", 60) or 60)
-    return max(1, configured, declared)
+    # params.warmup_bars is the canonical declaration live honours first.
+    window = resolve_compute_window(params, strategy).live_depth
+    return max(1, configured, declared, window)
 
 
 def _variant_params(

@@ -545,3 +545,63 @@ def test_readiness_applies_the_trial_haircut_outside_probation() -> None:
         ]
         is False
     )
+
+
+def test_paired_folds_warm_up_on_each_sides_declared_window(monkeypatch) -> None:
+    """A fold opens with the history live hands the strategy, not a flat 60
+    bars: otherwise the gate scores indicators the live window never holds."""
+    import types
+
+    import pandas as pd
+
+    from wayfinder_paths.jobs import economics
+    from wayfinder_paths.jobs.execution.primitives import (
+        CompletedBarsView,
+        ExecutionSpec,
+    )
+    from wayfinder_paths.jobs.execution.simulator import PreparedExecutionDataset
+
+    stamps = pd.date_range("2026-01-01", periods=6_000, freq="5min", tz="UTC")
+    rows = [
+        {
+            "timestamp": stamp.isoformat(),
+            "symbol": "SNX",
+            "open": 10.0,
+            "high": 10.1,
+            "low": 9.9,
+            "close": 10.0,
+            "volume": 1.0,
+        }
+        for stamp in stamps
+    ]
+    dataset = PreparedExecutionDataset(CompletedBarsView.from_rows(rows), {}, [])
+
+    def build(params):
+        return types.SimpleNamespace(decide=lambda ctx: [], warmup_bars=60)
+
+    seen: list[int] = []
+
+    class Stop(Exception):
+        pass
+
+    def capture(script, dataset, spec, params, timestamps, start, end, warmup):
+        seen.append(warmup)
+        raise Stop
+
+    monkeypatch.setattr(economics, "_oos_window", capture)
+    with pytest.raises(Stop):
+        economics.paired_fold_evaluation(
+            baseline_script=build,
+            candidate_script=build,
+            dataset=dataset,
+            spec=ExecutionSpec.from_dict(
+                {"data_contract": {"bar_interval": "5m", "symbols": ["SNX"]}}
+            ),
+            baseline_params={"warmup_bars": 200},
+            candidate_params={"warmup_bars": 1_464},
+            constitution={
+                "evaluation": {"folds": 4, "audit_days": 1},
+                "objective": {"weights": {}},
+            },
+        )
+    assert seen == [1_464]

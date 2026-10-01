@@ -572,6 +572,138 @@ def test_window_invariance_probe_reds_full_frame_recompute() -> None:
     assert result["base_intents"] != result["wide_intents"]
 
 
+def _build_precompute_strategy(deep: bool) -> Any:
+    """A selective entry whose signal is precomputed. ``deep`` keys it on an
+    expanding bar count — it fires only when the view holds 104+ bars, so a
+    30-bar declared window never sees it (the backtest/live trap); otherwise
+    it keys on the bar itself and fires at any depth."""
+    target = _bars(140)[103]["timestamp"].replace("Z", "+00:00")
+
+    def build(params: dict[str, Any]) -> Any:
+        def precompute(frames: dict[str, Any]) -> dict[str, Any]:
+            out = {}
+            for symbol, frame in frames.items():
+                if deep:
+                    signal = (frame.index == 103).astype(float)
+                else:
+                    stamps = frame["timestamp"].map(lambda value: value.isoformat())
+                    signal = (stamps == target).astype(float)
+                out[symbol] = frame.assign(entry_signal=signal)[["entry_signal"]]
+            return out
+
+        def decide(ctx: Any) -> list[OrderIntent]:
+            if float(ctx.view.latest("SNX").get("entry_signal") or 0.0) < 1.0:
+                return []
+            return [
+                OrderIntent(
+                    action="OPEN",
+                    venue="hyperliquid",
+                    symbol="SNX",
+                    side="long",
+                    size=1.0,
+                )
+            ]
+
+        return types.SimpleNamespace(decide=decide, precompute=precompute)
+
+    return build
+
+
+def test_entry_window_parity_probe_reds_an_entry_only_full_history_sees() -> None:
+    from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
+    from wayfinder_paths.jobs.execution.validation import (
+        entry_window_parity_probe,
+        window_invariance_probe,
+    )
+
+    bars = CompletedBarsView.from_rows(_bars(140))
+    # The backtest's entry filled at the open after decision bar 103.
+    fills = [
+        {
+            "raw": {"intent_action": "OPEN"},
+            "symbol": "SNX",
+            "timestamp": bars.timestamps[104].isoformat(),
+        },
+        {
+            "raw": {"intent_action": "CLOSE"},
+            "symbol": "SNX",
+            "timestamp": bars.timestamps[110].isoformat(),
+        },
+    ]
+    deep = _build_precompute_strategy(deep=True)
+    # Evenly sampled bars never land on the entry, so the old probe passes.
+    assert (
+        window_invariance_probe(deep, bars, _PROBE_SPEC, {"warmup_bars": 30})["status"]
+        == "passed"
+    )
+    failed = entry_window_parity_probe(
+        deep, bars, _PROBE_SPEC, {"warmup_bars": 30}, fills
+    )
+    assert failed["status"] == "failed"
+    assert failed["bar"] == bars.timestamps[103].isoformat()
+    assert failed["symbol"] == "SNX"
+
+    shallow = _build_precompute_strategy(deep=False)
+    passed = entry_window_parity_probe(
+        shallow, bars, _PROBE_SPEC, {"warmup_bars": 30}, fills
+    )
+    assert passed["status"] == "passed"
+    assert passed["entries_probed"] == 1
+    assert (
+        entry_window_parity_probe(deep, bars, _PROBE_SPEC, {}, fills)["status"]
+        == "skipped"
+    )
+
+
+def test_forward_parity_replay_requires_backtest_and_live_mode_to_agree() -> None:
+    from wayfinder_paths.jobs.execution.simulator import PreparedExecutionDataset
+    from wayfinder_paths.jobs.execution.validation import forward_parity_replay
+
+    dataset = PreparedExecutionDataset.from_rows(_bars(140), {"source": "test"})
+    params = {"warmup_bars": 30}
+    # Keyed on an expanding bar count: the backtest's precompute sees bar 103
+    # of its history, the live window never holds 104 bars, so the entry
+    # exists only in the backtest.
+    diverged = forward_parity_replay(
+        _build_precompute_strategy(deep=True),
+        dataset,
+        _PROBE_SPEC,
+        params,
+        days=1,
+    )
+    assert diverged["status"] == "failed"
+    assert diverged["backtest_intents"] and not diverged["forward_intents"]
+
+    agreed = forward_parity_replay(
+        _build_precompute_strategy(deep=False),
+        dataset,
+        _PROBE_SPEC,
+        params,
+        days=1,
+    )
+    assert agreed["status"] == "passed"
+    assert agreed["intents_compared"] >= 1
+
+    skipped = forward_parity_replay(
+        _build_precompute_strategy(deep=False), dataset, _PROBE_SPEC, {}, days=1
+    )
+    assert skipped["status"] == "skipped"
+
+
+def test_live_mode_simulation_refuses_full_history() -> None:
+    from wayfinder_paths.jobs.execution.simulator import PreparedExecutionDataset
+
+    dataset = PreparedExecutionDataset.from_rows(_bars(40), {"source": "test"})
+    with pytest.raises(ValueError, match="declared compute window"):
+        simulate_execution(
+            _build_precompute_strategy(deep=False),
+            dataset,
+            _PROBE_SPEC,
+            {"full_history": True},
+            precompute_per_tick=True,
+        )
+
+
 def test_parameter_behavior_probe_distinguishes_material_and_noop_knobs() -> None:
     from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
     from wayfinder_paths.jobs.execution.validation import parameter_behavior_probe

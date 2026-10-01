@@ -52,7 +52,12 @@ def test_population_defs_are_causal_boolean_and_round_trip_their_expression() ->
     probe = _bars(_wavy_closes(400))
     defs = population_defs(limit=300)
     for start in range(0, len(defs), 12):
-        validate_workspace_signals(defs[start : start + 12], probe)
+        # The window check is exhaustive in production; a short tail keeps
+        # this 244-def sweep fast (test_every_library_signal_... and the
+        # helpers' derivation cover the full span).
+        validate_workspace_signals(
+            defs[start : start + 12], probe, window_probe_bars=40
+        )
     for spec in defs[::5]:
         rebuilt = compile_signal_expression(
             name=spec.name,

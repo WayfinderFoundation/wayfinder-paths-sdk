@@ -854,6 +854,185 @@ def window_invariance_probe(
     return asyncio.run(probe())
 
 
+ENTRY_PROBE_SAMPLES = 6
+
+
+def entry_window_parity_probe(
+    script_entrypoint: str | Path | Callable[..., Any],
+    bars: CompletedBarsView,
+    execution_spec: ExecutionSpec | Mapping[str, Any] | None,
+    params: Mapping[str, Any],
+    fills: Sequence[Mapping[str, Any]],
+    *,
+    samples: int = ENTRY_PROBE_SAMPLES,
+) -> dict[str, Any]:
+    """Replay the bars where a backtest OPENED a position with only the
+    declared window and require the entry to survive.
+
+    The backtest precomputes indicators once over all its history; live and
+    probation recompute them per tick over the declared window. A selective
+    strategy holds at almost every bar, so the evenly sampled invariance
+    probe sees two empty decisions and passes while the backtest's entries
+    exist only because of history the live window never holds."""
+    from wayfinder_paths.jobs.execution.simulator import _load_strategy
+
+    params_data = dict(params)
+    spec = ExecutionSpec.coerce(execution_spec)
+    window = resolve_compute_window(
+        params_data, _load_strategy(script_entrypoint, dict(params_data))
+    )
+    if not window.declared or window.size is None:
+        return {
+            "status": "skipped",
+            "reason": f"compute window is {window.source}, not declared",
+        }
+    size = window.size
+    position = {stamp.isoformat(): index for index, stamp in enumerate(bars.timestamps)}
+    # An entry fills at the open after its decision bar.
+    decisions: set[tuple[int, str]] = set()
+    for fill in fills:
+        if (fill.get("raw") or {}).get("intent_action") != "OPEN":
+            continue
+        filled_at = position.get(str(fill.get("timestamp")))
+        if filled_at is None or filled_at - 1 < size:
+            continue
+        decisions.add((filled_at - 1, str(fill.get("symbol"))))
+    if not decisions:
+        return {"status": "skipped", "reason": "no entry beyond the declared window"}
+    ordered = sorted(decisions)
+    probed = ordered[:: max(1, len(ordered) // samples)][:samples]
+
+    def opens(intents: list[dict[str, Any]], symbol: str) -> bool:
+        return any(
+            str(intent.get("action")).upper() == "OPEN"
+            and str(intent.get("symbol")) == symbol
+            for intent in intents
+        )
+
+    async def probe() -> dict[str, Any]:
+        for index, symbol in probed:
+            full = await _probe_decided_intents(
+                script_entrypoint,
+                bars,
+                spec,
+                params_data,
+                index=index,
+                lookback=index + 1,
+            )
+            if not opens(full, symbol):
+                # A fresh-state replay does not reproduce this entry at all
+                # (it rode strategy state); no evidence either way.
+                continue
+            declared = await _probe_decided_intents(
+                script_entrypoint,
+                bars,
+                spec,
+                params_data,
+                index=index,
+                lookback=size,
+            )
+            if not opens(declared, symbol):
+                return {
+                    "status": "failed",
+                    "bar": bars.timestamps[index].isoformat(),
+                    "symbol": symbol,
+                    "window": size,
+                    "window_source": window.source,
+                }
+        return {
+            "status": "passed",
+            "window": size,
+            "window_source": window.source,
+            "entries_probed": len(probed),
+        }
+
+    return asyncio.run(probe())
+
+
+FORWARD_PARITY_DAYS = 30
+
+
+def forward_parity_replay(
+    script_entrypoint: str | Path | Callable[..., Any],
+    dataset: Any,
+    execution_spec: ExecutionSpec | Mapping[str, Any] | None,
+    params: Mapping[str, Any],
+    *,
+    days: float = FORWARD_PARITY_DAYS,
+) -> dict[str, Any]:
+    """Prove the backtest trades the way the forward engine will.
+
+    Replays the last ``days`` twice from identical fresh state: the backtest
+    simulator (indicators precomputed over all the history it holds) and the
+    live-mode simulator (every tick built exactly as the live driver and the
+    probation shadow build it: fetch depth, engine features, crop, precompute
+    on that window alone). Every material intent must match bar for bar; the
+    first differing bar fails the replay. The backtest side holds more than
+    the live depth of history, so an indicator that needs more than its
+    declared window shows up as a divergence."""
+    import time
+
+    from wayfinder_paths.jobs.execution.simulator import (  # circular import
+        _load_strategy,
+        live_feature_warmup_bars,
+        simulate_execution,
+    )
+    from wayfinder_paths.jobs.execution.walk_forward import _slice  # circular
+
+    params_data = dict(params)
+    spec = ExecutionSpec.coerce(execution_spec)
+    window = resolve_compute_window(
+        params_data, _load_strategy(script_entrypoint, dict(params_data))
+    )
+    if not window.declared or window.size is None:
+        return {
+            "status": "skipped",
+            "reason": f"compute window is {window.source}, not declared",
+        }
+    bar_interval = spec.data_contract.get("bar_interval")
+    span = max(1, int(days * 86_400 // bar_interval_seconds(bar_interval)))
+    depth = max(window.live_depth, live_feature_warmup_bars(params_data, bar_interval))
+    timestamps = dataset.bars.timestamps
+    start = max(0, len(timestamps) - (span + 2 * depth))
+    compare_from = timestamps[max(start, len(timestamps) - span)].isoformat()
+    replay = _slice(dataset, timestamps, start, len(timestamps))
+    started = time.perf_counter()
+    backtest = simulate_execution(script_entrypoint, replay, spec, params_data)
+    live = simulate_execution(
+        script_entrypoint, replay, spec, params_data, precompute_per_tick=True
+    )
+
+    def by_bar(trace: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+        bars: dict[str, list[dict[str, Any]]] = {}
+        for intent in trace.get("intents") or []:
+            stamp = str(intent.get("timestamp"))
+            if stamp >= compare_from:
+                bars.setdefault(stamp, []).extend(_material_intents([intent]))
+        return bars
+
+    expected, actual = by_bar(backtest.trace), by_bar(live.trace)
+    for stamp in sorted(set(expected) | set(actual)):
+        base, forward = expected.get(stamp, []), actual.get(stamp, [])
+        if not _probe_values_match(base, forward):
+            return {
+                "status": "failed",
+                "bar": stamp,
+                "window": window.size,
+                "window_source": window.source,
+                "backtest_intents": base,
+                "forward_intents": forward,
+                "mismatches": probe_mismatches(base, forward)[:6],
+            }
+    return {
+        "status": "passed",
+        "window": window.size,
+        "window_source": window.source,
+        "bars_compared": len([t for t in timestamps if t.isoformat() >= compare_from]),
+        "intents_compared": sum(len(rows) for rows in expected.values()),
+        "wall_seconds": round(time.perf_counter() - started, 1),
+    }
+
+
 SEQUENCE_PREVIEW_BARS = 2_000
 _SEQUENCE_PREVIEW_STATE_KEYS = 8
 

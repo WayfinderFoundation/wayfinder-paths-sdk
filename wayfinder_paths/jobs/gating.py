@@ -460,7 +460,9 @@ def evaluate_economic_gate(
         "dataset_fingerprint": _candidate_dataset_fingerprint(
             candidate_root, protected_dataset_root or root
         ),
-        "fold_spec": {**constitution["evaluation"], "warmup_bars": 60},
+        # Folds warm up on each side's declared window (economics._live_depth),
+        # so evaluations keyed on the old flat 60 bars are never reused.
+        "fold_spec": {**constitution["evaluation"], "warmup_bars": "declared_window"},
     }
     persist_path = (
         protected_dataset_root

@@ -11,8 +11,6 @@ import pandas as pd
 from wayfinder_paths.jobs.compute_lock import job_state_lock
 from wayfinder_paths.jobs.defense import (
     add_defense_features,
-    defense_feature_warmup_bars,
-    defense_policy,
 )
 from wayfinder_paths.jobs.execution.engine import EngineState, TickResult, run_tick
 from wayfinder_paths.jobs.execution.features import (
@@ -28,13 +26,13 @@ from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
     ExecutionSpec,
     StateSnapshot,
-    bar_interval_seconds,
     resolve_compute_window,
 )
 from wayfinder_paths.jobs.execution.simulator import (
     _load_strategy,
     _resolve_fee_bps,
     _resolve_maker_fee_bps,
+    live_feature_warmup_bars,
 )
 from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
 from wayfinder_paths.jobs.forward import ForwardRecorder
@@ -51,9 +49,7 @@ from wayfinder_paths.jobs.probation import (
     update_probation_target,
 )
 from wayfinder_paths.jobs.regime import (
-    REGIME_FEATURE_WARMUP_BARS,
     add_portfolio_regime_feature,
-    declared_regimes,
 )
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.runner.monitor_state import atomic_write_json
@@ -87,12 +83,7 @@ def candidate_shadow_lookback_bars(store: JobStore, job_id: str) -> int:
         required = max(
             required,
             resolve_compute_window(params, strategy).live_depth,
-            REGIME_FEATURE_WARMUP_BARS if declared_regimes(params) else 0,
-            (
-                defense_feature_warmup_bars(bar_interval_seconds(interval))
-                if defense_policy(params)["enabled"]
-                else 0
-            ),
+            live_feature_warmup_bars(params, interval),
         )
     return required
 

@@ -32,12 +32,21 @@ DEFENSE_FEATURE_WARMUP_BARS = 450
 DEFENSE_VOL_BASELINE_BARS = 400
 
 
-def defense_feature_warmup_bars(interval_seconds: int | float | None) -> int:
-    """History needed for a lagged 400-bar baseline plus a 24h return."""
+def defense_feature_warmup_bars(
+    interval_seconds: int | float | None, *, cooldown_hours: float = 0.0
+) -> int:
+    """History needed for a lagged 400-bar baseline plus a 24h return, plus
+    the OOD cooldown: a breadth thrust older than the fetched window would
+    otherwise never hold its cooldown live while the backtest, which sees all
+    history, does (full-size entries live where the backtest sized 25%)."""
     if interval_seconds is None or interval_seconds <= 0:
         return DEFENSE_FEATURE_WARMUP_BARS
     horizon = max(2, math.ceil(86_400 / float(interval_seconds)))
-    return max(DEFENSE_FEATURE_WARMUP_BARS, horizon + DEFENSE_VOL_BASELINE_BARS + 2)
+    cooldown = math.ceil(float(cooldown_hours) * 3_600 / float(interval_seconds))
+    return max(
+        DEFENSE_FEATURE_WARMUP_BARS,
+        horizon + DEFENSE_VOL_BASELINE_BARS + 2 + cooldown,
+    )
 
 
 def defense_policy(params: Mapping[str, Any]) -> dict[str, Any]:

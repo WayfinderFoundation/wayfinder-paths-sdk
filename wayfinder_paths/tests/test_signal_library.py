@@ -145,10 +145,12 @@ class TestSignalLibrary:
         for i in range(400, 460):
             closes[i] += (i - 400) * 0.8
         full = build_signal_frame(_with_feeds(_bars(closes)))
+        # Past funding_divergence's declared 506 bars (a 480-bar z-score is
+        # only window-exact once it holds all 480), so the prefix is unmasked.
         prefix = build_signal_frame(
-            _with_feeds(_bars(closes)).iloc[:450].reset_index(drop=True)
+            _with_feeds(_bars(closes)).iloc[:560].reset_index(drop=True)
         )
-        pd.testing.assert_frame_equal(full.iloc[:450], prefix)
+        pd.testing.assert_frame_equal(full.iloc[:560], prefix)
         assert full["liquidation_flush_long"].iloc[200:262].any()
         assert full["liquidation_flush_short"].iloc[400:462].any()
         assert full["funding_divergence_short"].iloc[300:332].any()
@@ -624,3 +626,25 @@ def test_scan_signals_conditions_on_store_feature_labels() -> None:
     assert any(
         row["regime"] == "macro_regime=chop" for row in result["_unmeasured_rows"]
     )
+
+
+def test_every_library_signal_is_exact_on_its_declared_window() -> None:
+    """The live window is exactly ``min_bars`` (via the recipe warmup); every
+    canonical signal must compute the same value there as on all history, at
+    every bar. An unbounded EWM can never satisfy this, so EWM builders are
+    bounded and their warmup is derived (``rsi_bars``, ``ema_cross_bars``...)."""
+    from wayfinder_paths.jobs.workspace_signals import declared_window_shortfall
+
+    rng = np.random.default_rng(7)
+    volatility = 0.004 * (1.0 + 2.0 * (np.sin(np.arange(700) / 90.0) > 0.6))
+    closes = list(100.0 * np.exp(np.cumsum(rng.normal(0.0, volatility))))
+    probe = _bars(closes)
+    shortfalls = []
+    for spec in SIGNAL_LIBRARY:
+        if spec.requires:
+            continue
+        full = spec.build(probe).fillna(False).astype(bool)
+        problem = declared_window_shortfall(spec, probe, full, bars=200)
+        if problem:
+            shortfalls.append(problem)
+    assert shortfalls == []

@@ -354,3 +354,39 @@ class TestLoader:
         (src / "signals.py").write_text("x = 1\n")
         with pytest.raises(ValueError, match="WORKSPACE_SIGNALS"):
             load_workspace_signals(tmp_path)
+
+
+def _noisy_closes(n: int, seed: int = 7) -> list[float]:
+    rng = np.random.default_rng(seed)
+    vol = 0.004 * (1.0 + 2.0 * (np.sin(np.arange(n) / 90.0) > 0.6))
+    return list(100.0 * np.exp(np.cumsum(rng.normal(0.0, vol))))
+
+
+class TestDeclaredWindow:
+    # The recurrence-bench finalist's expression: a Wilder ATR (bounded span
+    # 14 x 8) stacked under a 100-bar rolling quantile needs ~212 bars, and
+    # it was registered with min_bars=120 -- it fired in backtests and never
+    # on the live window.
+    EXPRESSION = (
+        "(atr(f, 14) > atr(f, 14).rolling(100).quantile(0.8)) & rsi_extreme(f, 70, +1)"
+    )
+
+    def _def(self, min_bars: int) -> SignalDef:
+        from wayfinder_paths.jobs.signal_library import compile_signal_expression
+
+        return compile_signal_expression(
+            name="ws_vol_extreme",
+            family="workspace",
+            description="high-volatility RSI extreme",
+            min_bars=min_bars,
+            expression=self.EXPRESSION,
+        )
+
+    def test_rejects_min_bars_shorter_than_the_stacked_lookback(self):
+        probe = _bars(_noisy_closes(1_200))
+        with pytest.raises(ValueError, match="min_bars=120 is shorter"):
+            validate_workspace_signals([self._def(120)], probe)
+
+    def test_accepts_min_bars_covering_the_stack(self):
+        probe = _bars(_noisy_closes(1_200))
+        validate_workspace_signals([self._def(260)], probe)
