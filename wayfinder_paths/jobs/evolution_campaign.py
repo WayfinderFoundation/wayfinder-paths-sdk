@@ -1457,7 +1457,35 @@ def _policy_scan_block(
     except Exception as exc:  # noqa: BLE001 - a side panel never blocks a start
         return {"available": False, "reason": str(exc)[:240]}
     block["source"] = "train split of the campaign dataset, common history"
+    if policy.get("policy_scan_retire_failed"):
+        # The scan is deterministic on a slowly moving panel, so a survivor
+        # that already lost on validation comes back identical every campaign.
+        failed = _failed_policy_ids(load_archive(store, job_id).get("candidates") or [])
+        survivors = list(block.get("survivors") or [])
+        block["survivors"] = [
+            row for row in survivors if str(row.get("policy_id") or "") not in failed
+        ]
+        block["retired"] = [
+            str(row.get("policy_id"))
+            for row in survivors
+            if str(row.get("policy_id") or "") in failed
+        ]
     return block
+
+
+def _failed_policy_ids(archive: list[dict[str, Any]]) -> set[str]:
+    """Kernel configurations whose full development lost on validation."""
+    failed: set[str] = set()
+    for entry in archive:
+        metadata = entry.get("metadata") or {}
+        policy_id = str(metadata.get("policy_id") or "")
+        dev = metadata.get("dev") or {}
+        validation = ((dev.get("validation") or {}).get("stats") or {}).get(
+            "net_return"
+        )
+        if policy_id and validation is not None and float(validation) <= 0:
+            failed.add(policy_id)
+    return failed
 
 
 def _policy_scan_instruction(block: Mapping[str, Any]) -> str:
@@ -1497,6 +1525,13 @@ def _policy_scan_instruction(block: Mapping[str, Any]) -> str:
         )
     else:
         text += "no configuration was consistent on both windows. "
+    retired = list(block.get("retired") or [])
+    if retired:
+        text += (
+            f"{len(retired)} further survivor(s) are retired: the same "
+            "configuration already lost on independent validation in an earlier "
+            "campaign. "
+        )
     if falsified:
         text += (
             "Falsified on this panel (the family's best in-sample row lost more "
@@ -4387,6 +4422,7 @@ def _prepare_candidate(
             "requested_parent_source": requested_source,
             "starter_seed_id": candidate.get("starter_seed_id"),
             "research_seed_id": candidate.get("research_seed_id"),
+            "policy_id": candidate.get("policy_id"),
             "seed_revision": seed_revision,
             "evidence_reset": candidate["evidence_reset"],
             "design_slot_id": candidate.get("design_slot_id"),
