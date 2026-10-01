@@ -14,6 +14,9 @@ async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     append newly found relevant entities/implementations before returning. Parent
     submits interpretation, merged discovery, provisional draft, and full judged
     ledger. Every discovered entity needs a disposition, including NEEDS_EVIDENCE.
+    Use discovery_dispositions to link differing worker entity keys to assessed
+    candidate_entity keys, or briefly mark unranked leads out_of_scope/needs_evidence.
+    Do not duplicate full candidate essays for the entire discovery inbox.
     Implementation-driven exclusions must compare known alternatives, including
     spot versus perp where applicable, instead of rejecting the whole exposure.
     Inputs remain agent assertions: only independent public tool reads verify them.

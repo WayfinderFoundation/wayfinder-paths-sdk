@@ -31,8 +31,19 @@ def checkpoints(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if not isinstance(output, dict) or output.get("ok") is not True:
                 continue
             receipt = output.get("result")
-            digest = hashlib.sha256(checkpoint.model_dump_json().encode()).hexdigest()
-            if not isinstance(receipt, dict) or receipt.get("sha256") != digest:
+            digests = {
+                hashlib.sha256(checkpoint.model_dump_json().encode()).hexdigest()
+            }
+            # Read v2 receipts issued before compact dispositions were added.
+            if "discovery_dispositions" not in state["input"]["checkpoint"]:
+                digests.add(
+                    hashlib.sha256(
+                        checkpoint.model_dump_json(
+                            exclude={"discovery_dispositions"}
+                        ).encode()
+                    ).hexdigest()
+                )
+            if not isinstance(receipt, dict) or receipt.get("sha256") not in digests:
                 continue
             records.append(
                 {
@@ -109,6 +120,11 @@ def assessment_report(
         None,
     )
     cases = judged["candidates"] if judged else []
+    dispositions = {
+        entity.casefold(): d
+        for d in (judged or {}).get("discovery_dispositions", [])
+        for entity in d["entities"]
+    }
     if judged is None:
         errors.append(
             "Record a v2 judged checkpoint with the complete candidate ledger"
@@ -120,25 +136,37 @@ def assessment_report(
     ]
     # Union all snapshots; a later shorter/empty ledger cannot erase discoveries.
     missing = set()
-    lost_instruments = set()
     unobserved_instruments = set()
+    deferred: set[str] = set()
+    excluded: set[str] = set()
+    case_by_entity = {c["entity"].casefold(): c for c in cases}
+    for disposition in dispositions.values():
+        if (
+            disposition["status"] == "assessed"
+            and disposition["candidate_entity"].casefold() not in case_by_entity
+        ):
+            errors.append(
+                f"Discovery links to missing candidate {disposition['candidate_entity']}"
+            )
     for discovery in discoveries:
-        matches = [
-            c
-            for c in cases
-            if c["entity"].casefold() == discovery["entity"].casefold()
-            or {s.casefold() for s in c["observed_identifiers"]}
-            & {s.casefold() for s in discovery["observed_identifiers"]}
-        ]
-        if not matches:
+        key = discovery["entity"].casefold()
+        disposition = dispositions.get(key)
+        if disposition and disposition["status"] != "assessed":
+            if key in case_by_entity:
+                errors.append(
+                    f"{key}: discovery disposition conflicts with its candidate assessment"
+                )
+            if disposition["status"] == "needs_evidence":
+                deferred.add(key)
+            else:
+                excluded.add(key)
+            continue
+        case = case_by_entity.get(
+            disposition["candidate_entity"].casefold() if disposition else key
+        )
+        if case is None:
             missing.add(discovery["entity"])
             continue
-        if len(matches) != 1:
-            errors.append(
-                f"{discovery['entity']}: ambiguous entity merge; use exact provider IDs"
-            )
-            continue
-        case = matches[0]
         # An inbox is untrusted: model-added namespaces/guessed IDs must not
         # become mandatory implementation identities merely by being recorded.
         known = {
@@ -147,7 +175,6 @@ def assessment_report(
             if any(i.casefold() in output for output in outputs)
         }
         unobserved_instruments.update(set(discovery["instruments"]) - known)
-        lost_instruments.update(known - set(case["instruments"]))
         if case["decision_basis"] == "implementation" and case["decision"] in {
             "REJECT",
             "ALTERNATIVE",
@@ -165,25 +192,17 @@ def assessment_report(
                 )
     if missing:
         errors.append("Discoveries missing assessment: " + ", ".join(sorted(missing)))
-    if lost_instruments:
-        errors.append(
-            "Known implementation IDs lost: " + ", ".join(sorted(lost_instruments))
-        )
     for case in cases:
         for check in case["implementation_checks"]:
-            references = [*check["observations"]]
-            if check["instrument_id"]:
-                references.append(check["instrument_id"])
-            if any(
-                not any(ref.casefold() in output for output in outputs)
-                for ref in references
+            if check["status"] in {"viable", "rejected"} and not any(
+                check["instrument_id"].casefold() in output for output in outputs
             ):
                 errors.append(
-                    f"{case['entity']}: implementation comparison references were not observed in successful public reads"
+                    f"{case['entity']}: compared implementation ID was not observed in successful public reads"
                 )
     return {
         "errors": list(dict.fromkeys(errors)),
-        "discovered_entities": len({d["entity"].casefold() for d in discoveries}),
+        "discovery_keys": len({d["entity"].casefold() for d in discoveries}),
         "assessed_entities": len(cases),
         "kept_instruments": sorted(
             {
@@ -195,6 +214,8 @@ def assessment_report(
         ),
         "missing_entities": sorted(missing),
         "unobserved_instrument_claims": sorted(unobserved_instruments),
+        "deferred_discoveries": sorted(deferred),
+        "out_of_scope_discoveries": sorted(excluded),
         "unresolved_entities": [
             c["entity"] for c in cases if c["decision"] == "NEEDS_EVIDENCE"
         ],

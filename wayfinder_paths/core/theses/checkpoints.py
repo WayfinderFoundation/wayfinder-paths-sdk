@@ -32,13 +32,26 @@ class ImplementationCheck(Contract):
     instrument_id: Identifier | None = None
     status: Literal["viable", "rejected", "not_found", "incompatible", "unverified"]
     reason: Text
-    # Returned IDs/URLs, not a claim that the conclusion itself is verified.
+    # Human-readable observations; independent reads establish IDs, not conclusions.
     observations: Annotated[list[Text], Field(min_length=1, max_length=6)]
 
     @model_validator(mode="after")
     def validate_implementation(self) -> Self:
         if self.status in {"viable", "rejected"} and not self.instrument_id:
             raise ValueError("A compared implementation requires its observed ID")
+        return self
+
+
+class DiscoveryDisposition(Contract):
+    entities: Annotated[list[Identifier], Field(min_length=1, max_length=120)]
+    status: Literal["assessed", "out_of_scope", "needs_evidence"]
+    candidate_entity: Identifier | None = None
+    reason: Text
+
+    @model_validator(mode="after")
+    def validate_link(self) -> Self:
+        if (self.status == "assessed") != (self.candidate_entity is not None):
+            raise ValueError("Only assessed discoveries link to a candidate_entity")
         return self
 
 
@@ -64,6 +77,9 @@ class ResearchCheckpoint(Contract):
     stage: Literal["interpretation", "discovery", "provisional", "judged"]
     spec: ThesisSpec
     discoveries: Annotated[list[Discovery], Field(max_length=120)] = []
+    discovery_dispositions: Annotated[
+        list[DiscoveryDisposition], Field(max_length=480)
+    ] = []
     candidates: Annotated[list[CandidateCase], Field(max_length=120)] = []
     proposal: Proposal | None = None
 
@@ -72,6 +88,11 @@ class ResearchCheckpoint(Contract):
         entities = [case.entity.casefold() for case in self.candidates]
         if len(set(entities)) != len(entities):
             raise ValueError("Group implementations of the same economic entity")
+        dispositions = [
+            e.casefold() for d in self.discovery_dispositions for e in d.entities
+        ]
+        if len(dispositions) != len(set(dispositions)):
+            raise ValueError("Each discovery key has one disposition")
         if self.schema_version == 2 and self.stage == "judged":
             if not self.candidates:
                 raise ValueError(

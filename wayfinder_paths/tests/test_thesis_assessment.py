@@ -77,6 +77,7 @@ def record(
     *,
     discoveries: Sequence[dict[str, Any]] = (),
     candidates: Sequence[dict[str, Any]] = (),
+    dispositions: Sequence[dict[str, Any]] = (),
     session: str | None = None,
 ) -> dict[str, Any]:
     checkpoint = ResearchCheckpoint.model_validate(
@@ -86,6 +87,7 @@ def record(
             "spec": spec,
             "discoveries": list(discoveries),
             "candidates": list(candidates),
+            "discovery_dispositions": list(dispositions),
         }
     )
     return {
@@ -154,15 +156,20 @@ def test_all_snapshots_union_and_entity_aliases_merge(
     child = record(spec, "discovery", discoveries=[discovery], session="worker")
     empty = record(spec, "discovery", session="worker")
     renamed = dict(case, entity="canonical-network")
-    parent = record(spec, "judged", candidates=[renamed])
+    links = [
+        {
+            "entities": ["network"],
+            "status": "assessed",
+            "candidate_entity": "canonical-network",
+            "reason": "Same observed underlying",
+        }
+    ]
+    parent = record(spec, "judged", candidates=[renamed], dispositions=links)
     assert not assessment_report([parent, observed()], [child, empty])["errors"]
-    # Losing an implementation in a later ledger is not allowed either.
+    # The inventory owns known IDs; the case need not copy every implementation.
     renamed["instruments"] = ["NETWORK-USDC"]
-    parent = record(spec, "judged", candidates=[renamed])
-    assert (
-        "Known implementation IDs lost: network-solana"
-        in assessment_report([parent, observed()], [child])["errors"]
-    )
+    parent = record(spec, "judged", candidates=[renamed], dispositions=links)
+    assert not assessment_report([parent, observed()], [child])["errors"]
 
 
 def test_perp_cost_cannot_exclude_spot_without_comparison(
@@ -234,7 +241,7 @@ def test_checkpoint_claims_are_not_implementation_observations(
 ) -> None:
     parent = record(spec, "judged", candidates=[case])
     errors = assessment_report([parent], [])["errors"]
-    assert any("references were not observed" in e for e in errors)
+    assert any("ID was not observed" in e for e in errors)
 
 
 def test_empty_judgment_cannot_erase_full_ledger(spec: dict[str, Any]) -> None:
@@ -270,3 +277,96 @@ def test_invented_id_labels_do_not_become_mandatory_implementations(
     report = assessment_report([parent, observed()], [child])
     assert not report["errors"]
     assert report["unobserved_instrument_claims"] == ["hl:NETWORK-USDC"]
+
+
+@pytest.mark.parametrize("status", ["out_of_scope", "needs_evidence"])
+def test_unranked_leads_need_explicit_compact_dispositions_not_full_essays(
+    spec: dict[str, Any],
+    discovery: dict[str, Any],
+    case: dict[str, Any],
+    status: str,
+) -> None:
+    lead = {**discovery, "entity": "unranked", "observed_identifiers": ["unranked"]}
+    child = record(spec, "discovery", discoveries=[lead])
+    parent = record(
+        spec,
+        "judged",
+        candidates=[case],
+        dispositions=[
+            {
+                "entities": ["unranked"],
+                "status": status,
+                "reason": "Explicit reason",
+            }
+        ],
+    )
+    report = assessment_report([parent, observed()], [child])
+    assert not report["errors"]
+    key = (
+        "deferred_discoveries"
+        if status == "needs_evidence"
+        else "out_of_scope_discoveries"
+    )
+    assert report[key] == ["unranked"]
+
+
+def test_discovery_link_cannot_point_to_a_nonexistent_assessment(
+    spec: dict[str, Any],
+    discovery: dict[str, Any],
+    case: dict[str, Any],
+) -> None:
+    parent = record(
+        spec,
+        "judged",
+        candidates=[case],
+        dispositions=[
+            {
+                "entities": ["alias"],
+                "status": "assessed",
+                "candidate_entity": "missing",
+                "reason": "Alias",
+            }
+        ],
+    )
+    assert any(
+        "missing candidate" in e
+        for e in assessment_report([parent, observed()], [])["errors"]
+    )
+
+
+def test_duplicate_dispositions_fail(
+    spec: dict[str, Any], case: dict[str, Any]
+) -> None:
+    with pytest.raises(ValidationError, match="one disposition"):
+        record(
+            spec,
+            "judged",
+            candidates=[case],
+            dispositions=[
+                {
+                    "entities": ["a", "a"],
+                    "status": "needs_evidence",
+                    "reason": "Uninvestigated",
+                }
+            ],
+        )
+
+
+def test_v2_receipts_before_dispositions_remain_readable(spec: dict[str, Any]) -> None:
+    message = record(spec, "discovery")
+    state = message["parts"][0]["state"]
+    checkpoint = ResearchCheckpoint.model_validate(state["input"]["checkpoint"])
+    del state["input"]["checkpoint"]["discovery_dispositions"]
+    state["output"] = json.dumps(
+        {
+            "ok": True,
+            "result": {
+                "sha256": hashlib.sha256(
+                    checkpoint.model_dump_json(
+                        exclude={"discovery_dispositions"}
+                    ).encode()
+                ).hexdigest(),
+            },
+        }
+    )
+    assert len(checkpoints([message])) == 1
