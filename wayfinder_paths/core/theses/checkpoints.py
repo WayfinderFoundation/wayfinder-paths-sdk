@@ -100,31 +100,30 @@ class ResearchCheckpoint(Contract):
 
     @model_validator(mode="after")
     def validate_checkpoint(self) -> Self:
+        errors = []
         entities = [case.entity.casefold() for case in self.candidates]
         if len(set(entities)) != len(entities):
-            raise ValueError("Group implementations of the same economic entity")
+            errors.append("Group implementations of the same economic entity")
         dispositions = [
             e.casefold() for d in self.discovery_dispositions for e in d.entities
         ]
         if len(dispositions) != len(set(dispositions)):
-            raise ValueError("Each discovery key has one disposition")
+            errors.append("Each discovery key has one disposition")
         if self.schema_version >= 2 and self.stage == "judged":
             if not self.candidates and not self.discovery_dispositions:
-                raise ValueError(
+                errors.append(
                     "A judged checkpoint must retain the assessment ledger or update dispositions"
                 )
             for case in self.candidates:
                 if self.schema_version == 3 and case.case_basis is None:
-                    raise ValueError(f"{case.entity}: specify case_basis")
+                    errors.append(f"{case.entity}: specify case_basis")
                 if case.decision_basis is None:
-                    raise ValueError(
-                        f"{case.entity}: specify the exposure decision_basis"
-                    )
+                    errors.append(f"{case.entity}: specify the exposure decision_basis")
                 if (
                     case.decision_basis == "unresolved"
                     and case.decision != "NEEDS_EVIDENCE"
                 ):
-                    raise ValueError(
+                    errors.append(
                         f"{case.entity}: unresolved is NEEDS_EVIDENCE, not rejection"
                     )
                 if case.decision_basis == "implementation" and case.decision in {
@@ -136,27 +135,30 @@ class ResearchCheckpoint(Contract):
                     if len(alternatives) < 2 or any(
                         c.status == "unverified" for c in checks
                     ):
-                        raise ValueError(
+                        errors.append(
                             f"{case.entity}: compare alternative implementations before "
                             "dropping the exposure; unresolved alternatives are NEEDS_EVIDENCE"
                         )
                     if any(c.status == "viable" for c in checks):
-                        raise ValueError(
+                        errors.append(
                             f"{case.entity}: a viable alternative remains; implementation "
                             "failure alone cannot exclude this exposure"
                         )
         if self.stage == "provisional" and self.proposal is None:
-            raise ValueError("A provisional checkpoint requires a complete draft")
+            errors.append("A provisional checkpoint requires a complete draft")
         if (
             self.stage == "provisional"
             and self.proposal is not None
             and not any(v.positions for v in self.proposal.variants)
         ):
-            raise ValueError(
-                "Not constructed is not a provisional investment portfolio"
-            )
+            errors.append("Not constructed is not a provisional investment portfolio")
         if self.proposal is not None:
-            validate_full_allocation(self.proposal)
+            try:
+                validate_full_allocation(self.proposal)
+            except ValueError as exc:
+                errors.append(str(exc))
+        if errors:
+            raise ValueError("\n".join(errors))
         return self
 
 

@@ -511,6 +511,28 @@ def test_worker_schema_cannot_record_parent_judgments(
         DiscoveryCheckpoint.model_validate({"spec": spec, **extra})
 
 
+def test_checkpoint_returns_all_independent_judgment_errors(
+    spec: dict[str, Any], case: dict[str, Any]
+) -> None:
+    with pytest.raises(ValidationError) as error:
+        ResearchCheckpoint.model_validate(
+            {
+                "schema_version": 3,
+                "stage": "judged",
+                "spec": spec,
+                "candidates": [
+                    {**case, "entity": "unresolved", "decision_basis": "unresolved"},
+                    {**case, "entity": "unchecked", "implementation_checks": []},
+                ],
+            }
+        )
+    feedback = str(error.value)
+    assert "unresolved: specify case_basis" in feedback
+    assert "unresolved: unresolved is NEEDS_EVIDENCE" in feedback
+    assert "unchecked: specify case_basis" in feedback
+    assert "unchecked: compare alternative implementations" in feedback
+
+
 @pytest.mark.asyncio
 async def test_worker_receipt_and_parallel_inventory_updates(
     spec: dict[str, Any], discovery: dict[str, Any], case: dict[str, Any]
