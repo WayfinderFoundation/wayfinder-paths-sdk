@@ -36,6 +36,7 @@ async def test_resolve_token_happy_path(market_data: bool) -> None:
 
     assert out["ok"] is True
     assert out["result"]["symbol"] == "USDC"
+    assert out["result"]["lookup_id"] == "usd-coin-arbitrum"
     fake_client.get_token_details.assert_awaited_once_with(
         "usd-coin-arbitrum", market_data=market_data
     )
@@ -349,6 +350,47 @@ async def test_list_tokens_can_lookup_pool_stats_by_exact_address() -> None:
     client.discover_tokens.assert_awaited_once_with(
         "base", "trending", 25, query=ARC_USDC_ADDRESS
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native", [False, True])
+async def test_pool_lookup_resolves_id_and_native_wrapper_internally(native):
+    client = AsyncMock()
+    client.get_token_details.return_value = {
+        "address": "0xnative" if native else "0xproject",
+        "chain": {"code": "base"},
+        "identity": {
+            "is_canonical": native,
+            "verification": "native" if native else None,
+            "wrapped_native_address": "0xwrapped",
+        },
+    }
+    client.discover_tokens.return_value = {"tokens": []}
+    with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", client):
+        result = await onchain_list_tokens("base", token_id="project-base")
+    assert result["ok"]
+    client.discover_tokens.assert_awaited_once_with(
+        "base", "trending", 25, query="0xwrapped" if native else "0xproject"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["wrong_chain", "suspicious", "ambiguous_input"])
+async def test_lookup_pool_identity_still_rejects_conflicts(case):
+    client = AsyncMock()
+    client.get_token_details.return_value = {
+        "address": "0xproject",
+        "chain": {"code": "ethereum" if case == "wrong_chain" else "base"},
+        "identity": {"suspicious": case == "suspicious"},
+    }
+    with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", client):
+        result = await onchain_list_tokens(
+            "base",
+            token_id="project-base",
+            query="project" if case == "ambiguous_input" else None,
+        )
+    assert not result["ok"]
+    client.discover_tokens.assert_not_awaited()
 
 
 @pytest.mark.asyncio

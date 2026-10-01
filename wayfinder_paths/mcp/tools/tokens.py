@@ -46,7 +46,7 @@ async def onchain_resolve_token(
             "Token lookup failed in the backend.",
             details={"status_code": status_code},
         )
-    return ok(token)
+    return ok({**token, "lookup_id": query})
 
 
 @catch_errors
@@ -106,6 +106,7 @@ async def onchain_list_tokens(
     dimension: str = "trending",
     limit: int = 25,
     query: str | None = None,
+    token_id: str | None = None,
 ) -> dict[str, Any]:
     """Browse a chain's top tokens — what's actually live and moving right now.
 
@@ -126,6 +127,9 @@ async def onchain_list_tokens(
             symbol. Liquidity is selected-pool reserves, NOT executable depth;
             volume is that pool's 24h turnover, not global token volume. Empty
             results mean unavailable discovery data, not an untradeable token.
+        token_id: Optional resolved lookup ID (e.g. aerodrome-finance-base).
+            Resolves the address internally for exact pool lookup; do not also
+            supply query. Native assets use their registered wrapped pool.
     """
     if chain_code not in CHAIN_CODE_TO_ID:
         return err(
@@ -138,8 +142,39 @@ async def onchain_list_tokens(
             "invalid_dimension",
             f"dimension must be one of: {', '.join(_LIST_DIMENSIONS)}",
         )
+    if token_id:
+        if query:
+            return err("invalid_query", "Supply token_id or query, not both.")
+        token = await TOKEN_CLIENT.get_token_details(token_id)
+        if token.get("chain", {}).get("code") != chain_code:
+            return err("chain_mismatch", "Resolved token is on a different chain.")
+        identity = token.get("identity", {})
+        if identity.get("suspicious"):
+            return err(
+                "suspicious_identity", "Resolved token has a conflicting identity."
+            )
+        query = token["address"]
+        if identity.get("verification") == "native" and identity.get("is_canonical"):
+            query = identity.get("wrapped_native_address") or query
     result = await TOKEN_CLIENT.discover_tokens(
         chain_code, dimension, limit, query=query
     )
+    if token_id:
+        # The successful lookup is evidence too; callers need not resolve again.
+        result["resolved_token"] = {
+            **{
+                key: token.get(key)
+                for key in (
+                    "token_id",
+                    "asset_id",
+                    "symbol",
+                    "name",
+                    "address",
+                    "chain",
+                    "identity",
+                )
+            },
+            "lookup_id": token_id,
+        }
     result["retrieved_at_ms"] = int(time.time() * 1000)
     return ok(result)

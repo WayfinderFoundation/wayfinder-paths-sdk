@@ -130,6 +130,8 @@ class TokenClient(WayfinderClient):
         *,
         chain_id: int,
         before_timestamp: int | None = None,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
     ) -> list[dict[str, Any]]:
         url = f"{get_api_base_url()}/blockchain/tokens/candles/"
         params: dict[str, str | int] = {
@@ -139,6 +141,12 @@ class TokenClient(WayfinderClient):
         }
         if before_timestamp is not None:
             params["before_timestamp"] = before_timestamp
+        if start_ms is not None or end_ms is not None:
+            if start_ms is None or end_ms is None or end_ms <= start_ms:
+                raise ValueError("Provide start_ms < end_ms for a candle window")
+            if before_timestamp is not None:
+                raise ValueError("Use a candle window or before_timestamp, not both")
+            params.update(start_ms=start_ms, end_ms=end_ms)
         response = await self._authed_request("GET", url, params=params)
         response.raise_for_status()
         return response.json().get("rows", [])

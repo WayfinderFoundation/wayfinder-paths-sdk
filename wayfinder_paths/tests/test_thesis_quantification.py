@@ -1,0 +1,288 @@
+import json
+from unittest.mock import AsyncMock, patch
+
+import httpx
+import pytest
+
+from wayfinder_paths.core.clients.TokenClient import TokenClient
+from wayfinder_paths.core.theses.models import Position, Variant
+from wayfinder_paths.core.theses.quantification import (
+    DAY_MS,
+    allocation_key,
+    daily_returns,
+    price_metrics,
+    quantify_variants,
+)
+from wayfinder_paths.mcp.polymarket_summary import compact_order_book
+from wayfinder_paths.mcp.tools import thesis_quantification as tool
+
+
+def variant(**changes):
+    position = Position.model_validate(
+        {
+            "id": "holding",
+            "component_id": "thesis",
+            "kind": "perp",
+            "instrument_id": "BTC-USDC",
+            "symbol": "BTC",
+            "direction": "long",
+            "capital_bps": 5000,
+            "leverage": 1,
+            "rationale": "Fixture",
+            **changes,
+        }
+    )
+    return Variant(
+        budget_usd=100,
+        rationale="Fixture",
+        positions=[position],
+        cash_bps=10000 - position.capital_bps,
+    )
+
+
+def test_missing_days_are_not_filled_or_counted_as_one_day_returns():
+    prices = {0: 100, DAY_MS: 110, 3 * DAY_MS: 150}
+    assert daily_returns(prices) == {DAY_MS: pytest.approx(0.1)}
+    metrics = price_metrics(prices)
+    assert metrics["price_return"] == 0.5
+    assert metrics["daily_returns"] == 1
+    assert metrics["annualized_daily_volatility"] is None
+    assert metrics["status"] == "limited_history"
+
+
+@pytest.mark.parametrize(
+    "direction,leverage,expected",
+    [("long", 1, 0.1), ("short", 1, -0.1), ("short", 2, -0.2)],
+)
+def test_fixed_notional_price_pnl_cash_and_funding_sign(direction, leverage, expected):
+    draft = variant(direction=direction, leverage=leverage)
+    report = quantify_variants(
+        [draft],
+        {"BTC-USDC": {"prices": {0: 100, DAY_MS: 120}, "funding": {"sum_rates": 0.01}}},
+    )
+    portfolio = report["portfolios"][0]
+    assert portfolio["metrics"]["price_return"] == pytest.approx(expected)
+    assert portfolio["cash_bps"] == 5000
+    assert portfolio["gross_notional_bps"] == 5000 * leverage
+    assert portfolio["funding"][0]["observed_cost_nav_fraction"] == pytest.approx(
+        0.005 * leverage * (-1 if direction == "short" else 1)
+    )
+    # Same weights scale across budgets; prose and stop orders are not simulated.
+    assert allocation_key(draft) == allocation_key(
+        draft.model_copy(update={"budget_usd": 100000, "rationale": "Larger"})
+    )
+    assert allocation_key(draft) != allocation_key(variant(capital_bps=4000))
+
+
+def test_no_shares_are_not_a_short_of_yes():
+    report = quantify_variants(
+        [variant(kind="prediction", instrument_id="123", direction="no")],
+        {"123": {"prices": {0: 0.4, DAY_MS: 0.6}}},
+    )
+    portfolio = report["portfolios"][0]
+    assert portfolio["metrics"]["price_return"] == pytest.approx(0.25)
+    assert portfolio["signed_directional_notional_bps"] == 0
+    assert portfolio["prediction_capital_bps"] == 5000
+
+
+def test_zero_outcome_is_a_real_loss_not_a_missing_price():
+    draft = variant(kind="prediction", instrument_id="123", direction="no")
+    result = quantify_variants([draft], {"123": {"prices": {0: 0.4, DAY_MS: 0}}})
+    assert result["assets"]["123"]["metrics"]["price_return"] == -1
+    assert result["portfolios"][0]["metrics"]["price_return"] == -0.5
+
+
+@pytest.mark.asyncio
+async def test_funding_failure_does_not_erase_good_price_history():
+    rows = [{"t": 0, "T": DAY_MS - 1, "c": "100"}]
+    with (
+        patch.object(
+            tool.HYPERLIQUID_DATA_CLIENT,
+            "get_candles_response",
+            AsyncMock(return_value={"rows": rows}),
+        ),
+        patch.object(
+            tool.HYPERLIQUID_DATA_CLIENT,
+            "get_funding_history",
+            AsyncMock(side_effect=TimeoutError),
+        ),
+    ):
+        result = await tool._read_market(variant().positions[0], 0, DAY_MS)
+    assert result["prices"] == {0: 100}
+    assert result["funding"]["sum_rates"] is None
+
+
+def test_missing_leg_never_becomes_cash_or_zero_risk():
+    report = quantify_variants(
+        [variant()], {"BTC-USDC": {"prices": {}, "error": "Provider unavailable"}}
+    )
+    portfolio = report["portfolios"][0]
+    assert portfolio["metrics"]["status"] == "unavailable"
+    assert "price_return" not in portfolio["metrics"]
+    assert portfolio["missing_history"] == ["BTC-USDC"]
+    assert portfolio["funding"][0]["observed_cost_nav_fraction"] is None
+    json.dumps(report, allow_nan=False)
+
+
+def test_insolvent_gross_diagnostic_cannot_report_plausible_performance():
+    result = quantify_variants(
+        [variant(direction="short", leverage=2)],
+        {"BTC-USDC": {"prices": {0: 100, DAY_MS: 250}}},
+    )
+    assert result["portfolios"][0]["metrics"]["status"] == "unavailable"
+
+
+@pytest.mark.parametrize("mode", ["aligned", "disjoint", "constant"])
+def test_correlations_align_timestamps_and_reject_insufficient_variance(mode):
+    left = {i * DAY_MS: 100 + i * i for i in range(30)}
+    right = {
+        i * DAY_MS: (100 if mode == "constant" else 2 * (100 + i * i))
+        for i in range(
+            40 if mode == "disjoint" else 0, 70 if mode == "disjoint" else 30
+        )
+    }
+    report = quantify_variants([], {"A": {"prices": left}, "B": {"prices": right}})
+    row = report["correlations"][0]
+    assert row["correlation"] == (pytest.approx(1) if mode == "aligned" else None)
+
+
+@pytest.mark.parametrize("ask", [0.2, 0.99, 0, 1, None])
+def test_prediction_payoff_is_entry_hurdle_not_probability_forecast(ask):
+    book = compact_order_book(
+        {"asks": [] if ask is None else [{"price": str(ask), "size": "100"}]}
+    )
+    payoff = book["buyPayoff"]
+    if ask is None or ask in {0, 1}:
+        assert payoff is None
+    else:
+        assert payoff["breakEvenProbabilityBeforeCosts"] == ask
+        assert payoff["winReturnBeforeCosts"] == pytest.approx(1 / ask - 1)
+        assert payoff["lossReturn"] == -1
+
+
+@pytest.mark.asyncio
+async def test_batch_shares_market_reads_across_all_budgets_and_returns_observed_key():
+    drafts = [
+        variant().model_copy(update={"budget_usd": b})
+        for b in (100, 1000, 10000, 100000)
+    ]
+    with (
+        patch.object(
+            tool,
+            "_read_market",
+            AsyncMock(return_value={"prices": {0: 100, DAY_MS: 110}}),
+        ) as read,
+        patch("wayfinder_paths.mcp.utils._report_tool_metric"),
+        patch.object(tool.time, "time", return_value=90 * DAY_MS / 1000),
+    ):
+        result = await tool.research_quantify_portfolio(drafts)
+    assert result["ok"]
+    assert read.await_count == 1
+    report = result["result"]["portfolio_quantification"]
+    assert len(report["portfolios"]) == 4
+    assert {p["allocation_key"] for p in report["portfolios"]} == {
+        allocation_key(drafts[0])
+    }
+    assert report["assets"]["BTC-USDC"]["coverage_fraction"] == pytest.approx(2 / 90)
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_is_reported_without_aborting_other_finalists():
+    with (
+        patch.object(tool, "_read_market", AsyncMock(side_effect=TimeoutError)),
+        patch("wayfinder_paths.mcp.utils._report_tool_metric"),
+    ):
+        result = await tool.research_quantify_portfolio([variant()])
+    assert result["ok"]
+    assert (
+        result["result"]["portfolio_quantification"]["assets"]["BTC-USDC"]["error"]
+        == "Market read timed out"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("end_offset", [0, -1])
+async def test_spot_history_resolves_lookup_id_and_uses_completed_daily_window(
+    end_offset,
+):
+    token = {
+        "token_id": "base_0xabc",
+        "chain": {"id": 8453},
+        "identity": {"is_canonical": False},
+    }
+    rows = [
+        {"t": i * DAY_MS, "T": (i + 1) * DAY_MS + end_offset, "c": "2"}
+        for i in range(3)
+    ]
+    with (
+        patch.object(
+            tool.TOKEN_CLIENT, "get_token_details", AsyncMock(return_value=token)
+        ) as resolve,
+        patch.object(
+            tool.TOKEN_CLIENT, "get_candles", AsyncMock(return_value=rows)
+        ) as candles,
+    ):
+        result = await tool._read_market(
+            variant(kind="token", instrument_id="aerodrome-finance-base").positions[0],
+            0,
+            2 * DAY_MS,
+        )
+    resolve.assert_awaited_once_with("aerodrome-finance-base")
+    candles.assert_awaited_once_with(
+        "base_0xabc", "1d", chain_id=8453, start_ms=0, end_ms=2 * DAY_MS
+    )
+    assert result["prices"] == {0: 2, DAY_MS: 2}
+
+
+@pytest.mark.asyncio
+async def test_token_client_keeps_legacy_candles_and_adds_range_parameters():
+    client = TokenClient()
+    response = httpx.Response(
+        200,
+        json={"rows": [{"c": "1"}]},
+        request=httpx.Request("GET", "https://example.test"),
+    )
+    with patch.object(
+        client, "_authed_request", AsyncMock(return_value=response)
+    ) as request:
+        assert await client.get_candles("asset-base", "1d", chain_id=8453) == [
+            {"c": "1"}
+        ]
+        assert "start_ms" not in request.call_args.kwargs["params"]
+        await client.get_candles(
+            "asset-base", "1d", chain_id=8453, start_ms=0, end_ms=DAY_MS
+        )
+        assert request.call_args.kwargs["params"]["start_ms"] == 0
+        with pytest.raises(ValueError):
+            await client.get_candles("asset-base", "1d", chain_id=8453, start_ms=0)
+
+
+@pytest.mark.asyncio
+async def test_prediction_resolution_and_book_survive_missing_history():
+    adapter = AsyncMock()
+    adapter.get_market_by_token_id.return_value = (
+        True,
+        {
+            "id": "1",
+            "outcomes": ["Yes", "No"],
+            "clobTokenIds": ["123", "456"],
+            "active": True,
+        },
+    )
+    adapter.resolve_outcome_from_token_id = lambda **_: "No"
+    adapter.get_prices_history.return_value = (False, "No history")
+    adapter.get_order_book.return_value = (
+        True,
+        {"asks": [{"price": ".4", "size": "100"}]},
+    )
+    with patch.object(tool, "PolymarketAdapter", return_value=adapter):
+        result = await tool._read_market(
+            variant(kind="prediction", direction="no", instrument_id="456").positions[
+                0
+            ],
+            0,
+            90 * DAY_MS,
+        )
+    assert result["prices"] == {}
+    assert result["book"]["buyPayoff"]["winReturnBeforeCosts"] == 1.5
+    adapter.close.assert_awaited_once()

@@ -2,8 +2,8 @@
 
 This is the simulation boundary for the thesis-portfolio dev feature. It builds
 on a selective extraction of `wayfinder-jobs-v1`; it does not grant
-permission to trade. The application, data acquisition and funding/execution
-flows are not included in this SDK change.
+permission to trade. The application orchestration and funding/execution
+flows remain outside this SDK module.
 
 ## Contract
 
@@ -18,6 +18,37 @@ Proposals contain intent, assumptions, evidence, counterarguments and
 invalidation conditions, never executable transactions. Callers must resolve
 instrument identities against their venue, including verifying prediction
 outcomes, before constructing `MarketHistory`.
+
+## Lookup IDs and pre-publication quantification
+
+Research can use a successfully resolved chain-scoped lookup ID, such as
+`aerodrome-finance-base`, without copying a contract address. The resolver returns
+`lookup_id` alongside the resolved `token_id`; observed evidence joins both to
+the same identity. Protected native/stablecoin registry membership and literal
+contract text on a project website are not general-project admission requirements.
+Explicitly suspicious identities still fail. Economic claims still require a
+relevant source read, and aliases cannot split one holding to bypass capacity.
+`onchain_list_tokens(token_id=..., chain_code=...)` resolves the pool address
+internally, including registered native/wrapped pricing proxies.
+
+Before final publication, `research_quantify_portfolio(variants=...)` reads daily
+spot/perp/outcome history and seven days of perp funding using existing clients.
+It fetches each finalist once across budgets, with four reads in flight at most,
+then returns per-asset and fixed-initial-notional portfolio diagnostics: observed
+returns/drawdowns, daily volatility, timestamp-aligned correlations, cash and
+gross exposure, funding coverage/cost and prediction entry payoffs. Submit one
+variant per distinct allocation; the backend checks a deterministic allocation
+key so changed weights must be measured again. Missing history is reported, not
+fabricated or treated as zero risk. No forecast or historical-return optimizer
+is introduced.
+
+Diagnostics use up to 90 completed UTC days and require 14 overlapping daily
+returns for volatility/correlation. Gaps are not filled; coverage and staleness
+are explicit. Gross price diagnostics exclude fees, funding, stops and liquidation
+and are **not** the execution-aware simulation below. Prediction book summaries
+report break-even probability and winning/losing returns at the best ask, before
+costs—not an independent probability forecast or a sized fill guarantee. NO uses
+its own outcome price history, not a negated YES series.
 
 ## Simulator bridge
 

@@ -29,7 +29,7 @@ class Position(Contract):
     id: Identifier
     component_id: Identifier
     kind: Literal["token", "perp", "hip3", "prediction"]
-    # SDK canonical token id, Hyperliquid asset_name, or Polymarket outcome token id.
+    # Resolved SDK lookup id, Hyperliquid asset_name, or Polymarket outcome token id.
     instrument_id: Identifier
     symbol: Annotated[str, Field(min_length=1, max_length=120)]
     direction: Literal["long", "short", "yes", "no"]

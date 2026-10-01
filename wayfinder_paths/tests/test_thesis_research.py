@@ -85,6 +85,7 @@ def test_observed_outcomes_and_latest_book_not_market_liquidity() -> None:
         "hyperliquid_depth": {},
         "onchain_tokens": {},
         "onchain_pools": {},
+        "quantified_allocations": {},
     }
 
 
@@ -332,17 +333,16 @@ def onchain_case(proposal: Proposal) -> tuple[Proposal, list[dict[str, Any]]]:
     ]
 
 
-def test_onchain_evidence_corroborates_contract_and_caps_local_pool(
+def test_resolved_noncanonical_project_needs_no_webpage_proof_but_caps_local_pool(
     onchain_case: tuple[Proposal, list[dict[str, Any]]],
 ) -> None:
     proposal, results = onchain_case
+    results[1] = {}
     evidence = research_evidence(results)
     validate_market_capacity(proposal, evidence)
     token_id = proposal.variants[0].positions[0].instrument_id
-    assert (
-        evidence["onchain_tokens"][token_id]["issuer_reference"]
-        == "https://docs.project.test/contracts"
-    )
+    assert evidence["onchain_tokens"][token_id]["token_id"] == token_id
+    assert "issuer_reference" not in evidence["onchain_tokens"][token_id]
     assert "links" not in evidence["onchain_tokens"][token_id]
     assert "pages" not in evidence
     assert evidence["onchain_pools"][token_id]["pool_address"] == "0x" + "b" * 40
@@ -359,14 +359,15 @@ def test_capacity_reports_all_instruments_and_largest_failing_budget(
         variant["positions"].append(
             {**variant["positions"][0], "id": "typo", "instrument_id": unknown_id}
         )
-    # A missing issuer proof must not hide an unrelated address transcription error.
+    # A suspicious identity must not hide an unrelated unresolved instrument.
+    results[0]["identity"]["suspicious"] = True
     evidence = research_evidence([results[0], results[2]])
     with pytest.raises(ValueError) as error:
         validate_market_capacity(Proposal.model_validate(payload), evidence)
     failures = str(error.value).splitlines()
     assert len(failures) == 2
     assert failures[0].startswith("100000/no:")
-    assert "registry-linked issuer" in failures[0]
+    assert "suspicious identity" in failures[0]
     assert failures[1].startswith("100000/typo:")
     assert f"unknown onchain instrument_id {unknown_id!r}" in failures[1]
 
@@ -375,11 +376,6 @@ def test_capacity_reports_all_instruments_and_largest_failing_budget(
     "failure",
     [
         "unresolved",
-        "no_page",
-        "wrong_host",
-        "host_prefix",
-        "wrong_address",
-        "address_prefix",
         "suspicious",
     ],
 )
@@ -388,25 +384,14 @@ def test_onchain_identity_cannot_be_replaced_with_a_disclaimer(
     failure: str,
 ) -> None:
     proposal, results = onchain_case
-    page = results[1]["results"][0]
     if failure == "unresolved":
         results[0] = {}
-    elif failure == "no_page":
-        results[1] = {}
-    elif failure == "wrong_host":
-        page["url"] = "https://exchange.test/listing"
-    elif failure == "host_prefix":
-        page["url"] = "https://project.test.attacker.test/contracts"
-    elif failure == "wrong_address":
-        page["contentExcerpt"] = "0x" + "b" * 40
-    elif failure == "address_prefix":
-        page["contentExcerpt"] += "a"
     else:
         results[0]["identity"]["suspicious"] = True
     expected = (
         "unknown onchain instrument_id"
         if failure == "unresolved"
-        else "registry-linked issuer"
+        else "suspicious identity"
     )
     with pytest.raises(ValueError, match=expected):
         validate_market_capacity(proposal, research_evidence(results))
@@ -469,61 +454,51 @@ def test_onchain_pool_cap_cannot_use_global_volume_or_another_token(
         validate_market_capacity(proposal, research_evidence(results))
 
 
-def test_sol_mint_and_registry_homepage_path_are_case_sensitive(
+def test_successfully_resolved_lookup_id_preserves_exact_mint_case(
     onchain_case: tuple[Proposal, list[dict[str, Any]]],
 ) -> None:
-    _, results = onchain_case
+    proposal, results = onchain_case
     mint = "AbCd" * 8
-    results[0].update(address=mint, links={"homepage": ["https://shared.test/project"]})
-    page = results[1]["results"][0]
-    page.update(url="https://shared.test/another", contentExcerpt=mint)
-    token_id = results[0]["token_id"]
-    assert (
-        research_evidence(results)["onchain_tokens"][token_id]["issuer_reference"]
-        is None
+    token_id = f"solana_{mint}"
+    lookup_id = "natix-network-solana"
+    results[0].update(
+        token_id=token_id,
+        lookup_id=lookup_id,
+        address=mint,
+        chain={"id": 900, "code": "solana"},
     )
-    page["url"] = "https://shared.test/project/contracts"
-    assert (
-        research_evidence(results)["onchain_tokens"][token_id]["issuer_reference"]
-        == page["url"]
-    )
-    page["contentExcerpt"] = mint.lower()
-    assert (
-        research_evidence(results)["onchain_tokens"][token_id]["issuer_reference"]
-        is None
-    )
+    results[1] = {}
+    results[2]["chain_code"] = "solana"
+    results[2]["tokens"][0].update(token_id=token_id, address=mint, chain_code="solana")
+    payload = proposal.model_dump()
+    for variant in payload["variants"]:
+        variant["positions"][0]["instrument_id"] = lookup_id
+    evidence = research_evidence(results)
+    assert evidence["onchain_tokens"][lookup_id]["address"] == mint
+    validate_market_capacity(Proposal.model_validate(payload), evidence)
+    # Resolving a project does not authorize other similarly named IDs.
+    payload["variants"][0]["positions"][0]["instrument_id"] = "another-project-solana"
+    with pytest.raises(ValueError, match="unknown onchain"):
+        validate_market_capacity(Proposal.model_validate(payload), evidence)
 
 
-@pytest.mark.parametrize(
-    "homepage,page_url,allowed",
-    [
-        ("https://app.project.com", "https://docs.project.com/contracts", True),
-        ("https://project.co.uk", "https://other.co.uk/contracts", False),
-        ("https://project.github.io", "https://other.github.io/contracts", False),
-        ("https://project.github.io", "https://docs.project.github.io/contracts", True),
-        (
-            "https://github.com/project/contracts",
-            "https://github.com/attacker/contracts",
-            False,
-        ),
-        (
-            "https://github.com/project/contracts",
-            "https://github.com/project/contracts/blob/main/token.sol",
-            True,
-        ),
-    ],
-)
-def test_issuer_domain_matching_respects_registrable_and_private_suffixes(
-    onchain_case: tuple[Proposal, list[dict[str, Any]]],
-    homepage: str,
-    page_url: str,
-    allowed: bool,
-) -> None:
-    _, results = onchain_case
-    results[0]["links"] = {"homepage": [homepage]}
-    results[1]["results"][0]["url"] = page_url
-    token_id = results[0]["token_id"]
-    assert (
-        bool(research_evidence(results)["onchain_tokens"][token_id]["issuer_reference"])
-        is allowed
+def test_pool_tool_resolution_is_sufficient_without_a_duplicate_lookup(onchain_case):
+    proposal, results = onchain_case
+    results[2]["resolved_token"] = results[0]
+    evidence = research_evidence([results[2]])
+    validate_market_capacity(proposal, evidence)
+
+
+def test_lookup_aliases_cannot_split_a_position_to_evade_capacity(onchain_case):
+    proposal, results = onchain_case
+    results[0]["lookup_id"] = "project-ethereum"
+    payload = proposal.model_dump()
+    variant = payload["variants"][0]
+    variant["positions"].append(
+        {**variant["positions"][0], "id": "alias", "instrument_id": "project-ethereum"}
     )
+    variant["cash_bps"] -= 200
+    with pytest.raises(ValueError, match="duplicate resolved instrument"):
+        validate_market_capacity(
+            Proposal.model_validate(payload), research_evidence(results)
+        )

@@ -4,20 +4,11 @@ import re
 from collections.abc import Iterable
 from math import isfinite
 from typing import Any
-from urllib.parse import urlsplit
-
-from tldextract import TLDExtract
 
 from wayfinder_paths.core.theses.models import Position, Proposal
 from wayfinder_paths.mcp.polymarket_summary import (
     compact_market_candidate,
     compact_order_book,
-)
-
-# Offline PSL matching includes private suffixes: docs.aave.com belongs with
-# app.aave.com, but another user's github.io site does not belong with ours.
-_DOMAIN = TLDExtract(
-    suffix_list_urls=(), cache_dir=None, include_psl_private_domains=True
 )
 
 RESEARCH_EVIDENCE_TOOLS = frozenset(
@@ -27,6 +18,7 @@ RESEARCH_EVIDENCE_TOOLS = frozenset(
         "onchain_resolve_token",
         "onchain_list_tokens",
         "core_web_fetch",
+        "research_quantify_portfolio",
     }
 )
 
@@ -41,13 +33,26 @@ def research_evidence(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
     onchain_tokens: dict[str, dict[str, Any]] = {}
     onchain_pools: dict[str, dict[str, Any]] = {}
     pages: list[dict[str, Any]] = []
+    quantified_allocations: dict[str, dict[str, Any]] = {}
     for result in results:
+        for portfolio in result.get("portfolio_quantification", {}).get(
+            "portfolios", []
+        ):
+            quantified_allocations[portfolio["allocation_key"]] = portfolio
         hyperliquid_depth.update(result.get("depth", {}))
-        if result.get("token_id") and result.get("address") and result.get("chain"):
-            onchain_tokens[result["token_id"]] = {
-                key: result.get(key, {})
-                for key in ("address", "chain", "identity", "links")
+        resolution = result.get("resolved_token") or result
+        if (
+            resolution.get("token_id")
+            and resolution.get("address")
+            and resolution.get("chain")
+        ):
+            token = {
+                key: resolution.get(key) or {}
+                for key in ("token_id", "address", "chain", "identity")
             }
+            onchain_tokens[resolution["token_id"]] = token
+            if resolution.get("lookup_id"):
+                onchain_tokens[resolution["lookup_id"]] = token
         if result.get("chain_code"):
             for token in result.get("tokens", []):
                 if (
@@ -66,8 +71,7 @@ def research_evidence(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
                             "volume_24h_usd",
                         )
                     }
-        # Only core_web_fetch results are admitted by the caller, not search
-        # snippets or the agent's query (which can already contain the address).
+        # Source reads substantiate economic claims, not contract identity.
         pages.extend(result.get("results", []))
         # Direct event/market reads can supply resolution rules without a web
         # fetch. Search candidates alone cannot establish a source was read.
@@ -109,9 +113,6 @@ def research_evidence(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
             if "asks" in book:
                 book = compact_order_book(book)
             ask_depth[result["token_id"]] = book.get("topAskNotional") or 0
-    for token in onchain_tokens.values():
-        token["issuer_reference"] = _issuer_reference(token, pages)
-        token.pop("links")
     fetched_urls.update(
         page["url"]
         for page in pages
@@ -125,6 +126,7 @@ def research_evidence(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "hyperliquid_depth": hyperliquid_depth,
         "onchain_tokens": onchain_tokens,
         "onchain_pools": onchain_pools,
+        "quantified_allocations": quantified_allocations,
     }
 
 
@@ -143,50 +145,23 @@ def missing_source_reads(proposal: Proposal, evidence: dict[str, Any]) -> list[s
     ]
 
 
-def _issuer_reference(token: dict[str, Any], pages: list[dict[str, Any]]) -> str | None:
-    """Corroborate the address on a registry-linked website, not token safety."""
-    address = token["address"]
-    for page in pages:
-        content = page.get("contentExcerpt", "")
-        # EVM addresses ignore case; Solana mint addresses must retain it.
-        if address.startswith("0x"):
-            content, address = content.lower(), address.lower()
-        if not re.search(
-            rf"(?<![A-Za-z0-9]){re.escape(address)}(?![A-Za-z0-9])", content
-        ):
-            continue
-        parsed = urlsplit(page["url"])
-        for website in token["links"].get("homepage", []) + token["links"].get(
-            "github", []
-        ):
-            official = urlsplit(website)
-            if official.scheme not in {"http", "https"}:
-                continue
-            host = official.hostname or ""
-            host = _DOMAIN(host).top_domain_under_public_suffix or host
-            path = official.path.rstrip("/")
-            if (
-                host
-                and parsed.scheme in {"http", "https"}
-                and (
-                    parsed.hostname == host
-                    or (parsed.hostname or "").endswith("." + host)
-                )
-                and (
-                    not path
-                    or parsed.path == path
-                    or parsed.path.startswith(path + "/")
-                )
-            ):
-                return page["url"]
-    return None
-
-
 def validate_market_capacity(proposal: Proposal, evidence: dict[str, Any]) -> None:
     """Report every affected instrument; retain the largest-budget failure per ID."""
     errors: dict[str, str] = {}
     for variant in sorted(proposal.variants, key=lambda v: v.budget_usd):
+        resolved_ids: set[tuple[str, str]] = set()
         for position in variant.positions:
+            resolved = evidence.get("onchain_tokens", {}).get(
+                position.instrument_id, {}
+            )
+            key = (position.kind, resolved.get("token_id") or position.instrument_id)
+            if key in resolved_ids:
+                errors[position.instrument_id] = (
+                    f"{variant.budget_usd}/{position.id}: duplicate resolved instrument; "
+                    "combine lookup aliases into one position before sizing"
+                )
+                continue
+            resolved_ids.add(key)
             try:
                 _validate_position_capacity(variant.budget_usd, position, evidence)
             except ValueError as exc:
@@ -205,17 +180,14 @@ def _validate_position_capacity(
         if not token:
             raise ValueError(
                 f"{location}: unknown onchain instrument_id {position.instrument_id!r}; "
-                "copy the exact ID from onchain_resolve_token. Check every budget for "
-                "transcription errors; never guess or retype a contract address"
+                "use an ID returned by onchain_resolve_token. A chain-scoped lookup "
+                "ID is sufficient; no contract address or issuer-page proof is required"
             )
         identity = token.get("identity", {})
-        if identity.get("suspicious") or not (
-            identity.get("is_canonical") is True or token.get("issuer_reference")
-        ):
+        if identity.get("suspicious"):
             raise ValueError(
-                f"{location}: resolve the exact onchain token, then use core_web_fetch "
-                "to corroborate its contract on its registry-linked issuer website; "
-                "a listing, search match or disclaimer does not verify the contract"
+                f"{location}: resolved token is flagged as a suspicious identity; "
+                "choose a non-conflicting instrument"
             )
         # Native holdings use the backend registry's wrapped-native
         # market-data proxy, never an agent-proposed substitute.
@@ -240,8 +212,8 @@ def _validate_position_capacity(
             raise ValueError(
                 f"{location}: onchain capital ${capital:g} exceeds the research cap "
                 f"of 0.5% of selected-pool reserves (${reserve:g}) or 1% of its "
-                f"24h volume (${volume:g}); use onchain_list_tokens with the chain "
-                f"and address query {pool_address}, reduce capital_bps or omit the leg. "
+                f"24h volume (${volume:g}); use onchain_list_tokens with "
+                f"token_id={position.instrument_id!r}, reduce capital_bps or omit the leg. "
                 "This cap is a sizing proxy, not executable depth or a fill quote"
             )
     if position.kind in {"perp", "hip3"} or (
