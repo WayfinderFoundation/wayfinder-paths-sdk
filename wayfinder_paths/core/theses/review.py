@@ -110,18 +110,19 @@ def review_report(
         for r in records
         for c in r["checkpoint"]["candidates"]
     }
-    resolutions = {
-        (v["review_session_id"], v["finding_id"]): (v, r["completed_at_ms"] or 0)
-        for r in records
-        for v in r["checkpoint"]["review_resolutions"]
-    }
+    resolutions: dict[tuple[str, str], tuple[dict[str, Any], int]] = {}
+    first_resolution_at: dict[tuple[str, str], int] = {}
+    for record in records:
+        for resolution in record["checkpoint"]["review_resolutions"]:
+            key = (resolution["review_session_id"], resolution["finding_id"])
+            timestamp = record["completed_at_ms"] or 0
+            resolutions[key] = (resolution, timestamp)
+            first_resolution_at.setdefault(key, timestamp)
     errors = []
     if not reviews:
         errors.append(
             "Reviewer must record research_thesis_review, including an empty findings list when clear"
         )
-    for key in resolutions.keys() - findings.keys():
-        errors.append(f"Resolution references unknown review finding {key[1]}")
     for key, finding in findings.items():
         resolution, resolved_at = resolutions.get(key, ({}, 0))
         action = resolution.get("action")
@@ -169,6 +170,22 @@ def review_report(
             errors.append(
                 f"Review finding {key[1]} ({finding['entity']}): resolve with public evidence, a supported change or removal; only nonblocking uncertainty may be accepted"
             )
+    for key in resolutions.keys() - findings.keys():
+        matches = [k for k in findings if k[1] == key[1]]
+        # An append-only transcript preserves a mistyped session ID. A later,
+        # valid resolution of the unique real finding supersedes that typo;
+        # never infer a resolution from the malformed reference itself.
+        if key[0] not in reviews and len(matches) == 1:
+            corrected = matches[0]
+            if (
+                findings[corrected]["resolved"]
+                and resolutions[corrected][1] > first_resolution_at[key]
+            ):
+                continue
+        errors.append(
+            f"Resolution references unknown review finding {key[0]}/{key[1]}; "
+            "resubmit using the exact review_session_id and finding_id from status"
+        )
     return {
         "findings": list(findings.values()),
         "errors": errors,

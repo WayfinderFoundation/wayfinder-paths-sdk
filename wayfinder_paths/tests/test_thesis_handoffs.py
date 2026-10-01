@@ -450,3 +450,78 @@ def test_worker_cannot_issue_review(compact_run):
             parent, [*child, fake], projected_records(parent, child)[0], set()
         )["errors"][0]
     )
+
+
+@pytest.mark.parametrize(
+    "wrong_session,wrong_finding,corrected_at,blocking,ambiguous,repeated,cleared",
+    [
+        ("typo", "carry", 5, False, False, False, True),
+        ("typo", "carry", 5, False, False, True, True),
+        ("typo", "carry", None, False, False, False, False),
+        ("typo", "carry", 3, False, False, False, False),
+        ("typo", "carry", 5, True, False, False, False),
+        ("typo", "carry", 5, False, True, False, False),
+        ("typo", "unknown-finding", 5, False, False, False, False),
+        ("other-reviewer", "carry", 5, False, False, False, False),
+    ],
+)
+def test_only_later_valid_unambiguous_resolution_can_correct_session_typo(
+    compact_run: tuple[list[dict], list[dict]],
+    wrong_session: str,
+    wrong_finding: str,
+    corrected_at: int | None,
+    blocking: bool,
+    ambiguous: bool,
+    repeated: bool,
+    cleared: bool,
+) -> None:
+    parent, child = compact_run
+    child.append(review(blocking))
+    if ambiguous or wrong_session == "other-reviewer":
+        other = review(False)
+        other["info"]["sessionID"] = "other-reviewer"
+        if not ambiguous:
+            checkpoint = ReviewCheckpoint(findings=[])
+            state = other["parts"][0]["state"]
+            state["input"]["checkpoint"] = checkpoint.model_dump()
+            state["output"] = json.dumps(
+                {
+                    "ok": True,
+                    "result": {
+                        "sha256": hashlib.sha256(
+                            checkpoint.model_dump_json().encode()
+                        ).hexdigest()
+                    },
+                }
+            )
+        child.append(other)
+    attempts = [(wrong_session, wrong_finding, 4)]
+    if corrected_at is not None:
+        attempts.append(("reviewer", "carry", corrected_at))
+    if repeated:
+        attempts.append((wrong_session, wrong_finding, 6))
+    for session, finding, timestamp in attempts:
+        parent.append(
+            receipt(
+                {
+                    "schema_version": 5,
+                    "stage": "discovery",
+                    "review_resolutions": [
+                        {
+                            "review_session_id": session,
+                            "finding_id": finding,
+                            "action": "accepted",
+                            "reason": "Disclosed nonblocking uncertainty",
+                        }
+                    ],
+                },
+                timestamp,
+            )
+        )
+    original = deepcopy((parent, child))
+    report = review_report(parent, child, projected_records(parent, child)[0], set())
+    unknown = [e for e in report["errors"] if "unknown review finding" in e]
+    assert (not unknown) == cleared
+    if cleared:
+        assert not report["errors"]
+    assert (parent, child) == original
