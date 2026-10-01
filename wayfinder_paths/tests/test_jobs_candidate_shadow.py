@@ -177,7 +177,9 @@ def test_regime_shadow_requests_classifier_history_from_shared_feed(tmp_path) ->
         now=pd.Timestamp("2026-08-24T12:00:00Z").to_pydatetime(),
     )
 
-    assert candidate_shadow_lookback_bars(store, job.id) == 690
+    # 690 for the lagged baseline + 24h return, plus the 48h OOD cooldown
+    # (576 bars) so a thrust older than the fetch still holds live.
+    assert candidate_shadow_lookback_bars(store, job.id) == 690 + 576
 
 
 def test_candidate_shadow_merges_the_features_the_candidate_declares(tmp_path) -> None:
