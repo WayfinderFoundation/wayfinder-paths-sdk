@@ -16,7 +16,11 @@ from typing import Any
 
 import pandas as pd
 
-from wayfinder_paths.jobs.defense import add_defense_features
+from wayfinder_paths.jobs.defense import (
+    add_defense_features,
+    defense_feature_warmup_bars,
+    defense_policy,
+)
 from wayfinder_paths.jobs.execution.engine import (
     EngineState,
     LiquidationConfig,
@@ -60,6 +64,7 @@ from wayfinder_paths.jobs.execution.venues import (
     VenueState,
 )
 from wayfinder_paths.jobs.regime import (
+    REGIME_FEATURE_WARMUP_BARS,
     add_portfolio_regime_feature,
     declared_regimes,
     partition_regime_returns,
@@ -462,27 +467,75 @@ def _build_profile(
     return profile
 
 
+def live_feature_warmup_bars(params: Mapping[str, Any], bar_interval: Any) -> int:
+    """Extra history the live driver fetches for engine-owned features (the
+    portfolio regime label, the defense overlay) beyond the strategy window."""
+    return max(
+        REGIME_FEATURE_WARMUP_BARS if declared_regimes(params) else 0,
+        (
+            defense_feature_warmup_bars(
+                bar_interval_seconds(bar_interval),
+                cooldown_hours=defense_policy(params)["ood_cooldown_hours"],
+            )
+            if defense_policy(params)["enabled"]
+            else 0
+        ),
+    )
+
+
 def simulate_execution(
     script_entrypoint: str | Path | Callable[..., Any],
     dataset: PreparedExecutionDataset,
     execution_spec: ExecutionSpec | Mapping[str, Any] | None = None,
     params: Mapping[str, Any] | None = None,
     record_strategy_state: bool = False,
+    precompute_per_tick: bool = False,
 ) -> ExecutionBacktestResult:
+    """``precompute_per_tick`` builds every tick's view exactly as the live
+    driver does — fetch depth, engine features, crop to the strategy window,
+    then ``precompute`` on that window alone — instead of slicing columns
+    precomputed once over all history. Slow; it exists to prove the two
+    agree (``validation.forward_parity_replay``)."""
     spec = ExecutionSpec.coerce(execution_spec)
     params_data = dict(params) if params else {}
     strategy = _load_strategy(script_entrypoint, params_data)
-    # One vectorized pass for strategy-declared derived columns (optional
-    # `precompute` hook — see features.apply_precompute). Runs on the (already
-    # quick_bars-truncated, feature-merged) dataset, so the replay's per-bar
-    # decide() just reads columns instead of re-deriving indicators.
-    defense_bars = add_defense_features(dataset.bars, params_data)
-    regime_bars = add_portfolio_regime_feature(defense_bars, params_data)
-    dataset = PreparedExecutionDataset(
-        apply_precompute(strategy, regime_bars),
-        dict(dataset.metadata),
-        list(dataset.market_events),
+    # Each tick sees a bounded trailing window — resolved by the SAME
+    # function that sizes the live driver's fetch and the shadow replayer's
+    # slice. Full history is opt-in via `full_history: true`.
+    window = resolve_compute_window(params_data, strategy)
+    raw_bars = dataset.bars
+    fetch_depth = max(
+        window.live_depth,
+        live_feature_warmup_bars(params_data, spec.data_contract.get("bar_interval")),
     )
+    if precompute_per_tick:
+        if window.size is None:
+            raise ValueError(
+                "precompute_per_tick needs a declared compute window "
+                "(execution_params.warmup_bars); full history has no live equivalent"
+            )
+    else:
+        # One vectorized pass for strategy-declared derived columns (optional
+        # `precompute` hook — see features.apply_precompute). Runs on the
+        # (already quick_bars-truncated, feature-merged) dataset, so the
+        # replay's per-bar decide() just reads columns.
+        defense_bars = add_defense_features(dataset.bars, params_data)
+        regime_bars = add_portfolio_regime_feature(defense_bars, params_data)
+        dataset = PreparedExecutionDataset(
+            apply_precompute(strategy, regime_bars),
+            dict(dataset.metadata),
+            list(dataset.market_events),
+        )
+
+    def live_view(index: int) -> CompletedBarsView:
+        # driver.py: fetch, engine features over the fetch, crop, precompute.
+        view = raw_bars.window(index, fetch_depth)
+        view = add_defense_features(view, params_data)
+        view = add_portfolio_regime_feature(view, params_data)
+        if fetch_depth > window.live_depth:
+            view = view.window(len(view.timestamps) - 1, window.live_depth)
+        return apply_precompute(strategy, view)
+
     brokers = _backtest_brokers(spec, params_data, strategy)
     state = EngineState()
     trace = ExecutionTrace(execution_spec=spec.to_dict())
@@ -504,11 +557,6 @@ def simulate_execution(
     )
     # None unless params["enable_liquidation"] is truthy — default-off parity.
     liquidation = LiquidationConfig.from_params(params_data)
-    # Each tick sees a bounded trailing window — resolved by the SAME
-    # function that sizes the live driver's fetch and the shadow replayer's
-    # slice, so backtest inputs ≡ forward inputs by construction. Full
-    # history is opt-in via `full_history: true`.
-    window = resolve_compute_window(params_data, strategy)
 
     total_bars = len(dataset.bars.timestamps)
     progress_every = max(1, total_bars // 20)
@@ -551,7 +599,11 @@ def simulate_execution(
             tick_start = time.perf_counter()
             tick = await run_tick(
                 strategy,
-                view=window.slice_view(dataset.bars, index),
+                view=(
+                    live_view(index)
+                    if precompute_per_tick
+                    else window.slice_view(dataset.bars, index)
+                ),
                 brokers=brokers,
                 state=state,
                 spec=spec,

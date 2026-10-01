@@ -273,7 +273,12 @@ DEFAULT_IMPROVER: dict[str, Any] = {
             "max_queued": 3,
             "burn_in_hours": 24,
             "min_paired_days": 7,
+            # The floor of a trial's horizon; a sparse finalist gets up to
+            # max_paired_days_cap so it can reach min_candidate_trades with
+            # trade_confidence, and is rejected as untestable beyond it.
             "max_paired_days": 14,
+            "max_paired_days_cap": 28,
+            "trade_confidence": 0.8,
             "confidence": 0.90,
             "min_effect_utility": 0.001,
             "min_candidate_trades": 3,

@@ -20,6 +20,7 @@ from wayfinder_paths.jobs.bench.aggregate import aggregate_experiment
 from wayfinder_paths.jobs.bench.env import sandbox_relative
 from wayfinder_paths.jobs.bench.forward_replay import (
     _behavior_distance,
+    _bundle_params,
     _warmup_rows,
     race_bundles,
     replay_probation,
@@ -2194,3 +2195,18 @@ def test_probation_warmup_counts_bars_not_rows() -> None:
     assert len(kept) == 864
     assert kept[-1] == stamps[899].isoformat()
     assert len(warmup) == 864 * 4
+
+
+def test_race_keeps_a_bundles_own_universe_under_the_frozen_environment() -> None:
+    environment = {
+        "params": {
+            "symbols": ["SOL", "XRP", "POL", "HYPE"],
+            "fee_bps": 5.0,
+            "initial_capital": 100.0,
+        }
+    }
+    narrowed = _bundle_params({"symbols": ["HYPE"], "fee_bps": 9.0}, environment)
+    # Costs and capital are the world's; the universe is the bundle's own.
+    assert narrowed == {"symbols": ["HYPE"], "fee_bps": 5.0, "initial_capital": 100.0}
+    unnamed = _bundle_params({"atr_period": 14}, environment)
+    assert unnamed["symbols"] == ["SOL", "XRP", "POL", "HYPE"]

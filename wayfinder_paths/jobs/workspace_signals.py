@@ -97,6 +97,7 @@ def validate_workspace_signals(
     probe: pd.DataFrame,
     *,
     truncate: int = _CAUSALITY_TRUNCATE,
+    window_probe_bars: int | None = None,
 ) -> None:
     """Fail-loud validation of workspace defs against a real probe frame.
 
@@ -190,5 +191,61 @@ def validate_workspace_signals(
                     "full-frame statistic?)"
                 )
                 break
+        else:
+            shortfall = declared_window_shortfall(
+                spec,
+                probe,
+                coerced.astype(bool),
+                bars=window_probe_bars or _WINDOW_PROBE_BARS,
+            )
+            if shortfall is not None:
+                problems.append(shortfall)
     if problems:
         raise ValueError("invalid workspace signals: " + "; ".join(problems))
+
+
+# An unbounded EWM inside an undersized window flips only near-threshold
+# bars (2 of ~1,000 for the bench finalist's expression), so samples miss
+# it; every recent bar is checked, a few milliseconds each.
+_WINDOW_PROBE_BARS = 1_500
+
+
+def declared_window_shortfall(
+    spec: SignalDef,
+    probe: pd.DataFrame,
+    full: pd.Series,
+    *,
+    bars: int = _WINDOW_PROBE_BARS,
+) -> str | None:
+    """Rebuild the signal on only its declared ``min_bars`` window at each of
+    the probe's last ``bars`` bars and require the full-history value.
+    Strategies are handed exactly that window live (warmup is derived from
+    ``min_bars``), so a signal whose stacked lookbacks need more history
+    trades differently live than in its backtest."""
+    window = int(spec.min_bars) + 2
+
+    def windowed(index: int, depth: int) -> bool:
+        rows = probe.iloc[max(0, index - depth + 1) : index + 1]
+        return bool(spec.build(rows).fillna(False).astype(bool).iloc[-1])
+
+    for index in range(max(window, len(probe) - bars), len(probe)):
+        expected = bool(full.iloc[index])
+        if windowed(index, window) == expected:
+            continue
+        depth = window
+        while depth < index + 1 and windowed(index, depth) != expected:
+            depth *= 2
+        needed = (
+            f"about {depth} bars"
+            if depth < index + 1
+            else f"more than {index + 1} bars of the probe"
+        )
+        return (
+            f"{spec.name!r}: min_bars={spec.min_bars} is shorter than the "
+            "expression's lookback; built on only its declared window the "
+            f"signal differs at {probe['timestamp'].iloc[index]} (needs {needed}). "
+            "Stacked indicators add their lookbacks; declare min_bars to cover "
+            "the whole stack. An open-ended .ewm() is never exact on a finite "
+            "window: use the DSL's bounded ema/atr/wilder_rsi/rsi_extreme instead"
+        )
+    return None

@@ -8,6 +8,7 @@ resamples upstream) so what the agent sees is what the stats test.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 
 import numpy as np
@@ -18,6 +19,30 @@ MAX_INDICATORS = 8
 # open-ended one to within (1 - 1/period) ** ((multiple - 1) * period), about
 # 7e-4 at the default; the strategy's declared window can then be exact.
 BOUNDED_EWM_MULTIPLE = 8
+
+
+# An open-ended EWM still carries ``residual`` of its seed after
+# ln(1/residual)/alpha bars. A signal built on one must declare at least that
+# many, or the live window (exactly the declared bars) and the backtest (all
+# history) disagree at near-threshold bars.
+EWM_SETTLE_RESIDUAL = 0.001
+
+
+def ewm_settle_bars(alpha: float, *, residual: float = EWM_SETTLE_RESIDUAL) -> int:
+    """Bars an open-ended EWM with smoothing ``alpha`` needs to forget its seed."""
+    if not 0.0 < alpha <= 1.0:
+        raise ValueError("ewm alpha must be in (0, 1]")
+    return math.ceil(math.log(1.0 / residual) / alpha)
+
+
+def ema_settle_bars(span: int) -> int:
+    """``ewm(span=span)``: alpha = 2 / (span + 1)."""
+    return ewm_settle_bars(2.0 / (span + 1))
+
+
+def wilder_settle_bars(period: int) -> int:
+    """Wilder RSI/ATR, ``ewm(alpha=1/period)``."""
+    return ewm_settle_bars(1.0 / period)
 
 
 def bounded_span(period: int, *, multiple: int = BOUNDED_EWM_MULTIPLE) -> int:
@@ -55,6 +80,15 @@ def bounded_recursive_mean(
     out = np.convolve(filled, weights, mode="full")[: len(filled)]
     out[: min(len(out), lead + window - 1)] = np.nan
     return pd.Series(out, index=values.index)
+
+
+def bounded_ema(
+    values: pd.Series, span: int, *, window: int | None = None
+) -> pd.Series:
+    """``ewm(span=span)`` over a fixed trailing ``window`` (default: its settle
+    span), so the value at bar t depends only on that window."""
+    size = max(window or ema_settle_bars(span), span + 1)
+    return bounded_recursive_mean(values, 2.0 / (span + 1), seed=span, window=size)
 
 
 def wilder_rsi(

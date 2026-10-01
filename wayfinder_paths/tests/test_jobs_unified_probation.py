@@ -25,6 +25,7 @@ from wayfinder_paths.jobs.probation import (
     ensure_unified_probation,
     load_probation,
     maybe_adjudicate_probation,
+    probation_horizon_days,
     stage_evolution_probation,
 )
 from wayfinder_paths.jobs.risk_overrides import (
@@ -575,7 +576,7 @@ def test_forward_verdicts_only_peek_at_preregistered_day_7_and_14(
 
     updated = load_probation(store, job_id)["trials"][0]
     assert updated["status"] == "inconclusive"
-    assert updated["verdict_reason"] == "14-day endpoint inconclusive"
+    assert updated["verdict_reason"].endswith("-day endpoint inconclusive")
 
 
 def test_positive_paired_forward_lcb_graduates_to_owner_only_proposal(
@@ -1337,3 +1338,60 @@ def test_probation_verdict_archives_the_numbers_it_was_decided_on(
     assert forward["paired_days"] == 7 and forward["candidate_trade_count"] == 4
     assert forward["overall_estimate"] == -0.00012
     assert "daily_deltas" not in forward
+
+
+def test_probation_horizon_is_sized_so_the_trade_floor_is_reachable() -> None:
+    def horizon(trades: float, days: float) -> int | None:
+        return probation_horizon_days(
+            trades,
+            days,
+            floor_days=14,
+            cap_days=28,
+            min_trades=3,
+            confidence=0.8,
+        )
+
+    # An active book keeps the 14-day floor.
+    assert horizon(30, 30) == 14
+    # 0.2 trades/day expects ~2.8 in 14 days; it gets the ~22 days three
+    # trades need with 80% confidence.
+    sized = horizon(16, 80)
+    assert sized is not None and 20 <= sized <= 28
+    # The bench breakout finalist: 12 trades in ~80 days (0.15/day) reaches
+    # three trades with only 79% inside 28 days -- untestable, not staged to
+    # close inconclusive.
+    assert horizon(12, 80) is None
+    assert horizon(0, 80) is None
+
+
+def test_a_sparse_finalist_is_untestable_not_staged(tmp_path: Path) -> None:
+    store, job_id = _job(tmp_path)
+    candidate, revision = _candidate(store, job_id, "sparse")
+    sparse = stage_evolution_probation(
+        store,
+        job_id,
+        candidate_id="sparse",
+        candidate_root=candidate,
+        revision=revision,
+        source="evolution_campaign",
+        family="breakout",
+        evidence={"objective": {"candidate": {"trade_count": 12, "day_count": 80}}},
+        now=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+    assert sparse["status"] == "untestable"
+    assert load_probation(store, job_id)["trials"] == []
+
+    staged = stage_evolution_probation(
+        store,
+        job_id,
+        candidate_id="sparse",
+        candidate_root=candidate,
+        revision=revision,
+        source="evolution_campaign",
+        family="breakout",
+        evidence={"objective": {"candidate": {"trade_count": 16, "day_count": 80}}},
+        now=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+    trial = load_probation(store, job_id)["trials"][0]
+    assert staged["status"] != "untestable"
+    assert 20 <= trial["forward"]["max_paired_days"] <= 28
