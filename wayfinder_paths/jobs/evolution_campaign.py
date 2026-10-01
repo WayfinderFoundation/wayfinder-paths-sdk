@@ -74,6 +74,7 @@ from wayfinder_paths.jobs.evolution_diagnostics import (
     fit_diagnostic_pack,
     leader_attribution_sentence,
     maker_round_trip_bps,
+    pack_text,
     preview_progress,
     receipt_economics,
     receipt_exits,
@@ -823,7 +824,7 @@ def _start_campaign(
         withhold_artifacts=bool(certification_policy["enabled"]),
     )
     diagnostic_path = campaign_root / DIAGNOSTIC_PACK
-    atomic_write_json(diagnostic_path, diagnostic_pack)
+    atomic_write_text(diagnostic_path, pack_text(diagnostic_pack))
     manifest["diagnostic_pack"] = {
         "path": f"{relative_root}/{DIAGNOSTIC_PACK}",
         "sha256": _file_hash(diagnostic_path),
@@ -2983,7 +2984,7 @@ def _merge_compose_survivors(
         **dict(fitted_block.get("composition") or {}),
         "survivors": int(composed.get("survivors") or 0) + merged,
     }
-    atomic_write_json(pack_path, fitted)
+    atomic_write_text(pack_path, pack_text(fitted))
     manifest["diagnostic_pack"] = {
         **dict(manifest.get("diagnostic_pack") or {}),
         "sha256": _file_hash(pack_path),
@@ -3435,7 +3436,7 @@ def mechanism_grid(
                 "reason": "persisting the grid would push the pack past its budget "
                 "and drop the signal it cites; nothing was persisted",
             }
-        atomic_write_json(pack_path, pack)
+        atomic_write_text(pack_path, pack_text(pack))
         manifest["diagnostic_pack"] = {
             **dict(manifest.get("diagnostic_pack") or {}),
             "sha256": _file_hash(pack_path),

@@ -12,6 +12,7 @@ from wayfinder_paths.jobs.evolution_diagnostics import (
     build_repair_work_order,
     compact_postmortem,
     pack_bytes,
+    pack_text,
     participation_adjusted_score,
     receipt_economics,
     resolve_json_pointer,
@@ -436,19 +437,17 @@ def test_pack_budget_trims_lessons_before_dropping_them() -> None:
     pack = {
         "schema_version": "1.0",
         "baseline": {"stats": {"net_return": 0.0}},
-        "validated_signals": {"blob": "s" * 45_000},
-        "research_ideation": {"blob": "i" * 4_500},
+        "validated_signals": {"blob": "s" * 30_000},
+        "research_ideation": {"blob": "i" * 3_300},
         "research_context": {"refuted_families": [{"family": "f"}]},
         "prior_campaign_lessons": {"outcomes": outcomes, "_basis": "prior outcomes"},
     }
 
     fitted = _fit_pack(pack)
 
-    # The budget is on the persisted form: what atomic_write_json writes.
+    # The budget is on the persisted form: pack_text.
     assert pack_bytes(fitted) <= DIAGNOSTIC_PACK_MAX_BYTES
-    assert pack_bytes(fitted) == len(
-        (json.dumps(fitted, indent=2, sort_keys=True) + "\n").encode()
-    )
+    assert pack_bytes(fitted) == len(pack_text(fitted).encode())
     kept = fitted["prior_campaign_lessons"]["outcomes"]
     assert len(kept) == 12
     assert kept[0]["validation_exits"] == {"closes": 8, "stop_share": 0.25}
@@ -963,11 +962,9 @@ def test_fit_pack_trims_signal_tiers_before_the_fail_closed_shape() -> None:
     assert refit["validated_signals"]["trimmed"]["signals_cap"] <= 10
     assert pack_bytes(refit) <= DIAGNOSTIC_PACK_MAX_BYTES
     assert block["trimmed"]["reason"] == "diagnostic_pack_byte_budget"
-    # The budget is on the persisted form: what atomic_write_json writes.
+    # The budget is on the persisted form: pack_text.
     assert pack_bytes(fitted) <= DIAGNOSTIC_PACK_MAX_BYTES
-    assert pack_bytes(fitted) == len(
-        (json.dumps(fitted, indent=2, sort_keys=True) + "\n").encode()
-    )
+    assert pack_bytes(fitted) == len(pack_text(fitted).encode())
 
 
 def test_fit_pack_trims_the_policy_scan_before_dropping_it() -> None:
@@ -1013,3 +1010,21 @@ def test_fit_pack_trims_the_policy_scan_before_dropping_it() -> None:
     assert huge["policy_scan_truncated"]["survivors"] == 6
     assert "pack_truncated" not in huge
     assert len(json.dumps(huge)) <= DIAGNOSTIC_PACK_MAX_BYTES
+
+
+def test_pack_text_is_json_with_every_line_inside_one_read() -> None:
+    pack = {
+        "validated_signals": {
+            "replicated": [
+                {"signal_id": f"s{index}", "how_to_use": "x" * 300, "t": index}
+                for index in range(60)
+            ]
+        },
+        "baseline": {"note": "y" * 50},
+    }
+    text = pack_text(pack)
+    assert json.loads(text) == pack
+    lines = text.splitlines()
+    assert max(map(len, lines)) <= 2_000
+    # One line per signal row, not one per field.
+    assert len(lines) < 80
