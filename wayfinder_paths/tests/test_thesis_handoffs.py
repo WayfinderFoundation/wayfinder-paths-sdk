@@ -14,6 +14,7 @@ from wayfinder_paths.core.theses.checkpoints import (
     ResearchCheckpoint,
     ReviewCheckpoint,
 )
+from wayfinder_paths.core.theses.draft import draft_context, draft_status
 from wayfinder_paths.core.theses.review import REVIEW_TOOL, review_report
 from wayfinder_paths.tests import test_thesis_assessment
 from wayfinder_paths.tests.test_thesis_draft import receipt
@@ -106,6 +107,48 @@ def test_compact_decision_reuses_original_without_mutation(compact_run):
     assert index["items"][0]["research_refs"] == [
         {"session_id": "worker", "checkpoint_id": "t1", "entity": "network"}
     ]
+
+
+def test_status_evidence_ids_are_identifiable_paged_and_not_silently_lost(
+    compact_run: tuple[list[dict], list[dict]],
+) -> None:
+    parent, child = compact_run
+    parent.append(
+        {
+            "parts": [
+                {
+                    "type": "tool",
+                    "id": f"read-{index}",
+                    "tool": "wayfinder_core_web_fetch",
+                    "state": {
+                        "status": "completed",
+                        "input": {
+                            "urls": [f"https://example.test/venue-{index}"],
+                            "query": "fee capture",
+                            "unrelated_config": "do not expose",
+                        },
+                        "output": json.dumps(
+                            {
+                                "ok": True,
+                                "result": {"results": [{"contentExcerpt": "Fee docs"}]},
+                            }
+                        ),
+                    },
+                }
+                for index in range(31)
+            ]
+        }
+    )
+    first = draft_status(parent, child)["review"]
+    assert first["public_observations_page"] == {"total": 31, "next_offset": 25}
+    second = draft_status(parent, child, offset=25)["review"]
+    assert second["public_observations_page"]["next_offset"] is None
+    rows = first["public_observations"] + second["public_observations"]
+    assert [row["part_id"] for row in rows] == [f"read-{i}" for i in range(31)]
+    assert "https://example.test/venue-0" in rows[0]["request_summary"]
+    assert "unrelated_config" not in json.dumps(rows)
+    # Paging the model's view never limits the evidence used by publication.
+    assert len(draft_context(parent, child)[1]["review"]["public_observations"]) == 31
 
 
 @pytest.mark.parametrize(

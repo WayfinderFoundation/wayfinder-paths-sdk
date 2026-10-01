@@ -57,6 +57,29 @@ def review_report(
                         "part_id": part["id"],
                         "tool": tool,
                         "completed_at_ms": state.get("time", {}).get("end"),
+                        # Native tool-part IDs are not visible in the model's
+                        # ordinary tool messages. Identify reads without raw bodies.
+                        "request_summary": json.dumps(
+                            {
+                                key: value
+                                for key, value in state.get("input", {}).items()
+                                if key
+                                in {
+                                    "query",
+                                    "urls",
+                                    "dataset",
+                                    "protocolSlug",
+                                    "protocolSlugs",
+                                    "dataType",
+                                    "asset_names",
+                                    "asset_name",
+                                    "token_id",
+                                    "market_slug",
+                                    "action",
+                                }
+                            },
+                            ensure_ascii=False,
+                        )[:600],
                     }
                 if (
                     tool != REVIEW_TOOL

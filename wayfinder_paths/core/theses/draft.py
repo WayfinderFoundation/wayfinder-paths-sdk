@@ -203,7 +203,11 @@ def draft_status(
     child_messages: list[dict[str, Any]],
     *,
     include_proposal: bool = False,
+    offset: int = 0,
+    limit: int = 25,
 ) -> dict[str, Any]:
+    if offset < 0 or not 1 <= limit <= 100:
+        raise ValueError("Use offset>=0 and limit 1..100 for public observations")
     payload, evidence, reference = draft_context(parent_messages, child_messages)
     errors = []
     try:
@@ -211,6 +215,13 @@ def draft_status(
     except ValueError as exc:
         errors = str(exc).splitlines()
     ready = not errors and reference is not None
+    review = dict(evidence["review"])
+    observations = review.get("public_observations", [])
+    review["public_observations"] = observations[offset : offset + limit]
+    review["public_observations_page"] = {
+        "total": len(observations),
+        "next_offset": offset + limit if offset + limit < len(observations) else None,
+    }
     return {
         "ready": ready,
         "proposal_ref": reference if ready else None,
@@ -218,7 +229,7 @@ def draft_status(
         "construction": evidence.get("construction"),
         "budgets_recorded": [v["budget_usd"] for v in payload["variants"]],
         "assessment": evidence["assessment"],
-        "review": evidence["review"],
+        "review": review,
         **({"proposal": payload} if include_proposal else {}),
         "execution_authorized": False,
     }

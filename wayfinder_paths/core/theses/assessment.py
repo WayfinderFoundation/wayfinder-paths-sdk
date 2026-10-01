@@ -530,6 +530,8 @@ if __name__ == "__main__":
             request["parent_messages"],
             request["child_messages"],
             include_proposal=view == "draft",
+            offset=request.get("offset", 0),
+            limit=request.get("limit", 25),
         )
     elif view == "cases":
         result = research_notebook(**request)

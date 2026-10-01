@@ -33,9 +33,11 @@ async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     Prefer decisions=[{research_ref:{session_id,checkpoint_id,entity},entity,
     decision,decision_basis,reason,implementation_checks}] using notebook references.
     Original research is resolved in code. Only provide updated_research when facts
-    change. Record review_resolutions with public evidence_part_ids from notebook
-    status; accepted is only for nonblocking uncertainty. handoff_gaps acknowledges
-    an incomplete worker after one targeted continuation, never fabricated research.
+    change. Record review_resolutions with exact public evidence_part_ids from
+    notebook status; match request_summary and paginate public_observations_page.
+    Never guess a tool-part ID. accepted is only for nonblocking uncertainty.
+    handoff_gaps acknowledges an incomplete worker after one targeted continuation,
+    never fabricated research.
     """
     return ok(
         {
