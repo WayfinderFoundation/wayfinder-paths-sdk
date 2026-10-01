@@ -198,7 +198,7 @@ def evaluate_bundle(
     params = dict(job_data.get("execution_params") or {})
     environment = environment or {}
     spec_matches = _spec_matches_environment(spec, environment)
-    params.update(dict(environment.get("params") or {}))
+    params = _bundle_params(params, environment)
     script = resolve_bundle_script_entrypoint(bundle, job_data)
     dataset = PreparedExecutionDataset.from_rows(
         list(rows), {"source": "sealed_benchmark_world"}
@@ -261,6 +261,21 @@ def evaluate_bundle(
         "profile": result.profile,
         "equity_curve": result.equity_curve,
     }
+
+
+def _bundle_params(
+    params: Mapping[str, Any], environment: Mapping[str, Any]
+) -> dict[str, Any]:
+    """The bundle's params under the world's frozen execution environment.
+
+    The world freezes costs and capital so A and B pay the same market; it
+    does not choose a bundle's universe. A bundle that declares its own
+    symbols keeps them, as it does in probation and live; the frozen list
+    only fills in for a bundle that names none."""
+    frozen = dict(environment.get("params") or {})
+    if params.get("symbols"):
+        frozen.pop("symbols", None)
+    return {**params, **frozen}
 
 
 def _spec_matches_environment(

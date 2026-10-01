@@ -109,6 +109,8 @@ from wayfinder_paths.jobs.execution.simulator import (
 from wayfinder_paths.jobs.execution.validation import (
     BOUNDED_WINDOW_HINT,
     candidate_validation_failures,
+    entry_window_parity_probe,
+    forward_parity_replay,
     parameter_behavior_probe,
     resolve_execution_spec,
     sequence_preview,
@@ -4841,6 +4843,30 @@ def _evaluate_candidate(
                     },
                 }
         result = simulate_execution(subject["script"], quick, subject["spec"], params)
+        if result.validation.get("execution_valid") and result.trades:
+            entries = entry_window_parity_probe(
+                subject["script"],
+                quick.bars,
+                subject["spec"],
+                params,
+                result.trades,
+                samples=40,
+            )
+            if entries["status"] == "failed":
+                return {
+                    "status": "invalid",
+                    "evidence": {
+                        "error": (
+                            f"entry-bar window probe failed at {entries['bar']} "
+                            f"({entries['symbol']}): the backtest opened here "
+                            "but decide() with only the declared window of "
+                            f"{entries['window']} bars does not, so live and "
+                            f"probation would never take this trade — "
+                            f"{BOUNDED_WINDOW_HINT}"
+                        ),
+                        "probe": entries,
+                    },
+                }
         screen_results: dict[str, Any] = {"recent": result}
         screen_macros = {
             label: _slice_macro_regime(dataset) for label, dataset in screen_slices
@@ -6003,7 +6029,9 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
                     status = str(staged.get("status") or "queued")
                     outcome = {
                         "status": (
-                            "probation_deferred"
+                            "proposal_rejected"
+                            if status == "untestable"
+                            else "probation_deferred"
                             if status == "deferred"
                             else "probation"
                         ),
@@ -6015,6 +6043,9 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
                         ),
                     }
                 outcome["gate"] = _gate_summary(economic, hard, risk_normalization)
+                if (outcome.get("proposal") or {}).get("status") == "untestable":
+                    # Gate-green but too sparse to reach a probation verdict.
+                    outcome["gate"]["class"] = "probation_untestable"
                 if risk_normalization is not None:
                     outcome["risk_normalization"] = risk_normalization
                     if risk_normalization.get("revision"):
@@ -6469,6 +6500,8 @@ def _gate_summary(
     )
     if economic.get("ready") is True:
         klass = "staged"
+    elif (economic.get("forward_parity") or {}).get("status") == "failed":
+        klass = "backtest_forward_divergence"
     elif ceiling_only and float(delta.get("estimate") or 0.0) > 0:
         klass = "risk_ceiling"
     else:
@@ -6596,6 +6629,32 @@ def _economic_gate_child(
         phase="economic_gate",
         candidate_id=str(candidate["candidate_id"]),
     ):
+        # Nothing reaches probation unless its backtest trades the way the
+        # forward engine will: the last 30 days replayed both ways must emit
+        # identical orders bar for bar.
+        subject = _load_subject(
+            store,
+            job_id,
+            candidate_root,
+            campaign_id=campaign_id,
+            dataset_root=dataset_root,
+        )
+        parity = forward_parity_replay(
+            subject["script"], subject["dataset"], subject["spec"], subject["params"]
+        )
+        if parity["status"] == "failed":
+            return {
+                "status": "ok",
+                "ready": False,
+                "forward_parity": parity,
+                "reasons": [
+                    f"backtest and forward engine diverge at {parity['bar']}: "
+                    f"the backtest emits {len(parity['backtest_intents'])} order(s) "
+                    f"there, the live-mode replay {len(parity['forward_intents'])} "
+                    f"on the declared {parity['window']}-bar window — "
+                    f"{BOUNDED_WINDOW_HINT}"
+                ],
+            }
         return evaluate_economic_gate(
             job_id,
             candidate_dir=candidate_root,

@@ -12,34 +12,48 @@ from __future__ import annotations
 
 import random
 
-from wayfinder_paths.jobs.signal_library import SignalDef, compile_signal_expression
+from wayfinder_paths.jobs.signal_library import (
+    SIGNAL_LIBRARY,
+    SignalDef,
+    atr_bars,
+    compile_signal_expression,
+    ema_cross_bars,
+    macd_bars,
+    rsi_bars,
+    rsi_cross_bars,
+)
 
 POPULATION_FAMILY = "population"
 POPULATION_LIMIT_CAP = 400
 
-# Canonical atoms by side and family, as DSL source with their warmup.
+# Canonical atoms by side and family, as DSL source. Their warmup is the
+# library definition's own, so a composition can never declare less.
+_ATOM_SOURCES: dict[str, str] = {
+    "rsi14_le_30": "rsi_extreme(f, 30, -1)",
+    "rsi14_ge_70": "rsi_extreme(f, 70, +1)",
+    "bb20_z_le_neg2": "bb_extreme(f, -2.0)",
+    "bb20_z_ge_2": "bb_extreme(f, 2.0)",
+    "spike_dn_5pct_20": "spike_vs_sma(f, 0.05, -1)",
+    "spike_up_5pct_20": "spike_vs_sma(f, 0.05, +1)",
+    "wide_range_dn": "wide_range(f, -1)",
+    "wide_range_up": "wide_range(f, +1)",
+    "vol_surge_dn": "vol_surge(f, -1)",
+    "vol_surge_up": "vol_surge(f, +1)",
+    "new_low_5": "new_extreme(f, 5, -1)",
+    "new_high_5": "new_extreme(f, 5, +1)",
+    "new_low_20": "new_extreme(f, 20, -1)",
+    "new_high_20": "new_extreme(f, 20, +1)",
+    "ema_cross_dn_9_21": "ema_cross(f, -1, fast=9, slow=21)",
+    "ema_cross_up_9_21": "ema_cross(f, +1, fast=9, slow=21)",
+    "trend_dn_new_low_5": "trend_gated_extreme(f, -1)",
+    "trend_up_new_high_5": "trend_gated_extreme(f, +1)",
+    "us_open_hour": "session_window(f, 9 * 60 + 30, 10 * 60 + 30)",
+    "us_close_hour": "session_window(f, 15 * 60, 16 * 60)",
+    "weekend": "weekend(f)",
+}
+_LIBRARY_BARS = {spec.name: spec.min_bars for spec in SIGNAL_LIBRARY}
 _ATOMS: dict[str, tuple[str, int]] = {
-    "rsi14_le_30": ("rsi_extreme(f, 30, -1)", 30),
-    "rsi14_ge_70": ("rsi_extreme(f, 70, +1)", 30),
-    "bb20_z_le_neg2": ("bb_extreme(f, -2.0)", 22),
-    "bb20_z_ge_2": ("bb_extreme(f, 2.0)", 22),
-    "spike_dn_5pct_20": ("spike_vs_sma(f, 0.05, -1)", 22),
-    "spike_up_5pct_20": ("spike_vs_sma(f, 0.05, +1)", 22),
-    "wide_range_dn": ("wide_range(f, -1)", 17),
-    "wide_range_up": ("wide_range(f, +1)", 17),
-    "vol_surge_dn": ("vol_surge(f, -1)", 23),
-    "vol_surge_up": ("vol_surge(f, +1)", 23),
-    "new_low_5": ("new_extreme(f, 5, -1)", 7),
-    "new_high_5": ("new_extreme(f, 5, +1)", 7),
-    "new_low_20": ("new_extreme(f, 20, -1)", 22),
-    "new_high_20": ("new_extreme(f, 20, +1)", 22),
-    "ema_cross_dn_9_21": ("ema_cross(f, -1, fast=9, slow=21)", 23),
-    "ema_cross_up_9_21": ("ema_cross(f, +1, fast=9, slow=21)", 23),
-    "trend_dn_new_low_5": ("trend_gated_extreme(f, -1)", 62),
-    "trend_up_new_high_5": ("trend_gated_extreme(f, +1)", 62),
-    "us_open_hour": ("session_window(f, 9 * 60 + 30, 10 * 60 + 30)", 1),
-    "us_close_hour": ("session_window(f, 15 * 60, 16 * 60)", 1),
-    "weekend": ("weekend(f)", 1),
+    name: (source, _LIBRARY_BARS[name]) for name, source in _ATOM_SOURCES.items()
 }
 _DOWN: dict[str, tuple[str, ...]] = {
     "mean_reversion": ("rsi14_le_30", "bb20_z_le_neg2", "spike_dn_5pct_20"),
@@ -110,7 +124,7 @@ def _singles() -> list[Row]:
             (
                 f"rsi14_le_{level}",
                 f"rsi_extreme(f, {level}, -1)",
-                30,
+                rsi_bars(14),
                 f"Wilder RSI(14) at or below {level}",
             )
         )
@@ -119,12 +133,16 @@ def _singles() -> list[Row]:
             (
                 f"rsi14_ge_{level}",
                 f"rsi_extreme(f, {level}, +1)",
-                30,
+                rsi_bars(14),
                 f"Wilder RSI(14) at or above {level}",
             )
         )
-    rows.append(("rsi7_le_30", "rsi_extreme(f, 30, -1, period=7)", 16, "RSI(7) <= 30"))
-    rows.append(("rsi7_ge_70", "rsi_extreme(f, 70, +1, period=7)", 16, "RSI(7) >= 70"))
+    rows.append(
+        ("rsi7_le_30", "rsi_extreme(f, 30, -1, period=7)", rsi_bars(7), "RSI(7) <= 30")
+    )
+    rows.append(
+        ("rsi7_ge_70", "rsi_extreme(f, 70, +1, period=7)", rsi_bars(7), "RSI(7) >= 70")
+    )
     for z in (1.5, 2.5, 3.0):
         rows.append(
             (
@@ -166,7 +184,7 @@ def _singles() -> list[Row]:
                 (
                     f"wide_range_{side}_x{_token(multiple)}",
                     f"wide_range(f, {direction:+d}, multiple={multiple})",
-                    17,
+                    atr_bars(14) + 1,
                     f"bar range over {multiple}x ATR(14) closing {side}",
                 )
             )
@@ -187,7 +205,7 @@ def _singles() -> list[Row]:
                 (
                     f"ema_cross_{side}_{fast}_{slow}",
                     f"ema_cross(f, {direction:+d}, fast={fast}, slow={slow})",
-                    slow + 2,
+                    ema_cross_bars(slow),
                     f"{fast}-EMA crossed {'below' if direction < 0 else 'above'} "
                     f"{slow}-EMA this bar",
                 )
@@ -198,7 +216,7 @@ def _singles() -> list[Row]:
                 (
                     f"macd_cross_{side}_{fast}_{slow}_{signal}",
                     f"macd_cross(f, {direction:+d}, fast={fast}, slow={slow}, signal={signal})",
-                    slow + signal + 2,
+                    macd_bars(slow, signal),
                     f"MACD({fast},{slow}) crossed its {signal}-EMA signal, {side}",
                 )
             )
@@ -237,7 +255,7 @@ def _singles() -> list[Row]:
             (
                 f"rsi7_cross_{side}_50",
                 f"rsi_cross(f, 50.0, {direction:+d}, period=7)",
-                16,
+                rsi_cross_bars(7),
                 f"RSI(7) crossed {'below' if direction < 0 else 'above'} 50",
             )
         )

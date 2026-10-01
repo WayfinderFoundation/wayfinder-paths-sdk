@@ -113,6 +113,9 @@ def test_regime_returns_follow_marked_equity_not_trade_exit_bucket() -> None:
 
 def test_breadth_shock_scales_entries_but_never_exits() -> None:
     assert defense_feature_warmup_bars(300) == 690
+    # Live must also hold the 48h cooldown, or a thrust older than the fetch
+    # never scales entries live while the backtest scales them to 25%.
+    assert defense_feature_warmup_bars(300, cooldown_hours=48) == 690 + 576
     rows = _panel_rows(count=720, interval=timedelta(minutes=5))
     for row in rows[-len(SYMBOLS) :]:
         row["close"] *= 1.5

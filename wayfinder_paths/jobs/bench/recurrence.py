@@ -235,7 +235,12 @@ def _validate_recurrence_config(config: dict[str, Any], *, source_job: Path) -> 
         }
         probation = dict(policy.get("probation") or {})
         burn_in_days = float(probation.get("burn_in_hours", 24)) / 24.0
-        max_paired = int(probation.get("max_paired_days") or 14)
+        # A sparse finalist's trial runs up to the cap (sized from its trade
+        # rate at staging), so the cap is what must fit.
+        max_paired = max(
+            int(probation.get("max_paired_days") or 14),
+            int(probation.get("max_paired_days_cap") or 28),
+        )
         # Probation carries across loops, so burn-in, the paired days, and
         # the partial cutoff day must fit inside the whole observation window
         # or no verdict can ever fire.
@@ -243,7 +248,7 @@ def _validate_recurrence_config(config: dict[str, Any], *, source_job: Path) -> 
             raise ValueError(
                 f"arm {arm['name']!r}: probation cannot reach a verdict inside the "
                 f"{window['loops']}x{window['loop_days']}-day window "
-                "(burn_in_hours + max_paired_days)"
+                "(burn_in_hours + max_paired_days_cap)"
             )
     for relative in ("job.yaml", "workspace", str(BARS_RELATIVE)):
         if not (source_job / relative).exists():

@@ -32,11 +32,14 @@ import pandas as pd
 from wayfinder_paths.jobs.indicators import (
     FEED_FUNDING,
     FEED_OPEN_INTEREST,
+    bounded_ema,
+    ema_settle_bars,
     funding_divergence_signal,
     funding_zscore,
     liquidation_flush_signal,
     trailing_change,
     wilder_rsi,
+    wilder_settle_bars,
 )
 from wayfinder_paths.jobs.indicators import atr as wilder_atr
 
@@ -61,7 +64,46 @@ def missing_feeds(frame: pd.DataFrame, spec: SignalDef) -> tuple[str, ...]:
     return tuple(column for column in spec.requires if column not in frame.columns)
 
 
-_atr = wilder_atr
+def _atr(
+    frame: pd.DataFrame, period: int = 14, *, window: int | None = None
+) -> pd.Series:
+    """Wilder ATR bounded to its settle span: identical on the live window."""
+    return wilder_atr(frame, period, window=window or wilder_settle_bars(period))
+
+
+def _rsi(close: pd.Series, period: int = 14, *, window: int | None = None) -> pd.Series:
+    """Wilder RSI bounded to its settle span: identical on the live window."""
+    return wilder_rsi(close, period, window=window or wilder_settle_bars(period))
+
+
+# Bars a builder needs so its value on exactly that many trailing bars equals
+# its value on all history (the live window vs the backtest).
+def rsi_bars(period: int = 14) -> int:
+    return wilder_settle_bars(period) + 1
+
+
+def rsi_cross_bars(period: int = 14) -> int:
+    return rsi_bars(period) + 1
+
+
+def atr_bars(period: int = 14) -> int:
+    return wilder_settle_bars(period) + 1
+
+
+def ema_bars(span: int) -> int:
+    return max(ema_settle_bars(span), span + 1)
+
+
+def ema_cross_bars(slow: int) -> int:
+    return ema_bars(slow) + 1
+
+
+def macd_bars(slow: int = 26, signal: int = 9) -> int:
+    return ema_bars(slow) + ema_bars(signal) + 1
+
+
+def trend_gated_bars(span: int = 50, lag: int = 10) -> int:
+    return ema_bars(span) + lag + 1
 
 
 def _close(frame: pd.DataFrame) -> pd.Series:
@@ -81,7 +123,7 @@ def _fresh(event: pd.Series) -> pd.Series:
 
 
 def _ema_slope_dn(close: pd.Series, span: int = 50, lag: int = 10) -> pd.Series:
-    ema = close.ewm(span=span, adjust=False).mean()
+    ema = bounded_ema(close, span)
     return ema < ema.shift(lag)
 
 
@@ -177,7 +219,7 @@ def _spike_vs_sma(
 def _rsi_extreme(
     frame: pd.DataFrame, level: float, direction: int, *, period: int = 14
 ) -> pd.Series:
-    rsi = wilder_rsi(_close(frame), period)
+    rsi = _rsi(_close(frame), period)
     return rsi >= level if direction > 0 else rsi <= level
 
 
@@ -195,8 +237,8 @@ def _ema_cross(
     frame: pd.DataFrame, direction: int, fast: int = 9, slow: int = 50
 ) -> pd.Series:
     close = _close(frame)
-    fast_ema = close.ewm(span=fast, adjust=False).mean()
-    slow_ema = close.ewm(span=slow, adjust=False).mean()
+    fast_ema = bounded_ema(close, fast)
+    slow_ema = bounded_ema(close, slow)
     return _cross(fast_ema, slow_ema, direction)
 
 
@@ -209,18 +251,15 @@ def _macd_cross(
     signal: int = 9,
 ) -> pd.Series:
     close = _close(frame)
-    macd = (
-        close.ewm(span=fast, adjust=False).mean()
-        - close.ewm(span=slow, adjust=False).mean()
-    )
-    signal_line = macd.ewm(span=signal, adjust=False).mean()
+    macd = bounded_ema(close, fast) - bounded_ema(close, slow)
+    signal_line = bounded_ema(macd, signal)
     return _cross(macd, signal_line, direction)
 
 
 def _rsi_cross(
     frame: pd.DataFrame, level: float, direction: int, *, period: int = 14
 ) -> pd.Series:
-    rsi = wilder_rsi(_close(frame), period)
+    rsi = _rsi(_close(frame), period)
     if direction > 0:
         return (rsi > level) & (rsi.shift(1) <= level)
     return (rsi < level) & (rsi.shift(1) >= level)
@@ -271,7 +310,7 @@ def _sma(close: pd.Series, period: int) -> pd.Series:
 
 
 def _ema(close: pd.Series, span: int) -> pd.Series:
-    return close.ewm(span=span, adjust=False).mean()
+    return bounded_ema(close, span)
 
 
 def _funding_divergence(
@@ -360,7 +399,7 @@ SIGNAL_DSL: dict[str, Any] = {
     "sma": sma,
     "ema": ema,
     "atr": atr,
-    "wilder_rsi": wilder_rsi,
+    "wilder_rsi": _rsi,
     "new_extreme": new_extreme,
     "fresh": fresh,
     "cross": cross,
@@ -624,28 +663,28 @@ SIGNAL_LIBRARY: tuple[SignalDef, ...] = (
         "trend_dn_new_low_5",
         "trend",
         "5-bar-low break while the 50-EMA slopes down (regime-gated)",
-        62,
+        trend_gated_bars(),
         lambda f: _trend_gated_extreme(f, -1),
     ),
     SignalDef(
         "trend_up_new_high_5",
         "trend",
         "5-bar-high break while the 50-EMA slopes up (regime-gated)",
-        62,
+        trend_gated_bars(),
         lambda f: _trend_gated_extreme(f, +1),
     ),
     SignalDef(
         "ema_cross_dn_9_50",
         "trend",
         "9-EMA crossed below 50-EMA this bar",
-        52,
+        ema_cross_bars(50),
         lambda f: _ema_cross(f, -1),
     ),
     SignalDef(
         "ema_cross_up_9_50",
         "trend",
         "9-EMA crossed above 50-EMA this bar",
-        52,
+        ema_cross_bars(50),
         lambda f: _ema_cross(f, +1),
     ),
     SignalDef(
@@ -666,14 +705,14 @@ SIGNAL_LIBRARY: tuple[SignalDef, ...] = (
         "rsi14_ge_70",
         "mean_reversion",
         "Wilder RSI(14) at or above 70 (overbought)",
-        30,
+        rsi_bars(14),
         lambda f: _rsi_extreme(f, 70, +1),
     ),
     SignalDef(
         "rsi14_le_30",
         "mean_reversion",
         "Wilder RSI(14) at or below 30 (oversold)",
-        30,
+        rsi_bars(14),
         lambda f: _rsi_extreme(f, 30, -1),
     ),
     SignalDef(
@@ -708,14 +747,14 @@ SIGNAL_LIBRARY: tuple[SignalDef, ...] = (
         "wide_range_dn",
         "volatility",
         "bar range over 2x ATR(14) closing down",
-        17,
+        atr_bars(14) + 1,
         lambda f: _wide_range(f, -1),
     ),
     SignalDef(
         "wide_range_up",
         "volatility",
         "bar range over 2x ATR(14) closing up",
-        17,
+        atr_bars(14) + 1,
         lambda f: _wide_range(f, +1),
     ),
     SignalDef(
@@ -764,42 +803,42 @@ SIGNAL_LIBRARY: tuple[SignalDef, ...] = (
         "macd_cross_up_12_26_9",
         "trend",
         "MACD(12,26) line crossed above its 9-EMA signal line this bar",
-        37,
+        macd_bars(26, 9),
         lambda f: _macd_cross(f, +1),
     ),
     SignalDef(
         "macd_cross_dn_12_26_9",
         "trend",
         "MACD(12,26) line crossed below its 9-EMA signal line this bar",
-        37,
+        macd_bars(26, 9),
         lambda f: _macd_cross(f, -1),
     ),
     SignalDef(
         "ema_cross_up_9_21",
         "trend",
         "9-EMA crossed above 21-EMA this bar (fast variant of 9/50)",
-        23,
+        ema_cross_bars(21),
         lambda f: _ema_cross(f, +1, fast=9, slow=21),
     ),
     SignalDef(
         "ema_cross_dn_9_21",
         "trend",
         "9-EMA crossed below 21-EMA this bar (fast variant of 9/50)",
-        23,
+        ema_cross_bars(21),
         lambda f: _ema_cross(f, -1, fast=9, slow=21),
     ),
     SignalDef(
         "rsi14_cross_up_50",
         "momentum",
         "Wilder RSI(14) crossed above 50 this bar (regime flip, not extreme)",
-        31,
+        rsi_cross_bars(14),
         lambda f: _rsi_cross(f, 50.0, +1),
     ),
     SignalDef(
         "rsi14_cross_dn_50",
         "momentum",
         "Wilder RSI(14) crossed below 50 this bar (regime flip, not extreme)",
-        31,
+        rsi_cross_bars(14),
         lambda f: _rsi_cross(f, 50.0, -1),
     ),
     SignalDef(
@@ -836,7 +875,7 @@ SIGNAL_LIBRARY: tuple[SignalDef, ...] = (
         "funding z-score above 2 over 480 bars while the 24-bar return is not "
         "positive and open interest grew over 24 bars: crowded longs not "
         "being paid",
-        130,
+        480 + 26,
         lambda f: _funding_divergence(f) < 0,
         requires=(FEED_FUNDING, FEED_OPEN_INTEREST),
     ),
@@ -846,7 +885,7 @@ SIGNAL_LIBRARY: tuple[SignalDef, ...] = (
         "funding z-score below -2 over 480 bars while the 24-bar return is not "
         "negative and open interest grew over 24 bars: crowded shorts not "
         "being paid",
-        130,
+        480 + 26,
         lambda f: _funding_divergence(f) > 0,
         requires=(FEED_FUNDING, FEED_OPEN_INTEREST),
     ),
