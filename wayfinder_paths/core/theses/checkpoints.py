@@ -18,28 +18,53 @@ class ThesisSpec(Contract):
     baseline: Text
 
 
-class CandidateCase(Contract):
+class Discovery(Contract):
     entity: Identifier
     name: Annotated[str, Field(min_length=1, max_length=120)]
     mechanism: Text
+    observed_identifiers: Annotated[list[Text], Field(min_length=1, max_length=12)]
+    sources: Annotated[list[Text], Field(min_length=1, max_length=6)]
+    instruments: Annotated[list[Identifier], Field(max_length=12)]
+
+
+class ImplementationCheck(Contract):
+    kind: Literal["spot", "perp", "hip3", "prediction"]
+    instrument_id: Identifier | None = None
+    status: Literal["viable", "rejected", "not_found", "incompatible", "unverified"]
+    reason: Text
+    # Returned IDs/URLs, not a claim that the conclusion itself is verified.
+    observations: Annotated[list[Text], Field(min_length=1, max_length=6)]
+
+    @model_validator(mode="after")
+    def validate_implementation(self) -> Self:
+        if self.status in {"viable", "rejected"} and not self.instrument_id:
+            raise ValueError("A compared implementation requires its observed ID")
+        return self
+
+
+class CandidateCase(Discovery):
     effect_order: Literal[1, 2, 3]
     value_capture: Text
     support: Text
     counterevidence: Text
     closest_alternative: Text
-    # Exact source-returned name/ID plus URLs allow evaluation against transcripts.
-    observed_identifiers: Annotated[list[Text], Field(min_length=1, max_length=6)]
-    sources: Annotated[list[Text], Field(min_length=1, max_length=6)]
-    instruments: Annotated[list[Identifier], Field(max_length=6)]
     decision: Literal["KEEP", "ALTERNATIVE", "REJECT", "NEEDS_EVIDENCE"]
     reason: Text
     gaps: Annotated[list[Text], Field(max_length=6)]
+    decision_basis: (
+        Literal["economic", "implementation", "portfolio", "unresolved"] | None
+    ) = None
+    implementation_checks: Annotated[
+        list[ImplementationCheck], Field(max_length=12)
+    ] = []
 
 
 class ResearchCheckpoint(Contract):
+    schema_version: Literal[1, 2] = 1
     stage: Literal["interpretation", "discovery", "provisional", "judged"]
     spec: ThesisSpec
-    candidates: Annotated[list[CandidateCase], Field(max_length=60)] = []
+    discoveries: Annotated[list[Discovery], Field(max_length=120)] = []
+    candidates: Annotated[list[CandidateCase], Field(max_length=120)] = []
     proposal: Proposal | None = None
 
     @model_validator(mode="after")
@@ -47,6 +72,41 @@ class ResearchCheckpoint(Contract):
         entities = [case.entity.casefold() for case in self.candidates]
         if len(set(entities)) != len(entities):
             raise ValueError("Group implementations of the same economic entity")
+        if self.schema_version == 2 and self.stage == "judged":
+            if not self.candidates:
+                raise ValueError(
+                    "A judged checkpoint must retain the assessment ledger"
+                )
+            for case in self.candidates:
+                if case.decision_basis is None:
+                    raise ValueError(
+                        f"{case.entity}: specify the exposure decision_basis"
+                    )
+                if (
+                    case.decision_basis == "unresolved"
+                    and case.decision != "NEEDS_EVIDENCE"
+                ):
+                    raise ValueError(
+                        f"{case.entity}: unresolved is NEEDS_EVIDENCE, not rejection"
+                    )
+                if case.decision_basis == "implementation" and case.decision in {
+                    "REJECT",
+                    "ALTERNATIVE",
+                }:
+                    checks = case.implementation_checks
+                    alternatives = {(c.kind, c.instrument_id) for c in checks}
+                    if len(alternatives) < 2 or any(
+                        c.status == "unverified" for c in checks
+                    ):
+                        raise ValueError(
+                            f"{case.entity}: compare alternative implementations before "
+                            "dropping the exposure; unresolved alternatives are NEEDS_EVIDENCE"
+                        )
+                    if any(c.status == "viable" for c in checks):
+                        raise ValueError(
+                            f"{case.entity}: a viable alternative remains; implementation "
+                            "failure alone cannot exclude this exposure"
+                        )
         if self.stage == "provisional" and self.proposal is None:
             raise ValueError("A provisional checkpoint requires a complete draft")
         if (
