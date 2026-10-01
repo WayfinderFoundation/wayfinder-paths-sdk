@@ -622,6 +622,32 @@ def _repair_trial_identity(
     }
 
 
+def probation_horizon_days(
+    trade_count: float,
+    day_count: float,
+    *,
+    floor_days: int,
+    cap_days: int,
+    min_trades: int,
+    confidence: float,
+) -> int | None:
+    """Paired days a trial needs for ``min_trades`` closed trades with
+    ``confidence`` (Poisson at the out-of-sample trade rate), at least
+    ``floor_days``; None when even ``cap_days`` is not enough."""
+    if trade_count <= 0 or day_count <= 0:
+        return None
+    rate = float(trade_count) / float(day_count)
+    for days in range(int(floor_days), int(cap_days) + 1):
+        expected = rate * days
+        below = sum(
+            math.exp(-expected) * expected**count / math.factorial(count)
+            for count in range(int(min_trades))
+        )
+        if 1.0 - below >= confidence:
+            return days
+    return None
+
+
 def stage_evolution_probation(
     store: JobStore,
     job_id: str,
@@ -653,6 +679,34 @@ def stage_evolution_probation(
     max_paired_days = int(policy.get("max_paired_days") or 14)
     min_effect_utility = float(policy.get("min_effect_utility", 0.001))
     min_candidate_trades = int(policy.get("min_candidate_trades", 3))
+    # A sparse book gets a longer trial, sized so it can actually reach the
+    # trade floor; one that cannot inside the cap is untestable, not staged.
+    activity = ((evidence or {}).get("objective") or {}).get("candidate") or {}
+    if activity.get("trade_count") is not None and activity.get("day_count"):
+        cap_days = int(policy.get("max_paired_days_cap") or 28)
+        confidence = float(policy.get("trade_confidence") or 0.8)
+        horizon = probation_horizon_days(
+            float(activity["trade_count"]),
+            float(activity["day_count"]),
+            floor_days=max_paired_days,
+            cap_days=cap_days,
+            min_trades=min_candidate_trades,
+            confidence=confidence,
+        )
+        if horizon is None:
+            rate = float(activity["trade_count"]) / float(activity["day_count"])
+            return {
+                "status": "untestable",
+                "reason": (
+                    f"{rate:.2f} out-of-sample trades/day leaves under a "
+                    f"{confidence:.0%} chance of {min_candidate_trades} trades "
+                    f"in the {cap_days}-day probation cap "
+                    f"({rate * cap_days:.1f} expected)"
+                ),
+                "trades_per_day": round(rate, 4),
+                "cap_days": cap_days,
+            }
+        max_paired_days = horizon
     safe_revision = _safe_component(revision, "candidate revision")
     trial_id = _safe_trial_id(f"{candidate_id}-{safe_revision}")
     root = store.job_dir(job_id).resolve()
@@ -1342,7 +1396,7 @@ def _adjudicate_forward(
         _close_trial(
             trial,
             "inconclusive",
-            reason="14-day endpoint inconclusive",
+            reason=f"{max_days}-day endpoint inconclusive",
             current=current,
         )
     elif checkpoint is not None:
@@ -1358,7 +1412,7 @@ def _adjudicate_forward(
         _close_trial(
             trial,
             "inconclusive",
-            reason="14-day endpoint inconclusive",
+            reason=f"{max_days}-day endpoint inconclusive",
             current=current,
         )
     else:

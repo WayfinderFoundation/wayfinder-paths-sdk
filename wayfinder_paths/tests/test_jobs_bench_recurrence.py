@@ -101,6 +101,7 @@ def _config(source_job: Path, output: Path, **overrides: Any) -> dict[str, Any]:
                 "burn_in_hours": 0,
                 "min_paired_days": 3,
                 "max_paired_days": 4,
+                "max_paired_days_cap": 4,
             }
         },
         "arms": [{"name": "evolve", "model": "test/model"}],
@@ -561,9 +562,9 @@ def test_recurrence_config_validation(tmp_path: Path) -> None:
 
     _validate_recurrence_config(_config(source, output), source_job=source)
 
-    # Production probation (24h burn-in, 14 paired days, partial cutoff day)
-    # needs 16 days: three 5-day loops fall short, three 7-day loops do not,
-    # because probation carries across loops.
+    # Production probation (24h burn-in, up to 28 paired days for a sparse
+    # finalist, partial cutoff day) needs 30 days: three 5-day loops fall
+    # short, five 7-day loops do not, because probation carries across loops.
     with pytest.raises(ValueError, match="probation cannot reach a verdict"):
         _validate_recurrence_config(
             _config(source, output, campaign={}), source_job=source
@@ -576,7 +577,7 @@ def test_recurrence_config_validation(tmp_path: Path) -> None:
             window={
                 "start_cutoff": (START + timedelta(days=35)).isoformat(),
                 "loop_days": 7,
-                "loops": 3,
+                "loops": 5,
             },
         ),
         source_job=source,
