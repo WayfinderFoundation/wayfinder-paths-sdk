@@ -109,6 +109,7 @@ from wayfinder_paths.jobs.execution.simulator import (
 from wayfinder_paths.jobs.execution.validation import (
     BOUNDED_WINDOW_HINT,
     candidate_validation_failures,
+    entry_window_parity_probe,
     parameter_behavior_probe,
     resolve_execution_spec,
     sequence_preview,
@@ -4841,6 +4842,25 @@ def _evaluate_candidate(
                     },
                 }
         result = simulate_execution(subject["script"], quick, subject["spec"], params)
+        if result.validation.get("execution_valid") and result.trades:
+            entries = entry_window_parity_probe(
+                subject["script"], quick.bars, subject["spec"], params, result.trades
+            )
+            if entries["status"] == "failed":
+                return {
+                    "status": "invalid",
+                    "evidence": {
+                        "error": (
+                            f"entry-bar window probe failed at {entries['bar']} "
+                            f"({entries['symbol']}): the backtest opened here "
+                            "but decide() with only the declared window of "
+                            f"{entries['window']} bars does not, so live and "
+                            f"probation would never take this trade — "
+                            f"{BOUNDED_WINDOW_HINT}"
+                        ),
+                        "probe": entries,
+                    },
+                }
         screen_results: dict[str, Any] = {"recent": result}
         screen_macros = {
             label: _slice_macro_regime(dataset) for label, dataset in screen_slices
