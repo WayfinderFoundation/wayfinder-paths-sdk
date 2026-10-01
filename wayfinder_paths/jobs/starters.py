@@ -607,7 +607,7 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
         family="cross_sectional_momentum",
         summary=(
             "Runs four relative-trend sleeves, sizing each by its trailing "
-            "relative volatility and capping each sleeve's gross exposure."
+            "relative volatility and capping each sleeve's target gross exposure."
         ),
         timeframe="15m",
         module="wayfinder_paths.jobs.strategies.risk_balanced_sleeves",
@@ -617,7 +617,7 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
         rules=(
             "Compare trailing 3-day returns within HYPE/DOGE, ZEC/SUI, MORPHO/AAVE, and PAXG/AVAX.",
             "Long each sleeve winner and short its loser equally; allocate inverse 20-day relative volatility, capped at 35% gross per sleeve.",
-            "Gross exposure is at most 100%, net 0%; capped allocation remains in cash rather than being redistributed.",
+            "At 1x, target gross exposure is at most 100%, net 0%; capped allocation remains in cash rather than being redistributed.",
             "Re-rank every 48 hours on a 00:00 UTC completed bar.",
         ),
         params={
@@ -732,6 +732,7 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
         },
         strategy_inception_at="2026-09-04T00:00:00+00:00",
         cautions=(
+            "Allocation caps apply to targets; price drift, rebalance deadbands and independent stops can move actual gross and net exposure away from them.",
             "Risk balancing improved the training walk-forward comparison, but July–September validation was weaker than the original; this is not uniform improvement.",
             "The final historical week had negative utility; it remains a paper-admission warning, not evidence of forward readiness.",
             "Historical qualification uses the named starter-paper-2026-09 profile at 1x. Inspect the leverage sweep before changing risk; account-halt monitors are not simulated.",
