@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from wayfinder_paths.core.theses.checkpoints import ReviewCheckpoint
+from wayfinder_paths.core.theses.checkpoints import CaseResearch, ReviewCheckpoint
 from wayfinder_paths.core.theses.research import RESEARCH_EVIDENCE_TOOLS
 
 REVIEW_TOOL = "wayfinder_research_thesis_review"
@@ -83,6 +83,104 @@ def public_observations(
     return observations
 
 
+def decision_evidence(
+    records: list[dict[str, Any]],
+    research_records: list[dict[str, Any]],
+    observations: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Resolve evidence/dependency links; never infer that a citation proves a claim."""
+    snapshots = {}
+    current = {}
+    for record in sorted(
+        [*records, *research_records], key=lambda row: row["completed_at_ms"] or 0
+    ):
+        for field in ("research_cases", "candidates"):
+            for case in record["checkpoint"][field]:
+                key = case["entity"].casefold()
+                snapshot = (case, record)
+                snapshots[(record["session_id"], record["id"], key)] = snapshot
+                if field == "candidates" or key not in current:
+                    current[key] = snapshot
+                elif "decision" not in current[key][0]:
+                    current[key] = snapshot
+    claims = []
+    updates = []
+    errors = []
+    requires_claims = any(
+        record["checkpoint"]["schema_version"] >= 7 for record in records
+    )
+    for entity, (case, record) in current.items():
+        if "decision" not in case:
+            continue
+        if (
+            requires_claims
+            and case["decision"] != "NEEDS_EVIDENCE"
+            and not case.get("claims")
+        ):
+            errors.append(
+                f"{entity}: current decision requires source-linked claims in this v7 run"
+            )
+        for claim in case.get("claims", []):
+            missing = [
+                part_id
+                for part_id in claim["evidence_part_ids"]
+                if part_id not in observations
+                or (observations[part_id]["completed_at_ms"] or 0)
+                > (record["completed_at_ms"] or 0)
+            ]
+            if missing:
+                errors.append(
+                    f"{entity}: claim needs earlier successful public reads, not "
+                    f"unknown/private/failed/future evidence: {', '.join(missing)}"
+                )
+            claims.append(
+                {
+                    "entity": entity,
+                    "checkpoint_id": record["id"],
+                    **claim,
+                    "unavailable_part_ids": missing,
+                }
+            )
+        for ref in case.get("comparison_refs", []):
+            other = ref["entity"].casefold()
+            baseline = snapshots.get((ref["session_id"], ref["checkpoint_id"], other))
+            if baseline is None or (baseline[1]["completed_at_ms"] or 0) > (
+                record["completed_at_ms"] or 0
+            ):
+                errors.append(
+                    f"{entity}: comparison_ref is not an earlier saved case: {other}"
+                )
+                continue
+            latest, latest_record = current[other]
+            fields = [*CaseResearch.model_fields, "case_basis"]
+            if "decision" in baseline[0]:
+                fields.extend(("decision", "reason", "claims", "implementation_checks"))
+            changed = [
+                field for field in fields if baseline[0].get(field) != latest.get(field)
+            ]
+            if changed:
+                updates.append(
+                    {
+                        "entity": entity,
+                        "compared_entity": other,
+                        "compared_ref": ref,
+                        "current_ref": {
+                            "session_id": latest_record["session_id"],
+                            "checkpoint_id": latest_record["id"],
+                            "entity": other,
+                        },
+                        "changed_fields": changed,
+                    }
+                )
+    return {
+        "claims": claims,
+        "claim_count": len(claims),
+        "comparison_updates": updates,
+        "errors": errors,
+        "note": "Links establish provenance, not truth. Review decisive saved observations against each claim's scope and inference. Comparison updates identify changed inputs, not a changed verdict; check the affected comparison and current weights with the same reviewer.",
+    }
+
+
 def review_report(
     parent: list[dict[str, Any]],
     children: list[dict[str, Any]],
@@ -91,11 +189,14 @@ def review_report(
     *,
     revision: str | None = None,
 ) -> dict[str, Any]:
+    from wayfinder_paths.core.theses.assessment import checkpoints
+
     findings: dict[tuple[str, str], dict[str, Any]] = {}
     reviews: set[str] = set()
     reviewed_revisions: dict[str, tuple[int, str]] = {}
     draft_reads: dict[tuple[str, str], list[int]] = {}
     observations = public_observations([*parent, *children])
+    decisions = decision_evidence(records, checkpoints(children), observations)
     for message in children:
         info = message.get("info", {})
         if info.get("agent") != "thesis-reviewer":
@@ -186,7 +287,7 @@ def review_report(
             timestamp = record["completed_at_ms"] or 0
             resolutions[key] = (resolution, timestamp)
             first_resolution_at.setdefault(key, timestamp)
-    errors = []
+    errors = list(decisions["errors"])
     warnings = []
     current_signed = revision is not None and any(
         reviewed_revision == revision
@@ -325,6 +426,7 @@ def review_report(
             session: value[1] for session, value in reviewed_revisions.items()
         },
         "changes_since_review": changes,
+        "decision_evidence": decisions,
         "errors": errors,
         "warnings": warnings,
         "public_observations": list(observations.values()),

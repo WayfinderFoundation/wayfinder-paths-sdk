@@ -565,6 +565,8 @@ def test_case_projection_keeps_classification_and_identifies_current_assessment(
         "decision": "KEEP",
         "decision_basis": "portfolio",
         "reason": "Observed catalyst, not a fee claim",
+        "claims": [],
+        "comparison_refs": [],
     }
     # A historical page must never label its last old verdict as current.
     historical = research_notebook(parent, child, entities=["network"], limit=2)

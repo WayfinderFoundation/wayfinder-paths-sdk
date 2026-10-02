@@ -234,6 +234,13 @@ def draft_status(
         errors = str(exc).splitlines()
     ready = not errors and reference is not None
     review = dict(evidence["review"])
+    if not include_proposal and "decision_evidence" in review:
+        # Status is a retrieval index; full claims are in draft/case views.
+        review["decision_evidence"] = {
+            key: value
+            for key, value in review["decision_evidence"].items()
+            if key != "claims"
+        }
     # Fresh correction reads should not require paging through the whole run.
     # Sort only the presentation; publication still audits every observation.
     observations = sorted(

@@ -14,7 +14,7 @@ from wayfinder_paths.mcp.utils import catch_errors, err, ok
 async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     """Record typed research progress, NOT verified evidence or execution approval.
 
-    Parent only; use schema_version=6. Record spec and inferred construction ONCE
+    Parent only; use schema_version=7. Record spec and inferred construction ONCE
     in interpretation; subsequent checkpoints inherit construction when omitted. Record the
     interpretation, then small draft updates (metadata/components or ONE variant)
     and incremental judgments. Use thesis_notebook(view="status") before finishing
@@ -37,15 +37,23 @@ async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     candidate_count counts parent judgments, and handoff_recorded confirms a manifest.
     Prefer decisions=[{research_ref:{session_id,checkpoint_id,entity},entity,
     decision,decision_basis,reason,implementation_checks}] using notebook references.
+    Decisions other than NEEDS_EVIDENCE need 1-4 claims: {statement,basis:
+    observation/inference,scope,evidence_part_ids:[1-3 exact saved public read IDs]}.
+    Scope states the metric definition, period/denominator/recipient when relevant;
+    no numeric revenue requirement for narrative, catalyst or hedge cases. A source
+    link is not proof. Include contrary evidence when it determines selection/weight.
+    comparison_refs=[{session_id,checkpoint_id,entity}] links the actual saved cases
+    used in comparative decisions; copy current case references from the notebook,
+    never guess IDs. Changed inputs appear in review.decision_evidence.comparison_updates.
     Original research is resolved in code. Only provide updated_research when facts
     change. Record review_resolutions with exact public evidence_part_ids from
     notebook status; match request_summary and paginate public_observations_page.
     Never guess a tool-part ID. accepted is only for nonblocking uncertainty.
     handoff_gaps acknowledges an incomplete worker after one targeted continuation,
     never fabricated research.
-    Compact shapes: discovery={schema_version:6,stage:discovery,discoveries:[...]};
-    judged={schema_version:6,stage:judged,decisions:[...]} (at most six changed cases);
-    draft={schema_version:6,stage:draft,draft:{variant:...}} (one budget per write).
+    Compact shapes: discovery={schema_version:7,stage:discovery,discoveries:[...]};
+    judged={schema_version:7,stage:judged,decisions:[...]} (at most six changed cases);
+    draft={schema_version:7,stage:draft,draft:{variant:...}} (one budget per write).
     Do not put a draft under judged or a worker handoff under a parent stage.
     After any review correction, resume the SAME reviewer to sign the new
     review.revision from notebook status. Parent resolution receipts aren't approval.

@@ -159,7 +159,7 @@ def projected_records(
                 # Reuse the existing judgment checks, including viable alternatives.
                 validated = ResearchCheckpoint.model_validate(
                     {
-                        "schema_version": 5,
+                        "schema_version": 7 if cp["schema_version"] >= 7 else 5,
                         "stage": "judged",
                         "construction": cp["construction"],
                         "candidates": [payload],
@@ -569,6 +569,8 @@ def research_notebook(
                             "decision",
                             "decision_basis",
                             "observed_identifiers",
+                            "claims",
+                            "comparison_refs",
                         }
                     }
         return {

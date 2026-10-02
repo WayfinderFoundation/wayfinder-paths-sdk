@@ -1,6 +1,6 @@
 """Untrusted research progress, separate from observed market evidence and orders."""
 
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import Field, model_validator
 
@@ -81,6 +81,21 @@ class ResearchCase(CaseResearch):
     case_basis: CaseBasis
 
 
+class CaseReference(Contract):
+    session_id: Identifier
+    checkpoint_id: Identifier
+    entity: Identifier
+
+
+class DecisionClaim(Contract):
+    """A claim to review against saved reads, not a verified fact."""
+
+    statement: Text
+    basis: Literal["observation", "inference"]
+    scope: Text
+    evidence_part_ids: Annotated[list[Identifier], Field(min_length=1, max_length=3)]
+
+
 class CandidateCase(CaseResearch):
     decision: Literal["KEEP", "ALTERNATIVE", "REJECT", "NEEDS_EVIDENCE"]
     reason: Text
@@ -92,12 +107,8 @@ class CandidateCase(CaseResearch):
     ] = []
     # Historical receipts predate an explicit investment basis.
     case_basis: CaseBasis | None = None
-
-
-class CaseReference(Contract):
-    session_id: Identifier
-    checkpoint_id: Identifier
-    entity: Identifier
+    claims: Annotated[list[DecisionClaim], Field(max_length=4)] = []
+    comparison_refs: Annotated[list[CaseReference], Field(max_length=3)] = []
 
 
 class CaseDecision(Contract):
@@ -110,6 +121,8 @@ class CaseDecision(Contract):
     reason: Text
     implementation_checks: list[ImplementationCheck] = []
     updated_research: ResearchCase | None = None
+    claims: Annotated[list[DecisionClaim], Field(max_length=4)] = []
+    comparison_refs: Annotated[list[CaseReference], Field(max_length=3)] = []
 
 
 class Handoff(Contract):
@@ -161,7 +174,7 @@ V5_FIELDS = {"decisions", "handoff", "handoff_gaps", "review_resolutions"}
 
 
 class ResearchCheckpoint(Contract):
-    schema_version: Literal[1, 2, 3, 4, 5, 6] = 1
+    schema_version: Literal[1, 2, 3, 4, 5, 6, 7] = 1
     stage: Literal["interpretation", "discovery", "provisional", "judged", "draft"]
     spec: ThesisSpec | None = None
     discoveries: Annotated[list[Discovery], Field(max_length=120)] = []
@@ -180,9 +193,15 @@ class ResearchCheckpoint(Contract):
 
     def receipt_json(self) -> str:
         # Preserve bytes of v3 receipts; v1/v2 compatibility lives in the reader.
-        excluded = V5_FIELDS if self.schema_version < 5 else set()
+        excluded: dict[str, Any] = {
+            key: True for key in V5_FIELDS if self.schema_version < 5
+        }
         if self.schema_version < 4:
-            excluded = excluded | {"construction", "draft"}
+            excluded.update(construction=True, draft=True)
+        if self.schema_version < 7:
+            for field in ("candidates", "decisions"):
+                if field not in excluded:
+                    excluded[field] = {"__all__": {"claims", "comparison_refs"}}
         return self.model_dump_json(exclude=excluded)
 
     @model_validator(mode="after")
@@ -206,6 +225,31 @@ class ResearchCheckpoint(Contract):
             errors.append("Only discovery checkpoints contain a worker handoff")
         if self.decisions and self.stage != "judged":
             errors.append("Compact decisions belong in judged checkpoints")
+        assessments: list[CandidateCase | CaseDecision] = [
+            *self.candidates,
+            *self.decisions,
+        ]
+        for assessment in assessments:
+            if self.schema_version < 7 and (
+                assessment.claims or assessment.comparison_refs
+            ):
+                errors.append("Decision claims/comparisons require schema_version=7")
+            if (
+                self.schema_version >= 7
+                and assessment.decision != "NEEDS_EVIDENCE"
+                and not assessment.claims
+            ):
+                errors.append(
+                    f"{assessment.entity}: attach 1-4 decisive claims with saved public "
+                    "evidence_part_ids; missing proof is NEEDS_EVIDENCE, not rejection"
+                )
+            if any(
+                ref.entity.casefold() == assessment.entity.casefold()
+                for ref in assessment.comparison_refs
+            ):
+                errors.append(
+                    f"{assessment.entity}: a comparison must reference another entity"
+                )
         if self.schema_version >= 4:
             if (
                 self.stage != "discovery"

@@ -9,7 +9,11 @@ from wayfinder_paths.core.theses.assessment import (
     checkpoints,
     research_notebook,
 )
-from wayfinder_paths.core.theses.checkpoints import ResearchCheckpoint, ReviewCheckpoint
+from wayfinder_paths.core.theses.checkpoints import (
+    CaseResearch,
+    ResearchCheckpoint,
+    ReviewCheckpoint,
+)
 from wayfinder_paths.core.theses.draft import (
     draft_context,
     draft_status,
@@ -421,7 +425,7 @@ def test_late_ranked_alias_must_be_explicitly_reconciled(run, spec):
     research = {
         k: v
         for k, v in case.items()
-        if k not in {"decision", "decision_basis", "reason", "implementation_checks"}
+        if k in CaseResearch.model_fields or k == "case_basis"
     }
     research["entity"] = "bitcoin-btc"
     child.append(
