@@ -61,6 +61,25 @@ class WalletClient(WayfinderClient):
             logger.error(f"sign_transaction failed for {wallet_address}: {exc}")
             raise
 
+    async def sign_svm_message(self, wallet_address: str, message: bytes) -> bytes:
+        """Remote Ed25519 signing; never exports the wallet's private key."""
+        import base64
+
+        if not 1 <= len(message) <= 4096:
+            raise ValueError("message must contain 1–4096 bytes")
+        response = await self._authed_request(
+            "POST",
+            f"{get_api_base_url()}/wallets/{wallet_address}/sign-svm-message/",
+            json={"message": base64.b64encode(message).decode("ascii")},
+        )
+        data = response.json()
+        if data.get("encoding") != "base64":
+            raise ValueError("unexpected Solana signature encoding")
+        signature = base64.b64decode(data["signature"], validate=True)
+        if len(signature) != 64:
+            raise ValueError("invalid Ed25519 signature length")
+        return signature
+
     async def sign_svm_transaction(
         self, wallet_address: str, serialized_transaction: str
     ) -> str:
