@@ -234,13 +234,38 @@ def draft_status(
         errors = str(exc).splitlines()
     ready = not errors and reference is not None
     review = dict(evidence["review"])
-    if not include_proposal and "decision_evidence" in review:
-        # Status is a retrieval index; full claims are in draft/case views.
+    if "decision_evidence" in review:
+        # Full claims remain in case views, not duplicated beside four portfolios.
+        decision_evidence = review["decision_evidence"]
         review["decision_evidence"] = {
-            key: value
-            for key, value in review["decision_evidence"].items()
-            if key != "claims"
+            key: value for key, value in decision_evidence.items() if key != "claims"
         }
+        if include_proposal:
+            claim_refs: dict[str, dict[str, Any]] = {}
+            for claim in decision_evidence["claims"]:
+                row = claim_refs.setdefault(
+                    claim["entity"],
+                    {
+                        "entity": claim["entity"],
+                        "checkpoint_id": claim["checkpoint_id"],
+                        "evidence_part_ids": [],
+                    },
+                )
+                row["evidence_part_ids"] = sorted(
+                    set(row["evidence_part_ids"]) | set(claim["evidence_part_ids"])
+                )
+            index = [claim_refs[key] for key in sorted(claim_refs)]
+            review["decision_evidence"].update(
+                claim_index=index[offset : offset + limit],
+                claim_index_page={
+                    "total": len(index),
+                    "next_offset": offset + limit
+                    if offset + limit < len(index)
+                    else None,
+                    "order": "entity_asc",
+                    "read_claims": "Use view=cases with exact entity keys; claims survive field projection. This index is not the evidence or a completed claim review.",
+                },
+            )
     # Fresh correction reads should not require paging through the whole run.
     # Sort only the presentation; publication still audits every observation.
     observations = sorted(

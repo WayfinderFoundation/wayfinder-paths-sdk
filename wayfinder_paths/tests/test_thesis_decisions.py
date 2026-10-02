@@ -116,11 +116,14 @@ def test_legacy_overwrite_cannot_remove_claim_requirement(decision_run: Run) -> 
     assert "requires source-linked claims" in report(parent, children)["errors"][0]
 
 
-def test_draft_exposes_claims_but_status_stays_an_index(decision_run: Run) -> None:
+def test_draft_indexes_claims_and_status_stays_compact(decision_run: Run) -> None:
     parent, children = decision_run
     draft = draft_status(parent, children, include_proposal=True)
     status = draft_status(parent, children)
-    assert draft["review"]["decision_evidence"]["claims"][0]["entity"] == "network"
+    assert draft["review"]["decision_evidence"]["claim_index"] == [
+        {"entity": "network", "checkpoint_id": "t2", "evidence_part_ids": ["proof"]}
+    ]
+    assert "claims" not in draft["review"]["decision_evidence"]
     assert status["review"]["decision_evidence"]["claim_count"] == 1
     assert "claims" not in status["review"]["decision_evidence"]
     parent[0]["parts"][0]["tool"] = "private"
@@ -129,6 +132,38 @@ def test_draft_exposes_claims_but_status_stays_an_index(decision_run: Run) -> No
         "earlier successful public reads" in error for error in invalid["errors"]
     )
     assert not invalid["ready"]
+
+
+def test_long_claims_remain_retrievable_without_overflowing_draft(
+    decision_run: Run,
+) -> None:
+    parent, children = decision_run
+    projected, _, _ = projected_records(parent, children)
+    case = deepcopy(projected[0]["checkpoint"]["candidates"][0])
+    long_claim = {**case["claims"][0], "statement": "s" * 2000, "scope": "p" * 2000}
+    cases = [
+        {**case, "entity": f"case-{i}", "claims": [long_claim] * 4} for i in range(8)
+    ]
+    parent.append(
+        receipt({"schema_version": 7, "stage": "judged", "candidates": cases}, 3)
+    )
+    assert len(json.dumps(report(parent, children)["claims"])) > 128_000
+    seen: list[str] = []
+    offset = 0
+    while offset is not None:
+        draft = draft_status(
+            parent, children, include_proposal=True, limit=2, offset=offset
+        )
+        assert len(json.dumps(draft).encode()) < 48_000
+        evidence = draft["review"]["decision_evidence"]
+        assert len(evidence["claim_index"]) <= 2
+        seen.extend(row["entity"] for row in evidence["claim_index"])
+        offset = evidence["claim_index_page"]["next_offset"]
+    assert seen == [*[f"case-{i}" for i in range(8)], "network"]
+    row = research_notebook(
+        parent, children, entities=["case-0"], fields=["reason"], history=False
+    )
+    assert row["cases"][0]["records"][0]["case"]["claims"] == [long_claim] * 4
 
 
 @pytest.mark.parametrize("version", [5, 6])
