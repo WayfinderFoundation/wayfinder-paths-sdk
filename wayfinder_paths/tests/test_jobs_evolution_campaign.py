@@ -3322,6 +3322,7 @@ def test_overlap_generation_writes_the_next_slot_while_one_screen_runs(
     overlapped = campaign_prompt_block(store, job_id, now=working)
     assert overlapped.get("status") != "blocked"
     assert 'action="evolution_prepare"' in overlapped["next_action"]
+    assert "Complexity budget: at most " in overlapped["next_action"]
 
     # A second screen in flight, or a candidate awaiting its own launch,
     # still waits.

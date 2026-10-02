@@ -7645,6 +7645,16 @@ def campaign_prompt_block(
     policy = manifest.get("policy") or {}
     budget = _program_budget(state, policy)
     awaiting_evaluation = _awaiting_evaluation(state, policy)
+    comparison_budget = _complexity_budget(
+        policy, _incumbent_complexity(store, job_id, str(state["campaign_id"]))
+    )
+    # 4 of v11-v12's first 63 attempts were rejected unseen on this budget.
+    complexity_note = (
+        f"Complexity budget: at most {comparison_budget} comparisons in the "
+        f"strategy ({2 * comparison_budget} when it reads the "
+        f"{MACRO_FEATURE_NAME} column); over budget is rejected before "
+        "simulation and spends the attempt. "
+    )
     deadline_elapsed = current >= deadline
     draining = deadline - CAMPAIGN_DRAIN <= current < deadline
     if running_block is not None and (
@@ -7736,7 +7746,8 @@ def campaign_prompt_block(
             if repair_work_order:
                 repair_instruction += _repair_work_order_sentence(repair_work_order)
         next_action = (
-            f"{seed_instruction}{mutation_instruction}{repair_instruction}Edit only files inside "
+            f"{seed_instruction}{mutation_instruction}{repair_instruction}"
+            f"{complexity_note}Edit only files inside "
             f"{candidate_root} "
             "(workspace, job.yaml, "
             "and optional search_space.json), then launch "
@@ -7767,7 +7778,8 @@ def campaign_prompt_block(
         preview = _parent_plan_handoff(next_parent_plan)
         next_action = (
             f"Next source plan: {json.dumps(preview, sort_keys=True)}. "
-            f"{research_instruction} {prepare_call} Then follow the returned "
+            f"{research_instruction} {prepare_call} {complexity_note}Then follow "
+            "the returned "
             "design assignment and edit only the exact `bundle_path` returned by "
             "that call and "
             'launch wayfinder_core_jobs with action="evolution_evaluate", '
