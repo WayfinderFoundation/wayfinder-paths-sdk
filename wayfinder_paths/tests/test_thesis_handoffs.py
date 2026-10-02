@@ -831,10 +831,31 @@ async def test_live_review_requires_nested_revision_but_legacy_model_remains_rea
     result = await research_thesis_review(current)
     assert result["ok"] is True
     assert result["result"]["reviewed_revision"] == "revision-1"
+    assert result["result"]["finding_keys"] == []
     assert (
         result["result"]["sha256"]
         == hashlib.sha256(current.receipt_json().encode()).hexdigest()
     )
+    current = ReviewCheckpoint(
+        reviewed_revision="revision-2",
+        findings=[
+            {
+                "id": "exact-stable-finding-id",
+                "entity": "candidate",
+                "blocking": True,
+                "issue": "Unverified direction",
+                "required_change": "Check the contract payoff",
+            }
+        ],
+    )
+    result = await research_thesis_review(current)
+    assert result["result"]["finding_keys"] == [
+        {
+            "finding_id": "exact-stable-finding-id",
+            "entity": "candidate",
+            "blocking": True,
+        }
+    ]
 
 
 def review(blocking=True):

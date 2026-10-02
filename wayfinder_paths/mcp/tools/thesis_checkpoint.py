@@ -121,6 +121,14 @@ async def research_thesis_review(checkpoint: ReviewCheckpoint) -> dict:
             "sha256": hashlib.sha256(checkpoint.receipt_json().encode()).hexdigest(),
             "reviewed_revision": checkpoint.reviewed_revision,
             "finding_count": len(checkpoint.findings),
+            "finding_keys": [
+                {
+                    "finding_id": finding.id,
+                    "entity": finding.entity,
+                    "blocking": finding.blocking,
+                }
+                for finding in checkpoint.findings
+            ],
             "execution_authorized": False,
         }
     )
