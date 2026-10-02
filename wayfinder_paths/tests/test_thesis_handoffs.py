@@ -595,6 +595,122 @@ def test_conflicting_worker_metrics_survive_focused_case_read(compact_run):
     assert child == before
 
 
+@pytest.fixture
+def revised_notebook_run(
+    compact_run: tuple[list[dict], list[dict]], discovery: dict
+) -> tuple[list[dict], list[dict]]:
+    parent, child = compact_run
+    research = deepcopy(child[0]["parts"][0]["state"]["input"]["checkpoint"])
+    research["research_cases"][0]["support"] = "Updated worker observation"
+    child.append(receipt(research, 3, session="worker", agent="thesis-researcher"))
+    research["research_cases"][0]["support"] = "Independent contrary observation"
+    child.append(receipt(research, 4, session="other", agent="thesis-researcher"))
+    update = deepcopy(parent[0]["parts"][0]["state"]["input"]["checkpoint"])
+    # Deliberately retain the original research reference: a later worker case
+    # must be visible, not silently substituted into the parent's decision.
+    update["decisions"][0]["reason"] = "Latest parent judgment"
+    parent.append(receipt(update, 5))
+    parent.append(
+        receipt(
+            {"schema_version": 5, "stage": "discovery", "discoveries": [discovery]},
+            6,
+        )
+    )
+    return parent, child
+
+
+def test_current_cases_keep_latest_parent_and_each_research_author(
+    revised_notebook_run: tuple[list[dict], list[dict]],
+) -> None:
+    parent, child = revised_notebook_run
+    original = deepcopy((parent, child))
+    result = research_notebook(parent, child, entities=["network"], history=False)
+    row = result["cases"][0]
+    assert result["history"] is False
+    assert row["record_count"] == 6
+    assert row["visible_record_count"] == 4
+    assert row["history_available"] is True
+    assert row["next_offset"] is None
+    assert [r["checkpoint_id"] for r in row["records"]] == ["t5", "t6", "t4", "t3"]
+    assert [r["current_assessment"] for r in row["records"]] == [
+        True,
+        False,
+        False,
+        False,
+    ]
+    assert row["records"][0]["case"]["support"] == "Growing usage"
+    assert row["records"][0]["case"]["reason"] == "Latest parent judgment"
+    assert row["records"][2]["case"]["support"] == "Independent contrary observation"
+    assert row["records"][3]["case"]["support"] == "Updated worker observation"
+    assert result["evidence_verified"] is False
+    assert (parent, child) == original
+
+
+def test_current_case_pagination_and_history_are_separate(
+    revised_notebook_run: tuple[list[dict], list[dict]],
+) -> None:
+    parent, child = revised_notebook_run
+    pages = [
+        research_notebook(
+            parent, child, entities=["network"], history=False, limit=2, offset=offset
+        )["cases"][0]
+        for offset in (0, 2)
+    ]
+    assert [page["next_offset"] for page in pages] == [2, None]
+    assert [r["checkpoint_id"] for page in pages for r in page["records"]] == [
+        "t5",
+        "t6",
+        "t4",
+        "t3",
+    ]
+    full = research_notebook(parent, child, entities=["network"], history=True)
+    assert full["history"] is True
+    assert [r["checkpoint_id"] for r in full["cases"][0]["records"]] == [
+        "t1",
+        "t2",
+        "t3",
+        "t4",
+        "t5",
+        "t6",
+    ]
+    # Existing SDK callers still get the historical view unless they opt in.
+    assert research_notebook(parent, child, entities=["network"]) == full
+
+
+def test_current_case_projection_preserves_metadata_and_unassessed_inventory(
+    revised_notebook_run: tuple[list[dict], list[dict]],
+) -> None:
+    parent, child = revised_notebook_run
+    result = research_notebook(
+        [], child, entities=["NETWORK", "missing"], fields=["support"], history=False
+    )
+    row = result["cases"][0]
+    assert result["missing"] == ["missing"]
+    assert row["decision"] is None
+    assert [r["session_id"] for r in row["records"]] == ["other", "worker"]
+    assert all(not r["current_assessment"] for r in row["records"])
+    assert all(r["case"]["observed_identifiers"] for r in row["records"])
+    assert all(r["case"]["case_basis"] == "economic" for r in row["records"])
+    discovery_only = research_notebook(
+        [parent[-1]], [], entities=["network"], history=False
+    )["cases"][0]
+    assert discovery_only["ranked"] is False
+    assert discovery_only["history_available"] is False
+    assert discovery_only["records"][0]["checkpoint_id"] == "t6"
+
+
+def test_current_view_does_not_change_inventory_or_publication(
+    revised_notebook_run: tuple[list[dict], list[dict]],
+) -> None:
+    parent, child = revised_notebook_run
+    before = draft_context(parent, child)
+    assert research_notebook(parent, child, history=False) == research_notebook(
+        parent, child
+    )
+    research_notebook(parent, child, entities=["network"], history=False)
+    assert draft_context(parent, child) == before
+
+
 def test_evidence_retains_fee_and_holder_flows_without_adding_them():
     messages = [
         {

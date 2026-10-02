@@ -458,8 +458,9 @@ def research_notebook(
     fields: list[str] | None = None,
     offset: int = 0,
     limit: int = 25,
+    history: bool = True,
 ) -> dict[str, Any]:
-    """A compact index or selected original cases; never an LLM re-summary."""
+    """An inventory, current cases or their history; never an LLM re-summary."""
     if (
         offset < 0
         or not 1 <= limit <= 100
@@ -538,7 +539,22 @@ def research_notebook(
                 record["current_assessment"] = record is current
             count = len(row["records"])
             row["record_count"] = count
-            row["next_offset"] = offset + limit if offset + limit < count else None
+            if not history:
+                # Keep each author's latest research/discovery, including dissent.
+                # A newer worker case must not silently replace the research that
+                # the current parent judgment actually referenced.
+                latest = {(r["session_id"], r["kind"]): r for r in row["records"]}
+                row["records"] = ([current] if current is not None else []) + [
+                    r
+                    for r in reversed(row["records"])
+                    if r["kind"] != "candidates"
+                    and latest[(r["session_id"], r["kind"])] is r
+                ]
+                row["visible_record_count"] = len(row["records"])
+                row["history_available"] = len(row["records"]) < count
+            row["next_offset"] = (
+                offset + limit if offset + limit < len(row["records"]) else None
+            )
             row["records"] = row["records"][offset : offset + limit]
             if fields is not None:
                 for record in row["records"]:
@@ -557,6 +573,7 @@ def research_notebook(
                     }
         return {
             "errors": errors,
+            "history": history,
             "cases": [rows[key] for key in requested if key in rows],
             "missing": [key for key in requested if key not in rows],
             "evidence_verified": False,
