@@ -2130,7 +2130,7 @@ def _install_path_version(
 ) -> dict[str, Any]:
     venue = _path_install_venue(runtime="sdk-cli")
 
-    expected_sha = str(version_obj.get("bundle_sha256") or "").strip()
+    expected_sha = str(version_obj.get("bundle_sha256") or "").strip().lower()
     if not expected_sha and not no_verify:
         raise click.ClickException("Version is missing bundle_sha256 (cannot verify)")
 
@@ -2146,38 +2146,43 @@ def _install_path_version(
     if dest.exists() and any(dest.iterdir()) and not force:
         # Only dependencies may reuse a completed, matching install. Keep the
         # normal collision error for partial installs and unrelated directories.
-        if reuse_existing and expected_sha and bundle_path.is_file():
-            lock, lock_path = _load_install_lock(state_dir)
-            entry = _lock_path_entry(lock, slug) or {}
-            if (
-                entry.get("version") == desired_version
-                and str(entry.get("bundle_sha256") or "").lower()
-                == expected_sha.lower()
-                and Path(str(entry.get("path") or "")).expanduser().resolve()
-                == dest.resolve()
-                and _sha256_file(bundle_path).lower() == expected_sha.lower()
-            ):
-                manifest = _load_path_manifest(dest)
-                if manifest.slug == slug and manifest.version == desired_version:
-                    installation_id = entry.get("installation_id")
-                    return {
-                        "version": desired_version,
-                        "bundle_path": str(bundle_path),
-                        "bundle_sha256": expected_sha,
-                        "dest": str(dest),
-                        "extracted_files": 0,
-                        "lockfile": str(lock_path),
-                        "install_intent_id": None,
-                        "installation_id": installation_id,
-                        "heartbeat_enabled": bool(
-                            installation_id and entry.get("heartbeat_token")
-                        ),
-                        "verified_install": bool(installation_id),
-                        "install_receipt_status": "skipped",
-                        "warnings": [],
-                        "reused": True,
-                    }
-        raise click.ClickException(f"Destination already exists (use --force): {dest}")
+        collision = click.ClickException(
+            f"Destination already exists (use --force): {dest}"
+        )
+        if not reuse_existing or not expected_sha or not bundle_path.is_file():
+            raise collision
+
+        lock, lock_path = _load_install_lock(state_dir)
+        entry = _lock_path_entry(lock, slug) or {}
+        if (
+            entry.get("version") != desired_version
+            or str(entry.get("bundle_sha256") or "").lower() != expected_sha
+            or Path(str(entry.get("path") or "")).expanduser().resolve()
+            != dest.resolve()
+            or _sha256_file(bundle_path) != expected_sha
+        ):
+            raise collision
+
+        manifest = _load_path_manifest(dest)
+        if manifest.slug != slug or manifest.version != desired_version:
+            raise collision
+
+        installation_id = entry.get("installation_id")
+        return {
+            "version": desired_version,
+            "bundle_path": str(bundle_path),
+            "bundle_sha256": expected_sha,
+            "dest": str(dest),
+            "extracted_files": 0,
+            "lockfile": str(lock_path),
+            "install_intent_id": None,
+            "installation_id": installation_id,
+            "heartbeat_enabled": bool(installation_id and entry.get("heartbeat_token")),
+            "verified_install": bool(installation_id),
+            "install_receipt_status": "skipped",
+            "warnings": [],
+            "reused": True,
+        }
 
     try:
         intent_resp = client.create_install_intent(
@@ -2211,7 +2216,7 @@ def _install_path_version(
         raise click.ClickException(str(exc)) from exc
 
     actual_sha = _sha256_file(bundle_path)
-    if not no_verify and expected_sha and actual_sha.lower() != expected_sha.lower():
+    if not no_verify and expected_sha and actual_sha != expected_sha:
         raise click.ClickException(
             f"Bundle SHA-256 mismatch (expected {expected_sha}, got {actual_sha})"
         )

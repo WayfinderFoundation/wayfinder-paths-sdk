@@ -1587,7 +1587,9 @@ def test_dependency_reuse_rejects_incomplete_or_conflicting_install(
         ],
     )
 
-    assert result.exit_code != 0
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert result.output.startswith("Error:")
     assert registry.downloads == [("parent", "0.1.0"), ("custom-dependency", "0.1.0")]
     assert registry.intents == registry.receipts == ["parent", "custom-dependency"]
     assert json.loads(lock_path.read_text()) == lock

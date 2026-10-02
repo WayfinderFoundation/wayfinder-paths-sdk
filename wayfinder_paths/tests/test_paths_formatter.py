@@ -9,7 +9,7 @@ from wayfinder_paths.paths.manifest import PathManifest
 from wayfinder_paths.paths.scaffold import init_path
 
 
-def test_format_path_preserves_skill_dependencies(tmp_path: Path):
+def test_format_path_preserves_skill_dependencies(tmp_path: Path) -> None:
     path_dir = tmp_path / "publisher-qc"
     result = init_path(
         path_dir=path_dir,
@@ -32,13 +32,6 @@ def test_format_path_preserves_skill_dependencies(tmp_path: Path):
 
     after = PathManifest.load(result.manifest_path).skill
     assert after is not None
-    assert [
-        (d.name, d.path_slug, d.required, d.host_names) for d in after.dependencies
-    ] == [
-        ("auditor-a", "auditor-a", True, {}),
-        ("auditor-b", "auditor-b-pack", False, {}),
-        ("auditor-c", "auditor-c", True, {"claude": "auditor-c-claude"}),
-    ]
     assert [
         (d.name, d.path_slug, d.required, d.host_names) for d in before.dependencies
     ] == [(d.name, d.path_slug, d.required, d.host_names) for d in after.dependencies]
