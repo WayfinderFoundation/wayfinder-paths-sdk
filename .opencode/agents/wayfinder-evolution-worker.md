@@ -70,6 +70,35 @@ Never trade, apply, approve, or promote. Only the deterministic pipeline may
 stage a surviving candidate for forward paper evaluation; live promotion stays
 behind the owner gate.
 
+Strategy contract (your bundle's `workspace/src/strategy.py` already follows
+it; edit that file instead of reading other strategies to learn the API):
+
+- `build_strategy(params)` returns an object with `decide(ctx) -> list[dict]`
+  and optionally `precompute(frames)`: `frames` maps symbol -> bar DataFrame;
+  return symbol -> DataFrame of causal columns, one row per input bar. Those
+  columns, and declared feature columns, appear in `ctx.view`.
+- Read: `ctx.view.symbol_frame(sym)` (oldest to newest), `ctx.view.latest(sym)`
+  (last row as a dict), `ctx.view.feature(name, symbol=None, default=0.0)`,
+  `ctx.ledger.positions.get(sym)` (`side` "long"/"short", `size`,
+  `avg_price`, `bars_held`), `ctx.resting_orders`, `ctx.params`,
+  `ctx.timestamp`, and `ctx.strategy_state` (a JSON-serializable dict kept
+  across ticks).
+- Emit dicts: `{"action": "OPEN" | "CLOSE", "symbol": sym, "side": "buy" |
+  "sell", "size": units` (or `"notional": usd`)`, "reduce_only": True` (CLOSE)`,
+  "limit_price": p, "time_in_force": "ALO", "expires_after_bars": n` (resting
+  post-only; omit all three for a market order)`, "bracket": {"stop_loss":
+  price}` or `{"stop_loss_pct": 0.02, "take_profit_pct": 0.04}` (fractions of
+  the fill price)`, "metadata": {"entry_reason" | "exit_reason": ...}}`.
+- Helpers: `add_stop_atr(derived, frames, period=n)` from
+  `wayfinder_paths.jobs.strategies._starter_utils` (adds `starter_stop_atr`);
+  `atr`, `bounded_ema`, `wilder_rsi`, `realized_volatility` from
+  `wayfinder_paths.jobs.indicators`; `compile_signal_expression` and
+  `library_signal_on_bars` from `wayfinder_paths.jobs.signal_library`.
+- `job.yaml`: `execution_params.warmup_bars` covers the longest lookback; a
+  campaign feature such as `macro_regime` or `leader_state` is declared by
+  name alone under `execution_spec.data_contract.features` (`- name:
+  macro_regime`).
+
 For each candidate:
 
 - Implement the assigned campaign-design hypothesis; do not rename it or
