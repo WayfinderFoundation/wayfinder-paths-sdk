@@ -225,7 +225,7 @@ def draft_status(
     limit: int = 25,
 ) -> dict[str, Any]:
     if offset < 0 or not 1 <= limit <= 100:
-        raise ValueError("Use offset>=0 and limit 1..100 for public observations")
+        raise ValueError("Use offset>=0 and limit 1..100 for notebook pages")
     payload, evidence, reference = draft_context(parent_messages, child_messages)
     errors = []
     try:
@@ -234,6 +234,28 @@ def draft_status(
         errors = str(exc).splitlines()
     ready = not errors and reference is not None
     review = dict(evidence["review"])
+    # Old resolved findings can outgrow the portfolio. Page presentation only;
+    # validation above still considers every finding and its exact resolution.
+    findings = sorted(
+        review.get("findings", []),
+        key=lambda row: (
+            row["resolved"],
+            not row["blocking"],
+            row["review_session_id"],
+            row["id"],
+        ),
+    )
+    review["findings"] = findings[offset : offset + limit]
+    review["findings_page"] = {
+        "total": len(findings),
+        "unresolved": sum(not row["resolved"] for row in findings),
+        "unresolved_blocking": sum(
+            row["blocking"] and not row["resolved"] for row in findings
+        ),
+        "next_offset": offset + limit if offset + limit < len(findings) else None,
+        "order": "unresolved_first_then_blocking_then_session_and_id",
+        "note": "Counts and publication errors cover all findings, not just this page. Follow next_offset for full finding and resolution text; resolved is bookkeeping, not verified truth.",
+    }
     if "decision_evidence" in review:
         # Full claims remain in case views, not duplicated beside four portfolios.
         decision_evidence = review["decision_evidence"]

@@ -1115,6 +1115,81 @@ def review(blocking=True):
     }
 
 
+@pytest.mark.parametrize("include_proposal", [False, True])
+def test_large_review_ledger_is_paged_without_hiding_unresolved_findings(
+    compact_run: tuple[list[dict], list[dict]], include_proposal: bool
+) -> None:
+    parent, child = compact_run
+    message = review()
+    checkpoint = ReviewCheckpoint.model_validate(
+        {
+            "findings": [
+                {
+                    "id": f"finding-{index:02}",
+                    "entity": "network",
+                    "blocking": index == 1,
+                    "issue": "Unverified observation. " * 70,
+                    "required_change": "Compare exact saved evidence. " * 60,
+                }
+                for index in range(24)
+            ]
+        }
+    )
+    state = message["parts"][0]["state"]
+    state["input"]["checkpoint"] = checkpoint.model_dump()
+    state["output"] = json.dumps(
+        {
+            "ok": True,
+            "result": {
+                "sha256": hashlib.sha256(checkpoint.receipt_json().encode()).hexdigest()
+            },
+        }
+    )
+    child.append(message)
+    parent.append(
+        receipt(
+            {
+                "schema_version": 5,
+                "stage": "discovery",
+                "review_resolutions": [
+                    {
+                        "review_session_id": "reviewer",
+                        "finding_id": f"finding-{index:02}",
+                        "action": "accepted",
+                        "reason": "Disclosed nonblocking uncertainty",
+                    }
+                    for index in range(2, 24)
+                ],
+            },
+            5,
+        )
+    )
+    original = deepcopy((parent, child))
+    proposal, evidence, reference = draft_context(parent, child)
+    full = evidence["review"]["findings"]
+    assert len(json.dumps(full).encode()) > 48_000
+    seen = []
+    offset = 0
+    while offset is not None:
+        page = draft_status(
+            parent, child, include_proposal=include_proposal, offset=offset, limit=1
+        )
+        assert len(json.dumps(page).encode()) < 48_000
+        assert not page["ready"] and page["proposal_ref"] is None
+        assert any("finding-01" in error for error in page["errors"])
+        rows = page["review"]["findings"]
+        paging = page["review"]["findings_page"]
+        assert paging["total"] == 24
+        assert paging["unresolved"] == 2
+        assert paging["unresolved_blocking"] == 1
+        seen.extend(rows)
+        offset = paging["next_offset"]
+    assert [row["id"] for row in seen[:2]] == ["finding-01", "finding-00"]
+    assert sorted(seen, key=lambda row: row["id"]) == full
+    assert draft_context(parent, child) == (proposal, evidence, reference)
+    assert (parent, child) == original
+
+
 @pytest.mark.parametrize(
     "blocking,action,refs,updated_at,valid",
     [
