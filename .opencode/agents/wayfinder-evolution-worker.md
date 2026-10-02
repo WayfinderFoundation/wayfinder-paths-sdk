@@ -94,7 +94,12 @@ it; edit that file instead of reading other strategies to learn the API):
   `atr`, `bounded_ema`, `wilder_rsi`, `realized_volatility` from
   `wayfinder_paths.jobs.indicators`; `compile_signal_expression` and
   `library_signal_on_bars` from `wayfinder_paths.jobs.signal_library`.
-- `job.yaml`: `execution_params.warmup_bars` covers the longest lookback; a
+- Stops and targets live in a literal `"bracket": {...}` key on the OPEN
+  intent dict; never emit a CLOSE because a stop or target level was crossed
+  on the close (the validator rejects that before simulation and the attempt
+  is spent).
+- `job.yaml`: edit it in place, keeping `execution_params.initial_capital`,
+  `warmup_bars` (covers the longest lookback) and `lookback_bars`; a
   campaign feature such as `macro_regime` or `leader_state` is declared by
   name alone under `execution_spec.data_contract.features` (`- name:
   macro_regime`).
