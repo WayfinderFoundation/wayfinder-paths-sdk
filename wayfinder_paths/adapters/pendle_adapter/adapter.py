@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 import httpx
 from eth_utils import to_checksum_address
+from web3.exceptions import ContractLogicError
 
 from wayfinder_paths.adapters.multicall_adapter.adapter import MulticallAdapter
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
@@ -330,8 +331,8 @@ class PendleAdapter(BaseAdapter):
         """
         Execute multicall and decode each return as uint256.
 
-        If a chunk reverts, fall back to executing calls one-by-one so we can salvage
-        partial results (returning None for failed calls).
+        Only contract reverts fall back to individual calls. Transport failures
+        must propagate, not become zero balances or trigger a retry per token.
         """
         out: list[int | None] = []
         for chunk in self._chunks(calls, max(1, int(chunk_size))):
@@ -340,7 +341,7 @@ class PendleAdapter(BaseAdapter):
             try:
                 res = await multicall.aggregate(chunk)
                 out.extend([multicall.decode_uint256(b) for b in res.return_data])
-            except Exception:  # noqa: BLE001 - fall back to individual calls
+            except ContractLogicError:
                 for call in chunk:
                     try:
                         r = await multicall.aggregate([call])
@@ -348,7 +349,7 @@ class PendleAdapter(BaseAdapter):
                             out.append(multicall.decode_uint256(r.return_data[0]))
                         else:
                             out.append(None)
-                    except Exception:  # noqa: BLE001
+                    except ContractLogicError:
                         out.append(None)
         return out
 
@@ -2094,8 +2095,9 @@ class PendleAdapter(BaseAdapter):
         multicall_chunk_size: int = 400,
         include_prices: bool = False,
         price_concurrency: int = 8,
+        chain_timeout_seconds: float = 60.0,
     ) -> tuple[bool, dict[str, Any] | str]:
-        """Query all Pendle chains and return merged positions."""
+        """Merge positions, reporting failed/timed-out chains in ``errors``."""
         all_positions: list[dict[str, Any]] = []
         chains_queried: list[int] = []
         errors: list[str] = []
@@ -2110,6 +2112,7 @@ class PendleAdapter(BaseAdapter):
                 multicall_chunk_size=multicall_chunk_size,
                 include_prices=include_prices,
                 price_concurrency=price_concurrency,
+                timeout_seconds=chain_timeout_seconds,
             )
             if ok:
                 chain_data = result  # type: ignore[assignment]
@@ -2140,6 +2143,7 @@ class PendleAdapter(BaseAdapter):
         multicall_chunk_size: int = 400,
         include_prices: bool = False,
         price_concurrency: int = 8,
+        timeout_seconds: float = 60.0,
     ) -> tuple[bool, dict[str, Any] | str]:
         """
         Pendle "full user state" snapshot via on-chain ERC20 balance scan.
@@ -2148,154 +2152,166 @@ class PendleAdapter(BaseAdapter):
           1) Fetch markets from Pendle API (market/pt/yt/sy addresses + expiry metadata)
           2) Multicall ERC20.balanceOf(account) + ERC20.decimals() for PT/YT/LP/(SY)
           3) Optionally fetch market snapshots (API) for markets with positions
+
+        The whole scan is bounded by ``timeout_seconds``, including discovery.
         """
         chain_id = _as_chain_id(chain)
 
         try:
-            markets_resp = await self.fetch_markets(
-                chain_id=chain_id,
-                is_active=None if include_inactive else True,
-            )
-            markets = markets_resp.get("markets") or []
-
-            now = _now_utc()
-            normalized: list[dict[str, Any]] = []
-            for m in markets:
-                expiry_s = m.get("expiry")
-                try:
-                    expiry_dt = _parse_iso8601(str(expiry_s)) if expiry_s else None
-                except Exception:  # noqa: BLE001
-                    expiry_dt = None
-                days_to_expiry = (
-                    (expiry_dt - now).total_seconds() / 86400.0 if expiry_dt else None
+            async with asyncio.timeout(timeout_seconds):
+                markets_resp = await self.fetch_markets(
+                    chain_id=chain_id,
+                    is_active=None if include_inactive else True,
                 )
+                markets = markets_resp.get("markets") or []
 
-                normalized.append(
-                    {
-                        "chainId": int(m.get("chainId") or chain_id),
-                        "marketName": m.get("name"),
-                        "marketAddress": _as_address(str(m.get("address", ""))),
-                        "pt": _as_address(str(m.get("pt", ""))),
-                        "yt": _as_address(str(m.get("yt", ""))),
-                        "sy": _as_address(str(m.get("sy", ""))),
-                        "underlying": _as_address(str(m.get("underlyingAsset", ""))),
-                        "expiry": expiry_s,
-                        "daysToExpiry": days_to_expiry,
-                        "active": bool(m.get("isActive"))
-                        if m.get("isActive") is not None
-                        else None,
-                    }
-                )
-
-            async with web3_from_chain_id(chain_id) as web3:
-                user_ck = web3.to_checksum_address(account)
-                multicall = MulticallAdapter(chain_id=chain_id, web3=web3)
-
-                call_specs: list[tuple[int, str, str, str]] = []
-                calls: list[Any] = []
-
-                def add_token_calls(midx: int, kind: str, token: str) -> None:
-                    if not token:
-                        return
-                    token_ck = web3.to_checksum_address(token)
-                    erc20 = web3.eth.contract(address=token_ck, abi=ERC20_ABI)
-
-                    calls.append(
-                        multicall.build_call(
-                            token_ck,
-                            erc20.encode_abi("balanceOf", args=[user_ck]),
-                        )
-                    )
-                    call_specs.append((midx, kind, token_ck, "bal"))
-
-                    calls.append(
-                        multicall.build_call(
-                            token_ck,
-                            erc20.encode_abi("decimals", args=[]),
-                        )
-                    )
-                    call_specs.append((midx, kind, token_ck, "dec"))
-
-                for i, m in enumerate(normalized):
-                    add_token_calls(i, "pt", m["pt"])
-                    add_token_calls(i, "yt", m["yt"])
-                    add_token_calls(i, "lp", m["marketAddress"])
-                    if include_sy:
-                        add_token_calls(i, "sy", m["sy"])
-
-                decoded = await self._multicall_uint256_chunked(
-                    multicall=multicall,
-                    calls=calls,
-                    chunk_size=multicall_chunk_size,
-                )
-
-                per_market: list[dict[str, Any]] = [
-                    dict(m, balances={}) for m in normalized
-                ]
-
-                for spec, val in zip(call_specs, decoded, strict=False):
-                    midx, kind, token, which = spec
-                    if midx >= len(per_market):
-                        continue
-                    bucket = per_market[midx]["balances"].setdefault(
-                        kind,
-                        {
-                            "address": token,
-                            "raw": 0,
-                            "decimals": None,
-                        },
-                    )
-                    if which == "bal":
-                        bucket["raw"] = int(val or 0)
-                    else:
-                        bucket["decimals"] = int(val) if val is not None else None
-
-            positions: list[dict[str, Any]] = []
-            for m in per_market:
-                balances = m.get("balances") or {}
-                has_any = False
-                for kind in ("pt", "yt", "lp", "sy"):
-                    if kind in balances and int(balances[kind].get("raw") or 0) > 0:
-                        has_any = True
-                        break
-                if not include_zero_positions and not has_any:
-                    continue
-                positions.append(m)
-
-            if include_prices and positions:
-
-                async def fetch_one(pos: dict[str, Any]) -> dict[str, Any]:
-                    cid = int(pos.get("chainId") or chain_id)
-                    market_address = str(pos.get("marketAddress") or "").strip()
-                    if not market_address:
-                        return {}
+                now = _now_utc()
+                normalized: list[dict[str, Any]] = []
+                for m in markets:
+                    expiry_s = m.get("expiry")
                     try:
-                        return await self.fetch_market_snapshot(
-                            chain_id=cid, market_address=market_address
-                        )
+                        expiry_dt = _parse_iso8601(str(expiry_s)) if expiry_s else None
                     except Exception:  # noqa: BLE001
-                        return {}
+                        expiry_dt = None
+                    days_to_expiry = (
+                        (expiry_dt - now).total_seconds() / 86400.0
+                        if expiry_dt
+                        else None
+                    )
 
-                snapshots = await _gather_limited(
-                    [lambda pos=pos: fetch_one(pos) for pos in positions],
-                    concurrency=int(price_concurrency),
+                    normalized.append(
+                        {
+                            "chainId": int(m.get("chainId") or chain_id),
+                            "marketName": m.get("name"),
+                            "marketAddress": _as_address(str(m.get("address", ""))),
+                            "pt": _as_address(str(m.get("pt", ""))),
+                            "yt": _as_address(str(m.get("yt", ""))),
+                            "sy": _as_address(str(m.get("sy", ""))),
+                            "underlying": _as_address(
+                                str(m.get("underlyingAsset", ""))
+                            ),
+                            "expiry": expiry_s,
+                            "daysToExpiry": days_to_expiry,
+                            "active": bool(m.get("isActive"))
+                            if m.get("isActive") is not None
+                            else None,
+                        }
+                    )
+
+                async with web3_from_chain_id(chain_id) as web3:
+                    user_ck = web3.to_checksum_address(account)
+                    multicall = MulticallAdapter(chain_id=chain_id, web3=web3)
+
+                    call_specs: list[tuple[int, str, str, str]] = []
+                    calls: list[Any] = []
+
+                    def add_token_calls(midx: int, kind: str, token: str) -> None:
+                        if not token:
+                            return
+                        token_ck = web3.to_checksum_address(token)
+                        erc20 = web3.eth.contract(address=token_ck, abi=ERC20_ABI)
+
+                        calls.append(
+                            multicall.build_call(
+                                token_ck,
+                                erc20.encode_abi("balanceOf", args=[user_ck]),
+                            )
+                        )
+                        call_specs.append((midx, kind, token_ck, "bal"))
+
+                        calls.append(
+                            multicall.build_call(
+                                token_ck,
+                                erc20.encode_abi("decimals", args=[]),
+                            )
+                        )
+                        call_specs.append((midx, kind, token_ck, "dec"))
+
+                    for i, m in enumerate(normalized):
+                        add_token_calls(i, "pt", m["pt"])
+                        add_token_calls(i, "yt", m["yt"])
+                        add_token_calls(i, "lp", m["marketAddress"])
+                        if include_sy:
+                            add_token_calls(i, "sy", m["sy"])
+
+                    decoded = await self._multicall_uint256_chunked(
+                        multicall=multicall,
+                        calls=calls,
+                        chunk_size=multicall_chunk_size,
+                    )
+
+                    per_market: list[dict[str, Any]] = [
+                        dict(m, balances={}) for m in normalized
+                    ]
+
+                    for spec, val in zip(call_specs, decoded, strict=False):
+                        midx, kind, token, which = spec
+                        if midx >= len(per_market):
+                            continue
+                        bucket = per_market[midx]["balances"].setdefault(
+                            kind,
+                            {
+                                "address": token,
+                                "raw": 0,
+                                "decimals": None,
+                            },
+                        )
+                        if which == "bal":
+                            bucket["raw"] = int(val or 0)
+                        else:
+                            bucket["decimals"] = int(val) if val is not None else None
+
+                positions: list[dict[str, Any]] = []
+                for m in per_market:
+                    balances = m.get("balances") or {}
+                    has_any = False
+                    for kind in ("pt", "yt", "lp", "sy"):
+                        if kind in balances and int(balances[kind].get("raw") or 0) > 0:
+                            has_any = True
+                            break
+                    if not include_zero_positions and not has_any:
+                        continue
+                    positions.append(m)
+
+                if include_prices and positions:
+
+                    async def fetch_one(pos: dict[str, Any]) -> dict[str, Any]:
+                        cid = int(pos.get("chainId") or chain_id)
+                        market_address = str(pos.get("marketAddress") or "").strip()
+                        if not market_address:
+                            return {}
+                        try:
+                            return await self.fetch_market_snapshot(
+                                chain_id=cid, market_address=market_address
+                            )
+                        except Exception:  # noqa: BLE001
+                            return {}
+
+                    snapshots = await _gather_limited(
+                        [lambda pos=pos: fetch_one(pos) for pos in positions],
+                        concurrency=int(price_concurrency),
+                    )
+                    for pos, snap in zip(positions, snapshots, strict=False):
+                        if snap:
+                            pos["marketSnapshot"] = snap
+
+                return (
+                    True,
+                    {
+                        "protocol": "pendle",
+                        "source": "onchain_scan_multicall",
+                        "chainId": int(chain_id),
+                        "account": account,
+                        "positions": positions,
+                    },
                 )
-                for pos, snap in zip(positions, snapshots, strict=False):
-                    if snap:
-                        pos["marketSnapshot"] = snap
-
-            return (
-                True,
-                {
-                    "protocol": "pendle",
-                    "source": "onchain_scan_multicall",
-                    "chainId": int(chain_id),
-                    "account": account,
-                    "positions": positions,
-                },
+        except TimeoutError:
+            return False, (
+                f"Pendle position scan timed out on chain {chain_id} "
+                f"(limit {timeout_seconds:g}s)"
             )
         except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+            return False, str(exc) or type(exc).__name__
 
     # ---------------------------------------
     # Execute swap
