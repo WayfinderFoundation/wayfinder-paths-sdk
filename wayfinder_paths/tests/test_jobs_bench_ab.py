@@ -2210,3 +2210,35 @@ def test_race_keeps_a_bundles_own_universe_under_the_frozen_environment() -> Non
     assert narrowed == {"symbols": ["HYPE"], "fee_bps": 5.0, "initial_capital": 100.0}
     unnamed = _bundle_params({"atr_period": 14}, environment)
     assert unnamed["symbols"] == ["SOL", "XRP", "POL", "HYPE"]
+
+
+def test_overlap_waits_for_the_launch_claim_then_asks_the_campaign(monkeypatch):
+    from wayfinder_paths.jobs.bench import runner as runner_module
+
+    states = [
+        {"status": "active", "candidates": [{"status": "prepared"}]},
+        {"status": "active", "candidates": [{"status": "quick_running"}]},
+    ]
+    polls: list[int] = []
+
+    def fake_status(store, job_id):
+        polls.append(1)
+        return states[min(len(polls) - 1, len(states) - 1)]
+
+    blocks = iter([{"session_stage": "candidate-02"}, {"status": "blocked"}])
+    monkeypatch.setattr(runner_module, "campaign_status", fake_status)
+    monkeypatch.setattr(
+        runner_module, "campaign_prompt_block", lambda *a, **k: next(blocks)
+    )
+    monkeypatch.setattr(runner_module.time, "sleep", lambda seconds: None)
+
+    # The launched candidate is claimed on the second poll; the campaign then
+    # offers the next slot.
+    assert runner_module._overlap_ready(None, "demo", now=None) is True
+    assert len(polls) == 2
+    # A blocked campaign (overlap off, or not a fresh slot) settles as before.
+    assert runner_module._overlap_ready(None, "demo", now=None) is False
+    # Nothing running: nothing to overlap with.
+    states[:] = [{"status": "active", "candidates": [{"status": "quick_complete"}]}]
+    polls.clear()
+    assert runner_module._overlap_ready(None, "demo", now=None) is False
