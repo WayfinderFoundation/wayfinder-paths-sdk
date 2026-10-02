@@ -163,7 +163,7 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "incumbent_neighborhood_span": 0.3,
         # Complexity budget: comparisons (gates) may not exceed the larger of
         # the floor and the multiple of the incumbent's own count.
-        "complexity_floor_comparisons": 24,
+        "complexity_floor_comparisons": 48,
         "complexity_multiple": 1.5,
         # Signal-first seeding: library event studies on the two screen slices;
         # signals significant on both feed the design prompt. An A/B arm

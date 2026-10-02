@@ -832,8 +832,11 @@ def test_strategy_complexity_budget_scales_with_the_incumbent() -> None:
     assert size["comparisons"] == 3
     assert size["numeric_literals"] == 4
     assert _complexity_budget({}, {"comparisons": 32}) == 48
-    assert _complexity_budget({}, {"comparisons": 4}) == 24
-    assert _complexity_budget({"complexity_multiple": 2.0}, {"comparisons": 20}) == 40
+    assert _complexity_budget({}, {"comparisons": 4}) == 48
+    # A campaign whose incumbent was retired to cash keeps the full floor.
+    assert _complexity_budget({}, {"comparisons": 0}) == 48
+    assert _complexity_budget({}, {"comparisons": 40}) == 60
+    assert _complexity_budget({"complexity_multiple": 2.0}, {"comparisons": 30}) == 60
     assert strategy_complexity("def broken(:")["comparisons"] == 0
 
 

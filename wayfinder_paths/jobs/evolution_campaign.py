@@ -938,7 +938,9 @@ def _campaign_regime_context(
     }
 
 
-_COMPLEXITY_FLOOR_COMPARISONS = 24
+# A flat (cash) or tiny incumbent must not halve the budget: books that
+# passed validation in v11-v12 used 19-40 comparisons.
+_COMPLEXITY_FLOOR_COMPARISONS = 48
 _RISK_NORMALIZATION_FLOOR = 0.25
 _RISK_CEILING_REASON_PREFIXES = ("OOS max drawdown ", "OOS tail loss ")
 _SIZING_DIMENSIONS = frozenset(
