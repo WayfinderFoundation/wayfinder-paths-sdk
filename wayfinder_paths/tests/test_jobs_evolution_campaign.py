@@ -8651,6 +8651,48 @@ def test_tuning_selects_on_frequency_score_when_weighted(monkeypatch) -> None:
     assert active["frequency_score"] > sparse["frequency_score"]
 
 
+def test_a_requested_screen_runs_next_in_the_same_op(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    first = prepare_candidate(
+        store,
+        job_id,
+        family="breakout",
+        summary="first",
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
+    )
+    second = prepare_candidate(
+        store,
+        job_id,
+        family="breakout",
+        summary="second",
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
+    )
+    assert evolution_campaign.request_candidate_evaluation(
+        store, job_id, second["candidate_id"]
+    ) == {"queued": True, "candidate_id": second["candidate_id"]}
+    state = campaign_status(store, job_id)
+    # A fresh request is in flight: no worker session is issued for it.
+    policy = {"screen_before_repair": True, "generated_programs": 12}
+    waiting = [
+        item["candidate_id"]
+        for item in evolution_campaign._awaiting_evaluation(state, policy)
+    ]
+    assert second["candidate_id"] not in waiting
+    assert first["candidate_id"] in waiting
+
+    result = evolution_campaign.evaluate_candidate_and_requests(
+        store, job_id, first["candidate_id"]
+    )
+    assert result["chained_evaluations"] == [second["candidate_id"]]
+    after = {
+        item["candidate_id"]: item
+        for item in campaign_status(store, job_id)["candidates"]
+    }
+    assert after[second["candidate_id"]]["status"] != "prepared"
+    assert "evaluation_requested_at" not in after[second["candidate_id"]]
+
+
 def test_unbuildable_seed_falls_back_to_de_novo_instead_of_wedging(
     tmp_path, monkeypatch
 ) -> None:

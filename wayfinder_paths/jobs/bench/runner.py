@@ -833,8 +833,11 @@ def _overlap_ready(
     deadline = time.monotonic() + claim_timeout_s
     while time.monotonic() < deadline:
         state = campaign_status(store, job_id)
+        # A queued screen (requested behind the running one) is in flight.
         statuses = [
-            str(candidate.get("status") or "")
+            "quick_running"
+            if candidate.get("evaluation_requested_at")
+            else str(candidate.get("status") or "")
             for candidate in state.get("candidates") or []
         ]
         if state.get("status") != "active":

@@ -4518,6 +4518,67 @@ def _require_declared_window(subject: dict[str, Any], params: dict[str, Any]) ->
         )
 
 
+# A worker whose screen launch found another candidate's screen running
+# leaves a request; the running op evaluates it next. A request older than
+# this with nothing running is handed back to a worker session.
+EVALUATION_REQUEST_TTL = timedelta(minutes=30)
+_REQUESTABLE_STATUSES = frozenset({"prepared", "quick_failed", "repair_pending"})
+
+
+def request_candidate_evaluation(
+    store: JobStore, job_id: str, candidate_id: str
+) -> dict[str, Any] | None:
+    """Queue a screen behind the one running; None when the candidate is not
+    waiting for one (already running, or already screened)."""
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = _active_campaign(store, job_id)
+        candidate = _candidate(state, candidate_id)
+        if candidate.get("status") not in _REQUESTABLE_STATUSES:
+            return None
+        candidate["evaluation_requested_at"] = utc_now_iso()
+        _save_campaign(store, job_id, state)
+    return {"queued": True, "candidate_id": candidate_id}
+
+
+def evaluate_candidate_and_requests(
+    store: JobStore, job_id: str, candidate_id: str
+) -> dict[str, Any]:
+    """The evaluate op: this candidate, then every screen requested while it
+    ran, in request order."""
+    result = evaluate_candidate(store, job_id, candidate_id)
+    chained: list[str] = []
+    while (requested := _next_requested_evaluation(store, job_id)) is not None:
+        evaluate_candidate(store, job_id, requested)
+        chained.append(requested)
+    return {**result, "chained_evaluations": chained} if chained else result
+
+
+def _next_requested_evaluation(store: JobStore, job_id: str) -> str | None:
+    state = campaign_status(store, job_id)
+    if state.get("status") not in {"active", "finalizing"}:
+        return None
+    requested = sorted(
+        (
+            item
+            for item in state.get("candidates") or []
+            if item.get("evaluation_requested_at")
+            and item.get("status") in _REQUESTABLE_STATUSES
+        ),
+        key=lambda item: str(item["evaluation_requested_at"]),
+    )
+    return str(requested[0]["candidate_id"]) if requested else None
+
+
+def _evaluation_requested(candidate: Mapping[str, Any]) -> bool:
+    stamp = candidate.get("evaluation_requested_at")
+    if not stamp:
+        return False
+    try:
+        return _campaign_now() - _parse(str(stamp)) < EVALUATION_REQUEST_TTL
+    except (TypeError, ValueError):
+        return False
+
+
 def evaluate_candidate(
     store: JobStore, job_id: str, candidate_id: str
 ) -> dict[str, Any]:
@@ -4548,6 +4609,7 @@ def evaluate_candidate(
                 "evaluation_claimed_at": utc_now_iso(),
             }
         )
+        candidate.pop("evaluation_requested_at", None)
         candidate_snapshot = dict(candidate)
         _save_campaign(store, job_id, state)
     try:
@@ -7864,7 +7926,11 @@ def _awaiting_evaluation(
     focus set is served, best rank first.  The legacy depth-first order is
     kept behind ``screen_before_repair: false`` for the bench control arm.
     """
-    candidates = list(state.get("candidates") or [])
+    candidates = [
+        item
+        for item in state.get("candidates") or []
+        if not _evaluation_requested(item)
+    ]
     fresh = [
         item
         for item in candidates
