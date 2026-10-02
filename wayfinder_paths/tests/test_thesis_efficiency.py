@@ -120,7 +120,10 @@ async def test_bulk_fees_filter_before_limit_and_preserve_missing():
 
 
 @pytest.mark.asyncio
-async def test_alternatives_are_measured_not_allocated_and_sizing_reuses_history():
+@pytest.mark.parametrize("compare_implementations", [False, True])
+async def test_alternatives_are_measured_not_allocated_and_sizing_reuses_history(
+    compare_implementations: bool,
+) -> None:
     tool._market_cache.clear()
     draft = variant(capital_bps=10000)
     alternative = variant(
@@ -146,7 +149,7 @@ async def test_alternatives_are_measured_not_allocated_and_sizing_reuses_history
         result = await tool.research_quantify_portfolio(
             [draft, draft.model_copy(update={"budget_usd": 100000})],
             alternatives=[alternative],
-            compare_implementations=True,
+            compare_implementations=compare_implementations,
         )
         assert result["ok"]
         report = result["result"]
@@ -154,16 +157,23 @@ async def test_alternatives_are_measured_not_allocated_and_sizing_reuses_history
             "BTC-USDC",
             "UBTC/USDC",
         }
-        assert report["implementation_comparisons"]["BTC-USDC"][
-            "notional_by_budget"
-        ] == {"100": 100, "100000": 100000}
+        scope = report["implementation_comparison_scope"]
+        assert scope["instruments"] == "supplied_only"
+        assert scope["alternative_discovery_performed"] is False
+        assert set(report["implementation_comparisons"]) == (
+            {"BTC-USDC", "UBTC/USDC"} if compare_implementations else set()
+        )
+        if compare_implementations:
+            assert report["implementation_comparisons"]["BTC-USDC"][
+                "notional_by_budget"
+            ] == {"100": 100, "100000": 100000}
         assert (
             report["portfolio_quantification"]["portfolios"][0]["gross_notional_bps"]
             == 10000
         )
         await tool.research_quantify_portfolio([variant(capital_bps=5000)])
         assert read.await_count == 2
-        assert depth.await_count == 2
+        assert depth.await_count == (2 if compare_implementations else 0)
     tool._market_cache.clear()
 
 

@@ -192,9 +192,11 @@ async def research_quantify_portfolio(
     All return/risk numbers are fractions, not percentages. No forecasts or trades.
     alternatives: Hypothetical positions for closest competing implementations,
         using the SAME position schema. These are measured, never added to portfolios.
-    compare_implementations: Include public depth/pool observations for holdings
-        and alternatives. Compare funding-free spot with costly longs; a spot short
-        is incompatible. Use actual per-budget notional, not volume as capacity.
+    compare_implementations: Include public depth/pool observations only for
+        supplied holdings and alternatives. Does NOT discover alternative routes.
+        Discover spot/perp/wrapper IDs with existing lookup tools and pass them as
+        alternatives before rejecting an exposure for one route's funding or depth.
+        A spot short is incompatible. Use per-budget notional, not volume as capacity.
         Read at most 12 distinct instruments including alternatives. Reuses public
         histories for five minutes; depth is refreshed on each comparison call.
     """
@@ -355,6 +357,11 @@ async def research_quantify_portfolio(
             )
     return ok(
         {
+            "implementation_comparison_scope": {
+                "instruments": "supplied_only",
+                "alternative_discovery_performed": False,
+                "note": "Discover and supply alternative routes separately. An absent route here was not checked; it is not evidence of unavailability.",
+            },
             "implementation_comparisons": comparisons,
             **(
                 {"sized_variants": [v.model_dump(mode="json") for v in variants]}
