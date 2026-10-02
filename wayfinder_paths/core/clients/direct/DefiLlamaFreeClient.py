@@ -133,7 +133,7 @@ class DefiLlamaFreeClient:
         if not isinstance(protocols, list):
             protocols = []
 
-        matches = []
+        matches: list[tuple[int, dict[str, Any]]] = []
         for protocol in protocols:
             if not isinstance(protocol, dict):
                 continue
@@ -148,12 +148,23 @@ class DefiLlamaFreeClient:
             ).lower()
             if normalized not in haystack:
                 continue
-            matches.append(_compact_protocol(protocol))
+            identity = [
+                str(protocol.get(key) or "").lower()
+                for key in ("name", "slug", "symbol")
+            ]
+            rank = 2
+            if not normalized or normalized in identity:
+                rank = 0
+            elif any(normalized in value for value in identity):
+                rank = 1
+            matches.append((rank, _compact_protocol(protocol)))
 
+        # Identity matches precede incidental prose hits before pagination.
+        # Equal ranks (including category-only browsing) retain provider order.
         page = _paged_result(
             dataset="protocol_search",
             source_url=response["url"],
-            items=matches,
+            items=[item for _, item in sorted(matches, key=lambda match: match[0])],
             limit=limit,
             cursor=cursor,
         )

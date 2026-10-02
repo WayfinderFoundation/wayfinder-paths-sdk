@@ -236,6 +236,67 @@ async def test_defillama_free_protocol_search_compacts_matches(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("match_field", ["name", "slug", "symbol", "partial_name"])
+async def test_protocol_search_ranks_identity_before_description_and_pagination(
+    monkeypatch: pytest.MonkeyPatch, match_field: str
+) -> None:
+    target = {"name": "Target", "slug": "target", "symbol": "TARGET"}
+    target["name" if match_field == "partial_name" else match_field] = (
+        "Pons V2" if match_field == "partial_name" else "PoNs"
+    )
+    catalog = [
+        {
+            "name": f"Noise {i}",
+            "slug": f"noise-{i}",
+            "description": "Responsible liquidity",
+        }
+        for i in range(12)
+    ] + [target]
+    client = llama_module.DefiLlamaFreeClient()
+    get = AsyncMock(
+        return_value={"url": "https://api.llama.fi/protocols", "result": catalog}
+    )
+    monkeypatch.setattr(client, "_get", get)
+    first = (await client.protocol_search(" pOnS ", limit=1))["result"]
+    assert first["matches"][0]["slug"] == target["slug"]
+    assert first["page"]["totalAvailable"] == 13
+    assert first["page"]["nextCursor"] == "1"
+    # Description matches remain available, and paging never mutates the catalog.
+    rest = (await client.protocol_search("pons", limit=20, cursor="1"))["result"]
+    assert [p["slug"] for p in rest["matches"]] == [f"noise-{i}" for i in range(12)]
+    assert rest["page"]["nextCursor"] is None
+    assert catalog[0]["slug"] == "noise-0"
+    get.assert_awaited_once_with("/protocols")
+
+
+@pytest.mark.asyncio
+async def test_protocol_search_exact_identity_precedes_partial_and_filters_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog = [
+        {"name": "Pons", "slug": "excluded", "category": "Bridge"},
+        {"name": "Pons V1", "slug": "partial", "category": "Launchpad"},
+        {"name": "Pons V2", "slug": "exact", "symbol": "PONS", "category": "Launchpad"},
+    ]
+    client = llama_module.DefiLlamaFreeClient()
+    monkeypatch.setattr(
+        client,
+        "_get",
+        AsyncMock(
+            return_value={"url": "https://api.llama.fi/protocols", "result": catalog}
+        ),
+    )
+    result = (await client.protocol_search("pons", category="launchpad", limit=1))[
+        "result"
+    ]
+    assert [p["slug"] for p in result["matches"]] == ["exact"]
+    assert result["page"]["totalAvailable"] == 2
+    # Category-only browsing retains source order, rather than ranking empty queries.
+    browse = (await client.protocol_search("_", category="Launchpad"))["result"]
+    assert [p["slug"] for p in browse["matches"]] == ["partial", "exact"]
+
+
+@pytest.mark.asyncio
 async def test_fee_compaction_preserves_periods_and_deployment_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
