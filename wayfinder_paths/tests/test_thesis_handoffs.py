@@ -292,9 +292,59 @@ def test_revision_signoff_requires_same_reviewer_to_read_current_draft(
         parent, child, projected_records(parent, child)[0], set(), revision="current"
     )
     assert (not report["errors"]) == valid
+    assert (report["changes_since_review"] is not None) == valid
     assert review_report(
         parent, child, projected_records(parent, child)[0], set(), revision="changed"
     )["errors"]
+
+
+def test_review_change_index_uses_saved_read_not_later_signoff(
+    compact_run: tuple[list[dict], list[dict]],
+) -> None:
+    parent, child = compact_run
+    child.append(signoff("old", 7, read_at=5))
+    update = deepcopy(parent[0]["parts"][0]["state"]["input"]["checkpoint"])
+    update["decisions"][0]["reason"] = "Changed comparison"
+    parent.append(receipt(update, 6))
+    parent.append(
+        receipt(
+            {
+                "schema_version": 6,
+                "stage": "draft",
+                "draft": {"remove_components": ["old"]},
+                "discovery_dispositions": [
+                    {
+                        "entities": ["alias"],
+                        "status": "needs_evidence",
+                        "reason": "Still unresolved",
+                    }
+                ],
+            },
+            8,
+        )
+    )
+    failed = receipt(update, 9)
+    failed["parts"][0]["state"]["output"] = json.dumps({"ok": False})
+    parent.append(failed)
+    # A later forged or unread sign-off cannot hide the updates.
+    child.append(signoff("unread", 12, read=False))
+    report = review_report(
+        parent, child, projected_records(parent, child)[0], set(), revision="current"
+    )
+    changes = report["changes_since_review"]
+    assert changes["baseline_revision"] == "old"
+    assert changes["baseline_read_at_ms"] == 5
+    assert changes["parent_checkpoint_ids"] == ["t6", "t8"]
+    assert changes["parent_entity_keys"] == ["alias", "network"]
+    assert changes["parent_stages"] == ["draft", "judged"]
+    assert report["errors"]  # This index cannot certify the changed revision.
+    child.append(signoff("current", 14))
+    refreshed = review_report(
+        parent, child, projected_records(parent, child)[0], set(), revision="current"
+    )["changes_since_review"]
+    assert refreshed["baseline_revision"] == "current"
+    assert refreshed["parent_checkpoint_ids"] == []
+    assert refreshed["parent_entity_keys"] == []
 
 
 @pytest.mark.parametrize("change", ["decision", "resolution", "draft", "research"])

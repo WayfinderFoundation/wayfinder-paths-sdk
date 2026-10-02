@@ -93,7 +93,7 @@ def review_report(
 ) -> dict[str, Any]:
     findings: dict[tuple[str, str], dict[str, Any]] = {}
     reviews: set[str] = set()
-    reviewed_revisions: dict[str, tuple[int, str | None]] = {}
+    reviewed_revisions: dict[str, tuple[int, str]] = {}
     draft_reads: dict[tuple[str, str], list[int]] = {}
     observations = public_observations([*parent, *children])
     for message in children:
@@ -153,14 +153,14 @@ def review_report(
             session = info["sessionID"]
             reviews.add(session)
             completed_at = state.get("time", {}).get("end", 0) or 0
-            read_before_signoff = any(
-                timestamp <= completed_at
-                for timestamp in draft_reads.get(
-                    (session, checkpoint.reviewed_revision), []
-                )
-            )
             if (
-                read_before_signoff
+                checkpoint.reviewed_revision is not None
+                and any(
+                    timestamp <= completed_at
+                    for timestamp in draft_reads.get(
+                        (session, checkpoint.reviewed_revision), []
+                    )
+                )
                 and completed_at >= reviewed_revisions.get(session, (0, None))[0]
             ):
                 reviewed_revisions[session] = (
@@ -267,12 +267,46 @@ def review_report(
             f"Resolution references unknown review finding {key[0]}/{key[1]}; "
             "resubmit using the exact review_session_id and finding_id from status"
         )
+    changes = None
+    if reviewed_revisions:
+        session, (signed_at, baseline) = max(
+            reviewed_revisions.items(), key=lambda item: item[1][0]
+        )
+        # Use the actual draft read, not the later receipt: a concurrent update
+        # between reading and signing must still be visible. This is a retrieval
+        # index of accepted parent writes, not a semantic diff or review verdict.
+        read_at = max(
+            stamp for stamp in draft_reads[(session, baseline)] if stamp <= signed_at
+        )
+        updated = [r for r in records if (r["completed_at_ms"] or 0) > read_at]
+        changes = {
+            "baseline_revision": baseline,
+            "baseline_read_at_ms": read_at,
+            "parent_checkpoint_ids": [r["id"] for r in updated],
+            "parent_stages": sorted({r["checkpoint"]["stage"] for r in updated}),
+            "parent_entity_keys": sorted(
+                {
+                    case["entity"].casefold()
+                    for r in updated
+                    for field in ("discoveries", "research_cases", "candidates")
+                    for case in r["checkpoint"][field]
+                }
+                | {
+                    entity.casefold()
+                    for r in updated
+                    for disposition in r["checkpoint"]["discovery_dispositions"]
+                    for entity in disposition["entities"]
+                }
+            ),
+            "note": "Accepted parent updates only, not a semantic diff. Check dependent comparisons even when their cases were not updated; use the current draft and saved observations, not this index, to judge the revision.",
+        }
     return {
         "findings": list(findings.values()),
         "revision": revision,
         "reviewed_revisions": {
             session: value[1] for session, value in reviewed_revisions.items()
         },
+        "changes_since_review": changes,
         "errors": errors,
         "public_observations": list(observations.values()),
     }
