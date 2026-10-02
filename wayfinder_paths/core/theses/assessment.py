@@ -266,17 +266,29 @@ def assessment_report(
                 for c in r["checkpoint"][kind]
             }
             manifest = manifests[-1] if manifests else None
-            complete = bool(
-                manifest is not None
-                and {k.casefold() for k in manifest["case_entities"]} == ranked_keys
-                and {k.casefold() for k in manifest["unresolved_entities"]}
-                == inventory - ranked_keys
-            )
-            if not complete:
+            mismatches = []
+            if manifest is None:
+                mismatches.append("missing handoff manifest")
+            else:
+                for field, expected in (
+                    ("case_entities", ranked_keys),
+                    ("unresolved_entities", inventory - ranked_keys),
+                ):
+                    reported = {k.casefold() for k in manifest[field]}
+                    for label, keys in (
+                        ("missing", expected - reported),
+                        ("unexpected", reported - expected),
+                    ):
+                        if keys:
+                            mismatches.append(
+                                f"{field} {label}: {', '.join(sorted(keys))}"
+                            )
+            if mismatches:
                 incomplete_handoffs.append(session_id)
                 if session_id not in handoff_gaps:
                     errors.append(
-                        f"Research child {session_id}: incomplete handoff; resume once or record handoff_gaps explicitly"
+                        f"Research child {session_id}: incomplete handoff "
+                        f"({'; '.join(mismatches)}); resume once or record handoff_gaps explicitly"
                     )
     judgments = [
         r["checkpoint"]
@@ -391,10 +403,18 @@ def assessment_report(
                 )
     if missing:
         errors.append("Discoveries missing assessment: " + ", ".join(sorted(missing)))
+    kept_instruments = {
+        instrument
+        for case in cases
+        if case["decision"] == "KEEP"
+        for instrument in case["instruments"]
+    }
     unobserved_comparisons = []
     for case in cases:
         for check in case["implementation_checks"]:
-            if check["status"] in {"viable", "rejected"} and not any(
+            if check["status"] not in {"viable", "rejected"}:
+                continue
+            if not any(
                 check["instrument_id"].casefold() in output for output in outputs
             ):
                 unobserved_comparisons.append(
@@ -407,18 +427,13 @@ def assessment_report(
                     errors.append(
                         f"{case['entity']}: compared implementation ID was not observed in successful public reads"
                     )
+            elif case["decision"] == "KEEP" and check["status"] == "viable":
+                kept_instruments.add(check["instrument_id"])
     return {
         "errors": list(dict.fromkeys(errors)),
         "discovery_keys": len({d["entity"].casefold() for d in discoveries}),
         "assessed_entities": len(cases),
-        "kept_instruments": sorted(
-            {
-                instrument
-                for case in cases
-                if case["decision"] == "KEEP"
-                for instrument in case["instruments"]
-            }
-        ),
+        "kept_instruments": sorted(kept_instruments),
         "missing_entities": sorted(missing),
         "assigned_entities": sorted(assigned),
         "unassessed_discoveries": sorted(unassessed),

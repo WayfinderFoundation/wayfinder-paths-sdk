@@ -740,6 +740,53 @@ def test_incomplete_handoff_cannot_silently_pass(compact_run):
     assert report["incomplete_handoffs"] == ["worker"]
 
 
+@pytest.mark.parametrize(
+    "field,keys,expected",
+    [
+        ("case_entities", [], "case_entities missing: network"),
+        ("case_entities", ["ghost"], "case_entities unexpected: ghost"),
+        ("unresolved_entities", ["ghost"], "unresolved_entities unexpected: ghost"),
+    ],
+)
+def test_handoff_error_identifies_the_mismatched_inventory(
+    compact_run: tuple[list[dict], list[dict]],
+    field: str,
+    keys: list[str],
+    expected: str,
+) -> None:
+    parent, child = compact_run
+    checkpoint = deepcopy(child[0]["parts"][0]["state"]["input"]["checkpoint"])
+    checkpoint["handoff"][field] = keys
+    child = [receipt(checkpoint, 1, session="worker", agent="thesis-researcher")]
+    assert expected in " ".join(assessment_report(parent, child)["errors"])
+
+
+@pytest.mark.asyncio
+async def test_live_review_requires_nested_revision_but_legacy_model_remains_readable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from wayfinder_paths.mcp.tools.thesis_checkpoint import research_thesis_review
+
+    monkeypatch.setattr(
+        "wayfinder_paths.mcp.utils._report_tool_metric", lambda *args: None
+    )
+    legacy = ReviewCheckpoint(findings=[])
+    assert legacy.receipt_json() == '{"findings":[]}'
+    result = await research_thesis_review(legacy)
+    assert result["ok"] is False
+    assert result["error"]["code"] == "invalid_argument"
+    assert "checkpoint.reviewed_revision" in result["error"]["message"]
+
+    current = ReviewCheckpoint(findings=[], reviewed_revision="revision-1")
+    result = await research_thesis_review(current)
+    assert result["ok"] is True
+    assert result["result"]["reviewed_revision"] == "revision-1"
+    assert (
+        result["result"]["sha256"]
+        == hashlib.sha256(current.receipt_json().encode()).hexdigest()
+    )
+
+
 def review(blocking=True):
     cp = ReviewCheckpoint(
         findings=[

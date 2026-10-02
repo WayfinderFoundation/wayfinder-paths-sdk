@@ -189,6 +189,41 @@ def test_viable_spot_prevents_implementation_only_exclusion(
         record(spec, "judged", candidates=[case])
 
 
+@pytest.mark.parametrize("status", ["viable", "rejected", "unverified", "incompatible"])
+@pytest.mark.parametrize("observed_successfully", [True, False])
+def test_kept_alias_includes_only_observed_viable_implementations(
+    spec: dict[str, Any],
+    case: dict[str, Any],
+    status: str,
+    observed_successfully: bool,
+) -> None:
+    case.update(decision="KEEP", decision_basis="economic", instruments=["alias"])
+    case["implementation_checks"][1]["status"] = status
+    parent = record(spec, "judged", candidates=[case])
+    observation = observed()
+    if not observed_successfully:
+        observation["parts"][0]["state"]["output"] = json.dumps(
+            {"ok": False, "error": "network-solana lookup unavailable"}
+        )
+    report = assessment_report([parent, observation], [])
+    expected = ["alias"]
+    if status == "viable" and observed_successfully:
+        expected.append("network-solana")
+    assert report["kept_instruments"] == expected
+    assert report["assessed_entities"] == 1
+
+
+def test_viable_implementation_does_not_promote_unselected_exposure(
+    spec: dict[str, Any], case: dict[str, Any]
+) -> None:
+    case.update(
+        decision="ALTERNATIVE", decision_basis="economic", instruments=["alias"]
+    )
+    case["implementation_checks"][1]["status"] = "viable"
+    parent = record(spec, "judged", candidates=[case])
+    assert assessment_report([parent, observed()], [])["kept_instruments"] == []
+
+
 def test_comparing_different_alternative_cannot_hide_known_spot(
     spec: dict[str, Any],
     discovery: dict[str, Any],

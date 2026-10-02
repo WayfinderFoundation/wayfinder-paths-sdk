@@ -7,7 +7,7 @@ from wayfinder_paths.core.theses.checkpoints import (
     ResearchCheckpoint,
     ReviewCheckpoint,
 )
-from wayfinder_paths.mcp.utils import catch_errors, ok
+from wayfinder_paths.mcp.utils import catch_errors, err, ok
 
 
 @catch_errors
@@ -110,9 +110,16 @@ async def research_thesis_review(checkpoint: ReviewCheckpoint) -> dict:
     need not. Record an empty findings list when clear. Parent resolves findings;
     a smaller weight alone does not supply missing proof. No trades or authorization.
     """
+    if checkpoint.reviewed_revision is None:
+        return err(
+            "invalid_argument",
+            'checkpoint.reviewed_revision is required. Read thesis_notebook(view="draft") '
+            "and put review.revision inside checkpoint alongside findings, not beside checkpoint.",
+        )
     return ok(
         {
             "sha256": hashlib.sha256(checkpoint.receipt_json().encode()).hexdigest(),
+            "reviewed_revision": checkpoint.reviewed_revision,
             "finding_count": len(checkpoint.findings),
             "execution_authorized": False,
         }
