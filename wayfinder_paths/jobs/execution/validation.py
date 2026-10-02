@@ -1804,6 +1804,12 @@ def _script_static_checks(
             or "BracketEngine" in code_text
             or "ohlc_" in code_text
             or bracket_delegation is not None,
+            "hint": (
+                "stop and take-profit levels must be a literal "
+                '"bracket": {"stop_loss": price} (or stop_loss_pct / '
+                "take_profit_pct) key on the OPEN intent dict; decide() may not "
+                "close a position because a level was crossed on the close"
+            ),
         }
     )
     return checks

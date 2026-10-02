@@ -8693,6 +8693,28 @@ def test_a_requested_screen_runs_next_in_the_same_op(tmp_path) -> None:
     assert "evaluation_requested_at" not in after[second["candidate_id"]]
 
 
+def test_slow_strategies_are_handed_back_before_the_screen(monkeypatch) -> None:
+    rates = iter([37.0, 580.0])
+    monkeypatch.setattr(evolution_campaign, "_strategy_warmup_bars", lambda *a: 20)
+    monkeypatch.setattr(evolution_campaign, "_tail", lambda dataset, bars: dataset)
+    monkeypatch.setattr(
+        evolution_campaign,
+        "simulate_execution",
+        lambda *a, **k: SimpleNamespace(profile={"bars_per_second": next(rates)}),
+    )
+    subject = {"script": "strategy.py", "spec": {}}
+    slow = evolution_campaign._screen_speed_shortfall(subject, None, {}, {})
+    assert slow is not None and "precompute(frames)" in slow
+    assert evolution_campaign._screen_speed_shortfall(subject, None, {}, {}) is None
+    # The policy can switch the probe off.
+    assert (
+        evolution_campaign._screen_speed_shortfall(
+            subject, None, {}, {"min_screen_bars_per_second": 0}
+        )
+        is None
+    )
+
+
 def test_unbuildable_seed_falls_back_to_de_novo_instead_of_wedging(
     tmp_path, monkeypatch
 ) -> None:

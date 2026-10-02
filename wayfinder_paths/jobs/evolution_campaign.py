@@ -4996,6 +4996,9 @@ def _evaluate_candidate(
                         },
                     },
                 }
+        too_slow = _screen_speed_shortfall(subject, quick, params, policy)
+        if too_slow is not None:
+            return _rejected_submission(too_slow)
         result = simulate_execution(subject["script"], quick, subject["spec"], params)
         if result.validation.get("execution_valid") and result.trades:
             entries = entry_window_parity_probe(
@@ -10185,8 +10188,47 @@ _CONTRACT_CHECKS = frozenset(
         "declared_features_valid",
         "feature_policy_replayable",
         "undeclared_feature_read",
+        "no_close_only_stop_tp",
     }
 )
+
+# A screen is ~10,000 bars per slice; below this rate it takes minutes and
+# every queued screen waits behind it (a v14 book ran at 37 bars/s, 105 ms
+# per tick, ~15 minutes). Measured on a short tail before the screen.
+_MIN_SCREEN_BARS_PER_SECOND = 100.0
+_SPEED_PROBE_BARS = 400
+
+
+def _screen_speed_shortfall(
+    subject: Mapping[str, Any],
+    quick: PreparedExecutionDataset,
+    params: Mapping[str, Any],
+    policy: Mapping[str, Any],
+) -> str | None:
+    floor = float(
+        policy.get("min_screen_bars_per_second", _MIN_SCREEN_BARS_PER_SECOND) or 0.0
+    )
+    if floor <= 0:
+        return None
+    warmup = _strategy_warmup_bars(subject["script"], dict(params))
+    probe = simulate_execution(
+        subject["script"],
+        _tail(quick, warmup + _SPEED_PROBE_BARS),
+        subject["spec"],
+        dict(params),
+    )
+    rate = (probe.profile or {}).get("bars_per_second")
+    if rate is None or float(rate) >= floor:
+        return None
+    # Stable text: a repeated identical rejection is how the campaign
+    # abandons a candidate that cannot be fixed.
+    return (
+        f"decide() runs below {floor:.0f} bars/s, so the screen would take many "
+        "minutes and stall every queued screen. Move indicator work into "
+        "precompute(frames) (vectorized once per window) and have decide() read "
+        "the latest row (ctx.view.latest(sym)); no per-bar pandas rolling, "
+        "resampling or loops over history in decide()."
+    )
 
 
 def _freeze_parent_pool(
