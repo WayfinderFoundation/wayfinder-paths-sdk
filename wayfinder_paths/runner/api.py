@@ -31,6 +31,7 @@ def dispatch(daemon, *, method: str, params: dict[str, Any]) -> dict[str, Any]:
             interval_seconds=params.get("interval_seconds"),
             cron_expr=params.get("cron_expr"),
             timezone=params.get("timezone"),
+            caller_session_id=params.get("caller_session_id"),
         )
     if method == "update_job":
         return daemon.ctl_update_job(
@@ -39,15 +40,22 @@ def dispatch(daemon, *, method: str, params: dict[str, Any]) -> dict[str, Any]:
             interval_seconds=params.get("interval_seconds"),
             cron_expr=params.get("cron_expr"),
             timezone=params.get("timezone"),
+            caller_session_id=params.get("caller_session_id"),
         )
     if method == "pause_job":
         return daemon.ctl_pause_job(name=params.get("name"))
     if method == "resume_job":
-        return daemon.ctl_resume_job(name=params.get("name"))
+        return daemon.ctl_resume_job(
+            name=params.get("name"),
+            caller_session_id=params.get("caller_session_id"),
+        )
     if method == "stop_job":
         return daemon.ctl_stop_job(name=params.get("name"), sig=params.get("sig"))
     if method == "run_once":
-        return daemon.ctl_run_once(name=params.get("name"))
+        return daemon.ctl_run_once(
+            name=params.get("name"),
+            caller_session_id=params.get("caller_session_id"),
+        )
     if method == "delete_job":
         return daemon.ctl_delete_job(name=params.get("name"))
 
