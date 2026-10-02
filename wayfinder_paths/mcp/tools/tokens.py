@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import httpx
@@ -15,16 +16,23 @@ ALL_CHAINS = ("all", "_")
 @catch_errors(
     "Token could not be resolved, please use onchain_fuzzy_search_tokens() to find the token."
 )
-async def onchain_resolve_token(query: str) -> dict[str, Any]:
+async def onchain_resolve_token(
+    query: str, market_data: bool = False
+) -> dict[str, Any]:
     """Resolve a token by canonical id/address; chain-scoped shorthands are tolerated.
 
     Args:
         query: Prefer coingecko_id-chain_code or chain_code_address. Shorthands like
             polygon_usdc or usdc-polygon can resolve, but use the returned canonical ID
             for quotes, execution, and scripts.
+        market_data: Include current price, market cap and volume when available.
+            These are market snapshots, not chain-local depth or executable quotes.
+
+    Native identities may include wrapped_native_address for pool/history reads.
+    This is a registered pricing proxy, not a change to the asset being held.
     """
     try:
-        token = await TOKEN_CLIENT.get_token_details(query)
+        token = await TOKEN_CLIENT.get_token_details(query, market_data=market_data)
     except httpx.HTTPStatusError as exc:
         status_code = exc.response.status_code
         if status_code in (400, 404):
@@ -76,7 +84,9 @@ async def onchain_fuzzy_search_tokens(chain_code: str, query: str) -> dict[str, 
     """Fuzzy-search tokens on a chain by symbol, name, or address — use when an exact id isn't known.
 
     If the user names a chain, search that chain, not all chains. This searches
-    tokens, not blockchain names. A match score is not verification or safety.
+    tokens, not blockchain names. Copy a candidate's token_id into
+    onchain_resolve_token(query=...) rather than constructing an ID from its name.
+    A lookup ID or match score is not verification or safety.
 
     Args:
         chain_code: e.g. base or solana. Pass all or _ to search across every chain.
@@ -92,7 +102,10 @@ _LIST_DIMENSIONS = ("trending", "volume", "new", "active")
 
 @catch_errors
 async def onchain_list_tokens(
-    chain_code: str, dimension: str = "trending", limit: int = 25
+    chain_code: str,
+    dimension: str = "trending",
+    limit: int = 25,
+    query: str | None = None,
 ) -> dict[str, Any]:
     """Browse a chain's top tokens — what's actually live and moving right now.
 
@@ -108,6 +121,11 @@ async def onchain_list_tokens(
         dimension: ranking — "trending" (default), "volume" (24h), "new"
             (recently launched), or "active" (most 24h transactions).
         limit: max tokens to return (1-50, default 25).
+        query: Optional token name or exact contract address to search pools on
+            this chain instead of browsing. Match the returned address, not the
+            symbol. Liquidity is selected-pool reserves, NOT executable depth;
+            volume is that pool's 24h turnover, not global token volume. Empty
+            results mean unavailable discovery data, not an untradeable token.
     """
     if chain_code not in CHAIN_CODE_TO_ID:
         return err(
@@ -120,5 +138,8 @@ async def onchain_list_tokens(
             "invalid_dimension",
             f"dimension must be one of: {', '.join(_LIST_DIMENSIONS)}",
         )
-    result = await TOKEN_CLIENT.discover_tokens(chain_code, dimension, limit)
+    result = await TOKEN_CLIENT.discover_tokens(
+        chain_code, dimension, limit, query=query
+    )
+    result["retrieved_at_ms"] = int(time.time() * 1000)
     return ok(result)

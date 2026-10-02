@@ -8,6 +8,7 @@ from urllib.parse import quote
 import httpx
 
 BASE_URL = "https://api.llama.fi"
+COINS_BASE_URL = "https://coins.llama.fi"
 STABLECOINS_BASE_URL = "https://stablecoins.llama.fi"
 YIELDS_BASE_URL = "https://yields.llama.fi"
 TIMEOUT_SECONDS = 20
@@ -147,15 +148,17 @@ class DefiLlamaFreeClient:
         days: int = 30,
     ) -> dict[str, Any]:
         normalized_type = str(data_type).strip()
-        if normalized_type not in {"dailyFees", "dailyRevenue"}:
-            raise ValueError("data_type must be dailyFees or dailyRevenue")
+        if normalized_type not in {"dailyFees", "dailyRevenue", "dailyHoldersRevenue"}:
+            raise ValueError(
+                "data_type must be dailyFees, dailyRevenue or dailyHoldersRevenue"
+            )
         response = await self._get(
             f"/summary/fees/{_path_part(protocol_slug, 'protocolSlug')}",
             params={"dataType": normalized_type},
         )
-        result = (
-            response.get("result") if isinstance(response.get("result"), dict) else {}
-        )
+        result = response.get("result")
+        if not isinstance(result, dict):
+            result = {}
         rows = _last_daily_rows(result.get("totalDataChart"), days=days)
         chain_rows = _last_daily_breakdown_rows(
             result.get("totalDataChartBreakdown"), days=days
@@ -163,6 +166,11 @@ class DefiLlamaFreeClient:
         response["result"] = {
             "protocolSlug": protocol_slug,
             "dataType": normalized_type,
+            "description": result.get("description"),
+            "methodology": result.get("methodology"),
+            "methodologyURL": result.get("methodologyURL"),
+            "breakdownMethodology": result.get("breakdownMethodology"),
+            "totals": _overview_totals(result),
             "days": days,
             "dailyRows": rows,
             "weeklyRollups": _weekly_sum_rollups(rows),
@@ -267,7 +275,9 @@ class DefiLlamaFreeClient:
         return _enforce_response_budget(response)
 
     async def current_prices(self, coins: str) -> dict[str, Any]:
-        return await self._get(f"/prices/current/{_path_part(coins, 'coins')}")
+        return await self._get(
+            f"/prices/current/{_path_part(coins, 'coins')}", base_url=COINS_BASE_URL
+        )
 
     async def dex_overview(
         self,
