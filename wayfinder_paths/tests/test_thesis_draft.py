@@ -1,8 +1,11 @@
 import hashlib
 import json
 from copy import deepcopy
+from typing import Any
 
 import pytest
+from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.fastmcp.tools.base import Tool
 
 from wayfinder_paths.core.theses.assessment import (
     CHECKPOINT_TOOL,
@@ -27,10 +30,81 @@ from wayfinder_paths.core.theses.quantification import (
 )
 from wayfinder_paths.core.theses.review import REVIEW_TOOL
 from wayfinder_paths.core.theses.sizing import construction_errors, size_variant
+from wayfinder_paths.mcp.tools.thesis_checkpoint import research_thesis_checkpoint
 from wayfinder_paths.tests import test_thesis_assessment, test_thesis_targets
 
 spec = test_thesis_assessment.spec
 target = test_thesis_targets.target
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [{}, {"stage": "draft"}, {"schema_version": 7}],
+)
+def test_draft_header_feedback_reports_stage_and_version_together(
+    headers: dict[str, Any],
+) -> None:
+    payload = {**headers, "draft": {"remove_components": ["old-component"]}}
+    original = deepcopy(payload)
+    with pytest.raises(ValueError) as error:
+        ResearchCheckpoint.model_validate(payload)
+    message = str(error.value)
+    assert 'checkpoint.stage="draft"' in message
+    assert "checkpoint.schema_version" in message
+    assert "not inherited" in message
+    assert payload == original
+    corrected = ResearchCheckpoint.model_validate(
+        {**payload, "schema_version": 7, "stage": "draft"}
+    )
+    assert corrected.draft is not None
+    assert corrected.draft.remove_components == ["old-component"]
+
+
+def test_draft_header_feedback_preserves_legacy_and_other_validation(
+    spec: dict[str, Any],
+) -> None:
+    legacy = ResearchCheckpoint.model_validate(
+        {"stage": "interpretation", "spec": spec}
+    )
+    assert legacy.schema_version == 1
+    with pytest.raises(ValueError, match="Only draft checkpoints"):
+        ResearchCheckpoint.model_validate(
+            {
+                "schema_version": 7,
+                "stage": "judged",
+                "draft": {"remove_components": ["old"]},
+            }
+        )
+    with pytest.raises(ValueError, match="schema_version>=4"):
+        ResearchCheckpoint.model_validate(
+            {
+                "schema_version": 3,
+                "stage": "draft",
+                "spec": spec,
+                "draft": {"remove_components": ["old"]},
+            }
+        )
+    schema = ResearchCheckpoint.model_json_schema()
+    assert "stage" in schema["required"]
+    assert schema["properties"]["schema_version"]["default"] == 1
+    assert "not inherited" in schema["properties"]["stage"]["description"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_draft_header_error_can_be_repaired_in_one_retry() -> None:
+    native = Tool.from_function(research_thesis_checkpoint)
+    payload = {"checkpoint": {"draft": {"remove_components": ["old"]}}}
+    with pytest.raises(ToolError) as error:
+        await native.run(payload)
+    assert 'checkpoint.stage="draft"' in str(error.value)
+    assert "checkpoint.schema_version" in str(error.value)
+    result = await native.run(
+        {"checkpoint": {**payload["checkpoint"], "stage": "draft", "schema_version": 7}}
+    )
+    assert result["ok"] is True
+    assert result["result"]["stage"] == "draft"
+    assert result["result"]["schema_version"] == 7
+    assert result["result"]["execution_authorized"] is False
 
 
 def test_v5_requires_review_receipt_and_implementation_comparisons(run):

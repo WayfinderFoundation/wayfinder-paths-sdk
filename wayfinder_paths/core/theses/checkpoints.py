@@ -174,8 +174,18 @@ V5_FIELDS = {"decisions", "handoff", "handoff_gaps", "review_resolutions"}
 
 
 class ResearchCheckpoint(Contract):
-    schema_version: Literal[1, 2, 3, 4, 5, 6, 7] = 1
-    stage: Literal["interpretation", "discovery", "provisional", "judged", "draft"]
+    schema_version: Annotated[
+        Literal[1, 2, 3, 4, 5, 6, 7],
+        Field(
+            description="Set 7 on every current parent write; omission means legacy v1, not the previous call's version."
+        ),
+    ] = 1
+    stage: Annotated[
+        Literal["interpretation", "discovery", "provisional", "judged", "draft"],
+        Field(
+            description="Required on every write, including corrections. Use draft for a draft update; this header is not inherited."
+        ),
+    ]
     spec: ThesisSpec | None = None
     discoveries: Annotated[list[Discovery], Field(max_length=120)] = []
     discovery_dispositions: Annotated[
@@ -190,6 +200,25 @@ class ResearchCheckpoint(Contract):
     handoff: Handoff | None = None
     handoff_gaps: list[HandoffGap] = []
     review_resolutions: list[ReviewResolution] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def require_draft_headers(cls, value: Any) -> Any:
+        # Otherwise a missing stage hides the legacy-version error until a retry.
+        # Both forms already fail validation; do not infer or repair the payload.
+        if (
+            isinstance(value, dict)
+            and value.get("draft") is not None
+            and ("stage" not in value or "schema_version" not in value)
+        ):
+            raise ValueError(
+                'Draft writes need both checkpoint.stage="draft" and explicit '
+                "checkpoint.schema_version (use 7 for current parent research). "
+                "They are not inherited from earlier writes. Retry the same draft "
+                'inside {"checkpoint":{"schema_version":7,"stage":"draft",'
+                '"draft":...}}; do not repeat the interpretation or other budgets.'
+            )
+        return value
 
     def receipt_json(self) -> str:
         # Preserve bytes of v3 receipts; v1/v2 compatibility lives in the reader.
@@ -217,10 +246,10 @@ class ResearchCheckpoint(Contract):
             or self.stage == "draft"
         ):
             errors.append(
-                "Construction and incremental drafts require schema_version=4"
+                "Construction and incremental drafts require schema_version>=4"
             )
         if self.schema_version < 5 and any(getattr(self, key) for key in V5_FIELDS):
-            errors.append("Compact decisions and handoffs require schema_version=5")
+            errors.append("Compact decisions and handoffs require schema_version>=5")
         if self.handoff is not None and self.stage != "discovery":
             errors.append("Only discovery checkpoints contain a worker handoff")
         if self.decisions and self.stage != "judged":
