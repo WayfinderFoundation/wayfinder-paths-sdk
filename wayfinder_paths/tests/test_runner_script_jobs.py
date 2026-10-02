@@ -181,7 +181,7 @@ def test_daemon_add_job_uses_caller_session_without_opencode_scan(
     assert job.payload["notify_session_id"] == "ses_caller"
 
 
-def test_daemon_add_job_defers_session_scan_when_session_unknown(
+def test_daemon_add_job_keeps_unknown_session_unbound(
     tmp_path: Path, monkeypatch
 ) -> None:
     p = _paths(tmp_path)
@@ -209,7 +209,8 @@ def test_daemon_add_job_defers_session_scan_when_session_unknown(
     )
 
     assert resp["ok"] is True
-    assert bound == [("script-job", None)]
+    assert bound == []
+    assert daemon._db.get_job(name="script-job")[0].payload["notify_session_id"] is None
 
 
 def test_notify_session_skips_routine_success(tmp_path: Path, monkeypatch) -> None:

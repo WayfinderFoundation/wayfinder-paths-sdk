@@ -4,6 +4,9 @@ import os
 from pathlib import Path
 from typing import Any
 
+from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
+from wayfinder_paths.core.config import is_opencode_instance
+from wayfinder_paths.runner.constants import RUNNER_SESSION_ACTIONS
 from wayfinder_paths.runner.protocol import decode_response_bytes, encode_request
 from wayfinder_paths.runner.transport import RunnerTransport, UnixSocketTransport
 
@@ -34,9 +37,16 @@ class RunnerControlClient:
 
     def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         params = dict(params or {})
-        session_id = caller_session_id()
-        if session_id:
-            params.setdefault("caller_session_id", session_id)
+        if method in RUNNER_SESSION_ACTIONS and not params.get("caller_session_id"):
+            session_id = caller_session_id()
+            if not session_id and is_opencode_instance() and params.get("name"):
+                # Resolve before submitting: the daemon may start the job as
+                # soon as it receives this request.
+                session_id = OPENCODE_CLIENT.find_session_referencing_job(
+                    params["name"]
+                )
+            if session_id:
+                params["caller_session_id"] = session_id
         try:
             payload = encode_request(method, params)
             buf = self._transport.roundtrip(payload)
