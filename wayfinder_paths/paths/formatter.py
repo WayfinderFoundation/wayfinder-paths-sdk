@@ -111,6 +111,19 @@ def _skill_dict(manifest: PathManifest) -> dict[str, Any] | None:
         if portable:
             data["portable"] = portable
 
+    if skill.dependencies:
+        dependencies: list[dict[str, Any]] = []
+        for dependency in skill.dependencies:
+            dep: dict[str, Any] = {
+                "name": dependency.name,
+                "path_slug": dependency.path_slug,
+                "required": dependency.required,
+            }
+            if dependency.host_names:
+                dep["host_names"] = dependency.host_names
+            dependencies.append(dep)
+        data["dependencies"] = dependencies
+
     return data
 
 
