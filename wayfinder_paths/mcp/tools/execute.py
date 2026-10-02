@@ -14,6 +14,7 @@ from wayfinder_paths.core.utils.brap import (
     uses_solver_approvals,
 )
 from wayfinder_paths.core.utils.etherscan import get_etherscan_transaction_link
+from wayfinder_paths.core.utils.rpc_errors import safe_rpc_error
 from wayfinder_paths.core.utils.svm import (
     get_solana_explorer_link,
     is_solana_chain,
@@ -34,7 +35,11 @@ from wayfinder_paths.core.utils.tokens import (
     get_token_balance,
     is_native_token,
 )
-from wayfinder_paths.core.utils.transaction import send_transaction
+from wayfinder_paths.core.utils.transaction import (
+    TransactionConfirmationError,
+    TransactionRevertedError,
+    send_transaction,
+)
 from wayfinder_paths.core.utils.units import from_erc20_raw
 from wayfinder_paths.core.utils.wallets import (
     SessionExpiredError,
@@ -43,13 +48,17 @@ from wayfinder_paths.core.utils.wallets import (
     is_solana_enabled,
 )
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
+from wayfinder_paths.mcp.tools.transaction_status import (
+    bridge_transaction_status,
+    pending_transaction,
+    transaction_status_action,
+)
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
     normalize_address,
     ok,
     parse_amount_to_raw,
-    sanitize_for_json,
 )
 
 
@@ -151,12 +160,21 @@ async def _broadcast(
         if explorer_link:
             result["explorer_url"] = explorer_link
         return True, result
+    except TransactionConfirmationError as exc:
+        return False, pending_transaction(exc)
+    except TransactionRevertedError as exc:
+        return False, {
+            "status": "failed",
+            "txn_hash": exc.txn_hash,
+            "chain_id": chain_id,
+            "error": safe_rpc_error(exc),
+        }
     except SessionExpiredError:
         # Let the expired-session signal bubble to @catch_errors instead of
         # collapsing into a generic failed-broadcast tuple.
         raise
     except Exception as e:
-        return False, {"error": sanitize_for_json(str(e)), "chain_id": chain_id}
+        return False, {"error": safe_rpc_error(e), "chain_id": chain_id}
 
 
 async def _broadcast_svm(
@@ -195,10 +213,12 @@ async def _broadcast_svm(
         # collapsing into a generic failed-broadcast tuple.
         raise
     except Exception as e:
-        return False, {"error": sanitize_for_json(str(e)), "chain_id": chain_id}
+        return False, {"error": safe_rpc_error(e), "chain_id": chain_id}
 
 
-def _tx_status(sent_ok: bool, waited: bool) -> str:
+def _tx_status(sent_ok: bool, waited: bool, sent: dict[str, Any] | None = None) -> str:
+    if sent and sent.get("status") == "submitted":
+        return "submitted"
     if not sent_ok:
         return "failed"
     return "confirmed" if waited else "submitted"
@@ -242,15 +262,18 @@ async def _ensure_allowance(
     spender: str,
     amount: int,
 ) -> tuple[bool, dict[str, Any] | None]:
-    sent_ok, txn_hash = await ensure_allowance(
-        token_address=token_address,
-        owner=owner,
-        spender=spender,
-        amount=amount,
-        chain_id=chain_id,
-        signing_callback=sign_callback,
-        confirmations=0,
-    )
+    try:
+        sent_ok, txn_hash = await ensure_allowance(
+            token_address=token_address,
+            owner=owner,
+            spender=spender,
+            amount=amount,
+            chain_id=chain_id,
+            signing_callback=sign_callback,
+            confirmations=0,
+        )
+    except TransactionConfirmationError as exc:
+        return False, pending_transaction(exc)
     if not txn_hash:
         return sent_ok, None
     result: dict[str, Any] = {"txn_hash": txn_hash, "chain_id": chain_id}
@@ -488,12 +511,11 @@ async def onchain_swap(
                     tx_hash=sent["txn_hash"],
                 )
                 response["effects"]["bridge"] = bridge_result
-                if not bridge_result.get("is_success"):
-                    status = "failed"
+                status = bridge_transaction_status(bridge_result)
             except Exception as exc:  # noqa: BLE001
                 response["effects"]["bridge"] = {
                     "state": "pending",
-                    "error": sanitize_for_json(str(exc)),
+                    "error": safe_rpc_error(exc),
                 }
                 status = "submitted"
 
@@ -532,7 +554,9 @@ async def onchain_swap(
         )
         response["effects"].setdefault("prerequisites", []).append(approval)
         if not approved:
-            response["status"] = "failed"
+            response["status"] = _tx_status(False, True, approval)
+            if response["status"] == "submitted":
+                response["pending_step"] = "prerequisite"
             response["raw"] = compact_quote
             return ok(response)
 
@@ -570,7 +594,9 @@ async def onchain_swap(
         if approval_tx:
             response["effects"]["approval"] = approval_tx
         if not ok_allow:
-            response["status"] = "failed"
+            response["status"] = _tx_status(False, True, approval_tx)
+            if response["status"] == "submitted":
+                response["pending_step"] = "approval"
             response["raw"] = _compact_quote(quote_data, None)
             return ok(response)
 
@@ -583,9 +609,11 @@ async def onchain_swap(
     )
     response["effects"]["swap"] = sent
 
-    status = _tx_status(sent_ok, wait_for_receipt)
+    status = _tx_status(sent_ok, wait_for_receipt, sent)
 
     bridge_tracking = best_quote.get("bridge_tracking")
+    if status == "submitted" and not sent_ok and bridge_tracking:
+        sent["next_action"]["arguments"]["bridge_tracking"] = bridge_tracking
     if sent_ok and wait_for_receipt and bridge_tracking:
         try:
             bridge_result = await BRAP_CLIENT.wait_for_bridge_execution(
@@ -593,17 +621,24 @@ async def onchain_swap(
                 tx_hash=sent["txn_hash"],
             )
             response["effects"]["bridge"] = bridge_result
-            if not bridge_result.get("is_success"):
-                status = "failed"
+            status = bridge_transaction_status(bridge_result)
         except Exception as exc:  # noqa: BLE001
             response["effects"]["bridge"] = {
                 "state": "pending",
-                "error": sanitize_for_json(str(exc)),
+                "error": safe_rpc_error(exc),
             }
             status = "submitted"
 
     response["status"] = status
     response["raw"] = compact_quote
+    if status == "submitted":
+        response["next_action"] = transaction_status_action(
+            int(from_chain_id), sent["txn_hash"], bridge_tracking
+        )
+        response["message"] = (
+            "Transaction submitted; final completion is not confirmed. "
+            "Do not repeat the transaction. Check the existing transaction's status."
+        )
 
     _annotate_profile(
         address=sender,
@@ -784,7 +819,7 @@ async def onchain_send(
     )
     response["effects"][label] = sent
 
-    status = _tx_status(sent_ok, wait_for_receipt)
+    status = _tx_status(sent_ok, wait_for_receipt, sent)
     response["status"] = status
     response["raw"] = {"transaction": transaction, "token": token_meta}
 

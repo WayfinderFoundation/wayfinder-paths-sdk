@@ -13,10 +13,13 @@ from wayfinder_paths.core.utils.contracts import (
 )
 from wayfinder_paths.core.utils.etherscan import fetch_contract_abi
 from wayfinder_paths.core.utils.proxy import resolve_proxy_implementation
+from wayfinder_paths.core.utils.rpc_errors import safe_rpc_error
 from wayfinder_paths.core.utils.solidity import SOLC_VERSION, compile_solidity
+from wayfinder_paths.core.utils.transaction import TransactionConfirmationError
 from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 from wayfinder_paths.mcp.state.contract_store import ContractArtifactStore
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
+from wayfinder_paths.mcp.tools.transaction_status import pending_transaction
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
@@ -179,8 +182,23 @@ async def contracts_deploy(
             sign_callback=sign_callback,
             verify=verify,
         )
+    except TransactionConfirmationError as exc:
+        pending = pending_transaction(exc)
+        pending["tx_hash"] = exc.txn_hash
+        _annotate_deploy(
+            address=sender,
+            label=wallet_label,
+            status="submitted",
+            chain_id=chain_id,
+            details={
+                "source_path": display_path,
+                "contract_name": contract_name,
+                "tx_hash": exc.txn_hash,
+            },
+        )
+        return ok(pending)
     except Exception as exc:
-        logger.error(f"Contract deployment failed: {exc}")
+        logger.error(f"Contract deployment failed: {safe_rpc_error(exc)}")
         return err("deploy_error", str(exc))
 
     if display_path:

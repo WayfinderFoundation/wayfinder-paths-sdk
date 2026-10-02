@@ -394,8 +394,9 @@ class TestGasLimitTransaction:
 
         msg = str(excinfo.value)
         assert "Gas estimation failed on all RPCs" in msg
-        assert "https://rpc-a/137/0: insufficient funds" in msg
-        assert "https://rpc-b/137/1: execution reverted" in msg
+        assert "insufficient funds" in msg
+        assert "execution reverted" in msg
+        assert "https://" not in msg
 
 
 @pytest.mark.asyncio

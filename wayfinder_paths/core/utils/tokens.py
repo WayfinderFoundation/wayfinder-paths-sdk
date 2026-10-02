@@ -13,7 +13,11 @@ from wayfinder_paths.core.constants.erc20_abi import (
     ERC20_SYMBOL_BYTES32_ABI,
 )
 from wayfinder_paths.core.constants.erc1155_abi import ERC1155_APPROVAL_ABI
-from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.transaction import (
+    TransactionConfirmationError,
+    encode_call,
+    send_transaction,
+)
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 NATIVE_TOKEN_ADDRESSES: set = {
@@ -334,7 +338,14 @@ async def ensure_allowance(
     expected = approval_amount if approval_amount is not None else amount
     for _ in range(32):
         await asyncio.sleep(0.25)
-        on_chain = await get_token_allowance(token_address, chain_id, owner, spender)
+        try:
+            on_chain = await get_token_allowance(
+                token_address, chain_id, owner, spender
+            )
+        except Exception as exc:
+            # The approval already landed. A follow-up RPC failure must not erase
+            # its hash or invite another approval/swap attempt.
+            raise TransactionConfirmationError(chain_id, txn_hash) from exc
         if on_chain >= expected:
             return True, txn_hash
 

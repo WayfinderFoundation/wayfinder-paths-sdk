@@ -14,10 +14,16 @@ from wayfinder_paths.core.utils.etherscan import (
     get_etherscan_transaction_link,
 )
 from wayfinder_paths.core.utils.proxy import resolve_proxy_implementation
-from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.rpc_errors import safe_rpc_error
+from wayfinder_paths.core.utils.transaction import (
+    TransactionConfirmationError,
+    encode_call,
+    send_transaction,
+)
 from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 from wayfinder_paths.mcp.state.contract_store import ContractArtifactStore
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
+from wayfinder_paths.mcp.tools.transaction_status import pending_transaction
 from wayfinder_paths.mcp.utils import (
     abi_function_signature,
     catch_errors,
@@ -594,8 +600,25 @@ async def contracts_execute(
         txn_hash = await send_transaction(
             tx, sign_callback, wait_for_receipt=bool(wait_for_receipt)
         )
+    except TransactionConfirmationError as exc:
+        pending = pending_transaction(exc)
+        pending["tx_hash"] = exc.txn_hash
+        _annotate(
+            address=sender,
+            label=wallet_label,
+            status="submitted",
+            chain_id=int(chain_id),
+            details={
+                "contract_address": contract_address,
+                "function_signature": signature,
+                "tx_hash": exc.txn_hash,
+            },
+            tool="contract_execute",
+            action="contract_execute",
+        )
+        return ok(pending)
     except Exception as exc:
-        logger.error(f"Contract execution failed: {exc}")
+        logger.error(f"Contract execution failed: {safe_rpc_error(exc)}")
         _annotate(
             address=sender,
             label=wallet_label,
@@ -606,7 +629,7 @@ async def contracts_execute(
                 "function_signature": signature,
                 "args": sanitize_for_json(casted_args),
                 "value_wei": value_i,
-                "error": sanitize_for_json(str(exc)),
+                "error": safe_rpc_error(exc),
                 **(abi_meta or {}),
             },
             tool="contract_execute",
