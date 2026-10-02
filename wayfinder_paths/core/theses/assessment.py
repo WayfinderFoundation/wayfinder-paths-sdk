@@ -601,6 +601,7 @@ def research_observations(
     child_messages: list[dict[str, Any]],
     *,
     part_ids: list[str],
+    result_path: list[str | int] | None = None,
 ) -> dict[str, Any]:
     """Retrieve exact saved public results, never re-fetch or summarize them."""
     from wayfinder_paths.core.theses.review import public_observations
@@ -611,13 +612,70 @@ def research_observations(
         or any(not isinstance(key, str) or not key for key in part_ids)
     ):
         raise ValueError("Use one to three exact public observation part_ids")
+    if result_path is not None and (
+        not isinstance(result_path, list)
+        or not 1 <= len(result_path) <= 12
+        or any(
+            not (
+                (type(segment) is str and len(segment) <= 200)
+                or (type(segment) is int and segment >= 0)
+            )
+            for segment in result_path
+        )
+    ):
+        raise ValueError(
+            "result_path needs 1-12 object keys or nonnegative array indices"
+        )
     observations = public_observations(
         [*parent_messages, *child_messages], include_results=True
     )
     requested = list(dict.fromkeys(part_ids))
+    selected = []
+    unavailable_paths = []
+    for key in requested:
+        if key not in observations:
+            continue
+        observation = observations[key]
+        if result_path is None:
+            selected.append(observation)
+            continue
+        value = observation["result"]
+        for segment in result_path:
+            if (
+                isinstance(value, dict)
+                and isinstance(segment, str)
+                and segment in value
+            ):
+                value = value[segment]
+            elif (
+                isinstance(value, list)
+                and isinstance(segment, int)
+                and segment < len(value)
+            ):
+                value = value[segment]
+            else:
+                unavailable_paths.append({"part_id": key, "result_path": result_path})
+                break
+        else:
+            selected.append(
+                {
+                    **observation,
+                    "result": value,
+                    "result_path": result_path,
+                    "partial_result": True,
+                }
+            )
     return {
-        "observations": [observations[key] for key in requested if key in observations],
+        "observations": selected,
         "unavailable_part_ids": [key for key in requested if key not in observations],
+        **(
+            {
+                "unavailable_result_paths": unavailable_paths,
+                "note": "Exact selected sections, not complete sources; omitted fields are not absent or disproven. Omit result_path to retrieve the full saved result. Preserve metric scope, period, units and source context when comparing claims.",
+            }
+            if result_path is not None
+            else {}
+        ),
         "evidence_verified": False,
     }
 
@@ -645,6 +703,7 @@ if __name__ == "__main__":
             request["parent_messages"],
             request["child_messages"],
             part_ids=request.get("part_ids", []),
+            result_path=request.get("result_path"),
         )
     else:
         raise ValueError("Unknown notebook view")

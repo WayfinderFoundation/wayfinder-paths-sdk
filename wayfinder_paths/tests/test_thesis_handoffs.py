@@ -780,6 +780,107 @@ def test_unusable_saved_evidence_is_explicitly_unavailable(output):
     assert report["unavailable_part_ids"] == ["read", "unknown"]
 
 
+@pytest.fixture
+def saved_section_messages() -> list[dict[str, Any]]:
+    result = {
+        "items": [
+            {"slug": "venue-v1", "total30d": 0, "verified": False, "change": None},
+            {"slug": "venue-v2", "total30d": 1200},
+        ],
+        "0": "string key, not an array index",
+    }
+    return [
+        {
+            "parts": [
+                {
+                    "id": key,
+                    "tool": tool,
+                    "state": {
+                        "status": "completed",
+                        "time": {"end": 100},
+                        "input": {"dataType": "dailyFees", "secret": "private"},
+                        "output": json.dumps({"ok": True, "result": result}),
+                    },
+                }
+                for key, tool in [
+                    ("read", "wayfinder_research_defillama_free"),
+                    ("private", "wallets"),
+                ]
+            ]
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        (
+            ["items", 0],
+            {"slug": "venue-v1", "total30d": 0, "verified": False, "change": None},
+        ),
+        (["items", 0, "total30d"], 0),
+        (["items", 0, "verified"], False),
+        (["items", 0, "change"], None),
+        (["0"], "string key, not an array index"),
+    ],
+)
+def test_saved_evidence_sections_preserve_exact_values_and_provenance(
+    saved_section_messages: list[dict[str, Any]], path: list[str | int], expected: Any
+) -> None:
+    before = deepcopy(saved_section_messages)
+    full = research_observations(saved_section_messages, [], part_ids=["read"])
+    report = research_observations(
+        saved_section_messages, [], part_ids=["read", "read"], result_path=path
+    )
+    assert len(report["observations"]) == 1
+    row = report["observations"][0]
+    assert row["result"] == expected
+    assert row["result_path"] == path
+    assert row["partial_result"] is True
+    for key in ("part_id", "tool", "completed_at_ms", "request_summary"):
+        assert row[key] == full["observations"][0][key]
+    assert not report["unavailable_result_paths"]
+    assert report["evidence_verified"] is False
+    assert "omitted fields" in report["note"]
+    assert "secret" not in json.dumps(report)
+    assert saved_section_messages == before
+    assert research_observations(saved_section_messages, [], part_ids=["read"]) == full
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ["absent"],
+        ["items", 5],
+        ["items", "0"],
+        ["items", 0, "total30d", "x"],
+        ["state", "input", "secret"],
+    ],
+)
+def test_missing_sections_are_distinct_from_unavailable_observations(
+    saved_section_messages: list[dict[str, Any]], path: list[str | int]
+) -> None:
+    report = research_observations(
+        saved_section_messages,
+        [],
+        part_ids=["read", "private", "unknown"],
+        result_path=path,
+    )
+    assert report["observations"] == []
+    assert report["unavailable_part_ids"] == ["private", "unknown"]
+    assert report["unavailable_result_paths"] == [
+        {"part_id": "read", "result_path": path}
+    ]
+
+
+@pytest.mark.parametrize(
+    "path", [[], ["items", -1], ["items", True], [1.5], [{}], "items", ["x"] * 13]
+)
+def test_saved_evidence_section_paths_are_bounded(path: Any) -> None:
+    with pytest.raises(ValueError, match="result_path"):
+        research_observations([], [], part_ids=["read"], result_path=path)
+
+
 @pytest.mark.parametrize(
     "tool,status",
     [
