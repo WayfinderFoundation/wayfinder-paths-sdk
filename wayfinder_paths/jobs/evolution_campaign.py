@@ -1468,16 +1468,34 @@ def _policy_scan_block(
     if policy.get("policy_scan_retire_failed"):
         # The scan is deterministic on a slowly moving panel, so a survivor
         # that already lost on validation comes back identical every campaign.
-        failed = _failed_policy_ids(load_archive(store, job_id).get("candidates") or [])
+        archive = load_archive(store, job_id).get("candidates") or []
+        failed = _failed_policy_ids(archive)
+        # Each week's panel also offers new parameterizations of a family
+        # that keeps losing; after enough of them, retire the family.
+        family_after = int(policy.get("policy_scan_retire_family_after") or 0)
+        dead_families = (
+            {
+                family
+                for family, count in _failed_policy_families(archive).items()
+                if count >= family_after
+            }
+            if family_after
+            else set()
+        )
         survivors = list(block.get("survivors") or [])
-        block["survivors"] = [
-            row for row in survivors if str(row.get("policy_id") or "") not in failed
-        ]
+
+        def retired(row: Mapping[str, Any]) -> bool:
+            return (
+                str(row.get("policy_id") or "") in failed
+                or str(row.get("family") or "") in dead_families
+            )
+
+        block["survivors"] = [row for row in survivors if not retired(row)]
         block["retired"] = [
-            str(row.get("policy_id"))
-            for row in survivors
-            if str(row.get("policy_id") or "") in failed
+            str(row.get("policy_id")) for row in survivors if retired(row)
         ]
+        if dead_families:
+            block["retired_families"] = sorted(dead_families)
     return block
 
 
@@ -1494,6 +1512,20 @@ def _failed_policy_ids(archive: list[dict[str, Any]]) -> set[str]:
         if policy_id and validation is not None and float(validation) <= 0:
             failed.add(policy_id)
     return failed
+
+
+def _failed_policy_families(archive: list[dict[str, Any]]) -> dict[str, int]:
+    """Validation losses per policy-scan family (distinct configurations)."""
+    losses: dict[str, set[str]] = {}
+    for entry in archive:
+        metadata = entry.get("metadata") or {}
+        family = str(metadata.get("policy_family") or "")
+        validation = (
+            ((metadata.get("dev") or {}).get("validation") or {}).get("stats") or {}
+        ).get("net_return")
+        if family and validation is not None and float(validation) <= 0:
+            losses.setdefault(family, set()).add(str(metadata.get("policy_id") or ""))
+    return {family: len(ids) for family, ids in losses.items()}
 
 
 def _policy_scan_instruction(block: Mapping[str, Any]) -> str:
@@ -1539,6 +1571,14 @@ def _policy_scan_instruction(block: Mapping[str, Any]) -> str:
             f"{len(retired)} further survivor(s) are retired: the same "
             "configuration already lost on independent validation in an earlier "
             "campaign. "
+        )
+    retired_families = list(block.get("retired_families") or [])
+    if retired_families:
+        text += (
+            "Retired families (repeated validation losses in earlier campaigns, "
+            "whatever the parameters): "
+            + ", ".join(retired_families)
+            + " — do not rebuild them as de_novo books. "
         )
     if falsified:
         text += (
@@ -4366,6 +4406,7 @@ def _prepare_candidate(
         "research_seed_id": (parent_plan.get("research_seed") or {}).get("seed_id"),
         "policy_ref": (parent_plan.get("policy") or {}).get("pointer"),
         "policy_id": (parent_plan.get("policy") or {}).get("policy_id"),
+        "policy_family": (parent_plan.get("policy") or {}).get("family"),
         "seed_fallback": (
             {
                 "from": parent_plan.get("fallback_from"),
@@ -4432,6 +4473,7 @@ def _prepare_candidate(
             "starter_seed_id": candidate.get("starter_seed_id"),
             "research_seed_id": candidate.get("research_seed_id"),
             "policy_id": candidate.get("policy_id"),
+            "policy_family": candidate.get("policy_family"),
             "seed_revision": seed_revision,
             "evidence_reset": candidate["evidence_reset"],
             "design_slot_id": candidate.get("design_slot_id"),

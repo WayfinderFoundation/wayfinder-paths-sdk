@@ -8785,6 +8785,72 @@ def test_policy_scan_retires_configurations_that_failed_validation(
     assert "retired" not in untouched
 
 
+def test_policy_scan_retires_a_family_after_repeated_validation_losses(
+    tmp_path, monkeypatch
+) -> None:
+    def developed(policy_id: str, family: str, validation: float) -> dict[str, Any]:
+        return {
+            "metadata": {
+                "policy_id": policy_id,
+                "policy_family": family,
+                "dev": {"validation": {"stats": {"net_return": validation}}},
+            }
+        }
+
+    archive = [
+        developed("rank-a", "cross_sectional_rank", -0.23),
+        developed("rank-b", "cross_sectional_rank", -0.12),
+        developed("sleeve-a", "sleeve_momentum", -0.01),
+    ]
+    survivors = [
+        {"policy_id": "rank-new", "family": "cross_sectional_rank"},
+        {"policy_id": "sleeve-new", "family": "sleeve_momentum"},
+        {"policy_id": "trend-new", "family": "time_series_trend"},
+    ]
+    monkeypatch.setattr(
+        evolution_campaign,
+        "_campaign_scan_frames",
+        lambda *_args, **_kwargs: {
+            "train": None,
+            "bar_seconds": 300,
+            "taker_round_trip_bps": 9.0,
+        },
+    )
+    monkeypatch.setattr(
+        evolution_campaign,
+        "policy_scan",
+        lambda *_args, **_kwargs: {
+            "available": True,
+            "survivors": [dict(row) for row in survivors],
+        },
+    )
+    monkeypatch.setattr(
+        evolution_campaign,
+        "load_archive",
+        lambda *_args, **_kwargs: {"candidates": archive},
+    )
+    policy = {"policy_scan_retire_failed": True, "policy_scan_retire_family_after": 2}
+    kept = _policy_scan_block(None, "job", tmp_path, policy=policy)
+    # Two distinct losing configurations retire the family's new ones too;
+    # one loss does not.
+    assert [row["policy_id"] for row in kept["survivors"]] == [
+        "sleeve-new",
+        "trend-new",
+    ]
+    assert kept["retired_families"] == ["cross_sectional_rank"]
+    assert "cross_sectional_rank" in _policy_scan_instruction(
+        {
+            "available": True,
+            "survivors": [],
+            "retired_families": ["cross_sectional_rank"],
+        }
+    )
+    off = _policy_scan_block(
+        None, "job", tmp_path, policy={"policy_scan_retire_failed": True}
+    )
+    assert len(off["survivors"]) == 3 and "retired_families" not in off
+
+
 def test_owner_compute_override_on_a_replayed_clock_lives_on_the_wall_clock(
     tmp_path,
 ) -> None:

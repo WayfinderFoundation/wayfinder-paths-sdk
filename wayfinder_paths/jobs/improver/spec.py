@@ -188,6 +188,9 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         # Drop scan survivors whose exact configuration already lost on
         # validation in an earlier campaign (they return identical every time).
         "policy_scan_retire_failed": False,
+        # With retirement on: a policy-scan family whose configurations lost
+        # on validation this many times is retired (0 = off).
+        "policy_scan_retire_family_after": 0,
         # One redesign pass after the screens; off on the product branch until
         # the bench A/B measures its prepare-time cost against the extra slots.
         "redesign_checkpoint": False,
