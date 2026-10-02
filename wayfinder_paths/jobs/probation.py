@@ -622,6 +622,9 @@ def _repair_trial_identity(
     }
 
 
+_EXTENSION_DAYS = 7
+
+
 def probation_horizon_days(
     trade_count: float,
     day_count: float,
@@ -795,6 +798,13 @@ def stage_evolution_probation(
                 "confidence": float(policy.get("confidence") or 0.90),
                 "min_effect_utility": min_effect_utility,
                 "min_candidate_trades": min_candidate_trades,
+                # A favourable but unproven trial runs on, a week at a time,
+                # to this many days instead of ending at its sized horizon.
+                "extend_cap_days": (
+                    int(policy.get("max_paired_days_cap") or 28)
+                    if policy.get("extend_favourable_to_cap")
+                    else None
+                ),
                 "metrics": None,
             },
             "candidate": {
@@ -1349,6 +1359,39 @@ def _adjudicate_forward(
         checkpoint is not None and ucb_negative and effect <= -band and not trades_short
     ):
         _close_trial(trial, "killed", reason="paired utility UCB < 0", current=current)
+    elif (
+        checkpoint == max_days
+        and effect > 0
+        and max_days < int(trial["forward"].get("extend_cap_days") or 0)
+        and not metrics.get("target_days_short")
+    ):
+        # v14: a book up 6.8% over its 14-day trial (7 trades, paired
+        # estimate +0.060) ended inconclusive on a lower bound of -0.010.
+        # The bar is unchanged; the trial gets the days to clear it.
+        extended = min(
+            max_days + _EXTENSION_DAYS, int(trial["forward"]["extend_cap_days"])
+        )
+        trial["forward"]["max_paired_days"] = extended
+        trial["forward"]["deadline_at"] = (
+            _parse(trial["forward"]["started_at"]) + timedelta(days=extended)
+        ).isoformat()
+        trial["forward"]["last_decision_day"] = checkpoint
+        trial["forward"].setdefault("extensions", []).append(
+            {
+                "at_day": checkpoint,
+                "to_day": extended,
+                "estimate": round(effect, 6),
+                "lcb": metrics["lcb"],
+            }
+        )
+        return {
+            "action": "probation_extended",
+            "trial_id": trial["trial_id"],
+            "candidate_id": trial.get("candidate_id"),
+            "checkpoint_day": checkpoint,
+            "max_paired_days": extended,
+            "metrics": metrics,
+        }
     elif checkpoint == max_days and metrics.get("target_days_short"):
         # The declared regime never showed up; that is silence, not evidence.
         _close_trial(

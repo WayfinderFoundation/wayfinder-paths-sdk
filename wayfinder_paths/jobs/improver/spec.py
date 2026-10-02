@@ -294,6 +294,9 @@ DEFAULT_IMPROVER: dict[str, Any] = {
             "max_paired_days": 14,
             "max_paired_days_cap": 28,
             "trade_confidence": 0.8,
+            # An inconclusive trial whose paired estimate favours the
+            # candidate runs on a week at a time up to max_paired_days_cap.
+            "extend_favourable_to_cap": False,
             "confidence": 0.90,
             "min_effect_utility": 0.001,
             "min_candidate_trades": 3,
