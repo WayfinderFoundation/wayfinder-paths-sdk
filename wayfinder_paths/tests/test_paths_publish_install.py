@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from zipfile import ZipFile
 
 import httpx
@@ -12,10 +14,11 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-from wayfinder_paths.paths.builder import PathBuilder
+from wayfinder_paths.paths.builder import BuiltPath, PathBuilder
 from wayfinder_paths.paths.cli import _apply_install_targets, path_cli
 from wayfinder_paths.paths.client import PathsApiClient
 from wayfinder_paths.paths.doctor import DoctorIssue, PathDoctorReport
+from wayfinder_paths.paths.formatter import format_path
 from wayfinder_paths.paths.scaffold import init_path
 
 pytestmark = pytest.mark.usefixtures("published_installed_runtime")
@@ -778,7 +781,13 @@ def test_path_heartbeat_install_reads_legacy_lockfile(tmp_path: Path, monkeypatc
     ]
 
 
-def _build_path_bundle(tmp_path: Path, *, slug: str, version: str) -> PathBuilder:
+def _build_path_bundle(
+    tmp_path: Path,
+    *,
+    slug: str,
+    version: str,
+    dependencies: list[str | dict[str, Any]] | None = None,
+) -> BuiltPath:
     path_dir = tmp_path / f"{slug}-{version}"
     init_path(
         path_dir=path_dir,
@@ -788,6 +797,12 @@ def _build_path_bundle(tmp_path: Path, *, slug: str, version: str) -> PathBuilde
         with_applet=False,
         with_skill=True,
     )
+    if dependencies is not None:
+        manifest_path = path_dir / "wfpath.yaml"
+        manifest = yaml.safe_load(manifest_path.read_text())
+        manifest["skill"]["dependencies"] = dependencies
+        manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False))
+        format_path(path_dir=path_dir)
     return PathBuilder.build(
         path_dir=path_dir, out_path=path_dir / "dist" / "bundle.zip"
     )
@@ -1298,6 +1313,316 @@ def test_path_install_opencode_activates_and_installs_required_dependencies(
     assert lock["paths"]["install-opencode-demo"]["activation"]["dependencies"] == [
         {"path_slug": "custom-market-data-pack", "version": "0.1.0"}
     ]
+
+
+class _DependencyRegistry:
+    """Local published bundles; exercise real extraction and host activation."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.bundles: dict[str, dict[str, BuiltPath]] = {}
+        self.downloads: list[tuple[str, str]] = []
+        self.intents: list[str] = []
+        self.receipts: list[str] = []
+
+    def publish(
+        self,
+        slug: str,
+        *,
+        version: str = "0.1.0",
+        dependencies: list[str | dict[str, Any]] | None = None,
+    ) -> None:
+        self.bundles.setdefault(slug, {})[version] = _build_path_bundle(
+            self.root, slug=slug, version=version, dependencies=dependencies
+        )
+
+    def get_path(self, *, slug: str) -> dict[str, Any]:
+        versions = self.bundles[slug]
+        return {
+            "path": {"slug": slug, "latest_version": list(versions)[-1]},
+            "versions": [
+                {"version": version, "bundle_sha256": bundle.bundle_sha256}
+                for version, bundle in versions.items()
+            ],
+        }
+
+    def create_install_intent(self, **kwargs: Any) -> dict[str, Any]:
+        self.intents.append(kwargs["slug"])
+        return {"intent": {"intent_id": str(len(self.intents))}, "signature": "test"}
+
+    def download_bundle(self, *, slug: str, version: str, out_path: Path) -> Path:
+        self.downloads.append((slug, version))
+        out_path.write_bytes(self.bundles[slug][version].bundle_path.read_bytes())
+        return out_path
+
+    def submit_install_receipt(self, **kwargs: Any) -> dict[str, Any]:
+        self.receipts.append(kwargs["slug"])
+        return {
+            "status": "recorded",
+            "installation_id": f"install-{len(self.receipts)}",
+            "heartbeat_token": f"heartbeat-{len(self.receipts)}",
+        }
+
+
+@pytest.fixture
+def dependency_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> _DependencyRegistry:
+    registry = _DependencyRegistry(tmp_path / "registry")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.delenv("OPENCODE_INSTANCE_ID", raising=False)
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli.PathsApiClient", lambda **kwargs: registry
+    )
+    return registry
+
+
+def _invoke_path(*args: str) -> dict[str, Any]:
+    result = CliRunner().invoke(path_cli, list(args))
+    assert result.exit_code == 0, result.output
+    return json.loads(result.output)["result"]
+
+
+def test_path_activation_reuses_dependency_and_restores_export(
+    dependency_registry: _DependencyRegistry,
+) -> None:
+    registry = dependency_registry
+    registry.publish("custom-dependency")
+    registry.publish(
+        "parent",
+        dependencies=["custom-dependency", {"name": "optional", "required": False}],
+    )
+    _invoke_path(
+        "install", "--slug", "parent", "--no-activate", "--no-include-dependencies"
+    )
+    activation = [
+        "activate",
+        "--slug",
+        "parent",
+        "--host",
+        "opencode",
+        "--scope",
+        "project",
+        "--include-dependencies",
+    ]
+    _invoke_path(*activation)
+    lock_path = Path(".wayfinder/paths.lock.json")
+    original = json.loads(lock_path.read_text())["paths"]["custom-dependency"]
+    skill_dir = Path(".opencode/skills/custom-dependency")
+    assert skill_dir.joinpath("SKILL.md").is_file()
+    shutil.rmtree(skill_dir)
+
+    result = _invoke_path(*activation)
+
+    assert result["dependencies"][0]["reused"] is True
+    assert result["dependencies"][0]["activated"] is True
+    assert skill_dir.joinpath("SKILL.md").is_file()
+    assert registry.downloads == [("parent", "0.1.0"), ("custom-dependency", "0.1.0")]
+    assert registry.intents == registry.receipts == ["parent", "custom-dependency"]
+    current = json.loads(lock_path.read_text())["paths"]["custom-dependency"]
+    for field in (
+        "version",
+        "bundle_sha256",
+        "path",
+        "installed_at",
+        "installation_id",
+        "heartbeat_token",
+    ):
+        assert current[field] == original[field]
+
+
+@pytest.mark.parametrize("diamond", [False, True])
+def test_path_install_reuses_shared_dependency(
+    dependency_registry: _DependencyRegistry, diamond: bool
+) -> None:
+    registry = dependency_registry
+    registry.publish("shared-dependency")
+    registry.publish("parent-a", dependencies=["shared-dependency"])
+    registry.publish("parent-b", dependencies=["shared-dependency"])
+    host = ["--host", "opencode", "--scope", "project"]
+    if diamond:
+        registry.publish("root", dependencies=["parent-a", "parent-b"])
+        result = _invoke_path("install", "--slug", "root", *host)
+        second_parent = result["dependencies"][1]
+    else:
+        _invoke_path("install", "--slug", "parent-a", *host)
+        second_parent = _invoke_path("install", "--slug", "parent-b", *host)
+
+    assert second_parent["dependencies"][0]["reused"] is True
+    assert registry.downloads.count(("shared-dependency", "0.1.0")) == 1
+    assert registry.receipts.count("shared-dependency") == 1
+    for slug in ("parent-a", "parent-b", "shared-dependency"):
+        assert Path(f".opencode/skills/{slug}/SKILL.md").is_file()
+
+
+def test_path_activation_fetches_newer_dependency_version(
+    dependency_registry: _DependencyRegistry,
+) -> None:
+    registry = dependency_registry
+    registry.publish("custom-dependency")
+    registry.publish("parent", dependencies=["custom-dependency"])
+    _invoke_path(
+        "install", "--slug", "parent", "--host", "opencode", "--scope", "project"
+    )
+    registry.publish("custom-dependency", version="0.2.0")
+
+    result = _invoke_path(
+        "activate",
+        "--slug",
+        "parent",
+        "--host",
+        "opencode",
+        "--scope",
+        "project",
+        "--include-dependencies",
+    )
+
+    dependency = result["dependencies"][0]
+    assert dependency["version"] == "0.2.0"
+    assert not dependency.get("reused")
+    assert registry.downloads[-1] == ("custom-dependency", "0.2.0")
+    assert registry.receipts.count("custom-dependency") == 2
+
+
+def test_reused_dependency_still_fetches_missing_transitive_dependency(
+    dependency_registry: _DependencyRegistry,
+) -> None:
+    registry = dependency_registry
+    registry.publish("leaf")
+    registry.publish("custom-dependency", dependencies=["leaf"])
+    registry.publish("parent", dependencies=["custom-dependency"])
+    # Model an install that completed its download but never activated.
+    _invoke_path(
+        "install",
+        "--slug",
+        "custom-dependency",
+        "--no-activate",
+        "--no-include-dependencies",
+    )
+
+    result = _invoke_path(
+        "install", "--slug", "parent", "--host", "opencode", "--scope", "project"
+    )
+
+    dependency = result["dependencies"][0]
+    assert dependency["reused"] is True
+    assert dependency["dependencies"][0]["slug"] == "leaf"
+    assert registry.downloads == [
+        ("custom-dependency", "0.1.0"),
+        ("parent", "0.1.0"),
+        ("leaf", "0.1.0"),
+    ]
+    assert Path(".opencode/skills/leaf/SKILL.md").is_file()
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "untracked",
+        "lock_version",
+        "lock_hash",
+        "lock_path",
+        "archive",
+        "missing_archive",
+        "missing_manifest",
+        "manifest_slug",
+        "manifest_version",
+        "invalid_manifest",
+    ],
+)
+def test_dependency_reuse_rejects_incomplete_or_conflicting_install(
+    dependency_registry: _DependencyRegistry, damage: str
+) -> None:
+    registry = dependency_registry
+    registry.publish("custom-dependency")
+    registry.publish("parent", dependencies=["custom-dependency"])
+    _invoke_path(
+        "install", "--slug", "parent", "--host", "opencode", "--scope", "project"
+    )
+    lock_path = Path(".wayfinder/paths.lock.json")
+    lock = json.loads(lock_path.read_text())
+    entry = lock["paths"]["custom-dependency"]
+    dest = Path(entry["path"])
+    manifest_path = dest / "wfpath.yaml"
+    archive = dest / "bundle.zip"
+    if damage == "untracked":
+        del lock["paths"]["custom-dependency"]
+    elif damage.startswith("lock_"):
+        field = {
+            "lock_version": "version",
+            "lock_hash": "bundle_sha256",
+            "lock_path": "path",
+        }[damage]
+        entry[field] = "mismatched"
+    elif damage == "archive":
+        archive.write_bytes(b"broken archive")
+    elif damage == "missing_archive":
+        archive.unlink()
+    elif damage == "missing_manifest":
+        manifest_path.unlink()
+    elif damage == "invalid_manifest":
+        manifest_path.write_text("skill: [")
+    else:
+        manifest = yaml.safe_load(manifest_path.read_text())
+        manifest["slug" if damage == "manifest_slug" else "version"] = (
+            "wrong-slug" if damage == "manifest_slug" else "0.9.0"
+        )
+        manifest_path.write_text(yaml.safe_dump(manifest))
+    lock_path.write_text(json.dumps(lock))
+    before = {str(p): p.read_bytes() for p in dest.rglob("*") if p.is_file()}
+
+    result = CliRunner().invoke(
+        path_cli,
+        [
+            "activate",
+            "--slug",
+            "parent",
+            "--host",
+            "opencode",
+            "--scope",
+            "project",
+            "--include-dependencies",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert result.output.startswith("Error:")
+    assert registry.downloads == [("parent", "0.1.0"), ("custom-dependency", "0.1.0")]
+    assert registry.intents == registry.receipts == ["parent", "custom-dependency"]
+    assert json.loads(lock_path.read_text()) == lock
+    assert {str(p): p.read_bytes() for p in dest.rglob("*") if p.is_file()} == before
+
+
+def test_dependency_reuse_preserves_top_level_collision_and_force_behavior(
+    dependency_registry: _DependencyRegistry,
+) -> None:
+    registry = dependency_registry
+    registry.publish("custom-dependency")
+    registry.publish("parent", dependencies=["custom-dependency"])
+    install = [
+        "install",
+        "--slug",
+        "parent",
+        "--host",
+        "opencode",
+        "--scope",
+        "project",
+    ]
+    _invoke_path(*install)
+
+    duplicate = CliRunner().invoke(path_cli, install)
+    assert duplicate.exit_code != 0
+    assert "Destination already exists" in duplicate.output
+
+    forced = _invoke_path(*install, "--force")
+    assert not forced["dependencies"][0].get("reused")
+    assert (
+        registry.downloads == [("parent", "0.1.0"), ("custom-dependency", "0.1.0")] * 2
+    )
+    assert registry.intents == registry.receipts == ["parent", "custom-dependency"] * 2
 
 
 def test_path_activate_opencode_preserves_existing_provider_config(tmp_path: Path):
