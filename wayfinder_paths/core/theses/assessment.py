@@ -125,8 +125,15 @@ def projected_records(
         for c in r["checkpoint"]["research_cases"]
     }
     errors_by_entity: dict[str, list[str]] = {}
+    construction = None
     for record in parent:
         cp = record["checkpoint"]
+        if cp["construction"] is not None:
+            construction = cp["construction"]
+        elif cp["schema_version"] >= 6:
+            # The interpretation owns this state; don't make every incremental
+            # judgment/draft copy it. Explicit changes are still checked by draft_context.
+            cp["construction"] = construction
         for candidate in cp["candidates"]:
             errors_by_entity.pop(candidate["entity"].casefold(), None)
         for decision in cp["decisions"]:
@@ -312,6 +319,15 @@ def assessment_report(
         if any(r["checkpoint"]["schema_version"] >= 3 for r in parent)
         else {d["entity"].casefold() for d in discoveries}
     )
+    # Parent-promoted/assigned leads are deliberate, unlike a broad worker inbox.
+    # Every one needs an outcome, even when a worker never promotes it to a case.
+    assigned = {
+        d["entity"].casefold()
+        for r in parent
+        if r["checkpoint"]["schema_version"] >= 6
+        for d in r["checkpoint"]["discoveries"]
+    }
+    required = required | assigned
     # Union all snapshots; a later shorter/empty ledger cannot erase discoveries.
     missing = set()
     unobserved_instruments = set()
@@ -404,6 +420,7 @@ def assessment_report(
             }
         ),
         "missing_entities": sorted(missing),
+        "assigned_entities": sorted(assigned),
         "unassessed_discoveries": sorted(unassessed),
         "unobserved_instrument_claims": sorted(unobserved_instruments),
         "unobserved_comparison_claims": unobserved_comparisons,

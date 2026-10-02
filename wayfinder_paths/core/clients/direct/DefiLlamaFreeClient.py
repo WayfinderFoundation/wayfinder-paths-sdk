@@ -25,6 +25,11 @@ OVERVIEW_PARAMS = {
     "excludeTotalDataChart": "true",
     "excludeTotalDataChartBreakdown": "true",
 }
+PERIOD_DEFINITIONS = {
+    "change_1m": "Percent change of the latest daily observation versus a day one month ago; NOT rolling-month growth.",
+    "change_30dover30d": "Percent change of total30d versus total60dto30d (the preceding 30-day period).",
+    "total1y": "Trailing-year total, NOT the annualized current pace.",
+}
 
 
 def _path_part(value: str, field_name: str) -> str:
@@ -191,6 +196,7 @@ class DefiLlamaFreeClient:
             "methodologyURL": result.get("methodologyURL"),
             "breakdownMethodology": result.get("breakdownMethodology"),
             "totals": _overview_totals(result),
+            "periodDefinitions": PERIOD_DEFINITIONS,
             "days": days,
             "dailyRows": rows,
             "weeklyRollups": _weekly_sum_rollups(rows),
@@ -580,6 +586,7 @@ def _compact_overview_response(
         cursor=cursor,
         totals=_overview_totals(result),
     )
+    response["result"]["periodDefinitions"] = PERIOD_DEFINITIONS
     response["result"]["omittedFields"] = [
         "totalDataChart",
         "totalDataChartBreakdown",

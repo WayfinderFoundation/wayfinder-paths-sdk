@@ -248,6 +248,8 @@ async def test_fee_compaction_preserves_periods_and_deployment_scope(
     _FakeAsyncClient.get_body = {"protocols": protocols}
     monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
     response = await llama_module.DEFILLAMA_FREE_CLIENT.fees_overview()
+    assert response["result"]["periodDefinitions"] == llama_module.PERIOD_DEFINITIONS
+    assert "NOT rolling-month" in response["result"]["periodDefinitions"]["change_1m"]
     items = {row["slug"]: row for row in response["result"]["items"]}
     for protocol in protocols:
         for field, value in protocol.items():

@@ -88,10 +88,39 @@ def review_report(
     children: list[dict[str, Any]],
     records: list[dict[str, Any]],
     selected: set[str],
+    *,
+    revision: str | None = None,
 ) -> dict[str, Any]:
     findings: dict[tuple[str, str], dict[str, Any]] = {}
     reviews: set[str] = set()
+    reviewed_revisions: dict[str, tuple[int, str | None]] = {}
+    draft_reads: dict[tuple[str, str], list[int]] = {}
     observations = public_observations([*parent, *children])
+    for message in children:
+        info = message.get("info", {})
+        if info.get("agent") != "thesis-reviewer":
+            continue
+        for part in message.get("parts", []):
+            state = part.get("state", {})
+            if (
+                part.get("tool") != "thesis_notebook"
+                or state.get("status") != "completed"
+                or state.get("input", {}).get("view") != "draft"
+            ):
+                continue
+            try:
+                output = json.loads(state.get("output", ""))
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(output, dict) or not isinstance(
+                output.get("proposal"), dict
+            ):
+                continue
+            read_revision = output.get("review", {}).get("revision")
+            if isinstance(read_revision, str):
+                draft_reads.setdefault(
+                    (info.get("sessionID"), read_revision), []
+                ).append(state.get("time", {}).get("end", 0) or 0)
     for message in [*parent, *children]:
         info = message.get("info", {})
         for part in message.get("parts", []):
@@ -110,15 +139,34 @@ def review_report(
                 checkpoint = ReviewCheckpoint.model_validate(
                     state.get("input", {}).get("checkpoint")
                 )
-                digest = hashlib.sha256(
-                    checkpoint.model_dump_json().encode()
-                ).hexdigest()
-                if output.get("result", {}).get("sha256") != digest:
+                digests = {
+                    hashlib.sha256(serialized.encode()).hexdigest()
+                    for serialized in (
+                        checkpoint.model_dump_json(),
+                        checkpoint.receipt_json(),
+                    )
+                }
+                if output.get("result", {}).get("sha256") not in digests:
                     continue
             except (ValueError, TypeError, ValidationError):
                 continue
             session = info["sessionID"]
             reviews.add(session)
+            completed_at = state.get("time", {}).get("end", 0) or 0
+            read_before_signoff = any(
+                timestamp <= completed_at
+                for timestamp in draft_reads.get(
+                    (session, checkpoint.reviewed_revision), []
+                )
+            )
+            if (
+                read_before_signoff
+                and completed_at >= reviewed_revisions.get(session, (0, None))[0]
+            ):
+                reviewed_revisions[session] = (
+                    completed_at,
+                    checkpoint.reviewed_revision,
+                )
             for item in checkpoint.findings:
                 findings[(session, item.id)] = {
                     **item.model_dump(),
@@ -142,6 +190,19 @@ def review_report(
     if not reviews:
         errors.append(
             "Reviewer must record research_thesis_review, including an empty findings list when clear"
+        )
+    if revision is not None and not any(
+        reviewed_revision == revision
+        for _, reviewed_revision in reviewed_revisions.values()
+    ):
+        errors.append(
+            "Current decisions/draft/resolutions need native reviewer sign-off: "
+            "resume the SAME reviewer for a focused delta check, read view=draft, and record "
+            f"reviewed_revision={revision}. Do not self-certify a changed rationale."
+        )
+    if revision is not None and len(reviews) > 1:
+        errors.append(
+            "Use one native reviewer; resume its existing task for delta checks"
         )
     for key, finding in findings.items():
         resolution, resolved_at = resolutions.get(key, ({}, 0))
@@ -208,6 +269,10 @@ def review_report(
         )
     return {
         "findings": list(findings.values()),
+        "revision": revision,
+        "reviewed_revisions": {
+            session: value[1] for session, value in reviewed_revisions.items()
+        },
         "errors": errors,
         "public_observations": list(observations.values()),
     }

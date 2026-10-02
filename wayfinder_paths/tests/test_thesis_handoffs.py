@@ -1,6 +1,7 @@
 import hashlib
 import json
 from copy import deepcopy
+from typing import Any
 
 import pytest
 
@@ -149,6 +150,251 @@ def test_compact_decision_reuses_original_without_mutation(compact_run):
     assert index["items"][0]["research_refs"] == [
         {"session_id": "worker", "checkpoint_id": "t1", "entity": "network"}
     ]
+
+
+@pytest.mark.parametrize("version,required", [(5, False), (6, True)])
+@pytest.mark.parametrize(
+    "disposition", [None, "out_of_scope", "needs_evidence", "assessed"]
+)
+def test_assigned_parent_leads_cannot_disappear(
+    compact_run: tuple[list[dict], list[dict]],
+    discovery: dict,
+    version: int,
+    required: bool,
+    disposition: str | None,
+) -> None:
+    parent, child = compact_run
+    lead = {**discovery, "entity": "assigned-lead"}
+    parent.append(
+        receipt(
+            {"schema_version": version, "stage": "discovery", "discoveries": [lead]}, 3
+        )
+    )
+    if disposition:
+        parent.append(
+            receipt(
+                {
+                    "schema_version": version,
+                    "stage": "judged",
+                    "construction": {"mode": "directional"},
+                    "discovery_dispositions": [
+                        {
+                            "entities": ["assigned-lead"],
+                            "status": disposition,
+                            "candidate_entity": "network"
+                            if disposition == "assessed"
+                            else None,
+                            "reason": "Explicit triage, not silently omitted",
+                        }
+                    ],
+                },
+                4,
+            )
+        )
+    report = assessment_report(parent, child)
+    assert ("assigned-lead" in report["missing_entities"]) == (
+        required and disposition is None
+    )
+    assert report["assigned_entities"] == (["assigned-lead"] if required else [])
+    if disposition:
+        assert not report["errors"]
+
+
+def test_v6_inherits_construction_without_changing_recorded_receipts(
+    compact_run: tuple[list[dict], list[dict]],
+    spec: dict,
+) -> None:
+    parent, child = compact_run
+    interpretation = receipt(
+        {
+            "schema_version": 6,
+            "stage": "interpretation",
+            "spec": spec,
+            "construction": {"mode": "directional"},
+        },
+        0,
+    )
+    decision = deepcopy(parent[0]["parts"][0]["state"]["input"]["checkpoint"])
+    decision.update(schema_version=6, construction=None)
+    parent = [interpretation, receipt(decision, 2)]
+    original = deepcopy(parent)
+    records, _, errors = projected_records(parent, child)
+    assert not errors
+    assert records[-1]["checkpoint"]["construction"]["mode"] == "directional"
+    assert parent == original
+    assert draft_context(parent, child)[1]["construction"]["mode"] == "directional"
+    with pytest.raises(ValueError, match="construction"):
+        ResearchCheckpoint(schema_version=6, stage="interpretation", spec=spec)
+
+
+def signoff(
+    revision: str,
+    number: int,
+    *,
+    session: str = "reviewer",
+    read: bool = True,
+    read_at: int | None = None,
+) -> dict[str, Any]:
+    checkpoint = ReviewCheckpoint(findings=[], reviewed_revision=revision)
+    message: dict[str, Any] = {
+        "info": {"sessionID": session, "agent": "thesis-reviewer", "finish": "stop"},
+        "parts": [],
+    }
+    if read:
+        message["parts"].append(
+            {
+                "tool": "thesis_notebook",
+                "state": {
+                    "status": "completed",
+                    "time": {"end": read_at or number - 1},
+                    "input": {"view": "draft"},
+                    "output": json.dumps(
+                        {"proposal": {}, "review": {"revision": revision}}
+                    ),
+                },
+            }
+        )
+    message["parts"].append(
+        {
+            "tool": REVIEW_TOOL,
+            "state": {
+                "status": "completed",
+                "time": {"end": number},
+                "input": {"checkpoint": checkpoint.model_dump()},
+                "output": json.dumps(
+                    {
+                        "ok": True,
+                        "result": {
+                            "sha256": hashlib.sha256(
+                                checkpoint.receipt_json().encode()
+                            ).hexdigest()
+                        },
+                    }
+                ),
+            },
+        }
+    )
+    return message
+
+
+@pytest.mark.parametrize(
+    "read,read_at,valid", [(False, None, False), (True, 8, False), (True, 6, True)]
+)
+def test_revision_signoff_requires_same_reviewer_to_read_current_draft(
+    compact_run: tuple[list[dict], list[dict]],
+    read: bool,
+    read_at: int | None,
+    valid: bool,
+) -> None:
+    parent, child = compact_run
+    child.append(signoff("current", 7, read=read, read_at=read_at))
+    report = review_report(
+        parent, child, projected_records(parent, child)[0], set(), revision="current"
+    )
+    assert (not report["errors"]) == valid
+    assert review_report(
+        parent, child, projected_records(parent, child)[0], set(), revision="changed"
+    )["errors"]
+
+
+@pytest.mark.parametrize("change", ["decision", "resolution", "draft", "research"])
+def test_v6_review_is_invalidated_by_later_selection_or_resolution(
+    compact_run: tuple[list[dict], list[dict]],
+    spec: dict,
+    discovery: dict,
+    change: str,
+) -> None:
+    parent, child = compact_run
+    parent.insert(
+        0,
+        receipt(
+            {
+                "schema_version": 6,
+                "stage": "interpretation",
+                "spec": spec,
+                "construction": {"mode": "directional"},
+            },
+            0,
+        ),
+    )
+    original_revision = draft_context(parent, child)[1]["review"]["revision"]
+    child.append(signoff(original_revision, 7))
+    assert not draft_context(parent, child)[1]["review"]["errors"]
+    update = {"schema_version": 6, "stage": "discovery"}
+    if change == "decision":
+        update = deepcopy(parent[1]["parts"][0]["state"]["input"]["checkpoint"])
+        update["decisions"][0]["reason"] = "Relabeled as generic infrastructure beta"
+    elif change == "resolution":
+        # Even a correct structural resolution needs a delta sign-off. A made-up
+        # finding remains an independent error; it cannot be waved through by review.
+        update["review_resolutions"] = [
+            {
+                "review_session_id": "reviewer",
+                "finding_id": "missing",
+                "action": "accepted",
+                "reason": "Acknowledged",
+            }
+        ]
+    elif change == "draft":
+        update.update(stage="draft", draft={"remove_components": ["old"]})
+    else:
+        child.append(
+            receipt(
+                {
+                    "schema_version": 6,
+                    "stage": "discovery",
+                    "discoveries": [{**discovery, "entity": "new"}],
+                },
+                8,
+                session="worker",
+                agent="thesis-researcher",
+            )
+        )
+    if change != "research":
+        parent.append(receipt(update, 8))
+    new = draft_context(parent, child)[1]["review"]
+    assert new["revision"] != original_revision
+    assert any("sign-off" in e for e in new["errors"])
+    child.append(signoff(new["revision"], 10))
+    approved = draft_context(parent, child)[1]["review"]
+    assert approved["revision"] == new["revision"]  # No circular invalidation.
+    assert not any("sign-off" in e for e in approved["errors"])
+    if change == "resolution":
+        assert any("unknown review finding" in e for e in approved["errors"])
+
+
+def test_legacy_review_receipt_remains_readable() -> None:
+    old = {"findings": []}
+    checkpoint = ReviewCheckpoint.model_validate(old)
+    assert json.loads(checkpoint.receipt_json()) == old
+    message = signoff("unused", 5)
+    state = message["parts"][-1]["state"]
+    state["input"]["checkpoint"] = old
+    state["output"] = json.dumps(
+        {
+            "ok": True,
+            "result": {
+                "sha256": hashlib.sha256(
+                    checkpoint.receipt_json().encode()
+                ).hexdigest(),
+            },
+        }
+    )
+    assert not review_report([], [message], [], set())["errors"]
+    assert review_report([], [message], [], set(), revision="current")["errors"]
+
+
+def test_replacement_reviewer_cannot_bypass_delta_review() -> None:
+    children = [signoff("old", 3), signoff("current", 5, session="replacement")]
+    errors = review_report([], children, [], set(), revision="current")["errors"]
+    assert any("one native reviewer" in error for error in errors)
+
+
+def test_review_read_from_another_session_cannot_supply_signoff() -> None:
+    signed = signoff("current", 5, read=False)
+    other = signoff("current", 4, session="other")
+    other["parts"].pop()  # Only a draft read, not a second review receipt.
+    assert review_report([], [other, signed], [], set(), revision="current")["errors"]
 
 
 @pytest.mark.asyncio

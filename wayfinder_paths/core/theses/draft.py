@@ -20,7 +20,9 @@ from wayfinder_paths.core.theses.review import review_report
 def draft_context(
     parent_messages: list[dict[str, Any]], child_messages: list[dict[str, Any]]
 ) -> tuple[dict[str, Any], dict[str, Any], str | None]:
-    records, _, projection_errors = projected_records(parent_messages, child_messages)
+    records, research_records, projection_errors = projected_records(
+        parent_messages, child_messages
+    )
     payload: dict[str, Any] = {}
     components: dict[str, dict[str, Any]] = {}
     variants: dict[int, dict[str, Any]] = {}
@@ -172,7 +174,23 @@ def draft_context(
     }
     if any(r["checkpoint"]["schema_version"] >= 5 for r in records):
         evidence["require_implementation_comparisons"] = True
-        review = review_report(parent_messages, child_messages, records, selected)
+        revision = None
+        if any(r["checkpoint"]["schema_version"] >= 6 for r in records):
+            # Include resolutions as well as decisions: citing a public read is
+            # not proof it resolves the finding. Reviewer receipts are excluded,
+            # so a final sign-off doesn't invalidate its own revision.
+            revision = hashlib.sha256(
+                json.dumps(
+                    sorted(
+                        (r["session_id"] or "", r["id"] or "")
+                        for r in [*records, *research_records]
+                    ),
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+        review = review_report(
+            parent_messages, child_messages, records, selected, revision=revision
+        )
         evidence["review"].update(review)
         errors.extend(review["errors"])
     evidence["draft_errors"] = list(dict.fromkeys(errors))

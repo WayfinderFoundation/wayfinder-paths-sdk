@@ -133,6 +133,13 @@ class ReviewFinding(Contract):
 
 class ReviewCheckpoint(Contract):
     findings: Annotated[list[ReviewFinding], Field(max_length=24)]
+    reviewed_revision: Identifier | None = None
+
+    def receipt_json(self) -> str:
+        # Preserve receipts from reviewers predating revision-bound sign-off.
+        return self.model_dump_json(
+            exclude={"reviewed_revision"} if self.reviewed_revision is None else set()
+        )
 
     @model_validator(mode="after")
     def unique_findings(self) -> Self:
@@ -154,7 +161,7 @@ V5_FIELDS = {"decisions", "handoff", "handoff_gaps", "review_resolutions"}
 
 
 class ResearchCheckpoint(Contract):
-    schema_version: Literal[1, 2, 3, 4, 5] = 1
+    schema_version: Literal[1, 2, 3, 4, 5, 6] = 1
     stage: Literal["interpretation", "discovery", "provisional", "judged", "draft"]
     spec: ThesisSpec | None = None
     discoveries: Annotated[list[Discovery], Field(max_length=120)] = []
@@ -200,7 +207,11 @@ class ResearchCheckpoint(Contract):
         if self.decisions and self.stage != "judged":
             errors.append("Compact decisions belong in judged checkpoints")
         if self.schema_version >= 4:
-            if self.stage != "discovery" and self.construction is None:
+            if (
+                self.stage != "discovery"
+                and (self.schema_version < 6 or self.stage == "interpretation")
+                and self.construction is None
+            ):
                 errors.append("Parent checkpoints require the inferred construction")
             if (self.stage == "draft") != (self.draft is not None):
                 errors.append("Only draft checkpoints contain a draft update")
@@ -296,7 +307,7 @@ class ResearchCheckpoint(Contract):
 class DiscoveryCheckpoint(Contract):
     """Separate worker input: judgments/portfolios are structurally impossible."""
 
-    schema_version: Literal[3, 5] = 5
+    schema_version: Literal[3, 5, 6] = 5
     stage: Literal["discovery"] = "discovery"
     spec: ThesisSpec | None = None
     discoveries: Annotated[list[Discovery], Field(max_length=120)] = []

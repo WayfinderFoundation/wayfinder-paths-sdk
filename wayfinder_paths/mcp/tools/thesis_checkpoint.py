@@ -14,11 +14,14 @@ from wayfinder_paths.mcp.utils import catch_errors, ok
 async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     """Record typed research progress, NOT verified evidence or execution approval.
 
-    Parent only; use schema_version=5 and an inferred construction. Record the
+    Parent only; use schema_version=6. Record spec and inferred construction ONCE
+    in interpretation; subsequent checkpoints inherit construction when omitted. Record the
     interpretation, then small draft updates (metadata/components or ONE variant)
     and incremental judgments. Use thesis_notebook(view="status") before finishing
     with its proposal_ref; no complete portfolio JSON rewrite is required.
-    Assess every ranked research case and
+    Before giving named leads to workers, register them as parent discoveries.
+    Every such assigned lead needs a decision or explicit out_of_scope/needs_evidence
+    disposition, even if no worker ranks it. Assess every ranked research case and
     final holding; unranked leads remain visible without invented dispositions.
     Use discovery_dispositions to link differing worker entity keys to assessed
     candidate_entity keys, or briefly mark unranked leads out_of_scope/needs_evidence.
@@ -40,6 +43,12 @@ async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     Never guess a tool-part ID. accepted is only for nonblocking uncertainty.
     handoff_gaps acknowledges an incomplete worker after one targeted continuation,
     never fabricated research.
+    Compact shapes: discovery={schema_version:6,stage:discovery,discoveries:[...]};
+    judged={schema_version:6,stage:judged,decisions:[...]} (at most six changed cases);
+    draft={schema_version:6,stage:draft,draft:{variant:...}} (one budget per write).
+    Do not put a draft under judged or a worker handoff under a parent stage.
+    After any review correction, resume the SAME reviewer to sign the new
+    review.revision from notebook status. Parent resolution receipts aren't approval.
     """
     return ok(
         {
@@ -69,7 +78,9 @@ async def research_thesis_discovery(checkpoint: DiscoveryCheckpoint) -> dict:
     Return a compact handoff referencing recorded entity keys, not the full inbox.
     This stores assertions only in the transcript, never parent judgments,
     files, trades or independently verified evidence.
-    Use schema_version=5; omit spec when the parent's interpretation is unchanged.
+    Use schema_version=6; omit spec when the parent's interpretation is unchanged.
+    Preserve assigned parent entity keys. Every assigned lead must appear in saved
+    cases or unresolved inventory, even if it is not among your strongest cases.
     Save cases progressively, then finish with handoff:
     case_entities lists EVERY saved ranked key; unresolved_entities lists remaining
     inventory keys; reason briefly explains gaps (or that research is complete). An inbox
@@ -89,6 +100,11 @@ async def research_thesis_discovery(checkpoint: DiscoveryCheckpoint) -> dict:
 async def research_thesis_review(checkpoint: ReviewCheckpoint) -> dict:
     """Reviewer only: persist findings (id, entity, blocking, issue, required_change).
 
+    Read thesis_notebook(view="draft") and include reviewed_revision copied exactly
+    from its review.revision. On a delta continuation, check changed decisions, actual weights,
+    dependent alternatives and each proposed resolution. Do not clear a material
+    objection merely because its disclosure/label changed. Reissue unsolved findings
+    under their original IDs; an empty list never erases earlier unresolved findings.
     Use exact assessed entity keys. Identity, missing economic links and unsupported
     implementation exclusions can block selection; disclosed noncritical uncertainty
     need not. Record an empty findings list when clear. Parent resolves findings;
@@ -96,7 +112,7 @@ async def research_thesis_review(checkpoint: ReviewCheckpoint) -> dict:
     """
     return ok(
         {
-            "sha256": hashlib.sha256(checkpoint.model_dump_json().encode()).hexdigest(),
+            "sha256": hashlib.sha256(checkpoint.receipt_json().encode()).hexdigest(),
             "finding_count": len(checkpoint.findings),
             "execution_authorized": False,
         }
