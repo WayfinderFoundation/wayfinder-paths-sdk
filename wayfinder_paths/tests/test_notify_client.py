@@ -97,3 +97,46 @@ async def test_notification_send_rejects_invalid_delivery() -> None:
 
     assert out["ok"] is False
     assert out["error"]["code"] == "invalid_request"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "updates", [None, {}, {"disabled": True}, {"initiative_level": None}]
+)
+async def test_settings_client_uses_partial_payload(monkeypatch, updates):
+    monkeypatch.setattr(
+        notify_client_module, "get_api_base_url", lambda: "https://example.com/api/v1"
+    )
+    client = NotifyClient()
+    client._authed_request = AsyncMock(return_value=_Response({"disabled": True}))
+    assert await client.settings(updates) == {"disabled": True}
+    if updates is None:
+        client._authed_request.assert_awaited_once_with(
+            "GET", "https://example.com/api/v1/opencode/sendblue/settings/"
+        )
+    else:
+        client._authed_request.assert_awaited_once_with(
+            "PATCH",
+            "https://example.com/api/v1/opencode/sendblue/settings/",
+            json=updates,
+        )
+
+
+@pytest.mark.asyncio
+async def test_settings_tool_returns_saved_values_and_rejects_app_only_permissions(
+    monkeypatch,
+):
+    client = AsyncMock()
+    client.settings.return_value = {"disabled": True}
+    monkeypatch.setattr(notify_tool_module, "NOTIFY_CLIENT", client)
+    assert await notify_tool_module.notification_settings({"disabled": True}) == {
+        "ok": True,
+        "result": {"disabled": True},
+    }
+    client.settings.assert_awaited_once_with({"disabled": True})
+    client.reset_mock()
+    result = await notify_tool_module.notification_settings(
+        {"initiative_permission": "rw"}
+    )
+    assert result["ok"] is False
+    client.settings.assert_not_awaited()

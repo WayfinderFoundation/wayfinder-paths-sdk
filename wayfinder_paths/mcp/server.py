@@ -104,7 +104,7 @@ from wayfinder_paths.mcp.tools.instance_state import (
     visual_set_active_market,
     visual_set_chart_indicators,
 )
-from wayfinder_paths.mcp.tools.notify import notification_send
+from wayfinder_paths.mcp.tools.notify import notification_send, notification_settings
 from wayfinder_paths.mcp.tools.pattern_match import (
     quant_pattern_match,
     quant_pattern_match_ccxt_proxy,
@@ -273,6 +273,7 @@ def build_mcp(
         mcp.tool()(visual_set_chart_indicators)
         mcp.tool()(visual_clear_chart_workspace)
         mcp.tool()(notification_send)
+        mcp.tool()(notification_settings)
 
     return mcp
 

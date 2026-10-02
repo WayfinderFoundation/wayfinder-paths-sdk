@@ -7,6 +7,15 @@ from wayfinder_paths.core.config import get_api_base_url
 
 
 class NotifyClient(WayfinderClient):
+    async def settings(self, updates: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Read or partially update the calling Shell's SMS preferences."""
+        url = f"{get_api_base_url()}/opencode/sendblue/settings/"
+        if updates is None:
+            response = await self._authed_request("GET", url)
+        else:
+            response = await self._authed_request("PATCH", url, json=updates)
+        return response.json()
+
     async def notify(
         self,
         title: str,
@@ -16,7 +25,8 @@ class NotifyClient(WayfinderClient):
     ) -> dict[str, Any]:
         """Direct callers (scripts, monitors, jobs) are trusted senders —
         override defaults on, so quiet hours and the frequency budget don't
-        gate them. The agent's notification tool passes override=False and
+        gate them. A user-paused SMS binding still blocks every send. The
+        agent's notification tool passes override=False and
         goes through the warning handshake instead."""
         url = f"{get_api_base_url()}/opencode/notify/"
         payload: dict[str, Any] = {"title": title, "message": message}

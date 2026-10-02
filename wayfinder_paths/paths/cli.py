@@ -876,7 +876,7 @@ def _resolve_install_target_paths(
     *, source_dir: Path, destination_root: Path, target: dict[str, Any]
 ) -> tuple[Path, Path]:
     try:
-        return (
+        paths = (
             resolve_contained_path(
                 source_dir,
                 str(target.get("source") or ""),
@@ -888,6 +888,27 @@ def _resolve_install_target_paths(
                 label="Install destination",
             ),
         )
+        if os.environ.get("WAYFINDER_MANAGED_PATHS") == "1":
+            relative = paths[1].relative_to(destination_root.resolve())
+            # Hosted installs may extend agents/tools/skills, not replace the
+            # platform's providers, MCP, dependencies or plugins. The separate
+            # management UID enforces the image-file boundary as well.
+            parts = relative.parts
+            allowed = relative.as_posix() in {"opencode.json", "AGENTS.md"} or (
+                len(parts) >= 3
+                and parts[0] == ".opencode"
+                and parts[1] in {"agents", "commands", "tools", "plugins", "skills"}
+            )
+            platform_file = Path(__file__).resolve().parents[2] / relative
+            if not allowed or (
+                platform_file.exists()
+                and relative.as_posix() != "opencode.json"
+                and parts[:2] != (".opencode", "skills")
+            ):
+                raise ValueError(
+                    f"Managed platform destination is read-only: {relative}"
+                )
+        return paths
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
 
