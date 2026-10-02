@@ -8540,6 +8540,17 @@ def test_full_dev_order_spends_entry_overlap_twins_last() -> None:
         item["candidate_id"] for item in _diversified_full_dev_order(distinct, distinct)
     ] == ["c02", "c11", "c05"]
 
+    # The same entries sized or exited differently are not twins.
+    reweighted = [
+        _screened("k1", "cross_sectional_rank", 0.55, entries=shared),
+        _screened("k2", "cross_sectional_rank_b", 0.27, entries=shared),
+        _screened("c05", "breakout", 0.10, entries=[f"b{i}" for i in range(9)]),
+    ]
+    assert [
+        item["candidate_id"]
+        for item in _diversified_full_dev_order(reweighted, reweighted)
+    ] == ["k1", "k2", "c05"]
+
 
 def test_entry_overlap_needs_enough_entries_and_signature_keeps_opens() -> None:
     assert _entry_overlap(["a", "b"], ["a", "b"]) == 0.0

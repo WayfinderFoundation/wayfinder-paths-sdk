@@ -6391,10 +6391,19 @@ def _quick_twins(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
     fingerprint = _quick_fingerprint(a)
     if fingerprint is not None and fingerprint == _quick_fingerprint(b):
         return True
-    return (
+    if (
         _entry_overlap(a.get("quick_entries") or (), b.get("quick_entries") or ())
-        >= NEAR_TWIN_OVERLAP
+        < NEAR_TWIN_OVERLAP
+    ):
+        return False
+    # Shared entries with different sizing or exits are a real variation
+    # (two weightings of one rebalance schedule returned 27% and 55%); a twin
+    # also lands on nearly the same screen result.
+    left, right = (
+        float(((item.get("quick") or {}).get("stats") or {}).get("net_return") or 0.0)
+        for item in (a, b)
     )
+    return abs(left - right) <= max(0.01, 0.25 * max(abs(left), abs(right)))
 
 
 def _select_full_dev_candidate(
