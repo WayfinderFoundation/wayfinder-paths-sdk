@@ -97,6 +97,37 @@ def quantify_variants(variants: list[Variant], markets: dict[str, dict]) -> dict
             )
             for t in times
         }
+        funding: list[dict[str, str | float | None]] = []
+        funding_windows: set[tuple[int | None, int | None]] = set()
+        net_funding_cost = 0.0
+        complete_funding = True
+        for p, w in zip(legs, weights, strict=True):
+            if p.kind not in {"perp", "hip3"}:
+                continue
+            observation = markets[p.instrument_id].get("funding", {})
+            rate: float | None = observation.get("sum_rates")
+            cost = w * rate if rate is not None else None
+            funding.append(
+                {
+                    "instrument_id": p.instrument_id,
+                    "observed_cost_nav_fraction": cost,
+                }
+            )
+            if cost is not None:
+                net_funding_cost += cost
+            funding_windows.add(
+                (observation.get("start_ms"), observation.get("end_ms"))
+            )
+            if (
+                rate is None
+                or not observation.get("expected_hours")
+                or observation.get("observed_hours") != observation["expected_hours"]
+            ):
+                complete_funding = False
+        start, end = (
+            next(iter(funding_windows)) if len(funding_windows) == 1 else (None, None)
+        )
+        complete_funding = complete_funding and start is not None and end is not None
         portfolios.append(
             {
                 "allocation_key": allocation_key(variant),
@@ -117,22 +148,22 @@ def quantify_variants(variants: list[Variant], markets: dict[str, dict]) -> dict
                     for p, series in zip(legs, prices, strict=True)
                     if not series
                 ],
-                "funding": [
-                    {
-                        "instrument_id": p.instrument_id,
-                        # Positive cost = paid; negative = received. Not extrapolated.
-                        "observed_cost_nav_fraction": (
-                            w * markets[p.instrument_id]["funding"]["sum_rates"]
-                            if markets[p.instrument_id]
-                            .get("funding", {})
-                            .get("sum_rates")
-                            is not None
-                            else None
-                        ),
-                    }
-                    for p, w in zip(legs, weights, strict=True)
-                    if p.kind in {"perp", "hip3"}
-                ],
+                "funding": funding,
+                "funding_summary": {
+                    "status": (
+                        "not_applicable"
+                        if not funding
+                        else "measured"
+                        if complete_funding
+                        else "unavailable"
+                    ),
+                    # Do not turn missing hours or mismatched windows into net carry.
+                    "observed_cost_nav_fraction": (
+                        net_funding_cost if complete_funding or not funding else None
+                    ),
+                    "start_ms": start if complete_funding else None,
+                    "end_ms": end if complete_funding else None,
+                },
             }
         )
     return {
@@ -154,7 +185,10 @@ def quantify_variants(variants: list[Variant], markets: dict[str, dict]) -> dict
             "Volatility/correlation require 14 overlapping consecutive-day returns; annualization assumes 365 days. "
             "Observed drawdowns can miss intraday/gap losses. Gross price history excludes fees, slippage, "
             "funding, distributions, rebalancing, stops and liquidations. Funding is a separate observed "
-            "7-day constant-notional cost, with coverage reported. These are diagnostics, not forecasts, "
+            "7-day constant-notional cost, with coverage reported. Funding costs are already NAV-weighted "
+            "including leverage/direction: positive is paid, negative is received; do not apply weights again. "
+            "funding_summary nets complete, matching windows only; not total holding costs or a forecast. "
+            "These are diagnostics, not forecasts, "
             "expected returns, a probability edge, or the execution-aware dashboard backtest."
         ),
     }

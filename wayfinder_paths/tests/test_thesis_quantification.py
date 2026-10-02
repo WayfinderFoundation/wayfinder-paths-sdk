@@ -92,6 +92,91 @@ def test_no_shares_are_not_a_short_of_yes():
     assert portfolio["prediction_capital_bps"] == 5000
 
 
+@pytest.mark.parametrize("short_rate", [0.0015694498, -0.0015694498, 0])
+def test_funding_total_weights_signed_notionals_once_across_budgets(short_rate):
+    gold = variant(instrument_id="xyz:GOLD", kind="hip3").positions[0]
+    btc = variant(id="hedge", direction="short", leverage=2).positions[0]
+    drafts = [
+        Variant(budget_usd=b, rationale="Pair", positions=[gold, btc], cash_bps=0)
+        for b in (100, 1000, 10000, 100000)
+    ]
+    markets = {
+        key: {
+            "funding": {
+                "sum_rates": rate,
+                "observed_hours": 168,
+                "expected_hours": 168,
+                "start_ms": 0,
+                "end_ms": 7 * DAY_MS,
+            }
+        }
+        for key, rate in [("xyz:GOLD", 0.0012425475), ("BTC-USDC", short_rate)]
+    }
+    report = quantify_variants(drafts, markets)
+    for portfolio in report["portfolios"]:
+        total = portfolio["funding_summary"]
+        assert total["status"] == "measured"
+        assert total["start_ms"] == 0
+        assert total["end_ms"] == 7 * DAY_MS
+        assert total["observed_cost_nav_fraction"] == pytest.approx(
+            0.5 * 0.0012425475 - short_rate
+        )
+        assert total["observed_cost_nav_fraction"] == pytest.approx(
+            sum(row["observed_cost_nav_fraction"] for row in portfolio["funding"])
+        )
+    assert "already NAV-weighted" in report["method"]
+    assert "positive is paid, negative is received" in report["method"]
+
+
+@pytest.mark.parametrize(
+    "bad_funding",
+    [
+        {},
+        {"sum_rates": None},
+        {"sum_rates": 0.01, "observed_hours": 167},
+        {"sum_rates": 0.01, "start_ms": DAY_MS, "end_ms": 8 * DAY_MS},
+        {"sum_rates": 0.01, "start_ms": None},
+    ],
+)
+def test_funding_total_never_sums_missing_partial_or_mismatched_windows(bad_funding):
+    draft = Variant(
+        budget_usd=100,
+        rationale="Pair",
+        positions=[
+            variant().positions[0],
+            variant(id="other", instrument_id="ETH-USDC").positions[0],
+        ],
+        cash_bps=0,
+    )
+    good = {
+        "sum_rates": 0.01,
+        "observed_hours": 168,
+        "expected_hours": 168,
+        "start_ms": 0,
+        "end_ms": 7 * DAY_MS,
+    }
+    bad = {**good, **bad_funding} if bad_funding else {}
+    report = quantify_variants(
+        [draft], {"BTC-USDC": {"funding": good}, "ETH-USDC": {"funding": bad}}
+    )
+    total = report["portfolios"][0]["funding_summary"]
+    assert total["status"] == "unavailable"
+    assert total["observed_cost_nav_fraction"] is None
+    assert total["start_ms"] is None and total["end_ms"] is None
+    assert report["portfolios"][0]["funding"][0]["observed_cost_nav_fraction"] == 0.005
+
+
+def test_no_perps_have_zero_funding_not_zero_total_cost():
+    report = quantify_variants(
+        [variant(kind="token", instrument_id="UBTC/USDC")], {"UBTC/USDC": {}}
+    )
+    summary = report["portfolios"][0]["funding_summary"]
+    assert summary["status"] == "not_applicable"
+    assert summary["observed_cost_nav_fraction"] == 0
+    assert summary["start_ms"] is None and summary["end_ms"] is None
+    assert "not total holding costs or a forecast" in report["method"]
+
+
 def test_zero_outcome_is_a_real_loss_not_a_missing_price():
     draft = variant(kind="prediction", instrument_id="123", direction="no")
     result = quantify_variants([draft], {"123": {"prices": {0: 0.4, DAY_MS: 0}}})
