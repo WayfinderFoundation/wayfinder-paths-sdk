@@ -1,0 +1,20 @@
+{
+  "flop": {
+    "protocol": "flop", "program": "agent-testnet", "rule_revision": "research-2026-10-01",
+    "cost_unit": "FLOP_TEST", "max_total_cost": 0, "max_daily_cost": 0, "max_operation_cost": 0
+  },
+  "risex": {
+    "protocol": "risex", "program": "ignite", "rule_revision": "research-2026-10-01",
+    "account": "0x1111111111111111111111111111111111111111",
+    "cost_unit": "USD", "max_total_cost": 0, "max_daily_cost": 0, "max_operation_cost": 0
+  },
+  "perptools": {
+    "protocol": "perptools", "program": "points", "rule_revision": "research-2026-10-01",
+    "cost_unit": "USD", "max_total_cost": 0, "max_daily_cost": 0, "max_operation_cost": 0
+  },
+  "imd": {
+    "protocol": "imd", "program": "worker-seats", "rule_revision": "research-2026-10-01",
+    "account": "0x1111111111111111111111111111111111111111",
+    "cost_unit": "USD", "max_total_cost": 0, "max_daily_cost": 0, "max_operation_cost": 0
+  }
+}

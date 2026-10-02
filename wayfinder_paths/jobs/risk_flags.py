@@ -79,6 +79,24 @@ def risk_flags(job: WayfinderJob, root: Path) -> list[dict[str, Any]]:
             )
         )
 
+    if job.execution_contract == "freestyle_v1":
+        from wayfinder_paths.jobs.activities import objective_strategy
+
+        objective = objective_strategy(params)
+        if objective is not None and not objective.trading_enabled:
+            # Runtime refuses openers/custom calls. Activities have their own
+            # declared budgets; fictitious position/stop warnings do not apply.
+            flags.append(
+                RiskFlag(
+                    "activity_execution_unverified",
+                    "info",
+                    "activities are observation-only; external execution is not certified",
+                    "keep the job in paper mode until its adapter is verified",
+                    "activity",
+                )
+            )
+            return [flag.to_dict() for flag in flags]
+
     if job.execution_contract == "jobs_v1":
         flags.extend(_jobs_v1_flags(job, root, params))
     else:

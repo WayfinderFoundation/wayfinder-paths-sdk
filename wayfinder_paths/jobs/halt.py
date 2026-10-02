@@ -27,7 +27,13 @@ HALTED_EXECUTION_STATUS = "halted"
 # Halts latched by the risk/protection layer: owner-clearable only. The loop
 # that tripped a circuit breaker must not be able to reset it.
 RISK_LATCH_SOURCES = frozenset(
-    {"risk_limits", "native_protection", "regime_health", "symbol_risk_override"}
+    {
+        "risk_limits",
+        "native_protection",
+        "regime_health",
+        "symbol_risk_override",
+        "activity_risk",
+    }
 )
 
 
@@ -66,7 +72,15 @@ def request_halt(
         "reason": reason or existing.get("reason") or "manual halt",
         "ts": existing.get("ts") or utc_now_iso(),
         "flatten": bool(flatten or existing.get("flatten")),
-        "source": existing.get("source") or source,
+        # A risk failure can strengthen an earlier manual pause, never weaken
+        # an existing owner-only latch into an agent-clearable one.
+        "source": (
+            existing.get("source")
+            if existing.get("source") in RISK_LATCH_SOURCES
+            else source
+            if source in RISK_LATCH_SOURCES
+            else existing.get("source") or source
+        ),
         # Restored on clear so an agent-written status isn't lost.
         "prior_live_execution_status": existing.get(
             "prior_live_execution_status",

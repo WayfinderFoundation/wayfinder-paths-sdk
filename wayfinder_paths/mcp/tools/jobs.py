@@ -92,6 +92,8 @@ from wayfinder_paths.runner.monitor_state import atomic_write_json
 JobAction = Literal[
     "list",
     "starter_strategies",
+    "objective_strategies",
+    "create_objective",
     "create_starter",
     "create",
     "status",
@@ -612,6 +614,7 @@ async def core_jobs(
     path_version: str | None = None,
     path_component: str | None = None,
     path_params: dict[str, Any] | None = None,
+    path_dependencies: list[dict[str, Any]] | None = None,
     install_dir: str | None = None,
     watch_level: Literal["off", "monitor", "intervene", "auto"] | None = None,
     triggers: list[str] | None = None,
@@ -682,6 +685,11 @@ async def core_jobs(
 
     The launch flow (every kind of job; load the `launching-wayfinder-jobs` skill):
       `create_starter` / `create_freestyle` / `create_from_path` (jobs start paused)
+      `objective_strategies` lists observation-first participation templates;
+      `create_objective` takes starter_id and optional account/seat_id in
+      execution_params. They start paused with zero spend. For custom objectives,
+      use create_freestyle with execution_params.objective_strategy and optional
+      path_dependencies (alias, slug, component) for reviewed pinned activities.
       -> `validate_job` (the ladder for the kind, with a sandboxed dry run for
       scripts and Paths) -> `readout` (honest evidence; `refresh=True` runs the
       backtest, walk-forward holdout and robustness in the background on a
@@ -823,6 +831,35 @@ async def core_jobs(
 
     if action == "starter_strategies":
         return ok(starter_catalog())
+
+    if action == "objective_strategies":
+        from wayfinder_paths.jobs.objective_starters import objective_catalog
+
+        return ok(objective_catalog())
+
+    if action == "create_objective":
+        from wayfinder_paths.jobs.objective_starters import create_objective_strategy
+
+        if not starter_id:
+            return err("invalid_request", "create_objective requires starter_id")
+        # Creation is deliberately observation-only; live limits are a proposal.
+        config = execution_params or {}
+        if set(config) - {"account", "seat_id"}:
+            return err(
+                "invalid_request", "objective creation accepts only account and seat_id"
+            )
+        return ok(
+            create_objective_strategy(
+                starter_id,
+                job_id=job_id or None,
+                account=str(config.get("account") or ""),
+                seat_id=config.get("seat_id"),
+                store=store,
+                compile_job=compile,
+                initializer_session_id=initializer_session_id
+                or _infer_initializer_session(),
+            )
+        )
 
     if action == "create_starter":
         if not starter_id:
@@ -995,6 +1032,7 @@ async def core_jobs(
                 initializer_session_id=initializer_session_id
                 or _infer_initializer_session(),
                 execution_params=execution_params,
+                path_dependencies=path_dependencies,
             )
         )
 

@@ -396,6 +396,48 @@ def starter_strategies_cmd() -> None:
 
 
 @job_cli.command(
+    name="objective-strategies",
+    help="List observation-first objective strategy templates.",
+)
+def objective_strategies_cmd() -> None:
+    from wayfinder_paths.jobs.objective_starters import objective_catalog
+
+    _echo_json({"ok": True, "result": objective_catalog()})
+
+
+@job_cli.command(
+    name="create-objective",
+    help="Create an objective strategy with execution disabled and zero spend.",
+)
+@click.argument("starter_id")
+@click.option("--job-id", default=None)
+@click.option("--account", default="")
+@click.option("--seat-id", type=click.IntRange(min=0), default=None)
+@click.option("--no-compile", is_flag=True, default=False)
+def create_objective_cmd(
+    starter_id: str,
+    job_id: str | None,
+    account: str,
+    seat_id: int | None,
+    no_compile: bool,
+) -> None:
+    from wayfinder_paths.jobs.objective_starters import create_objective_strategy
+
+    _echo_json(
+        {
+            "ok": True,
+            "result": create_objective_strategy(
+                starter_id,
+                job_id=job_id,
+                account=account,
+                seat_id=seat_id,
+                compile_job=not no_compile,
+            ),
+        }
+    )
+
+
+@job_cli.command(
     name="create-starter",
     help="Create a paper jobs_v1 job from a selectable starter definition.",
 )

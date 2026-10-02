@@ -67,10 +67,10 @@ from wayfinder_paths.paths.cli import (
     _state_dir_for_install_root,
 )
 from wayfinder_paths.paths.evaluator import PathEvalError, run_path_eval
+from wayfinder_paths.paths.job_params import PARAMS_PATH, effective_path_params
 from wayfinder_paths.paths.manifest import PathManifest, PathManifestError
 
 PIN_PATH = "workspace/config/path.json"
-PARAMS_PATH = "workspace/config/params.json"
 UPGRADE_STATE_PATH = "state/path_upgrade.json"
 PATH_STATE_DIR = "state/path"
 PATH_EVENT_MARKER = "WAYFINDER_PATH_EVENT "
@@ -194,6 +194,11 @@ def create_from_path(
             f"{slug} {pinned_version}: bundle.zip on disk ({on_disk_sha}) does not match the lock ({lock_sha})"
         )
     merged_params = {**dict(job_block.get("params") or {}), **dict(params or {})}
+    agent_wake_seconds = job_block.get("agent_wake_seconds")
+    if agent_wake_seconds is not None and (
+        type(agent_wake_seconds) is not int or agent_wake_seconds < 60
+    ):
+        raise ValueError("job.agent_wake_seconds must be an integer >= 60")
     pin = {
         "kind": "path",
         "slug": slug,
@@ -218,6 +223,7 @@ def create_from_path(
         timezone=str(schedule.get("timezone") or timezone),
         timeout_seconds=timeout,
         agent_mode=normalize_agent_mode(agent_mode),
+        agent_wake_seconds=agent_wake_seconds,
         execution_contract="path_v1",
         initializer_session_id=initializer_session_id,
         source=pin,
@@ -278,6 +284,11 @@ def validate_path_job(
         }
     )
     pin = dict(job_data.get("source") or {})
+    try:
+        effective_path_params(root, pin)
+        checks.append({"name": "path_params_valid", "passed": True})
+    except (ValueError, OSError) as exc:
+        checks.append({"name": "path_params_valid", "passed": False, "error": str(exc)})
     required = (
         "slug",
         "version",
@@ -713,7 +724,7 @@ def _exec_component(
         **os.environ,
         "WAYFINDER_JOB_MODE": mode,
         "WAYFINDER_PATH_DRY_RUN": "1" if dry_run else "0",
-        "WAYFINDER_PATH_PARAMS": json.dumps(dict(pin.get("params") or {})),
+        "WAYFINDER_PATH_PARAMS": json.dumps(effective_path_params(root, pin)),
         "WAYFINDER_PATH_STATE_DIR": str(state_dir),
         "WAYFINDER_JOB_DIR": str(root),
         "WAYFINDER_HIGH_LEVEL_JOB_ID": str(job_data.get("id") or root.name),

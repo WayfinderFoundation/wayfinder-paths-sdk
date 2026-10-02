@@ -281,8 +281,10 @@ class JobCompiler:
             "WAYFINDER_JOB_EXECUTION_CONTRACT": str(job.execution_contract or "legacy"),
         }
         if str((job.source or {}).get("kind")) == "path":
+            from wayfinder_paths.paths.job_params import effective_path_params
+
             env["WAYFINDER_PATH_PARAMS"] = json.dumps(
-                dict(job.source.get("params") or {})
+                effective_path_params(root, job.source)
             )
         spec_path = root / "execution_spec.json"
         if job.execution_spec:
