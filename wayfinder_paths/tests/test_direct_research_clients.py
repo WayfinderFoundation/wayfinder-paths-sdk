@@ -114,6 +114,8 @@ async def test_defillama_free_open_interest_overview(
     assert "not current open interest" in result["periodDefinitions"]["total1y"]
     assert "trailing-year total" not in result["periodDefinitions"]["total1y"].lower()
     assert llama_module.PERIOD_DEFINITIONS["total1y"].startswith("Trailing-year total")
+    assert "periodComparisons" not in result
+    assert "periodComparisons" not in result["items"][0]
 
 
 @pytest.mark.asyncio
@@ -271,6 +273,120 @@ async def test_fee_compaction_preserves_periods_and_deployment_scope(
             assert items[protocol["slug"]][field] == value
     # Missing is still null, not zero; no aggregation across deployments.
     assert items["venue-new"]["total1y"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "data_type", ["dailyFees", "dailyRevenue", "dailyHoldersRevenue"]
+)
+async def test_fee_comparisons_distinguish_daily_decline_from_monthly_growth(
+    monkeypatch: pytest.MonkeyPatch, data_type: str
+) -> None:
+    # Regression from a real eval: change_1m was misread as rolling-month growth.
+    metrics = {
+        "total24h": 1427104,
+        "total30DaysAgo": 4221588,
+        "change_1m": -66.2,
+        "total7d": 10368888,
+        "total14dto7d": 17773613,
+        "change_7dover7d": -41.66,
+        "total30d": 129390324,
+        "total60dto30d": 26939684,
+        "change_30dover30d": 380.3,
+    }
+    _FakeAsyncClient.get_body = {
+        **metrics,
+        "protocols": [{"name": "Venue", "slug": "venue", **metrics}],
+    }
+    monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
+    client = llama_module.DefiLlamaFreeClient()
+    overview = (await client.fees_overview(data_type=data_type))["result"]
+    history = (await client.protocol_fees("venue", data_type=data_type))["result"]
+    for result in (overview, history):
+        comparisons = result["periodComparisons"]
+        assert comparisons["latest_day_vs_day_30d_ago"]["reportedChangePct"] == -66.2
+        assert comparisons["last_7d_vs_previous_7d"]["reportedChangePct"] == -41.66
+        month = comparisons["last_30d_vs_previous_30d"]
+        assert month["currentUsd"] == 129390324
+        assert month["previousUsd"] == 26939684
+        assert month["reportedChangePct"] == 380.3
+        assert month["computedChangePct"] == pytest.approx(380.3, abs=0.01)
+        assert result["periodComparisonFields"]["last_30d_vs_previous_30d"] == (
+            "total30d",
+            "total60dto30d",
+            "change_30dover30d",
+        )
+        for field, value in metrics.items():
+            assert result["totals"][field] == value
+    assert overview["items"][0]["periodComparisons"] == overview["periodComparisons"]
+    assert overview["dataType"] == history["dataType"] == data_type
+
+
+@pytest.mark.parametrize(
+    "previous", [None, 0, -1, True, "unknown", float("nan"), float("inf")]
+)
+def test_fee_comparison_does_not_invent_growth_from_unavailable_baseline(
+    previous: Any,
+) -> None:
+    comparisons = llama_module._period_comparisons(
+        {"total30d": 100, "total60dto30d": previous}
+    )
+    assert comparisons["last_30d_vs_previous_30d"]["computedChangePct"] is None
+    assert comparisons["last_30d_vs_previous_30d"]["reportedChangePct"] is None
+    assert "latest_day_vs_day_30d_ago" not in comparisons
+
+
+def test_fee_comparison_preserves_zero_decline_and_provider_disagreement() -> None:
+    comparisons = llama_module._period_comparisons(
+        {"total30d": 0, "total60dto30d": 100, "change_30dover30d": 0}
+    )
+    assert comparisons["last_30d_vs_previous_30d"] == {
+        "currentUsd": 0,
+        "previousUsd": 100,
+        "reportedChangePct": 0,
+        "computedChangePct": -100,
+    }
+    assert llama_module._period_comparisons({}) == {}
+
+
+@pytest.mark.asyncio
+async def test_dex_comparisons_preserve_pagination_and_response_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeAsyncClient.get_body = {
+        "protocols": [
+            {
+                "slug": f"venue-{index}",
+                "total24h": 200 - index,
+                "total30DaysAgo": 100,
+                "total7d": 1000,
+                "total14dto7d": 2000,
+                "total30d": 5000,
+                "total60dto30d": 4000,
+            }
+            for index in range(100)
+        ]
+    }
+    monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
+    client = llama_module.DefiLlamaFreeClient()
+    cursor = "_"
+    seen = []
+    while cursor is not None:
+        response = await client.dex_overview(limit=100, cursor=cursor)
+        rendered = json.dumps({"ok": True, "result": response}, indent=2)
+        assert len(rendered) <= llama_module.MAX_RESPONSE_CHARACTERS
+        assert rendered.count("\n") < llama_module.MAX_RESPONSE_LINES
+        result = response["result"]
+        for item in result["items"]:
+            assert (
+                item["periodComparisons"]["last_30d_vs_previous_30d"][
+                    "computedChangePct"
+                ]
+                == 25
+            )
+            seen.append(item["slug"])
+        cursor = result["page"]["nextCursor"]
+    assert seen == [f"venue-{index}" for index in range(100)]
 
 
 @pytest.mark.asyncio

@@ -64,9 +64,14 @@ async def research_defillama_free(
             Missing data is unavailable, not zero holder value. Read the returned
             provider methodology before interpreting a metric as business revenue.
             Totals are provider-reported periods, not annualized projections.
-            change_1m compares the latest day with the day a month ago, NOT
-            rolling-month growth; use change_30dover30d and total60dto30d for
-            that comparison. total1y is a trailing total, not the annualized
+            Use periodComparisons for growth: latest_day_vs_day_30d_ago is
+            NOT monthly growth; last_30d_vs_previous_30d compares rolling months.
+            Each has currentUsd/previousUsd, reportedChangePct and independently
+            computedChangePct (null if unavailable); periodComparisonFields maps
+            these to the preserved provider fields. Conflicting horizons or
+            reported/computed changes need investigation, not a single growth label.
+            Legacy change_1m is daily-versus-month-ago, not rolling-month growth.
+            total1y is a trailing total, not the annualized
             current pace. Fees and buybacks funded from those fees are the same
             flow at different stages, not additive revenue. Each row's slug,
             parentProtocol and chains define its scope, not the entire business.

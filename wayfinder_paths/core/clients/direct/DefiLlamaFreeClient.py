@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import time
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
@@ -29,6 +30,11 @@ PERIOD_DEFINITIONS = {
     "change_1m": "Percent change of the latest daily observation versus a day one month ago; NOT rolling-month growth.",
     "change_30dover30d": "Percent change of total30d versus total60dto30d (the preceding 30-day period).",
     "total1y": "Trailing-year total, NOT the annualized current pace.",
+}
+PERIOD_COMPARISON_FIELDS = {
+    "latest_day_vs_day_30d_ago": ("total24h", "total30DaysAgo", "change_1m"),
+    "last_7d_vs_previous_7d": ("total7d", "total14dto7d", "change_7dover7d"),
+    "last_30d_vs_previous_30d": ("total30d", "total60dto30d", "change_30dover30d"),
 }
 
 
@@ -197,6 +203,8 @@ class DefiLlamaFreeClient:
             "breakdownMethodology": result.get("breakdownMethodology"),
             "totals": _overview_totals(result),
             "periodDefinitions": PERIOD_DEFINITIONS,
+            "periodComparisons": _period_comparisons(result),
+            "periodComparisonFields": PERIOD_COMPARISON_FIELDS,
             "days": days,
             "dailyRows": rows,
             "weeklyRollups": _weekly_sum_rollups(rows),
@@ -568,7 +576,9 @@ def _compact_overview_response(
     limit: int,
     cursor: str,
 ) -> dict[str, Any]:
-    result = response.get("result") if isinstance(response.get("result"), dict) else {}
+    result = response.get("result")
+    if not isinstance(result, dict):
+        result = {}
     protocols = result.get("protocols")
     if not isinstance(protocols, list):
         protocols = []
@@ -577,6 +587,10 @@ def _compact_overview_response(
         for protocol in protocols
         if isinstance(protocol, dict)
     ]
+    # Flow comparisons do not describe outstanding open-interest snapshots.
+    if dataset != "open_interest_overview":
+        for item in items:
+            item["periodComparisons"] = _period_comparisons(item)
     items.sort(key=lambda item: _number(item.get("total24h")), reverse=True)
     response["result"] = _paged_result(
         dataset=dataset,
@@ -587,6 +601,9 @@ def _compact_overview_response(
         totals=_overview_totals(result),
     )
     response["result"]["periodDefinitions"] = PERIOD_DEFINITIONS
+    if dataset != "open_interest_overview":
+        response["result"]["periodComparisons"] = _period_comparisons(result)
+        response["result"]["periodComparisonFields"] = PERIOD_COMPARISON_FIELDS
     if dataset == "open_interest_overview":
         response["result"]["periodDefinitions"] = {
             **PERIOD_DEFINITIONS,
@@ -601,6 +618,35 @@ def _compact_overview_response(
         "protocols[].breakdown30d",
     ]
     return _enforce_response_budget(response)
+
+
+def _period_comparisons(result: dict[str, Any]) -> dict[str, dict[str, float | None]]:
+    comparisons: dict[str, dict[str, float | None]] = {}
+    for period, fields in PERIOD_COMPARISON_FIELDS.items():
+        current, previous, reported = (
+            value
+            if isinstance(value := result.get(field), (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            else None
+            for field in fields
+        )
+        if current is None and previous is None and reported is None:
+            continue
+        computed = (
+            (current / previous - 1) * 100
+            if current is not None and previous is not None and previous > 0
+            else None
+        )
+        comparisons[period] = {
+            "currentUsd": current,
+            "previousUsd": previous,
+            "reportedChangePct": reported,
+            "computedChangePct": computed
+            if computed is not None and math.isfinite(computed)
+            else None,
+        }
+    return comparisons
 
 
 def _overview_totals(result: dict[str, Any]) -> dict[str, Any]:
