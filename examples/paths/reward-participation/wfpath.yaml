@@ -1,0 +1,54 @@
+schema_version: "0.1"
+
+slug: reward-participation
+name: "Reward Participation"
+version: "0.1.0"
+summary: "Readiness and bounded participation receipts for reward programs; live submissions disabled."
+
+primary_kind: monitor
+tags:
+  - monitor
+
+components:
+  - id: "main"
+    kind: script
+    path: "scripts/main.py"
+
+job:
+  component: main
+  kind: exec
+  dry_run: supported
+  schedule:
+    interval_seconds: 900
+    timeout_seconds: 120
+  agent_wake_seconds: 604800
+  params:
+    participation:
+      protocol: flop
+      program: agent-testnet
+      rule_revision: research-2026-10-01
+      enabled: false
+      cost_unit: FLOP_TEST
+      max_total_cost: 0
+      max_daily_cost: 0
+      max_operation_cost: 0
+      work: []
+
+skill:
+  enabled: true
+  source: generated
+  name: "reward-participation"
+  description: "Readiness and bounded participation receipts for reward programs; live submissions disabled."
+  instructions: "skill/instructions.md"
+  runtime:
+    mode: thin
+    package: "wayfinder-paths"
+    version: "0.11.1"
+    python: ">=3.12,<3.13"
+    component: "main"
+    bootstrap: uv
+    fallback_bootstrap: pipx
+    prefer_existing_runtime: true
+    require_api_key: false
+    api_key_env: "WAYFINDER_API_KEY"
+    config_path_env: "WAYFINDER_CONFIG_PATH"

@@ -183,6 +183,9 @@ def path_snapshot(store: JobStore, job_id: str, job: Any) -> dict[str, Any] | No
         "dry_run_declared": kind == "freestyle"
         or str(pin.get("dry_run") or "unsupported") == "supported",
         "upgrade": store.read_json(job_id, UPGRADE_STATE_PATH, default=None),
+        "incentives": store.read_json(
+            job_id, "state/path/participation_snapshot.json", default=None
+        ),
     }
 
 

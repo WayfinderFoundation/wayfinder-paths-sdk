@@ -868,6 +868,23 @@ def _overlay_change(
     if params:
         yaml_path = candidate_dir / "job.yaml"
         job_yaml = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        if job_yaml.get("execution_contract") == "path_v1":
+            from wayfinder_paths.paths.job_params import (
+                PARAMS_PATH,
+                effective_path_params,
+            )
+            from wayfinder_paths.runner.monitor_state import atomic_write_json
+
+            atomic_write_json(
+                candidate_dir / PARAMS_PATH,
+                {
+                    **effective_path_params(
+                        candidate_dir, job_yaml.get("source") or {}
+                    ),
+                    **params,
+                },
+            )
+            return
         job_yaml["execution_params"] = {
             **(job_yaml.get("execution_params") or {}),
             **params,

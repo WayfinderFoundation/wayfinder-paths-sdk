@@ -28,6 +28,153 @@ SLUG = "demo-rotator"
 VERSION = "0.1.0"
 
 
+def test_reward_path_runs_end_to_end_without_network_or_submission(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs import paths_runtime as pr
+
+    repo = Path(__file__).parents[2]
+    example = repo / "examples/paths/reward-participation"
+    store, path_dir = _install(tmp_path, dry_run="supported")
+    manifest = yaml.safe_load((path_dir / "wfpath.yaml").read_text())
+    manifest["job"] = yaml.safe_load((example / "wfpath.yaml").read_text())["job"]
+    (path_dir / "wfpath.yaml").write_text(yaml.safe_dump(manifest))
+    (path_dir / "scripts/main.py").write_text((example / "scripts/main.py").read_text())
+    PathBuilder.build(path_dir=path_dir, out_path=path_dir / "bundle.zip")
+    lock_path = tmp_path / ".wayfinder/paths.lock.json"
+    lock = json.loads(lock_path.read_text())
+    lock["paths"][SLUG]["bundle_sha256"] = pr.bundle_sha256(path_dir)
+    lock_path.write_text(json.dumps(lock))
+    create_from_path(SLUG, store=store, compile_job=False)
+    assert store.load(SLUG).agent_loop.wake_interval_seconds == 604800
+    monkeypatch.setenv("PYTHONPATH", str(repo))
+    monkeypatch.setenv("WAYFINDER_JOB_MODE", "paper")
+    monkeypatch.delenv("WAYFINDER_JOB_REVISION", raising=False)
+    monkeypatch.setattr(pr, "JobStore", lambda: store)
+    monkeypatch.setattr(pr, "fire_triggers", lambda *a, **k: None)
+    report = validate_path_job(SLUG, store=store)
+    assert report["status"] == "passed", report
+    outcome = run_path_tick(store.job_dir(SLUG))
+    assert outcome["ok"], outcome
+    snapshot = store.read_json(SLUG, "state/path/participation_snapshot.json")
+    assert snapshot["observation"]["protocol"] == "flop"
+    assert snapshot["status"] == "blocked" and snapshot["observation"]["rewards"] == []
+    assert not (store.job_dir(SLUG) / "state/path/participation.json").exists()
+
+
+def test_path_params_proposal_validation_compilation_and_execution_agree(
+    tmp_path: Path,
+) -> None:
+    from wayfinder_paths.jobs.compiler import JobCompiler
+    from wayfinder_paths.jobs.paths_runtime import PARAMS_PATH, _exec_component
+    from wayfinder_paths.jobs.proposals import _overlay_change
+
+    store, path_dir = _install(tmp_path, dry_run="supported")
+    create_from_path(
+        SLUG, store=store, compile_job=False, params={"limit": 1, "enabled": True}
+    )
+    root = store.job_dir(SLUG)
+    job = store.load(SLUG)
+    _overlay_change(root, candidate_source=None, params={"limit": 7, "enabled": False})
+    expected = {"limit": 7, "enabled": False}
+    assert json.loads((root / PARAMS_PATH).read_text()) == expected
+    assert job.source["params"]["limit"] == 1  # pin remains immutable
+    assert (
+        json.loads(
+            JobCompiler(store=store)._job_env(job, root)["WAYFINDER_PATH_PARAMS"]
+        )
+        == expected
+    )
+    # Read exactly what the installed child sees in both validation and live mode.
+    probe = path_dir / "scripts/probe.py"
+    probe.write_text("import os\nprint(os.environ['WAYFINDER_PATH_PARAMS'])\n")
+    pin = {**job.source, "component_path": "scripts/probe.py"}
+    for mode in ("paper", "live"):
+        result = _exec_component(
+            root,
+            job.to_dict(),
+            pin,
+            path_dir,
+            mode=mode,
+            dry_run=mode == "paper",
+            timeout=10,
+        )
+        assert result["ok"] and json.loads(result["stdout_tail"]) == expected
+
+
+def test_path_params_empty_is_authoritative_and_legacy_falls_back(
+    tmp_path: Path,
+) -> None:
+    from wayfinder_paths.paths.job_params import PARAMS_PATH, effective_path_params
+
+    source = {"params": {"enabled": True}}
+    assert effective_path_params(tmp_path, source) == {"enabled": True}
+    path = tmp_path / PARAMS_PATH
+    path.parent.mkdir(parents=True)
+    path.write_text("{}")
+    assert effective_path_params(tmp_path, source) == {}
+    path.write_text("invalid")
+    with pytest.raises(ValueError):
+        effective_path_params(tmp_path, source)
+
+
+def test_participation_journal_is_material_changes_only(tmp_path: Path) -> None:
+    from wayfinder_paths.jobs.freestyle.telemetry import path_snapshot
+    from wayfinder_paths.jobs.paths_runtime import _record_participation
+
+    store, _ = _install(tmp_path)
+    create_from_path(SLUG, store=store, compile_job=False)
+    root = store.job_dir(SLUG)
+    payload = {"status": "blocked", "reason": "API not verified"}
+    _record_participation(store, SLUG, root, payload)
+    _record_participation(store, SLUG, root, payload)
+    rows = [
+        json.loads(row) for row in (root / "journal.jsonl").read_text().splitlines()
+    ]
+    assert sum(row.get("type") == "path_participation" for row in rows) == 1
+    assert (
+        path_snapshot(store, SLUG, store.load(SLUG))["incentives"]["reason"]
+        == "API not verified"
+    )
+
+
+def test_participation_wakes_only_on_material_program_or_risk_changes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs import paths_runtime as pr
+
+    store, _ = _install(tmp_path)
+    create_from_path(SLUG, store=store, compile_job=False)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        pr, "fire_triggers", lambda store, job, events, **kw: calls.append(events)
+    )
+    payload = {
+        "status": "idle",
+        "observation": {
+            "protocol": "flop",
+            "program": "testnet",
+            "rule_revision": "v1",
+            "observed_at": 1,
+            "readiness": "ready",
+            "eligible": True,
+        },
+    }
+    root = store.job_dir(SLUG)
+    pr._record_participation(store, SLUG, root, payload)
+    payload["status"] = "submitted"
+    pr._record_participation(store, SLUG, root, payload)
+    assert not calls  # initial snapshot and ordinary work are not model wakes
+    payload["observation"]["eligible"] = False
+    pr._record_participation(store, SLUG, root, payload)
+    assert calls == [["participation_changed"]]
+    pr._record_participation(store, SLUG, root, payload)
+    assert len(calls) == 1
+    payload.update(risk_alert=True, reason="failed protective exit")
+    pr._record_participation(store, SLUG, root, payload)
+    assert calls[-1] == ["risk_halt"]
+
+
 def _install(
     tmp_path: Path, *, dry_run: str | None = None, freestyle: bool = False
 ) -> tuple[JobStore, Path]:

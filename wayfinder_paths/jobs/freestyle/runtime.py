@@ -705,6 +705,13 @@ def _run_ticks(
     entrypoint: Path | None = None,
 ) -> dict[str, Any]:
     entrypoint = entrypoint or _entrypoint(root, job)
+    if job.execution_contract == "path_v1":
+        from wayfinder_paths.paths.job_params import effective_path_params
+
+        job.execution_params = {
+            **(job.execution_params or {}),
+            **effective_path_params(root, job.source or {}),
+        }
     module = load_tick_module(entrypoint)
     tick_fn = getattr(module, "tick", None)
     if not callable(tick_fn):
