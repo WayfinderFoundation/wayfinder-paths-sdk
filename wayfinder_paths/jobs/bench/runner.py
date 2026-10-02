@@ -824,12 +824,15 @@ def _overlap_generation(store: JobStore, job_id: str, state: Mapping[str, Any]) 
 
 
 def _overlap_ready(
-    store: JobStore, job_id: str, *, now: Any, claim_timeout_s: float = 120.0
+    store: JobStore, job_id: str, *, now: Any, claim_timeout_s: float = 20.0
 ) -> bool:
     """With the campaign's overlap_generation on, the next stage may start
     while the one screen it just launched runs. Wait for that launch to be
     claimed first (a still-prepared candidate would be handed out again),
-    then ask the campaign; anything else settles as before."""
+    then ask the campaign; anything else settles as before. A detached screen
+    is claimed within seconds, so a still-prepared candidate after the
+    timeout means the stage ended without launching it (v14: 125 s lost per
+    such stage at a 120 s timeout)."""
     deadline = time.monotonic() + claim_timeout_s
     while time.monotonic() < deadline:
         state = campaign_status(store, job_id)
