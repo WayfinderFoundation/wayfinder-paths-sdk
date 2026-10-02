@@ -149,6 +149,10 @@ def test_correlations_align_timestamps_and_reject_insufficient_variance(mode):
         )
     }
     report = quantify_variants([], {"A": {"prices": left}, "B": {"prices": right}})
+    assert (
+        report["correlation_basis"]
+        == "instrument_price_returns_before_position_direction"
+    )
     row = report["correlations"][0]
     assert row["correlation"] == (pytest.approx(1) if mode == "aligned" else None)
 

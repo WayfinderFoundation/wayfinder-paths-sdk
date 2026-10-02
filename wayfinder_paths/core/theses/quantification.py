@@ -143,10 +143,13 @@ def quantify_variants(variants: list[Variant], markets: dict[str, dict]) -> dict
             }
             for key, market in markets.items()
         },
+        "correlation_basis": "instrument_price_returns_before_position_direction",
         "correlations": correlations,
         "portfolios": portfolios,
         "method": (
             "Fixed initial signed notionals, idle cash held at $1; NO shares are long their own outcome price. "
+            "Correlations use instrument price returns, not signed position PnL: negate a pair's correlation "
+            "when exactly one leg is short; do not invert a NO share's own price series. "
             "Portfolio uses only common observed UTC daily points, no filling or proxy substitution. "
             "Volatility/correlation require 14 overlapping consecutive-day returns; annualization assumes 365 days. "
             "Observed drawdowns can miss intraday/gap losses. Gross price history excludes fees, slippage, "
