@@ -80,10 +80,6 @@ def validate_proposal(
                     errors.append("Spot notional must be at least $10")
             if position.kind not in {"perp", "hip3"}:
                 continue
-            if position.stop_loss_pct is None:
-                errors.append(
-                    f"{variant.budget_usd}/{position.id}: perps require stop_loss_pct"
-                )
             notional = (
                 variant.budget_usd * position.capital_bps / 10000 * position.leverage
             )

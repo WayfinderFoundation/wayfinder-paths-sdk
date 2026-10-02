@@ -249,6 +249,34 @@ def test_incremental_draft_reference_and_legacy_response(run, target):
     )
 
 
+@pytest.mark.parametrize("stop_loss_pct", [None, 0.2])
+def test_research_loadings_publish_without_an_exit_policy(
+    run: tuple[list[dict], list[dict]], stop_loss_pct: float | None
+) -> None:
+    parent, child = run
+    for index, message in enumerate(parent):
+        for part in message.get("parts", []):
+            if part.get("tool") != CHECKPOINT_TOOL:
+                continue
+            checkpoint = part["state"]["input"]["checkpoint"]
+            variant = (checkpoint.get("draft") or {}).get("variant")
+            if variant:
+                for position in variant["positions"]:
+                    position["stop_loss_pct"] = stop_loss_pct
+                    position["take_profit_pct"] = None
+                parent[index] = receipt(checkpoint, part["state"]["time"]["end"])
+    status = draft_status(parent, child)
+    assert status["ready"], status["errors"]
+    result = publication_result(
+        json.dumps({"proposal_ref": status["proposal_ref"]}), parent, child
+    )
+    assert not result["feedback"]
+    for variant in result["proposal"]["variants"]:
+        assert variant["cash_bps"] == 0
+        assert sum(p["capital_bps"] for p in variant["positions"]) == 10000
+        assert all(p["stop_loss_pct"] == stop_loss_pct for p in variant["positions"])
+
+
 def test_partial_or_child_drafts_cannot_publish(run):
     parent, child = run
     assert not draft_status(parent[:3], child)["ready"]

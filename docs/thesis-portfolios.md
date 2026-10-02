@@ -24,6 +24,13 @@ invalidation conditions, never executable transactions. Callers must resolve
 instrument identities against their venue, including verifying prediction
 outcomes, before constructing `MarketHistory`.
 
+Research produces portfolio loadings: verified assets, directions and weights,
+supported by economic comparisons and historical diagnostics. Stop-loss and
+take-profit fields remain optional for compatibility; new research leaves them
+null. Publication does not require exit policies, sized execution quotes or
+wallet/margin setup. Those belong to the subsequent execution-planning step,
+not portfolio selection or review.
+
 ## Research progress and execution readiness
 
 `research_thesis_checkpoint` validates a compact interpretation, entity-level

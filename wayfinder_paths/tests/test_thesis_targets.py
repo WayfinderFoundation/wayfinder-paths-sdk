@@ -50,7 +50,6 @@ def target():
                             "symbol": "BTC",
                             "direction": "long",
                             "capital_bps": 10000,
-                            "stop_loss_pct": 0.2,
                             "rationale": "Fit",
                         }
                     ],
