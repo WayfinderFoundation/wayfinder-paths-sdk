@@ -40,7 +40,7 @@ class PriceSeries:
         return timestamps, closes
 
 
-def _normalized_shape(values: np.ndarray) -> np.ndarray | None:
+def normalized_price_shape(values: np.ndarray) -> np.ndarray | None:
     log_values = np.log(values)
     std = float(log_values.std())
     if not np.isfinite(std) or std <= 1e-12:
@@ -48,7 +48,7 @@ def _normalized_shape(values: np.ndarray) -> np.ndarray | None:
     return (log_values - float(log_values.mean())) / std
 
 
-def _path_features(values: np.ndarray) -> tuple[float, float]:
+def price_path_features(values: np.ndarray) -> tuple[float, float]:
     log_values = np.log(values)
     log_returns = np.diff(log_values)
     path_range = float(log_values.max() - log_values.min())
@@ -154,10 +154,10 @@ def find_price_analogs(
     window = len(pattern_closes)
     if window < MIN_PATTERN_BARS:
         raise ValueError(f"pattern needs at least {MIN_PATTERN_BARS} bars")
-    query_shape = _normalized_shape(pattern_closes)
+    query_shape = normalized_price_shape(pattern_closes)
     if query_shape is None:
         raise ValueError("pattern has zero price variance")
-    query_range, query_volatility = _path_features(pattern_closes)
+    query_range, query_volatility = price_path_features(pattern_closes)
 
     normalized_horizons = tuple(
         sorted({int(value) for value in horizons if int(value) > 0})
@@ -210,12 +210,14 @@ def find_price_analogs(
             )
             if same_market and overlaps_query:
                 continue
-            shape = _normalized_shape(closes[start:end])
+            shape = normalized_price_shape(closes[start:end])
             if shape is None:
                 continue
             shape_distance = float(np.sqrt(np.mean((shape - query_shape) ** 2)))
             shape_similarity = float(np.exp(-shape_distance))
-            candidate_range, candidate_volatility = _path_features(closes[start:end])
+            candidate_range, candidate_volatility = price_path_features(
+                closes[start:end]
+            )
             magnitude_similarity, magnitude_ratio = _ratio_similarity(
                 candidate_range, query_range
             )
