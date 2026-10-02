@@ -242,6 +242,123 @@ def test_correlations_align_timestamps_and_reject_insufficient_variance(mode):
     assert row["correlation"] == (pytest.approx(1) if mode == "aligned" else None)
 
 
+@pytest.mark.parametrize(
+    "left_direction,right_direction,expected",
+    [
+        ("long", "long", 1),
+        ("short", "long", -1),
+        ("long", "short", -1),
+        ("short", "short", 1),
+    ],
+)
+def test_position_correlations_apply_directions_without_changing_raw_matrix(
+    left_direction, right_direction, expected
+):
+    draft = Variant(
+        budget_usd=1000,
+        rationale="Different direction from price correlation",
+        positions=[
+            variant(
+                id="left", instrument_id="AAA-USDC", direction=left_direction
+            ).positions[0],
+            variant(
+                id="right",
+                instrument_id="BBB-USDC",
+                direction=right_direction,
+                leverage=2,
+            ).positions[0],
+        ],
+        cash_bps=0,
+    )
+    prices = {i * DAY_MS: 100 + i * i for i in range(30)}
+    report = quantify_variants(
+        [
+            draft.model_copy(update={"budget_usd": b})
+            for b in (100, 1000, 10000, 100000)
+        ],
+        {
+            "AAA-USDC": {"prices": prices},
+            "BBB-USDC": {"prices": prices},
+            "unused-alternative": {"prices": prices},
+        },
+    )
+    assert len(report["correlations"]) == 3
+    assert all(r["correlation"] == pytest.approx(1) for r in report["correlations"])
+    assert report["position_correlations"] == [
+        {
+            "left": "AAA-USDC",
+            "right": "BBB-USDC",
+            "left_direction": left_direction,
+            "right_direction": right_direction,
+            "overlapping_daily_returns": 29,
+            "correlation": pytest.approx(expected),
+        }
+    ]
+
+
+@pytest.mark.parametrize("history", ["complete", "short", "constant", "disjoint"])
+def test_position_correlations_preserve_unknown_and_do_not_invert_no_shares(history):
+    draft = Variant(
+        budget_usd=100,
+        rationale="NO is long its own outcome price, not short YES",
+        positions=[
+            variant(
+                id="outcome", kind="prediction", instrument_id="123", direction="no"
+            ).positions[0],
+            variant(id="perp", direction="short").positions[0],
+        ],
+        cash_bps=0,
+    )
+    prices = {
+        i * DAY_MS: 0.2 if history == "constant" else 0.2 + i * i / 2000
+        for i in range(5 if history == "short" else 30)
+    }
+    report = quantify_variants(
+        [draft],
+        {
+            "123": {"prices": prices},
+            "BTC-USDC": {
+                "prices": {
+                    t + (40 * DAY_MS if history == "disjoint" else 0): p * 100
+                    for t, p in prices.items()
+                }
+            },
+        },
+    )
+    row = report["position_correlations"][0]
+    assert row["left_direction"] == "no"
+    assert row["right_direction"] == "short"
+    assert row["correlation"] == (pytest.approx(-1) if history == "complete" else None)
+    assert "direction-adjusted instrument daily returns" in report["method"]
+    assert "not portfolio beta or net PnL correlation" in report["method"]
+
+
+def test_shared_position_matrix_keeps_different_directions_across_budgets():
+    drafts = [
+        Variant(
+            budget_usd=budget,
+            rationale="Same instruments, different direction",
+            positions=[
+                variant(direction=direction).positions[0],
+                variant(id="other", instrument_id="ETH-USDC").positions[0],
+            ],
+            cash_bps=0,
+        )
+        for budget, direction in [(100, "long"), (1000, "short")]
+    ]
+    prices = {i * DAY_MS: 100 + i * i for i in range(30)}
+    report = quantify_variants(
+        drafts, {"BTC-USDC": {"prices": prices}, "ETH-USDC": {"prices": prices}}
+    )
+    rows = report["position_correlations"]
+    assert len(rows) == 2
+    assert {(r["left_direction"], r["right_direction"]) for r in rows} == {
+        ("long", "long"),
+        ("short", "long"),
+    }
+    assert [r["correlation"] for r in rows] == pytest.approx([1, -1])
+
+
 @pytest.mark.parametrize("ask", [0.2, 0.99, 0, 1, None])
 def test_prediction_payoff_is_entry_hurdle_not_probability_forecast(ask):
     book = compact_order_book(

@@ -4,6 +4,7 @@ import hashlib
 import json
 from itertools import combinations
 from math import isfinite
+from typing import Any
 
 import numpy as np
 
@@ -65,7 +66,7 @@ def quantify_variants(variants: list[Variant], markets: dict[str, dict]) -> dict
     returns = {
         key: daily_returns(market.get("prices", {})) for key, market in markets.items()
     }
-    correlations = []
+    correlations: list[dict[str, Any]] = []
     for left, right in combinations(sorted(markets), 2):
         times = sorted(returns[left].keys() & returns[right].keys())
         x, y = [returns[left][t] for t in times], [returns[right][t] for t in times]
@@ -76,6 +77,34 @@ def quantify_variants(variants: list[Variant], markets: dict[str, dict]) -> dict
                 "right": right,
                 "overlapping_daily_returns": len(times),
                 "correlation": float(np.corrcoef(x, y)[0, 1]) if sufficient else None,
+            }
+        )
+    # Correlation is independent of budget/weight. Share signed pairs across variants.
+    by_pair = {(row["left"], row["right"]): row for row in correlations}
+    position_pairs = {
+        tuple(
+            sorted(
+                (
+                    (left.instrument_id, left.direction),
+                    (right.instrument_id, right.direction),
+                )
+            )
+        )
+        for variant in variants
+        for left, right in combinations(variant.positions, 2)
+    }
+    position_correlations = []
+    for (left, left_direction), (right, right_direction) in sorted(position_pairs):
+        row = by_pair[left, right]
+        sign = -1 if (left_direction == "short") != (right_direction == "short") else 1
+        position_correlations.append(
+            {
+                **row,
+                "left_direction": left_direction,
+                "right_direction": right_direction,
+                "correlation": row["correlation"] * sign
+                if row["correlation"] is not None
+                else None,
             }
         )
     portfolios = []
@@ -176,11 +205,14 @@ def quantify_variants(variants: list[Variant], markets: dict[str, dict]) -> dict
         },
         "correlation_basis": "instrument_price_returns_before_position_direction",
         "correlations": correlations,
+        "position_correlations": position_correlations,
         "portfolios": portfolios,
         "method": (
             "Fixed initial signed notionals, idle cash held at $1; NO shares are long their own outcome price. "
             "Correlations use instrument price returns, not signed position PnL: negate a pair's correlation "
             "when exactly one leg is short; do not invert a NO share's own price series. "
+            "position_correlations share the supplied portfolios' direction-adjusted instrument daily returns; "
+            "these are not portfolio beta or net PnL correlation. "
             "Portfolio uses only common observed UTC daily points, no filling or proxy substitution. "
             "Volatility/correlation require 14 overlapping consecutive-day returns; annualization assumes 365 days. "
             "Observed drawdowns can miss intraday/gap losses. Gross price history excludes fees, slippage, "
