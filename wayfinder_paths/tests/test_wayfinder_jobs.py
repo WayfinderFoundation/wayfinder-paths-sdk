@@ -336,31 +336,6 @@ def _worker_snapshot(job: WayfinderJob, **overrides: object) -> dict:
     return snapshot
 
 
-def test_path_worker_reads_incentives_without_trading_research_assignment(
-    tmp_path: Path, monkeypatch
-) -> None:
-    store = JobStore(repo_root=tmp_path)
-    job = WayfinderJob.new(
-        "participation", execution_contract="path_v1", agent_mode="monitor"
-    )
-    store.save(job)
-    monkeypatch.setattr(
-        "wayfinder_paths.jobs.improver.scheduler.assign_island",
-        lambda *a, **k: pytest.fail("Path jobs have no alpha search island"),
-    )
-    sections = _build_worker_prompt_sections(
-        store=store,
-        job_id=job.id,
-        mode="intervene",
-        snapshot=_worker_snapshot(
-            job, path={"incentives": {"reason": "protocol-interface-unverified"}}
-        ),
-    )
-    assert "PATH MONITOR" in sections["stable_prefix"]
-    assert "PROGRESS CONSTITUTION" not in sections["stable_prefix"]
-    assert "protocol-interface-unverified" in sections["dynamic_context"]
-
-
 def test_worker_prompt_keeps_dynamic_context_after_stable_prefix(
     tmp_path: Path,
 ) -> None:

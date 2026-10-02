@@ -1,6 +1,6 @@
 # RewardParticipationAdapter
 
-Read-only program observations for the reward-participation Path. `observe()`
+Read-only program observations for objective strategy jobs. `observe()`
 returns `(ok, observation_or_error)`; `close()` releases its HTTP client.
 See `examples.json` for configuration and the Path README for readiness blockers.
 

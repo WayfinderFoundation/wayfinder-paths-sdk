@@ -35,6 +35,7 @@ def create_freestyle_job(
     compile_job: bool = True,
     initializer_session_id: str | None = None,
     execution_params: dict[str, Any] | None = None,
+    path_dependencies: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Materialize a freestyle job, paused: the tick module lands under
     ``workspace/src`` (the only revision-hashed home), the job compiles into
@@ -45,6 +46,8 @@ def create_freestyle_job(
         raise ValueError("freestyle jobs need interval_seconds or cron_expr")
     store = store or JobStore()
     jid = safe_job_id(job_id)
+    if (store.job_dir(jid) / "job.yaml").exists():
+        raise FileExistsError(f"job already exists: {jid}")
     module_name = f"{jid.replace('-', '_')}.py"
     job = WayfinderJob.new(
         jid,
@@ -68,8 +71,23 @@ def create_freestyle_job(
     if execution_params:
         job.execution_params.update(dict(execution_params))
     job.agent_loop.triggers = list(SCRIPT_JOB_TRIGGERS)
+    from wayfinder_paths.jobs.activities import objective_strategy
+
+    objective = objective_strategy(job.execution_params)
+    if objective is not None:
+        job.agent_loop.triggers.append("participation_changed")
+        job.agent_loop.wake_interval_seconds = 604800
+        job.source["kind"] = "objective_strategy"
     job.reporting = {**job.reporting, "notify": default_notifications(job)}
     root = store.init_layout(job)
+    if path_dependencies:
+        from wayfinder_paths.jobs.activity_extensions import pin_activity_extension
+
+        pins = {}
+        for dependency in path_dependencies:
+            alias, pin = pin_activity_extension(root, dependency, store=store)
+            pins[alias] = pin
+        job.source["activity_extensions"] = pins
     target = root / "workspace" / "src" / module_name
     if script_source:
         target.write_text(script_source, encoding="utf-8")
@@ -84,7 +102,8 @@ def create_freestyle_job(
         "job_yaml": str(root / "job.yaml"),
         "script_entrypoint": str(target),
         "hint": (
-            "the module must define tick(ctx); trade only through ctx.act. Run "
+            "the module must define tick(ctx); trade through ctx.act and use "
+            "ctx.participate for declared activities. Run "
             "validate_job (static rules + a three-tick paper dry run), read the "
             "launch_checklist, then launch in paper."
         ),

@@ -344,6 +344,10 @@ class FreestyleContext:
         self.logs: list[str] = []
         self.notifications: list[dict[str, Any]] = []
         self.unpapered_actions: list[str] = []
+        from wayfinder_paths.jobs.activities import objective_strategy
+
+        self._objective_strategy = objective_strategy(job.execution_params or {})
+        self.activities: dict[str, dict[str, Any]] = {}
         self.halt_reason: str | None = None
         self._tick_notional = 0.0
         self.venues_used: set[str] = set()
@@ -416,6 +420,54 @@ class FreestyleContext:
         self.logs.append(str(message)[:500])
 
     # ---- writes ----------------------------------------------------------
+    def participate(
+        self, activity: str, *, work: list[Mapping[str, Any]] | None = None
+    ) -> dict[str, Any]:
+        """Run a declared activity with the job's revisioned capability/limits.
+
+        `work` can choose the next task but cannot raise budgets or grant new
+        capabilities. Once per activity per tick; receipt IDs survive restarts.
+        """
+        from wayfinder_paths.jobs.activities import run_activity
+        from wayfinder_paths.jobs.activity_reporting import record_activity
+        from wayfinder_paths.jobs.participation import WorkItem
+
+        if self._objective_strategy is None:
+            raise FreestyleRefusal(
+                "declare objective_strategy before using participate"
+            )
+        binding = self._objective_strategy.activities.get(activity)
+        if binding is None:
+            raise FreestyleRefusal(f"activity {activity!r} is not declared")
+        if activity in self.activities:
+            raise FreestyleRefusal("an activity may run only once per tick")
+        result = _run(
+            run_activity(
+                binding,
+                state_dir=self.root / "state" / "activities" / activity,
+                now=self.now.timestamp(),
+                mode=self.mode,
+                dry_run=self.dry_run,
+                halted=self.halted,
+                work=[WorkItem.model_validate(w) for w in work]
+                if work is not None
+                else None,
+                job_root=self.root,
+                extension_pin=(self.job.source.get("activity_extensions") or {}).get(
+                    binding.extension
+                ),
+            )
+        )
+        self.activities[activity] = result
+        if not self.dry_run and self._store is not None:
+            record_activity(self._store, self.job.id, activity, result)
+        if result.get("risk_alert"):
+            self.halt(
+                str(result.get("reason") or "activity risk breach"),
+                source="activity_risk",
+            )
+        return result
+
     def act(self, action: Mapping[str, Any]) -> ActionResult:
         try:
             symbol = str(action.get("symbol") or "")
@@ -445,7 +497,9 @@ class FreestyleContext:
             {"title": key, "body": str(body)[:20_000], "delivery": delivery}
         )
 
-    def halt(self, reason: str, *, flatten: bool = False) -> None:
+    def halt(
+        self, reason: str, *, flatten: bool = False, source: str = "freestyle_script"
+    ) -> None:
         self.halted = True
         self.halt_reason = str(reason)
         if self._store is not None and not self.dry_run:
@@ -454,7 +508,7 @@ class FreestyleContext:
                 self.job.id,
                 reason=str(reason),
                 flatten=flatten,
-                source="freestyle_script",
+                source=source,
             )
 
     def custom(self, label: str, coro: Any) -> Any:
@@ -466,6 +520,10 @@ class FreestyleContext:
         if (
             self.mode != "live"
             or self.dry_run
+            or (
+                self._objective_strategy is not None
+                and not self._objective_strategy.trading_enabled
+            )
             or not (allowed and self.spec.custom_risk_acknowledged)
         ):
             self.unpapered_actions.append(label)
@@ -476,6 +534,12 @@ class FreestyleContext:
 
     # ---- internals -------------------------------------------------------
     def _precheck(self, intent: OrderIntent) -> str | None:
+        if (
+            self._objective_strategy is not None
+            and not self._objective_strategy.trading_enabled
+            and intent.action == "OPEN"
+        ):
+            return "trading is disabled for this objective strategy; exits still flow"
         if intent.venue not in SUPPORTED_VENUES:
             return f"venue {intent.venue!r} is not supported by the freestyle runtime"
         if self.spec.venues and intent.venue not in self.spec.venues:
@@ -737,6 +801,7 @@ def _run_ticks(
     timeout = int(job.script_loop.timeout_seconds or 300)
     clock = now or datetime.now(UTC)
     last: dict[str, Any] = {}
+    activities: dict[str, Any] = {}
     accumulated: dict[str, list[Any]] = {
         "actions": [],
         "fills": [],
@@ -790,12 +855,14 @@ def _run_ticks(
             )
         for key, bucket in accumulated.items():
             bucket.extend(last.get(key) or [])
+        activities.update(last.get("activities") or {})
         if not last.get("ok"):
             break
     if dry_run:
         # The dry-run record is the whole run, not the last tick: a script
         # that opens on tick one and holds afterwards still shows its intent.
         last = {**last, **{key: list(bucket) for key, bucket in accumulated.items()}}
+        last["activities"] = activities
         last["dry_run"] = {
             "ticks": ticks,
             "spec": spec.to_dict(),
@@ -908,6 +975,7 @@ def _one_tick(
             "equity": equity,
             "unrealized_pnl": unrealized,
             "actions": list(ctx.actions),
+            "activities": dict(ctx.activities),
             "dry_run": dry_run,
         }
     )
@@ -918,6 +986,10 @@ def _one_tick(
         if ok
         else f"tick failed: {error}"
     )
+    if ok and ctx.activities and not ctx.actions:
+        summary = "; ".join(
+            f"{name}: {result['status']}" for name, result in ctx.activities.items()
+        )
     recorder.record_run(
         status=status,
         decision={"action": "tick", "reason": summary},
@@ -944,6 +1016,7 @@ def _one_tick(
         "mode": mode,
         "summary": summary,
         "actions": list(ctx.actions),
+        "activities": dict(ctx.activities),
         "fills": list(ctx.fills),
         "guard_events": guard_events,
         "marks": dict(ctx.marks),

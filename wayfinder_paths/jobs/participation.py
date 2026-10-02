@@ -1,6 +1,6 @@
-"""Bounded, receipt-driven participation for Path components, not a scheduler.
+"""Bounded, receipt-driven activities for strategy jobs, not a scheduler.
 
-The installed Path supplies its protocol adapter and owner-reviewed work queue.
+The strategy supplies a reviewed capability and owner-approved limits.
 The existing job runner calls this once per tick. No point-to-dollar valuation,
 trading evidence requirement, retry loop, or model-generated action lives here.
 """
@@ -54,12 +54,13 @@ class Observation(Record):
     rewards: list[Reward] = Field(default_factory=list)
     # Compact, explicitly normalized metrics; never raw responses or credentials.
     metrics: dict[str, FiniteFloat | str | None] = Field(default_factory=dict)
+    metric_units: dict[str, str] = Field(default_factory=dict)
     evidence: list[str] = Field(default_factory=list)
 
 
 class WorkItem(Record):
     id: str = Field(min_length=1, max_length=100)
-    kind: Literal["inference", "trade", "liquidity"]
+    kind: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
     max_cost: FiniteFloat = Field(gt=0)
     # Protocol adapter must validate this schema and any spend/exposure limits.
     request: dict[str, Any]
@@ -71,8 +72,26 @@ class WorkItem(Record):
         return self
 
 
+class MetricConstraint(Record):
+    unit: str = Field(min_length=1)
+    minimum: FiniteFloat | None = None
+    maximum: FiniteFloat | None = None
+
+    @model_validator(mode="after")
+    def check_bounds(self) -> MetricConstraint:
+        if self.minimum is None and self.maximum is None:
+            raise ValueError("a constraint needs a minimum or maximum")
+        if (
+            self.minimum is not None
+            and self.maximum is not None
+            and self.minimum > self.maximum
+        ):
+            raise ValueError("constraint minimum exceeds maximum")
+        return self
+
+
 class ParticipationConfig(Record):
-    protocol: Literal["flop", "risex", "perptools", "imd"]
+    protocol: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     program: str = Field(min_length=1)
     rule_revision: str = Field(min_length=1)
     account: str = ""
@@ -85,6 +104,10 @@ class ParticipationConfig(Record):
     max_pending_seconds: int = Field(default=600, ge=1, le=86400)
     observation_max_age_seconds: int = Field(default=300, ge=1, le=3600)
     work: list[WorkItem] = Field(default_factory=list, max_length=100)
+    # Adapter-normalized measurements, e.g. net_delta/USD or cpu_seconds/seconds.
+    constraints: dict[str, MetricConstraint] = Field(
+        default_factory=dict, max_length=16
+    )
 
 
 class Receipt(Record):
@@ -105,6 +128,7 @@ class Operation(Record):
     started_at: FiniteFloat = Field(ge=0)
     max_cost: FiniteFloat = Field(gt=0)
     receipt: Receipt | None = None
+    settled_at: FiniteFloat | None = None
 
 
 class ParticipationState(Record):
@@ -131,6 +155,8 @@ class ParticipationSnapshot(Record):
 
 class ParticipationPort(Protocol):
     supports_submit: bool
+
+    async def close(self) -> None: ...
 
     async def observe(self) -> tuple[bool, dict[str, Any] | str]: ...
 
@@ -258,6 +284,8 @@ async def _tick(
                 )
             else:
                 op.receipt = receipt
+                if receipt.status != "pending":
+                    op.settled_at = now
                 if receipt.cost > op.max_cost:
                     state.blocked = "protocol exceeded the reserved operation cost"
         if now - op.started_at > config.max_pending_seconds and (
@@ -282,7 +310,13 @@ async def _tick(
     daily = sum(
         _reserved(op)
         for op in state.operations.values()
-        if op in today or not op.receipt or op.receipt.status == "pending"
+        if op in today
+        or not op.receipt
+        or op.receipt.status == "pending"
+        or (
+            op.settled_at is not None
+            and int(op.settled_at // 86400) == int(now // 86400)
+        )
     )
     reason = state.blocked
     if not reason and observation is None:
@@ -302,6 +336,22 @@ async def _tick(
             reason = "stale observation"
         elif observation.readiness != "ready" or observation.eligible is not True:
             reason = observation.reason or "readiness/eligibility not confirmed"
+    if observation and not reason:
+        for metric, bound in config.constraints.items():
+            value = observation.metrics.get(metric)
+            if (
+                not isinstance(value, (float, int))
+                or observation.metric_units.get(metric) != bound.unit
+            ):
+                reason = f"required constraint measurement unavailable: {metric} ({bound.unit})"
+                break
+            if (bound.minimum is not None and value < bound.minimum) or (
+                bound.maximum is not None and value > bound.maximum
+            ):
+                state.blocked = f"constraint breached: {metric}={value:g} {bound.unit}"
+                reason = state.blocked
+                save()
+                break
     if not reason and not config.enabled:
         reason = "activity disabled; observing only"
     if not reason and not adapter.supports_submit:
@@ -354,6 +404,8 @@ async def _tick(
                     state.blocked = "submission receipt exceeded cost contract"
                 else:
                     op.receipt = receipt
+                    if receipt.status != "pending":
+                        op.settled_at = now
                     if receipt.cost > item.max_cost:
                         state.blocked = "submission receipt exceeded cost contract"
             save()

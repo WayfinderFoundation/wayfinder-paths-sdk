@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from wayfinder_paths.paths.participation import (
+from wayfinder_paths.jobs.participation import (
     ParticipationConfig,
     ParticipationState,
     Receipt,
@@ -53,7 +53,7 @@ def config(**overrides: Any) -> ParticipationConfig:
 
 
 class FixturePort:
-    """Test-only receipt simulator. Never imported by the installed Path."""
+    """Test-only receipt simulator. Never used for actual execution."""
 
     supports_submit = True
 
@@ -76,6 +76,9 @@ class FixturePort:
             "eligible": True,
             "rewards": [],
         }
+
+    async def close(self) -> None:
+        pass
 
     async def protect(self, *, dry_run: bool) -> tuple[bool, str]:
         self.protected.append(dry_run)
@@ -151,6 +154,76 @@ async def test_dry_run_never_submits_or_changes_live_ledger(tmp_path: Path) -> N
     assert result["status"] == "dry_run"
     assert not port.submitted and port.protected == [True]
     assert not (tmp_path / "participation.json").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "metrics, units", [({}, {}), ({"net_delta": 0}, {"net_delta": "BTC"})]
+)
+async def test_constraint_requires_measurement_in_declared_unit(
+    tmp_path: Path, metrics: dict, units: dict
+) -> None:
+    cfg = config(
+        constraints={"net_delta": {"unit": "USD", "minimum": -10, "maximum": 10}}
+    )
+    port = FixturePort(cfg)
+    port.observation.update(metrics=metrics, metric_units=units)
+    result = await participation_tick(
+        cfg, port, state_dir=tmp_path, now=NOW, dry_run=False
+    )
+    assert "measurement unavailable" in result["reason"]
+    assert not port.submitted
+
+
+@pytest.mark.asyncio
+async def test_constraint_breach_latches_but_stale_metrics_do_not(
+    tmp_path: Path,
+) -> None:
+    cfg = config(constraints={"net_delta": {"unit": "USD", "maximum": 10}})
+    port = FixturePort(cfg)
+    port.observation.update(
+        metrics={"net_delta": 11},
+        metric_units={"net_delta": "USD"},
+        observed_at=NOW - 400,
+    )
+    stale = await participation_tick(
+        cfg, port, state_dir=tmp_path, now=NOW, dry_run=False
+    )
+    assert stale["reason"] == "stale observation" and not stale["risk_alert"]
+    port.observation["observed_at"] = NOW
+    breached = await participation_tick(
+        cfg, port, state_dir=tmp_path, now=NOW, dry_run=False
+    )
+    assert breached["risk_alert"] and "constraint breached" in breached["reason"]
+    port.observation["metrics"]["net_delta"] = 0
+    recovered = await participation_tick(
+        cfg, port, state_dir=tmp_path, now=NOW, dry_run=False
+    )
+    assert recovered["risk_alert"] and not port.submitted
+
+
+@pytest.mark.asyncio
+async def test_yesterdays_pending_charge_still_counts_on_settlement_day(
+    tmp_path: Path,
+) -> None:
+    midnight = (int(NOW // 86400) + 1) * 86400
+    cfg = config(max_daily_cost=2)
+    port = FixturePort(cfg)
+    port.observation["observed_at"] = midnight - 1
+    await participation_tick(
+        cfg, port, state_dir=tmp_path, now=midnight - 1, dry_run=False
+    )
+    # Yesterday's reservation settles for one unit today, leaving insufficient
+    # capacity for a new two-unit reservation, including on subsequent ticks.
+    port.settled = True
+    port.observation["observed_at"] = midnight + 1
+    cfg.work.append(cfg.work[0].model_copy(update={"id": "second"}))
+    for now in (midnight + 1, midnight + 2):
+        result = await participation_tick(
+            cfg, port, state_dir=tmp_path, now=now, dry_run=False
+        )
+        assert result["reason"] == "activity budget exhausted"
+    assert len(port.submitted) == 1
 
 
 @pytest.mark.asyncio

@@ -224,6 +224,7 @@ def run_dry_run(
             "status",
             "error",
             "actions",
+            "activities",
             "fills",
             "guard_events",
             "marks",
@@ -304,6 +305,15 @@ def validate_freestyle_job(
     )
     checks.append(entrypoint_inside_workspace_check(root, script_path))
     freestyle: dict[str, Any] = {}
+    from wayfinder_paths.jobs.activities import objective_strategy
+
+    try:
+        objective_strategy(job_data.get("execution_params") or {})
+        checks.append({"name": "objective_strategy_contract", "passed": True})
+    except ValueError as exc:
+        checks.append(
+            {"name": "objective_strategy_contract", "passed": False, "error": str(exc)}
+        )
     if script_path and script_path.exists():
         checks.extend(static_checks(script_path))
         static_ok = all(c["passed"] for c in checks if c.get("blocking") is not False)
@@ -368,6 +378,7 @@ def validate_freestyle_job(
                     "ok": outcome.get("ok"),
                     "ticks": outcome.get("ticks"),
                     "actions": result.get("actions") or [],
+                    "activities": result.get("activities") or {},
                     "fills": result.get("fills") or [],
                     "intents": [
                         a.get("intent")

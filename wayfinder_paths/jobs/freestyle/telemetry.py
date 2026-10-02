@@ -64,6 +64,7 @@ def compact_tick(payload: dict[str, Any], *, revision: str | None) -> dict[str, 
             "bars": dict(payload.get("bars") or {}),
         },
         "actions": _actions(payload.get("actions")),
+        "activities": dict(payload.get("activities") or {}),
         "guard_events": list(payload.get("guard_events") or [])[-GUARD_CAP:],
         "logs": [
             str(line)[:300] for line in list(payload.get("logs") or [])[-LOG_CAP:]
@@ -129,10 +130,13 @@ def freestyle_snapshot(store: JobStore, job_id: str, job: Any) -> dict[str, Any]
     fills = summary.get("fills") or {}
     launch = store.read_json(job_id, LAUNCH_STATE_PATH, default=None)
     spec = section.get("spec") or path_section.get("spec") or {}
+    from wayfinder_paths.jobs.activity_reporting import objective_snapshot
+
     return {
         "contract": contract,
         "mode": (last or {}).get("mode") or str(job.script_loop.mode or "paper"),
         "launched": bool(launch),
+        "objective": objective_snapshot(store, job_id, job.execution_params),
         "spec": {
             "venues": list(spec.get("venues") or []),
             "symbols": list(spec.get("symbols") or []),
@@ -183,9 +187,6 @@ def path_snapshot(store: JobStore, job_id: str, job: Any) -> dict[str, Any] | No
         "dry_run_declared": kind == "freestyle"
         or str(pin.get("dry_run") or "unsupported") == "supported",
         "upgrade": store.read_json(job_id, UPGRADE_STATE_PATH, default=None),
-        "incentives": store.read_json(
-            job_id, "state/path/participation_snapshot.json", default=None
-        ),
     }
 
 

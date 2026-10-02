@@ -5,7 +5,7 @@ import httpx
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.ParticipationReadClient import ParticipationReadClient
-from wayfinder_paths.paths.participation import (
+from wayfinder_paths.jobs.participation import (
     Observation,
     ParticipationConfig,
     Reward,
@@ -88,6 +88,9 @@ class RewardParticipationAdapter(BaseAdapter):
                             "distributions": len(history.get("entries", [])),
                         }
                     )
+                    observed.metric_units.update(
+                        maker_bps="bps", taker_bps="bps", distributions="distributions"
+                    )
                 else:
                     observed.reason += (
                         "; supply account-scoped RISEX_JWT for points and actual fees"
@@ -109,6 +112,7 @@ class RewardParticipationAdapter(BaseAdapter):
                         "pending",
                     ):
                         observed.metrics[key] = seat.get(key)
+                        observed.metric_units[key] = "jobs"
                     earnings = await self.client.imd_earnings(cfg.account)
                     observed.metrics["earnings_rows_latest_page"] = earnings.get(
                         "count"
@@ -129,7 +133,7 @@ class RewardParticipationAdapter(BaseAdapter):
 
     async def protect(self, *, dry_run: bool) -> tuple[bool, str]:
         # This adapter never creates a position. It is NOT a live trading
-        # watchdog; do not attach externally-opened positions to this Path.
+        # watchdog; do not attach externally-opened positions to this adapter.
         return True, "read-only adapter; no managed exposure"
 
     async def submit(self, item: WorkItem, *, operation_id: str) -> tuple[bool, str]:
