@@ -459,6 +459,7 @@ def _install_required_dependencies_for_path(
                 model=model,
                 activate=activate,
                 include_dependencies=True,
+                reuse_existing=True,
                 _visited=visited,
             )
         )
@@ -2125,6 +2126,7 @@ def _install_path_version(
     install_dir: str,
     force: bool,
     no_verify: bool,
+    reuse_existing: bool = False,
 ) -> dict[str, Any]:
     venue = _path_install_venue(runtime="sdk-cli")
 
@@ -2142,6 +2144,39 @@ def _install_path_version(
     warnings: list[str] = []
 
     if dest.exists() and any(dest.iterdir()) and not force:
+        # Only dependencies may reuse a completed, matching install. Keep the
+        # normal collision error for partial installs and unrelated directories.
+        if reuse_existing and expected_sha and bundle_path.is_file():
+            lock, lock_path = _load_install_lock(state_dir)
+            entry = _lock_path_entry(lock, slug) or {}
+            if (
+                entry.get("version") == desired_version
+                and str(entry.get("bundle_sha256") or "").lower()
+                == expected_sha.lower()
+                and Path(str(entry.get("path") or "")).expanduser().resolve()
+                == dest.resolve()
+                and _sha256_file(bundle_path).lower() == expected_sha.lower()
+            ):
+                manifest = _load_path_manifest(dest)
+                if manifest.slug == slug and manifest.version == desired_version:
+                    installation_id = entry.get("installation_id")
+                    return {
+                        "version": desired_version,
+                        "bundle_path": str(bundle_path),
+                        "bundle_sha256": expected_sha,
+                        "dest": str(dest),
+                        "extracted_files": 0,
+                        "lockfile": str(lock_path),
+                        "install_intent_id": None,
+                        "installation_id": installation_id,
+                        "heartbeat_enabled": bool(
+                            installation_id and entry.get("heartbeat_token")
+                        ),
+                        "verified_install": bool(installation_id),
+                        "install_receipt_status": "skipped",
+                        "warnings": [],
+                        "reused": True,
+                    }
         raise click.ClickException(f"Destination already exists (use --force): {dest}")
 
     try:
@@ -2285,6 +2320,7 @@ def _install_path_with_options(
     model: str | None = None,
     activate: bool = False,
     include_dependencies: bool = False,
+    reuse_existing: bool = False,
     _visited: set[str] | None = None,
 ) -> dict[str, Any]:
     visited = set(_visited or set())
@@ -2313,6 +2349,7 @@ def _install_path_with_options(
         install_dir=install_dir,
         force=force,
         no_verify=no_verify,
+        reuse_existing=reuse_existing,
     )
     response: dict[str, Any] = {"slug": slug, **result}
     installed_path = Path(str(result["dest"]))
