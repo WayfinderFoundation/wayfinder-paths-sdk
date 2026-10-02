@@ -203,6 +203,7 @@ async def test_defillama_free_protocol_search_compacts_matches(
         {
             "name": "Pendle",
             "slug": "pendle",
+            "parentProtocol": None,
             "symbol": None,
             "category": "Yield",
             "chains": None,
@@ -215,6 +216,44 @@ async def test_defillama_free_protocol_search_compacts_matches(
             "address": None,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_fee_compaction_preserves_periods_and_deployment_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocols = [
+        {
+            "name": "Venue",
+            "slug": "venue-perps",
+            "parentProtocol": "parent#venue",
+            "chains": ["Venue"],
+            "total24h": 150,
+            "total30DaysAgo": 250,
+            "total30d": 6000,
+            "total60dto30d": 5000,
+            "total1y": 70000,
+            "change_1m": -40,
+            "change_30dover30d": 20,
+        },
+        {
+            "name": "Venue New Deployment",
+            "slug": "venue-new",
+            "parentProtocol": "parent#venue",
+            "chains": ["NewChain"],
+            "total24h": 0,
+            "total30d": 0,
+        },
+    ]
+    _FakeAsyncClient.get_body = {"protocols": protocols}
+    monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
+    response = await llama_module.DEFILLAMA_FREE_CLIENT.fees_overview()
+    items = {row["slug"]: row for row in response["result"]["items"]}
+    for protocol in protocols:
+        for field, value in protocol.items():
+            assert items[protocol["slug"]][field] == value
+    # Missing is still null, not zero; no aggregation across deployments.
+    assert items["venue-new"]["total1y"] is None
 
 
 @pytest.mark.asyncio

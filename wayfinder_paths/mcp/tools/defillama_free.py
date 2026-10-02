@@ -61,6 +61,12 @@ async def research_defillama_free(
             Missing data is unavailable, not zero holder value. Read the returned
             provider methodology before interpreting a metric as business revenue.
             Totals are provider-reported periods, not annualized projections.
+            change_1m compares the latest day with the day a month ago, NOT
+            rolling-month growth; use change_30dover30d and total60dto30d for
+            that comparison. total1y is a trailing total, not the annualized
+            current pace. Fees and buybacks funded from those fees are the same
+            flow at different stages, not additive revenue. Each row's slug,
+            parentProtocol and chains define its scope, not the entire business.
         days: Lookback days for protocol_fees/protocol_tvl_history.
         limit: Result cap for page-able collection datasets.
         cursor: Page cursor returned by a prior response, or "_".

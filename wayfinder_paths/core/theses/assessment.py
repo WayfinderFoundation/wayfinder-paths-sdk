@@ -515,7 +515,13 @@ def research_notebook(
                         for k, v in record["case"].items()
                         if k in fields
                         or k
-                        in {"case_basis", "effect_order", "decision", "decision_basis"}
+                        in {
+                            "case_basis",
+                            "effect_order",
+                            "decision",
+                            "decision_basis",
+                            "observed_identifiers",
+                        }
                     }
         return {
             "errors": errors,
@@ -541,6 +547,32 @@ def research_notebook(
     }
 
 
+def research_observations(
+    parent_messages: list[dict[str, Any]],
+    child_messages: list[dict[str, Any]],
+    *,
+    part_ids: list[str],
+) -> dict[str, Any]:
+    """Retrieve exact saved public results, never re-fetch or summarize them."""
+    from wayfinder_paths.core.theses.review import public_observations
+
+    if (
+        not isinstance(part_ids, list)
+        or not 1 <= len(part_ids) <= 3
+        or any(not isinstance(key, str) or not key for key in part_ids)
+    ):
+        raise ValueError("Use one to three exact public observation part_ids")
+    observations = public_observations(
+        [*parent_messages, *child_messages], include_results=True
+    )
+    requested = list(dict.fromkeys(part_ids))
+    return {
+        "observations": [observations[key] for key in requested if key in observations],
+        "unavailable_part_ids": [key for key in requested if key not in observations],
+        "evidence_verified": False,
+    }
+
+
 if __name__ == "__main__":
     # Native OpenCode tool passes only its verified session tree over stdin.
     import sys
@@ -559,6 +591,12 @@ if __name__ == "__main__":
         )
     elif view == "cases":
         result = research_notebook(**request)
+    elif view == "evidence":
+        result = research_observations(
+            request["parent_messages"],
+            request["child_messages"],
+            part_ids=request.get("part_ids", []),
+        )
     else:
         raise ValueError("Unknown notebook view")
     print(json.dumps(result))

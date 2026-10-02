@@ -585,6 +585,9 @@ async def test_worker_receipt_and_parallel_inventory_updates(
     assert page["missing"] == ["missing"]
     assert page["cases"][0]["record_count"] == 4
     assert page["cases"][0]["next_offset"] == 1
-    assert set(page["cases"][0]["records"][0]["case"]) == {"sources"}
+    assert set(page["cases"][0]["records"][0]["case"]) == {
+        "sources",
+        "observed_identifiers",
+    }
     with pytest.raises(ValueError, match="fields"):
         research_notebook([], children, fields=["invented"])

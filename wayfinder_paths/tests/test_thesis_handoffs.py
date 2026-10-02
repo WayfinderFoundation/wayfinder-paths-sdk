@@ -10,6 +10,7 @@ from wayfinder_paths.core.theses.assessment import (
     checkpoints,
     projected_records,
     research_notebook,
+    research_observations,
 )
 from wayfinder_paths.core.theses.checkpoints import (
     DiscoveryCheckpoint,
@@ -230,6 +231,13 @@ def test_status_evidence_ids_are_identifiable_paged_and_not_silently_lost(
     assert "unrelated_config" not in json.dumps(rows)
     # Paging the model's view never limits the evidence used by publication.
     assert len(draft_context(parent, child)[1]["review"]["public_observations"]) == 31
+    evidence = research_observations(parent, child, part_ids=["read-30", "read-0"])
+    assert [row["part_id"] for row in evidence["observations"]] == ["read-30", "read-0"]
+    assert evidence["observations"][0]["result"] == {
+        "results": [{"contentExcerpt": "Fee docs"}]
+    }
+    assert not evidence["unavailable_part_ids"]
+    assert "unrelated_config" not in json.dumps(evidence)
 
 
 def test_case_projection_keeps_classification_and_identifies_current_assessment(
@@ -255,6 +263,7 @@ def test_case_projection_keeps_classification_and_identifies_current_assessment(
     assert [r["current_assessment"] for r in row["records"]] == [False, False, True]
     assert row["records"][0]["case"]["case_basis"] == "economic"
     assert row["records"][-1]["case"] == {
+        "observed_identifiers": updated_research["observed_identifiers"],
         "effect_order": updated_research["effect_order"],
         "case_basis": "narrative",
         "decision": "KEEP",
@@ -265,6 +274,139 @@ def test_case_projection_keeps_classification_and_identifies_current_assessment(
     historical = research_notebook(parent, child, entities=["network"], limit=2)
     assert not any(r["current_assessment"] for r in historical["cases"][0]["records"])
     assert (parent, child) == original
+
+
+def test_conflicting_worker_metrics_survive_focused_case_read(compact_run):
+    parent, child = compact_run
+    checkpoint = deepcopy(child[0]["parts"][0]["state"]["input"]["checkpoint"])
+    original_case = checkpoint["research_cases"][0]
+    original_case["observed_identifiers"] = [
+        "venue-perps total30d dailyFees=6000 USD; parent#venue; source: provider",
+        "venue-new total30d dailyHoldersRevenue=0 USD; NewChain; source: provider",
+    ]
+    original_case["support"] = "Main venue receives fees"
+    original_case["counterevidence"] = "New deployment reports no holder revenue"
+    child = [receipt(checkpoint, 1, session="worker", agent="thesis-researcher")]
+    before = deepcopy(child)
+    row = research_notebook(parent, child, entities=["network"], fields=["reason"])[
+        "cases"
+    ][0]
+    for record in row["records"]:
+        assert (
+            record["case"]["observed_identifiers"]
+            == original_case["observed_identifiers"]
+        )
+    assert child == before
+
+
+def test_evidence_retains_fee_and_holder_flows_without_adding_them():
+    messages = [
+        {
+            "parts": [
+                {
+                    "id": metric,
+                    "tool": "wayfinder_research_defillama_free",
+                    "state": {
+                        "status": "completed",
+                        "input": {"dataset": "fees_overview", "dataType": metric},
+                        "output": json.dumps(
+                            {
+                                "ok": True,
+                                "result": {
+                                    "items": [
+                                        {"slug": "venue-perps", "total30d": value}
+                                    ],
+                                },
+                            }
+                        ),
+                    },
+                }
+                for metric, value in [
+                    ("dailyFees", 6000),
+                    ("dailyHoldersRevenue", 4000),
+                ]
+            ]
+        }
+    ]
+    report = research_observations(
+        messages, [], part_ids=["dailyFees", "dailyHoldersRevenue"]
+    )
+    assert [r["result"]["items"][0]["total30d"] for r in report["observations"]] == [
+        6000,
+        4000,
+    ]
+    assert "dailyFees" in report["observations"][0]["request_summary"]
+    assert "dailyHoldersRevenue" in report["observations"][1]["request_summary"]
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "not JSON",
+        "null",
+        "[]",
+        '{"ok":false,"result":{"text":"failure"}}',
+        '{"ok":true,"result":{}}',
+        '{"ok":true,"result":{"results":null}}',
+        '{"ok":true,"result":{"results":[{"url":"no readable text"}]}}',
+    ],
+)
+def test_unusable_saved_evidence_is_explicitly_unavailable(output):
+    messages = [
+        {
+            "parts": [
+                {
+                    "id": "read",
+                    "tool": "wayfinder_core_web_fetch",
+                    "state": {"status": "completed", "output": output},
+                }
+            ]
+        }
+    ]
+    report = research_observations(messages, [], part_ids=["read", "unknown"])
+    assert report["observations"] == []
+    assert report["unavailable_part_ids"] == ["read", "unknown"]
+
+
+@pytest.mark.parametrize(
+    "tool,status",
+    [
+        ("wallets", "completed"),
+        ("wayfinder_core_web_fetch", "error"),
+        ("wayfinder_core_web_fetch", "running"),
+    ],
+)
+def test_private_or_incomplete_reads_cannot_be_evidence(tool, status):
+    messages = [
+        {
+            "parts": [
+                {
+                    "id": "read",
+                    "tool": tool,
+                    "state": {
+                        "status": status,
+                        "output": json.dumps(
+                            {
+                                "ok": True,
+                                "result": {
+                                    "results": [{"text": "must not expose"}],
+                                },
+                            }
+                        ),
+                    },
+                }
+            ]
+        }
+    ]
+    report = research_observations(messages, [], part_ids=["read"])
+    assert report["unavailable_part_ids"] == ["read"]
+    assert "must not expose" not in json.dumps(report)
+
+
+@pytest.mark.parametrize("part_ids", [[], ["a", "b", "c", "d"], [""], "read"])
+def test_evidence_requires_bounded_exact_ids(part_ids):
+    with pytest.raises(ValueError, match="part_ids"):
+        research_observations([], [], part_ids=part_ids)
 
 
 @pytest.mark.parametrize(

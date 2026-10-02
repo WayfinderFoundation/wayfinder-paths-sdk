@@ -18,6 +18,71 @@ REVIEW_EVIDENCE_TOOLS = RESEARCH_EVIDENCE_TOOLS | {
 }
 
 
+def public_observations(
+    messages: list[dict[str, Any]], *, include_results: bool = False
+) -> dict[str, dict[str, Any]]:
+    """Usable public reads, shared by resolution validation and notebook retrieval."""
+    observations = {}
+    for message in messages:
+        for part in message.get("parts", []):
+            state = part.get("state", {})
+            tool = part.get("tool", "")
+            if (
+                state.get("status") != "completed"
+                or tool.removeprefix("wayfinder_") not in REVIEW_EVIDENCE_TOOLS
+                or not part.get("id")
+            ):
+                continue
+            try:
+                output = json.loads(state.get("output", ""))
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(output, dict) or output.get("ok") is not True:
+                continue
+            data = output.get("result")
+            if not data:
+                continue
+            if tool.removeprefix("wayfinder_") == "core_web_fetch" and not (
+                isinstance(data, dict)
+                and isinstance(data.get("results"), list)
+                and any(
+                    row.get("contentExcerpt") or row.get("text") or row.get("content")
+                    for row in data.get("results", [])
+                    if isinstance(row, dict)
+                )
+            ):
+                continue
+            observations[part["id"]] = {
+                "part_id": part["id"],
+                "tool": tool,
+                "completed_at_ms": state.get("time", {}).get("end"),
+                # Do not expose unrelated tool arguments or configuration.
+                "request_summary": json.dumps(
+                    {
+                        key: value
+                        for key, value in state.get("input", {}).items()
+                        if key
+                        in {
+                            "query",
+                            "urls",
+                            "dataset",
+                            "protocolSlug",
+                            "protocolSlugs",
+                            "dataType",
+                            "asset_names",
+                            "asset_name",
+                            "token_id",
+                            "market_slug",
+                            "action",
+                        }
+                    },
+                    ensure_ascii=False,
+                )[:600],
+                **({"result": data} if include_results else {}),
+            }
+    return observations
+
+
 def review_report(
     parent: list[dict[str, Any]],
     children: list[dict[str, Any]],
@@ -26,66 +91,21 @@ def review_report(
 ) -> dict[str, Any]:
     findings: dict[tuple[str, str], dict[str, Any]] = {}
     reviews: set[str] = set()
-    observations: dict[str, dict[str, Any]] = {}
+    observations = public_observations([*parent, *children])
     for message in [*parent, *children]:
         info = message.get("info", {})
         for part in message.get("parts", []):
             state = part.get("state", {})
-            if state.get("status") != "completed":
+            if (
+                state.get("status") != "completed"
+                or part.get("tool") != REVIEW_TOOL
+                or info.get("agent") != "thesis-reviewer"
+                or not info.get("sessionID")
+            ):
                 continue
             try:
                 output = json.loads(state.get("output", ""))
                 if not isinstance(output, dict) or output.get("ok") is not True:
-                    continue
-                tool = part.get("tool", "")
-                data = output.get("result")
-                useful = bool(data)
-                if tool == "wayfinder_core_web_fetch":
-                    useful = isinstance(data, dict) and any(
-                        row.get("contentExcerpt")
-                        or row.get("text")
-                        or row.get("content")
-                        for row in data.get("results", [])
-                        if isinstance(row, dict)
-                    )
-                if (
-                    tool.removeprefix("wayfinder_") in REVIEW_EVIDENCE_TOOLS
-                    and part.get("id")
-                    and useful
-                ):
-                    observations[part["id"]] = {
-                        "part_id": part["id"],
-                        "tool": tool,
-                        "completed_at_ms": state.get("time", {}).get("end"),
-                        # Native tool-part IDs are not visible in the model's
-                        # ordinary tool messages. Identify reads without raw bodies.
-                        "request_summary": json.dumps(
-                            {
-                                key: value
-                                for key, value in state.get("input", {}).items()
-                                if key
-                                in {
-                                    "query",
-                                    "urls",
-                                    "dataset",
-                                    "protocolSlug",
-                                    "protocolSlugs",
-                                    "dataType",
-                                    "asset_names",
-                                    "asset_name",
-                                    "token_id",
-                                    "market_slug",
-                                    "action",
-                                }
-                            },
-                            ensure_ascii=False,
-                        )[:600],
-                    }
-                if (
-                    tool != REVIEW_TOOL
-                    or info.get("agent") != "thesis-reviewer"
-                    or not info.get("sessionID")
-                ):
                     continue
                 checkpoint = ReviewCheckpoint.model_validate(
                     state.get("input", {}).get("checkpoint")
