@@ -187,14 +187,16 @@ def review_report(
             resolutions[key] = (resolution, timestamp)
             first_resolution_at.setdefault(key, timestamp)
     errors = []
+    warnings = []
+    current_signed = revision is not None and any(
+        reviewed_revision == revision
+        for _, reviewed_revision in reviewed_revisions.values()
+    )
     if not reviews:
         errors.append(
             "Reviewer must record research_thesis_review, including an empty findings list when clear"
         )
-    if revision is not None and not any(
-        reviewed_revision == revision
-        for _, reviewed_revision in reviewed_revisions.values()
-    ):
+    if revision is not None and not current_signed:
         errors.append(
             "Current decisions/draft/resolutions need native reviewer sign-off: "
             "resume the SAME reviewer for a focused delta check, read view=draft, and record "
@@ -263,9 +265,25 @@ def review_report(
                 and resolutions[corrected][1] > first_resolution_at[key]
             ):
                 continue
+        # A typo must not permanently poison an append-only ledger. It still
+        # cannot close any actual finding: all real findings need valid exact-key
+        # resolutions and the single reviewer must have signed this revision.
+        if (
+            current_signed
+            and len(reviews) == 1
+            and findings
+            and all(finding["resolved"] for finding in findings.values())
+        ):
+            warnings.append(
+                f"Unmatched resolution {key[0]}/{key[1]} retained for audit; "
+                "does not resolve any finding. All actual findings have valid "
+                "resolutions and the current revision has reviewer sign-off."
+            )
+            continue
         errors.append(
             f"Resolution references unknown review finding {key[0]}/{key[1]}; "
-            "resubmit using the exact review_session_id and finding_id from status"
+            "resolve actual findings using exact IDs from status, then resume the SAME "
+            "reviewer to sign the current revision. Unmatched entries remain in the audit."
         )
     changes = None
     if reviewed_revisions:
@@ -308,5 +326,6 @@ def review_report(
         },
         "changes_since_review": changes,
         "errors": errors,
+        "warnings": warnings,
         "public_observations": list(observations.values()),
     }

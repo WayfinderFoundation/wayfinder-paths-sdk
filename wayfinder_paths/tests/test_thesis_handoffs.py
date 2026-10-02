@@ -1043,3 +1043,59 @@ def test_only_later_valid_unambiguous_resolution_can_correct_session_typo(
     if cleared:
         assert not report["errors"]
     assert (parent, child) == original
+
+
+@pytest.mark.parametrize(
+    "corrected,blocking,signed_revision,read,extra_reviewer,cleared",
+    [
+        (True, False, "current", True, False, True),
+        (False, False, "current", True, False, False),
+        (True, True, "current", True, False, False),
+        (True, False, "stale", True, False, False),
+        (True, False, "current", False, False, False),
+        (True, False, "current", True, True, False),
+    ],
+)
+def test_unknown_resolution_ids_remain_audited_after_reviewed_corrections(
+    compact_run: tuple[list[dict], list[dict]],
+    corrected: bool,
+    blocking: bool,
+    signed_revision: str,
+    read: bool,
+    extra_reviewer: bool,
+    cleared: bool,
+) -> None:
+    parent, child = compact_run
+    child.append(review(blocking))
+    resolutions = [
+        {
+            "review_session_id": "reviewer",
+            "finding_id": "f1",
+            "action": "accepted",
+            "reason": "Mistyped shorthand; cannot close the real finding",
+        }
+    ]
+    if corrected:
+        resolutions.append(
+            {**resolutions[0], "finding_id": "carry", "reason": "Disclosed uncertainty"}
+        )
+    parent.append(
+        receipt(
+            {"schema_version": 6, "stage": "judged", "review_resolutions": resolutions},
+            5,
+        )
+    )
+    child.append(signoff(signed_revision, 7, read=read))
+    if extra_reviewer:
+        child.append(signoff("current", 8, session="replacement"))
+    original = deepcopy((parent, child))
+    report = review_report(
+        parent, child, projected_records(parent, child)[0], set(), revision="current"
+    )
+    assert (not report["errors"]) == cleared
+    assert bool(report["warnings"]) == cleared
+    assert report["findings"][0]["resolved"] == (corrected and not blocking)
+    if cleared:
+        assert "reviewer/f1" in report["warnings"][0]
+        assert "does not resolve" in report["warnings"][0]
+    assert (parent, child) == original
