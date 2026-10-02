@@ -23,6 +23,12 @@ This adapter wraps the `hyperliquid` SDK `Info` client for read paths.
   - enumerate perp markets
   - map `asset_id ↔ coin` and extract risk/margin fields from contexts
 
+Market search/trade-asset summaries retain `funding_apr` as a decimal fraction
+and also return `funding_apr_pct` for display: `0.0876` means `8.76%`, not
+`0.0876%`. These annualize the current hourly rate, not realized annual carry or
+a forecast. Positive funding means longs pay shorts; negative means shorts pay
+longs. Missing data is unavailable, not zero.
+
 ### Candles and funding history (time series)
 
 Important: `HyperliquidAdapter` does **not** implement historical candle or funding
@@ -30,6 +36,7 @@ helpers. Do not use `adapter.info`; adapter instances do not expose a stable pub
 `.info` handle.
 
 Use one of:
+
 - **MCP tools** (preferred in agent runs):
   - `hyperliquid_get_candles(asset_name="HYPE", interval="5m", lookback_hours=24)`
   - `hyperliquid_get_candles(asset_name="xyz:SPCX", interval="15m", lookback_hours=72)`
@@ -44,6 +51,7 @@ when available `v` (volume) and `n` (trade count). Do not expect
 `open`/`high`/`low`/`close` unless you are reading chart-normalized rows.
 
 Symbol rules:
+
 - Core perp candles accept `HYPE` or `HYPE-USDC`; the backend normalizes to `HYPE`.
 - HIP-3 / dex perps require the dex prefix, for example `xyz:SPCX`.
 - Spot accepts exact pairs from market search, e.g. `HYPE/USDC` or `PURR/USDC`.

@@ -10,6 +10,7 @@ from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
 from wayfinder_paths.core.constants.hyperliquid import HyperliquidMarketType
 from wayfinder_paths.mcp.tools.hyperliquid import (
     _market_search_resources,
+    _summarize_market_context,
     hyperliquid_search_hip4,
     hyperliquid_search_market,
 )
@@ -365,6 +366,20 @@ async def test_search_hip4_text_still_matches_comparison_aliases(
     assert response["result"]["spots"] == []
 
 
+@pytest.mark.parametrize("hourly", ["-0.0000646398", "0", "0.00001", None])
+def test_market_funding_exposes_decimal_and_percent_without_changing_sign(
+    hourly: str | None,
+) -> None:
+    market = _summarize_market_context({}, {"funding": hourly})
+    if hourly is None:
+        assert market["funding_apr"] is None
+        assert market["funding_apr_pct"] is None
+    else:
+        apr = float(hourly) * 24 * 365
+        assert market["funding_apr"] == pytest.approx(apr)
+        assert market["funding_apr_pct"] == pytest.approx(apr * 100)
+
+
 @pytest.mark.asyncio
 async def test_search_includes_public_market_context_without_wallet_reads(monkeypatch):
     async def metadata(self):
@@ -390,6 +405,8 @@ async def test_search_includes_public_market_context_without_wallet_reads(monkey
     market = response["result"]["perps"][0]["market"]
     assert market["day_notional_volume_usd"] == 2_000_000_000
     assert market["funding_rate_hourly"] == 0.00001
+    assert market["funding_apr"] == pytest.approx(0.0876)
+    assert market["funding_apr_pct"] == pytest.approx(8.76)
     assert market["min_order_notional_usd"] == 10
     assert market["compatible_margin_modes"] == ["cross", "isolated"]
     assert market["impact_px_ask"] == 80001

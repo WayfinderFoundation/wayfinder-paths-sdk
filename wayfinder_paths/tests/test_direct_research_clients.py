@@ -82,10 +82,18 @@ async def test_defillama_free_open_interest_overview(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _FakeAsyncClient.calls = []
-    _FakeAsyncClient.get_body = {"protocols": []}
+    _FakeAsyncClient.get_body = {
+        "total24h": 100,
+        "total30d": 3000,
+        "protocols": [
+            {"name": "Venue", "slug": "venue", "total24h": 100, "total30d": 3000}
+        ],
+    }
     monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
 
-    await llama_module.DEFILLAMA_FREE_CLIENT.open_interest_overview()
+    result = (await llama_module.DEFILLAMA_FREE_CLIENT.open_interest_overview())[
+        "result"
+    ]
 
     assert _FakeAsyncClient.calls == [
         (
@@ -99,6 +107,13 @@ async def test_defillama_free_open_interest_overview(
             },
         )
     ]
+    assert result["totals"]["total24h"] == result["items"][0]["total24h"] == 100
+    assert result["totals"]["total30d"] == result["items"][0]["total30d"] == 3000
+    assert "not traded volume" in result["periodDefinitions"]["total24h"]
+    assert "not current open interest" in result["periodDefinitions"]["multiDayTotals"]
+    assert "not current open interest" in result["periodDefinitions"]["total1y"]
+    assert "trailing-year total" not in result["periodDefinitions"]["total1y"].lower()
+    assert llama_module.PERIOD_DEFINITIONS["total1y"].startswith("Trailing-year total")
 
 
 @pytest.mark.asyncio

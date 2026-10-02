@@ -48,6 +48,9 @@ async def research_defillama_free(
             current_prices, dex_overview, fees_overview, or open_interest_overview.
             protocol returns metadata/current chain TVL, not bulk historical
             arrays. Use protocol_tvl_history with days for bounded TVL history.
+            open_interest_overview reports outstanding-notional snapshots, not
+            trading volume. Its multi-day totals are provider aggregates, not
+            current open interest, revenue or new positions opened in that period.
         protocolSlug: Required for protocol/tvl/protocol_fees/protocol_tvl_history.
         chain: Optional for dex_overview and fees_overview.
         coins: Required for current_prices, e.g. ethereum:0xa0b8...

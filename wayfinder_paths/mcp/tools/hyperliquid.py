@@ -651,6 +651,9 @@ def _summarize_market_context(
         if isinstance(asset_ctx, dict)
         else None
     )
+    funding_apr = (
+        funding_rate_hourly * 24 * 365 if funding_rate_hourly is not None else None
+    )
     impact_px_bid: float | None = None
     impact_px_ask: float | None = None
     if isinstance(asset_ctx, dict):
@@ -685,9 +688,8 @@ def _summarize_market_context(
         if isinstance(metadata, dict)
         else None,
         "funding_rate_hourly": funding_rate_hourly,
-        "funding_apr": funding_rate_hourly * 24 * 365
-        if funding_rate_hourly is not None
-        else None,
+        "funding_apr": funding_apr,
+        "funding_apr_pct": funding_apr * 100 if funding_apr is not None else None,
         "open_interest": _float_or_none(asset_ctx.get("openInterest"))
         if isinstance(asset_ctx, dict)
         else None,
@@ -2079,6 +2081,8 @@ async def hyperliquid_get_trade_asset(label: str, asset_name: str) -> dict[str, 
     metadata (`max_leverage`, `compatible_margin_modes`, size decimals,
     margin-table id), and live market context such as funding/open interest when
     available from `metaAndAssetCtxs`.
+    funding_apr is a decimal fraction; funding_apr_pct is its percentage display.
+    Both annualize the current hourly rate, not realized or forecast annual carry.
 
     Args:
         label: Configured Wayfinder wallet label in the current runtime, such as
@@ -2328,6 +2332,10 @@ async def hyperliquid_search_market(
     Returns canonical asset names. Perp results also include public market
     metadata, funding, 24h notional volume, margin modes and impact prices when
     available (perp metadata cached up to 60s, spot mappings up to 300s).
+    funding_apr is a decimal fraction (0.0876 = 8.76%); funding_apr_pct is
+    the percentage value (8.76). Both annualize the current hourly rate, not
+    realized or forecast annual carry. Positive funding: longs pay shorts;
+    negative: shorts pay longs. Missing funding remains unavailable, not zero.
     Impact prices/volume are NOT executable quotes or orderbook depth.
     Missing-provider warnings mean discovery is incomplete, not that a market is absent.
     """

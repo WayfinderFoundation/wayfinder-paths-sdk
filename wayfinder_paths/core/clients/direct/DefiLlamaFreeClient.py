@@ -587,6 +587,13 @@ def _compact_overview_response(
         totals=_overview_totals(result),
     )
     response["result"]["periodDefinitions"] = PERIOD_DEFINITIONS
+    if dataset == "open_interest_overview":
+        response["result"]["periodDefinitions"] = {
+            **PERIOD_DEFINITIONS,
+            "total24h": "Latest reported daily open-interest snapshot (outstanding notional), not traded volume or necessarily real-time exposure.",
+            "multiDayTotals": "total7d, total30d and other multi-day totals are provider aggregates of open-interest snapshots, not current open interest, traded volume or revenue. Do not annualize them or treat them as new positions opened during the period.",
+            "total1y": "Trailing-year aggregate of open-interest snapshots, not current open interest or annual traded volume.",
+        }
     response["result"]["omittedFields"] = [
         "totalDataChart",
         "totalDataChartBreakdown",
