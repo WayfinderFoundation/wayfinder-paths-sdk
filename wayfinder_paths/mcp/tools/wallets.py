@@ -442,6 +442,9 @@ async def core_get_wallets(
     No args (or `label="all"`) → every wallet. Pass `label` to filter to one
     wallet ring (one entry per available chain leg, or an `err(...)` response
     if not found).
+    Read afresh before reporting/sizing a transaction and after a confirmed
+    fund-moving step. A failed read is unavailable state, not a zero balance or
+    permission to reuse a previous conversation's balance.
 
     Args:
         label: Optional wallet label filter; "all" is equivalent to no filter.

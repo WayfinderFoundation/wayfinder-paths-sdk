@@ -147,6 +147,10 @@ async def core_run_script(
     """Run a Python script from `.wayfinder_runs/` and return its stdout/stderr/exit code.
 
     The script must already exist on disk inside the runs directory (write the file first).
+    Uses the SDK's Python interpreter and repo working directory; hosted callers
+    should use this tool rather than system Python or a separate Poetry command.
+    For a simple task, inspect the installed signature/source before one targeted
+    repair of an import/argument error. Do not replay writes to debug a script.
     For recurring jobs, use `runner(action="add_job", type="script", ...)` instead so the runner
     daemon owns scheduling, retries, and timeouts.
 

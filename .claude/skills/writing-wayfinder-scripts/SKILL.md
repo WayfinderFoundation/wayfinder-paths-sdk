@@ -41,17 +41,69 @@ For direct Web3 usage in scripts, **do not hardcode RPC URLs**. Use `web3_from_c
 
 ```python
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
+from wayfinder_paths.core.utils.tokens import get_token_balance
 
 async with web3_from_chain_id(8453) as w3:
     balance = await w3.eth.get_balance(addr)
+    token_balance = await get_token_balance(
+        token_address=token, chain_id=8453, wallet_address=addr, web3=w3
+    )
 ```
 
 It uses the Wayfinder RPC proxy by default. `strategy.rpc_urls` is only for
 explicit overrides such as local forks, Gorlami simulations, or debugging a
-specific provider. In normal Shell usage, keep `strategy.rpc_urls` empty. For
-sync access, use `get_web3s_from_chain_id(chain_id)` instead.
+specific provider. In normal Shell usage, keep `strategy.rpc_urls` empty.
+`get_web3s_from_chain_id` also returns **async** clients; it is not a synchronous
+alternative. Prefer the context manager above, which closes providers for you.
 
-Run scripts with poetry: `poetry run python .wayfinder_runs/my_script.py`
+On hosted Shells, write the file under `.wayfinder_runs/`, then use
+`core_run_script(script_path=".wayfinder_runs/my_script.py")`. It selects the SDK
+interpreter and repo working directory; do not use system Python or install missing
+dependencies to repair an interpreter mismatch. For local development outside
+Shells, `poetry run python .wayfinder_runs/my_script.py` is supported.
+
+For a simple task, an import/argument error permits one targeted repair after
+reading the installed signature/source. Chain constants live in
+`wayfinder_paths.core.constants.chains`; use keyword arguments for token helpers.
+If the repair fails, report the concrete blocker. Do not re-run a script containing
+writes until any earlier submissions have been reconciled.
+
+## Read-only recovery of an existing EVM transaction
+
+Use this only when the tool did not establish the outcome; never submit again to
+find out whether the first attempt worked. Preserve the original hash and chain.
+
+```python
+from wayfinder_paths.core.utils.transaction import wait_for_transaction_receipt
+
+receipt = await wait_for_transaction_receipt(
+    chain_id=chain_id, txn_hash=txn_hash, confirmations=0, timeout=15
+)
+```
+
+`status=1` confirms source execution; `TransactionRevertedError` establishes a
+source revert. A timeout/RPC error is **unknown**, not failure or proof that no funds
+moved. Stop after this bounded check if unresolved.
+
+For a bridge, source success is not destination delivery. Only when the original
+route's `bridge_tracking` is available, check it without submitting a new quote/swap:
+
+```python
+import asyncio
+from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
+
+bridge = await asyncio.wait_for(
+    BRAP_CLIENT.wait_for_bridge_execution(
+        bridge_tracking=bridge_tracking, tx_hash=txn_hash,
+        poll_interval_seconds=3, timeout_seconds=15,
+    ),
+    timeout=20,
+)
+```
+
+Require `bridge["is_success"]` before continuing dependent steps. Missing tracking,
+pending delivery, or a failed check means destination completion is unresolved;
+report that and the source hash instead of polling indefinitely or bridging again.
 
 ## Wallet helpers in scripts
 
@@ -128,30 +180,12 @@ from wayfinder_paths.core.config import load_config_json
 config = load_config_json("config.json")
 ```
 
-### 3. `web3_from_chain_id()` is an async context manager, not a function call
+### 3. Web3 is async
 
-```python
-# WRONG — returns an async generator object, not a Web3 instance
-w3 = web3_from_chain_id(8453)
+Use `async with` and `await` as shown above, including
+`await contract.functions.balanceOf(addr).call()`; an unawaited call is not a result.
 
-# RIGHT
-async with web3_from_chain_id(8453) as w3:
-    ...
-```
-
-### 4. All Web3 calls are async — always `await`
-
-```python
-# WRONG — returns a coroutine, not the result
-balance = w3.eth.get_balance(addr)
-result = contract.functions.balanceOf(addr).call()
-
-# RIGHT
-balance = await w3.eth.get_balance(addr)
-result = await contract.functions.balanceOf(addr).call()
-```
-
-### 5. Use existing ERC20 helpers — don't inline ABIs
+### 4. Use existing ERC20 helpers — don't inline ABIs
 
 ```python
 # WRONG — verbose, error-prone
@@ -168,7 +202,7 @@ from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 contract = w3.eth.contract(address=token, abi=ERC20_ABI)
 ```
 
-### 6. Python `quote_swap` amounts are wei strings, not human-readable
+### 5. Python `quote_swap` amounts are wei strings, not human-readable
 
 Note: This applies to the Python `quote_swap()` function in scripts. The MCP `onchain_swap(...)` / `onchain_send(...)` tools take **decimal human-readable** amount strings (e.g. `"5.0"` for 5 USDC). MCP amount strings must include a decimal point; `"5"` is rejected.
 
@@ -182,15 +216,15 @@ amount_wei = str(to_erc20_raw(10.0, decimals=6))  # USDC has 6 decimals
 quote = await quote_swap(from_token="usd-coin-base", to_token="ethereum-base", amount=amount_wei, ...)
 ```
 
-### 7. Cross-chain simulation IS possible
+### 6. Cross-chain simulation IS possible
 
 Fork both chains, seed expected tokens on the destination fork, then continue. Load `/simulation-dry-run` for the full pattern.
 
-### 8. Write the script file before calling `core_run_script`
+### 7. Write the script file before calling `core_run_script`
 
 `mcp__wayfinder__core_run_script` executes a file at the given path — the file must exist first. Always `Write` the script, then call `core_run_script`.
 
-### 9. Funding rate sign (CRITICAL for perp trading)
+### 8. Funding rate sign (CRITICAL for perp trading)
 
 **Negative funding means shorts PAY longs** (not the other way around).
 
