@@ -2318,6 +2318,7 @@ async def hyperliquid_search_market(
     limit: int = 10,
     market_type: HyperliquidMarketType | None = None,
     offset: int = 0,
+    include_market_data: bool = True,
 ) -> dict[str, Any]:
     """
     Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets by a simple query string. An empty
@@ -2328,6 +2329,11 @@ async def hyperliquid_search_market(
         pages return at most 25 to fit the agent's output budget; follow next_offset.
     offset: Zero-based offset into each filtered, ranked category. Use pagination.next_offset.
     market_type: optional filter — "perp", "hip3", "spot", or "hip4". Buckets the caller filters out come back empty.
+    include_market_data: False returns only perp/HIP-3 names, up to 100 per page.
+        For broad discovery or unknown symbols, browse query="", market_type="hip3",
+        limit=100, include_market_data=False and follow next_offset before claiming
+        no instrument exists. Then query exact finalist names with the default True
+        for funding, delisting and other market checks. A name alone is not tradability proof.
 
     Returns canonical asset names. Perp results also include public market
     metadata, funding, 24h notional volume, margin modes and impact prices when
@@ -2495,7 +2501,7 @@ async def hyperliquid_search_market(
 
     # Detailed perp rows otherwise overflow OpenCode's tool output at limit=100.
     # Keep the whole filtered universe reachable through the existing cursor.
-    perp_limit = min(limit, 25)
+    perp_limit = min(limit, 25) if include_market_data else limit
     pagination = {
         name: {
             "total": len(hits),
@@ -2514,30 +2520,31 @@ async def hyperliquid_search_market(
     perp_hits = perp_hits[offset : offset + perp_limit]
     spot_hits = spot_hits[offset : offset + limit]
     outcome_hits = outcome_hits[offset : offset + limit]
-    # Reuse the public data already fetched above; no wallet access or extra requests.
-    contexts = (
-        perp_data[1]
-        if isinstance(perp_data, (list, tuple)) and len(perp_data) > 1
-        else []
-    )
-    markets = {
-        adapter.canonical_asset_name(entry["name"], {}): _summarize_market_context(
-            entry, contexts[index] if index < len(contexts) else None
+    if include_market_data:
+        # Reuse the public data already fetched above; no wallet access or extra requests.
+        contexts = (
+            perp_data[1]
+            if isinstance(perp_data, (list, tuple)) and len(perp_data) > 1
+            else []
         )
-        for index, entry in enumerate(perp_universe)
-        if isinstance(entry, dict) and isinstance(entry.get("name"), str)
-    }
-    for hit in perp_hits:
-        hit["market"] = {
-            key: value
-            for key, value in markets[hit["name"]].items()
-            if value is not None and key not in {"raw_metadata", "raw_context"}
+        markets = {
+            adapter.canonical_asset_name(entry["name"], {}): _summarize_market_context(
+                entry, contexts[index] if index < len(contexts) else None
+            )
+            for index, entry in enumerate(perp_universe)
+            if isinstance(entry, dict) and isinstance(entry.get("name"), str)
         }
-        hit["market"]["min_order_notional_usd"] = MIN_ORDER_USD_NOTIONAL
-        if (open_interest := hit["market"].pop("open_interest", None)) is not None:
-            hit["market"]["open_interest_base"] = open_interest
-            if (mid := hit["market"].get("mid_px")) is not None:
-                hit["market"]["open_interest_usd_at_mid"] = open_interest * mid
+        for hit in perp_hits:
+            hit["market"] = {
+                key: value
+                for key, value in markets[hit["name"]].items()
+                if value is not None and key not in {"raw_metadata", "raw_context"}
+            }
+            hit["market"]["min_order_notional_usd"] = MIN_ORDER_USD_NOTIONAL
+            if (open_interest := hit["market"].pop("open_interest", None)) is not None:
+                hit["market"]["open_interest_base"] = open_interest
+                if (mid := hit["market"].get("mid_px")) is not None:
+                    hit["market"]["open_interest_usd_at_mid"] = open_interest * mid
 
     return ok(
         {

@@ -188,8 +188,10 @@ async def test_market_browsing_pages_after_type_filter(market_inventory):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("include_market_data", [True, False])
 async def test_large_perp_browse_uses_bounded_pages_without_skipping(
     monkeypatch: pytest.MonkeyPatch,
+    include_market_data: bool,
 ) -> None:
     names = [f"xyz:STOCK{index}" for index in range(110)]
     monkeypatch.setattr(
@@ -219,19 +221,46 @@ async def test_large_perp_browse_uses_bounded_pages_without_skipping(
     found = []
     while True:
         result = await hyperliquid_search_market(
-            "", limit=100, market_type="hip3", offset=offset
+            "",
+            limit=100,
+            market_type="hip3",
+            offset=offset,
+            include_market_data=include_market_data,
         )
         rendered = json.dumps(result, indent=2)
         assert len(rendered.encode()) < 50 * 1024
         assert len(rendered.splitlines()) < 2000
         found.extend(row["name"] for row in result["result"]["perps"])
         page = result["result"]["pagination"]["perps"]
-        assert page["limit"] == 25
+        assert page["limit"] == (25 if include_market_data else 100)
+        assert all(
+            ("market" in row) == include_market_data
+            for row in result["result"]["perps"]
+        )
         if page["next_offset"] is None:
             break
         offset = page["next_offset"]
         assert offset == len(found)
     assert found == names
+
+
+@pytest.mark.asyncio
+async def test_compact_market_discovery_can_hydrate_exact_result(
+    market_inventory: None,
+) -> None:
+    compact = await hyperliquid_search_market(
+        "", limit=100, market_type="hip3", include_market_data=False
+    )
+    rows = compact["result"]["perps"]
+    assert rows
+    assert all(set(row) == {"name"} and ":" in row["name"] for row in rows)
+    assert compact["result"]["spots"] == []
+    assert compact["result"]["outcomes"] == []
+    hydrated = await hyperliquid_search_market(
+        rows[-1]["name"], limit=1, market_type="hip3"
+    )
+    assert hydrated["result"]["perps"][0]["name"] == rows[-1]["name"]
+    assert "market" in hydrated["result"]["perps"][0]
 
 
 @pytest.mark.asyncio
