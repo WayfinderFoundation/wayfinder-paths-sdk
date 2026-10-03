@@ -1,0 +1,1433 @@
+{
+  "source_commit": "353c92b7",
+  "fixtures": [
+    {
+      "name": "spot",
+      "budget": 100,
+      "position": {
+        "kind": "token",
+        "instrument_id": "ethereum-base"
+      },
+      "prices": [
+        100,
+        100,
+        110,
+        120
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": 0.1648034600130408,
+        "max_drawdown": -0.012663783322465982,
+        "fees_usd": 0.08891108891108893,
+        "funding_paid_usd": 0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 100.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 98.7336216677534
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 107.60698383452875
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 116.48034600130408
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 100.2,
+            "quantity": 0.8873362166775342,
+            "capital_usd": 90.0,
+            "notional_usd": 88.73362166775341,
+            "final_value_usd": 106.48034600130408,
+            "close_reason": null,
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "spot",
+      "budget": 1000,
+      "position": {
+        "kind": "token",
+        "instrument_id": "ethereum-base"
+      },
+      "prices": [
+        100,
+        100,
+        110,
+        120
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": 0.17557113545137493,
+        "max_drawdown": -0.0036907204571875463,
+        "fees_usd": 0.898101898101898,
+        "funding_paid_usd": 0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 1000.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 996.3092795428124
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 1085.9402074970935
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 1175.5711354513749
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 100.2,
+            "quantity": 8.963092795428125,
+            "capital_usd": 900.0,
+            "notional_usd": 896.3092795428125,
+            "final_value_usd": 1075.5711354513749,
+            "close_reason": null,
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "spot",
+      "budget": 10000,
+      "position": {
+        "kind": "token",
+        "instrument_id": "ethereum-base"
+      },
+      "prices": [
+        100,
+        100,
+        110,
+        120
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": 0.17664790299520838,
+        "max_drawdown": -0.0027934141706597027,
+        "fees_usd": 8.99000999000999,
+        "funding_paid_usd": 0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 10000.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 9972.065858293403
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 10869.272444122744
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 11766.479029952085
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 100.2,
+            "quantity": 89.72065858293404,
+            "capital_usd": 9000.0,
+            "notional_usd": 8972.065858293403,
+            "final_value_usd": 10766.479029952085,
+            "close_reason": null,
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "spot",
+      "budget": 100000,
+      "position": {
+        "kind": "token",
+        "instrument_id": "ethereum-base"
+      },
+      "prices": [
+        100,
+        100,
+        110,
+        120
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": 0.17675557974959166,
+        "max_drawdown": -0.002703683542006896,
+        "fees_usd": 89.90909090909092,
+        "funding_paid_usd": 0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 100000.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 99729.63164579931
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 108702.59481037925
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 117675.55797495917
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 100.2,
+            "quantity": 897.296316457993,
+            "capital_usd": 90000.0,
+            "notional_usd": 89729.63164579931,
+            "final_value_usd": 107675.55797495917,
+            "close_reason": null,
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "long",
+      "budget": 100,
+      "position": {
+        "leverage": 2
+      },
+      "prices": [
+        100,
+        100,
+        110,
+        120
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": 0.3385636637627685,
+        "max_drawdown": -0.015311668740879747,
+        "fees_usd": 0.1772915415843277,
+        "funding_paid_usd": 0.0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 100.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 98.46883312591203
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 116.16259975109443
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 133.85636637627684
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 100.2,
+            "quantity": 1.7693766625182406,
+            "capital_usd": 90.0,
+            "notional_usd": 176.93766625182406,
+            "final_value_usd": 123.85636637627684,
+            "close_reason": null,
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "long",
+      "budget": 1000,
+      "position": {
+        "leverage": 2
+      },
+      "prices": [
+        100,
+        100,
+        110,
+        120
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": 0.3510884648569985,
+        "max_drawdown": -0.00636538224500105,
+        "fees_usd": 1.7908437739810183,
+        "funding_paid_usd": 0.0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 1000.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 993.634617754999
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 1172.3615413059988
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 1351.0884648569986
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 100.2,
+            "quantity": 17.872692355099982,
+            "capital_usd": 900.0,
+            "notional_usd": 1787.2692355099982,
+            "final_value_usd": 1251.0884648569986,
+            "close_reason": null,
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "long",
+      "budget": 10000,
+      "position": {
+        "leverage": 2
+      },
+      "prices": [
+        100,
+        100,
+        110,
+        120
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": 0.35234094496642165,
+        "max_drawdown": -0.005470753595413269,
+        "fees_usd": 17.92636609794792,
+        "funding_paid_usd": 0.0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 10000.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 9945.292464045868
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 11734.350956855042
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 13523.409449664216
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 100.2,
+            "quantity": 178.90584928091738,
+            "capital_usd": 9000.0,
+            "notional_usd": 17890.58492809174,
+            "final_value_usd": 12523.409449664216,
+            "close_reason": null,
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "long",
+      "budget": 100000,
+      "position": {
+        "leverage": 2
+      },
+      "prices": [
+        100,
+        100,
+        110,
+        120
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": 0.3524661929773638,
+        "max_drawdown": -0.005381290730454347,
+        "fees_usd": 179.28158933761696,
+        "funding_paid_usd": 0.0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 100000.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 99461.87092695457
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 117354.24511234548
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 135246.61929773638
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 100.2,
+            "quantity": 1789.2374185390915,
+            "capital_usd": 90000.0,
+            "notional_usd": 178923.74185390916,
+            "final_value_usd": 125246.6192977364,
+            "close_reason": null,
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "short",
+      "budget": 100,
+      "position": {
+        "direction": "short"
+      },
+      "prices": [
+        100,
+        100,
+        110,
+        120
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": -0.19012747731310609,
+        "max_drawdown": -0.19012747731310609,
+        "fees_usd": 0.08855615442441792,
+        "funding_paid_usd": 0.0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 100.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 98.73397660224006
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 89.86061443546473
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 80.98725226868939
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 99.8,
+            "quantity": 0.8873362166775342,
+            "capital_usd": 90.0,
+            "notional_usd": 88.73362166775341,
+            "final_value_usd": 70.98725226868939,
+            "close_reason": null,
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "short",
+      "budget": 1000,
+      "position": {
+        "direction": "short"
+      },
+      "prices": [
+        100,
+        100,
+        110,
+        120
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": -0.18294899112863183,
+        "max_drawdown": -0.18294899112863183,
+        "fees_usd": 0.8945166609837268,
+        "funding_paid_usd": 0.0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 1000.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 996.3128647799306
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 906.6819368256494
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 817.0510088713681
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 99.8,
+            "quantity": 8.963092795428125,
+            "capital_usd": 900.0,
+            "notional_usd": 896.3092795428125,
+            "final_value_usd": 717.0510088713681,
+            "close_reason": null,
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "short",
+      "budget": 10000,
+      "position": {
+        "direction": "short"
+      },
+      "prices": [
+        100,
+        100,
+        110,
+        120
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": -0.18223114251018435,
+        "max_drawdown": -0.18223114251018435,
+        "fees_usd": 8.954121726576817,
+        "funding_paid_usd": 0.0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 10000.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 9972.101746556837
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 9074.895160727498
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 8177.688574898157
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 99.8,
+            "quantity": 89.72065858293404,
+            "capital_usd": 9000.0,
+            "notional_usd": 8972.065858293403,
+            "final_value_usd": 7177.688574898157,
+            "close_reason": null,
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "short",
+      "budget": 100000,
+      "position": {
+        "direction": "short"
+      },
+      "prices": [
+        100,
+        100,
+        110,
+        120
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": -0.1821593576483398,
+        "max_drawdown": -0.1821593576483398,
+        "fees_usd": 89.55017238250771,
+        "funding_paid_usd": 0.0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 100000.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 99729.99056432588
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 90757.02739974596
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 81784.06423516602
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 99.8,
+            "quantity": 897.296316457993,
+            "capital_usd": 90000.0,
+            "notional_usd": 89729.63164579931,
+            "final_value_usd": 71784.06423516602,
+            "close_reason": null,
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "stop",
+      "budget": 100,
+      "position": {
+        "stop_loss_pct": 0.1
+      },
+      "prices": [
+        100,
+        100,
+        85,
+        200
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": -0.14802541470505548,
+        "max_drawdown": -0.14802541470505548,
+        "fees_usd": 0.16418382017184413,
+        "funding_paid_usd": 0.0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 100.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 98.7336216677534
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 85.19745852949445
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 85.19745852949445
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 100.2,
+            "quantity": 0.8873362166775342,
+            "capital_usd": 90.0,
+            "notional_usd": 88.73362166775341,
+            "final_value_usd": 75.19745852949445,
+            "close_reason": "protective_exit",
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "stop",
+      "budget": 1000,
+      "position": {
+        "stop_loss_pct": 0.1
+      },
+      "prices": [
+        100,
+        100,
+        85,
+        200
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": -0.1404211773256684,
+        "max_drawdown": -0.1404211773256684,
+        "fees_usd": 1.658441059938066,
+        "funding_paid_usd": 0.0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 1000.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 996.3092795428124
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 859.5788226743316
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 859.5788226743316
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 100.2,
+            "quantity": 8.963092795428125,
+            "capital_usd": 900.0,
+            "notional_usd": 896.3092795428125,
+            "final_value_usd": 759.5788226743316,
+            "close_reason": "protective_exit",
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "stop",
+      "budget": 10000,
+      "position": {
+        "stop_loss_pct": 0.1
+      },
+      "prices": [
+        100,
+        100,
+        85,
+        200
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": -0.13966075358772978,
+        "max_drawdown": -0.13966075358772978,
+        "fees_usd": 16.601013457600285,
+        "funding_paid_usd": 0.0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 10000.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 9972.065858293403
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 8603.392464122702
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 8603.392464122702
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 100.2,
+            "quantity": 89.72065858293404,
+            "capital_usd": 9000.0,
+            "notional_usd": 8972.065858293403,
+            "final_value_usd": 7603.392464122703,
+            "close_reason": "protective_exit",
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "stop",
+      "budget": 100000,
+      "position": {
+        "stop_loss_pct": 0.1
+      },
+      "prices": [
+        100,
+        100,
+        85,
+        200
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": -0.13958471121393579,
+        "max_drawdown": -0.13958471121393579,
+        "fees_usd": 166.02673743422247,
+        "funding_paid_usd": 0.0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 100000.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 99729.63164579931
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 86041.52887860642
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 86041.52887860642
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 100.2,
+            "quantity": 897.296316457993,
+            "capital_usd": 90000.0,
+            "notional_usd": 89729.63164579931,
+            "final_value_usd": 76041.52887860642,
+            "close_reason": "protective_exit",
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "liquidation",
+      "budget": 100,
+      "position": {
+        "leverage": 2
+      },
+      "prices": [
+        100,
+        100,
+        1,
+        200
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": -0.9,
+        "max_drawdown": -0.9,
+        "fees_usd": 0.1790573794935209,
+        "funding_paid_usd": 0.0,
+        "routing_cost_usd": 1.0,
+        "liquidated": true,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 100.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 98.46883312591203
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 10.0
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 10.0
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 100.2,
+            "quantity": 1.7693766625182406,
+            "capital_usd": 90.0,
+            "notional_usd": 176.93766625182406,
+            "final_value_usd": 0.0,
+            "close_reason": "liquidation",
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "liquidation",
+      "budget": 1000,
+      "position": {
+        "leverage": 2
+      },
+      "prices": [
+        100,
+        100,
+        1,
+        200
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": -0.9,
+        "max_drawdown": -0.9,
+        "fees_usd": 1.8086807209514082,
+        "funding_paid_usd": 0.0,
+        "routing_cost_usd": 1.0,
+        "liquidated": true,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 1000.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 993.634617754999
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 100.0
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 100.0
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 100.2,
+            "quantity": 17.872692355099982,
+            "capital_usd": 900.0,
+            "notional_usd": 1787.2692355099982,
+            "final_value_usd": 0.0,
+            "close_reason": "liquidation",
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "liquidation",
+      "budget": 10000,
+      "position": {
+        "leverage": 2
+      },
+      "prices": [
+        100,
+        100,
+        1,
+        200
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": -0.9,
+        "max_drawdown": -0.9,
+        "fees_usd": 18.104914135530276,
+        "funding_paid_usd": 0.0,
+        "routing_cost_usd": 1.0,
+        "liquidated": true,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 10000.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 9945.292464045868
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 1000.0
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 1000.0
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 100.2,
+            "quantity": 178.90584928091738,
+            "capital_usd": 9000.0,
+            "notional_usd": 17890.58492809174,
+            "final_value_usd": 0.0,
+            "close_reason": "liquidation",
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "liquidation",
+      "budget": 100000,
+      "position": {
+        "leverage": 2
+      },
+      "prices": [
+        100,
+        100,
+        1,
+        200
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": -0.9,
+        "max_drawdown": -0.9,
+        "fees_usd": 181.06724828131897,
+        "funding_paid_usd": 0.0,
+        "routing_cost_usd": 1.0,
+        "liquidated": true,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 100000.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 99461.87092695457
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 10000.0
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 10000.0
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 100.2,
+            "quantity": 1789.2374185390915,
+            "capital_usd": 90000.0,
+            "notional_usd": 178923.74185390916,
+            "final_value_usd": 0.0,
+            "close_reason": "liquidation",
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "prediction",
+      "budget": 100,
+      "position": {
+        "kind": "prediction",
+        "direction": "no",
+        "instrument_id": "123"
+      },
+      "prices": [
+        0.5,
+        0.5,
+        0.6,
+        0.7
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": 0.3422707033485477,
+        "max_drawdown": -0.012663783322465982,
+        "fees_usd": 0.08891108891108893,
+        "funding_paid_usd": 0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 100.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 98.7336216677534
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 116.48034600130408
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 134.22707033485477
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 0.501,
+            "quantity": 177.46724333550682,
+            "capital_usd": 90.0,
+            "notional_usd": 88.73362166775341,
+            "final_value_usd": 124.22707033485476,
+            "close_reason": null,
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "prediction",
+      "budget": 1000,
+      "position": {
+        "kind": "prediction",
+        "direction": "no",
+        "instrument_id": "123"
+      },
+      "prices": [
+        0.5,
+        0.5,
+        0.6,
+        0.7
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": 0.3548329913599373,
+        "max_drawdown": -0.0036907204571875463,
+        "fees_usd": 0.8981018981018982,
+        "funding_paid_usd": 0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 1000.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 996.3092795428124
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 1175.5711354513749
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 1354.8329913599373
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 0.501,
+            "quantity": 1792.618559085625,
+            "capital_usd": 900.0,
+            "notional_usd": 896.3092795428125,
+            "final_value_usd": 1254.8329913599373,
+            "close_reason": null,
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "prediction",
+      "budget": 10000,
+      "position": {
+        "kind": "prediction",
+        "direction": "no",
+        "instrument_id": "123"
+      },
+      "prices": [
+        0.5,
+        0.5,
+        0.6,
+        0.7
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": 0.35608922016107636,
+        "max_drawdown": -0.0027934141706597027,
+        "fees_usd": 8.99000999000999,
+        "funding_paid_usd": 0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 10000.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 9972.065858293403
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 11766.479029952083
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 13560.892201610764
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 0.501,
+            "quantity": 17944.131716586806,
+            "capital_usd": 9000.0,
+            "notional_usd": 8972.065858293403,
+            "final_value_usd": 12560.892201610764,
+            "close_reason": null,
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "prediction",
+      "budget": 100000,
+      "position": {
+        "kind": "prediction",
+        "direction": "no",
+        "instrument_id": "123"
+      },
+      "prices": [
+        0.5,
+        0.5,
+        0.6,
+        0.7
+      ],
+      "costs": {
+        "fee_rate": 0.001,
+        "slippage_rate": 0.002,
+        "routing_cost_usd": 1
+      },
+      "expected": {
+        "total_return": 0.3562148430411902,
+        "max_drawdown": -0.002703683542006896,
+        "fees_usd": 89.90909090909092,
+        "funding_paid_usd": 0,
+        "routing_cost_usd": 1.0,
+        "liquidated": false,
+        "equity": [
+          {
+            "time": "2026-09-01T01:00:00+00:00",
+            "value": 100000.0
+          },
+          {
+            "time": "2026-09-01T02:00:00+00:00",
+            "value": 99729.63164579931
+          },
+          {
+            "time": "2026-09-01T03:00:00+00:00",
+            "value": 117675.55797495917
+          },
+          {
+            "time": "2026-09-01T04:00:00+00:00",
+            "value": 135621.48430411902
+          }
+        ],
+        "positions": [
+          {
+            "position_id": "btc",
+            "entry_price": 0.501,
+            "quantity": 179459.26329159862,
+            "capital_usd": 90000.0,
+            "notional_usd": 89729.63164579931,
+            "final_value_usd": 125621.48430411902,
+            "close_reason": null,
+            "source": "fixture",
+            "fee_rate": 0.001,
+            "slippage_rate": 0.002,
+            "routing_cost_usd": 1
+          }
+        ]
+      }
+    }
+  ]
+}

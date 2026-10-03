@@ -105,7 +105,10 @@ def _wrap(fn: Callable, prefix: str) -> Callable:
             except SessionExpiredError as exc:
                 result = err("session_expired", str(exc))
             except Exception as exc:
-                result = err("error", f"{prefix} {exc}".strip())
+                result = err(
+                    "error",
+                    f"{prefix} {str(exc).strip() or type(exc).__name__}".strip(),
+                )
             _report_tool_metric(
                 fn.__name__, result, (time.perf_counter() - start) * 1000
             )
@@ -127,7 +130,9 @@ def _wrap(fn: Callable, prefix: str) -> Callable:
         except SessionExpiredError as exc:
             result = err("session_expired", str(exc))
         except Exception as exc:
-            result = err("error", f"{prefix} {exc}".strip())
+            result = err(
+                "error", f"{prefix} {str(exc).strip() or type(exc).__name__}".strip()
+            )
         _report_tool_metric(fn.__name__, result, (time.perf_counter() - start) * 1000)
         return result
 

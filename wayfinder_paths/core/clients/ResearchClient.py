@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import cast
+import asyncio
+from collections.abc import Mapping
+from typing import Any, cast
 
 import httpx
 
@@ -68,6 +70,21 @@ class ResearchClient(GatewayClient):
     session_env_keys = SESSION_ENV_KEYS
     default_session_id = DEFAULT_SESSION_ID
     include_response_text_in_error = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._requests = asyncio.Semaphore(4)
+
+    async def _post_gateway(self, path: str, payload: Mapping[str, Any]) -> Any:
+        # Native workers share this client. Queue bursts locally, without
+        # retrying failures or changing the backend's authoritative limits.
+        async with self._requests:
+            return await super()._post_gateway(path, payload)
+
+    async def aclose(self) -> None:
+        await super().aclose()
+        # The shared client can be reopened in a later asyncio.run invocation.
+        self._requests = asyncio.Semaphore(4)
 
     def _research_url(self, path: str) -> str:
         base = get_api_base_url().rstrip("/")

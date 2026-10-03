@@ -52,6 +52,66 @@ class TestPolymarketAdapter:
         assert adapter.adapter_type == "POLYMARKET"
 
     @pytest.mark.asyncio
+    async def test_history_pages_explicit_windows_without_interval_or_boundary_duplicates(
+        self, adapter, monkeypatch
+    ):
+        week = 7 * 86400
+        calls = []
+
+        async def get(path, *, params):
+            calls.append(params)
+            assert path == "/prices-history"
+            assert "interval" not in params
+            assert 0 < params["endTs"] - params["startTs"] <= week
+            return httpx.Response(
+                200,
+                request=httpx.Request("GET", "https://example.test"),
+                json={
+                    "history": [
+                        {"t": params["endTs"], "p": 0.5},
+                        {"t": params["startTs"], "p": 0.4},
+                    ]
+                },
+            )
+
+        monkeypatch.setattr(adapter._clob_http, "get", get)
+        success, result = await adapter.get_prices_history(
+            token_id="123", start_ts=1, end_ts=2 * week + 2, fidelity=60
+        )
+        assert success
+        assert len(calls) == 3
+        assert [r["t"] for r in result["history"]] == [1, week + 1, 2 * week + 1]
+        assert all(p["fidelity"] == 60 for p in calls)
+
+    @pytest.mark.asyncio
+    async def test_history_does_not_present_failed_pages_as_complete(
+        self, adapter, monkeypatch
+    ):
+        monkeypatch.setattr(
+            adapter._clob_http,
+            "get",
+            AsyncMock(
+                return_value=httpx.Response(
+                    503, request=httpx.Request("GET", "https://example.test")
+                )
+            ),
+        )
+        success, result = await adapter.get_prices_history(
+            token_id="123", start_ts=1, end_ts=90 * 86400, interval=None
+        )
+        assert not success
+        assert "503" in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("end", [0, -1, 367 * 86400])
+    async def test_history_rejects_invalid_or_unbounded_windows(self, adapter, end):
+        success, result = await adapter.get_prices_history(
+            token_id="123", start_ts=0, end_ts=end
+        )
+        assert not success
+        assert "366 days" in result
+
+    @pytest.mark.asyncio
     async def test_fund_deposit_wallet_deploys_before_transfer(
         self, adapter, monkeypatch
     ):

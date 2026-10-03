@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 from unittest.mock import AsyncMock
 
@@ -306,6 +307,54 @@ async def test_search_raises_structured_gateway_error(
     assert exc_info.value.error_type == "rate_limit"
     assert exc_info.value.code == "credits_exhausted"
     assert exc_info.value.details == {"remaining": 0}
+    client._authed_request.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_native_worker_reads_share_backpressure(monkeypatch) -> None:
+    _patch_base_url(monkeypatch)
+    client = ResearchClient()
+    active = peak = 0
+    saturated, release = asyncio.Event(), asyncio.Event()
+
+    async def request(*args, **kwargs):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        if active == 4:
+            saturated.set()
+        try:
+            await release.wait()
+            return _Response({"results": []})
+        finally:
+            active -= 1
+
+    client._authed_request = AsyncMock(side_effect=request)
+    tasks = [
+        asyncio.create_task(
+            client.search(query=f"candidate {i}")
+            if i % 2
+            else client.fetch(urls=[f"https://example.com/{i}"])
+        )
+        for i in range(10)
+    ]
+    try:
+        await asyncio.wait_for(saturated.wait(), timeout=1)
+        assert client._authed_request.await_count == 4
+        tasks[0].cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tasks[0]
+        release.set()
+        await asyncio.gather(*tasks[1:])
+        assert peak == 4
+        assert active == 0
+        assert client._authed_request.await_count == 10
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        previous = client._requests
+        await client.aclose()
+        assert client._requests is not previous
 
 
 def test_research_gateway_error_helpers_remain_available() -> None:

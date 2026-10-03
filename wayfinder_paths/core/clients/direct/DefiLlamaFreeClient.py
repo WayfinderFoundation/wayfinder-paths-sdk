@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import math
+import time
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import quote
@@ -8,16 +12,29 @@ from urllib.parse import quote
 import httpx
 
 BASE_URL = "https://api.llama.fi"
+COINS_BASE_URL = "https://coins.llama.fi"
 STABLECOINS_BASE_URL = "https://stablecoins.llama.fi"
 YIELDS_BASE_URL = "https://yields.llama.fi"
 TIMEOUT_SECONDS = 20
 ATTRIBUTION = "Data from DeFiLlama free API"
 DEFAULT_PAGE_LIMIT = 25
 MAX_PAGE_LIMIT = 100
-MAX_RESPONSE_CHARACTERS = 250_000
+# Leave room for MCP's envelope within OpenCode's 50 KiB / 2,000-line limit.
+MAX_RESPONSE_CHARACTERS = 40_000
+MAX_RESPONSE_LINES = 1_600
 OVERVIEW_PARAMS = {
     "excludeTotalDataChart": "true",
     "excludeTotalDataChartBreakdown": "true",
+}
+PERIOD_DEFINITIONS = {
+    "change_1m": "Percent change of the latest daily observation versus a day one month ago; NOT rolling-month growth.",
+    "change_30dover30d": "Percent change of total30d versus total60dto30d (the preceding 30-day period).",
+    "total1y": "Trailing-year total, NOT the annualized current pace.",
+}
+PERIOD_COMPARISON_FIELDS = {
+    "latest_day_vs_day_30d_ago": ("total24h", "total30DaysAgo", "change_1m"),
+    "last_7d_vs_previous_7d": ("total7d", "total14dto7d", "change_7dover7d"),
+    "last_30d_vs_previous_30d": ("total30d", "total60dto30d", "change_30dover30d"),
 }
 
 
@@ -35,6 +52,11 @@ class DefiLlamaFreeClient:
 
     This intentionally does not call the Wayfinder backend.
     """
+
+    def __init__(self) -> None:
+        self._catalog: dict[str, Any] | None = None
+        self._catalog_expires = 0.0
+        self._catalog_lock = asyncio.Lock()
 
     async def _get(
         self,
@@ -65,7 +87,15 @@ class DefiLlamaFreeClient:
         }
 
     async def protocols(self) -> dict[str, Any]:
-        return await self._get("/protocols")
+        async with self._catalog_lock:
+            if self._catalog is None or time.monotonic() >= self._catalog_expires:
+                catalog = await self._get("/protocols")
+                if not isinstance(catalog.get("result"), list):
+                    raise ValueError("DeFiLlama catalog response is not a list")
+                self._catalog = catalog
+                self._catalog_expires = time.monotonic() + 300
+            # Pagination/compaction mutates the response, never the shared cache.
+            return deepcopy(self._catalog)
 
     async def protocols_page(
         self, *, limit: int = DEFAULT_PAGE_LIMIT, cursor: str = "_"
@@ -89,18 +119,28 @@ class DefiLlamaFreeClient:
         )
         return _enforce_response_budget(response)
 
-    async def protocol_search(self, query: str, limit: int = 10) -> dict[str, Any]:
+    async def protocol_search(
+        self, query: str, limit: int = 10, *, cursor: str = "_", category: str = "_"
+    ) -> dict[str, Any]:
         response = await self.protocols()
         normalized = str(query).strip().lower()
-        if not normalized:
-            raise ValueError("query is required")
+        if normalized == "_":
+            normalized = ""
+        category_filter = category.strip().casefold()
+        if not normalized and category_filter in {"", "_"}:
+            raise ValueError("query or category is required")
         protocols = response.get("result")
         if not isinstance(protocols, list):
             protocols = []
 
-        matches = []
+        matches: list[tuple[int, dict[str, Any]]] = []
         for protocol in protocols:
             if not isinstance(protocol, dict):
+                continue
+            if (
+                category_filter not in {"", "_"}
+                and str(protocol.get("category") or "").casefold() != category_filter
+            ):
                 continue
             haystack = " ".join(
                 str(protocol.get(key) or "")
@@ -108,30 +148,33 @@ class DefiLlamaFreeClient:
             ).lower()
             if normalized not in haystack:
                 continue
-            matches.append(
-                {
-                    "name": protocol.get("name"),
-                    "slug": protocol.get("slug"),
-                    "symbol": protocol.get("symbol"),
-                    "category": protocol.get("category"),
-                    "chains": protocol.get("chains"),
-                    "tvl": protocol.get("tvl"),
-                    "change_1d": protocol.get("change_1d"),
-                    "change_7d": protocol.get("change_7d"),
-                    "url": protocol.get("url"),
-                }
-            )
-            if len(matches) >= max(1, min(int(limit), 25)):
-                break
+            identity = [
+                str(protocol.get(key) or "").lower()
+                for key in ("name", "slug", "symbol")
+            ]
+            rank = 2
+            if not normalized or normalized in identity:
+                rank = 0
+            elif any(normalized in value for value in identity):
+                rank = 1
+            matches.append((rank, _compact_protocol(protocol)))
 
-        return {
-            **response,
-            "result": {
-                "query": query,
-                "matches": matches,
-                "count": len(matches),
-            },
-        }
+        # Identity matches precede incidental prose hits before pagination.
+        # Equal ranks (including category-only browsing) retain provider order.
+        page = _paged_result(
+            dataset="protocol_search",
+            source_url=response["url"],
+            items=[item for _, item in sorted(matches, key=lambda match: match[0])],
+            limit=limit,
+            cursor=cursor,
+        )
+        # Preserve the original matches/count fields for existing callers.
+        response["result"] = {**page, "query": query, "category": category}
+        response = _enforce_response_budget(response)
+        result = response["result"]
+        result["matches"] = result.pop("items", [])
+        result["count"] = len(result["matches"])
+        return response
 
     async def protocol(self, protocol_slug: str) -> dict[str, Any]:
         return await self._get(f"/protocol/{_path_part(protocol_slug, 'protocolSlug')}")
@@ -147,15 +190,17 @@ class DefiLlamaFreeClient:
         days: int = 30,
     ) -> dict[str, Any]:
         normalized_type = str(data_type).strip()
-        if normalized_type not in {"dailyFees", "dailyRevenue"}:
-            raise ValueError("data_type must be dailyFees or dailyRevenue")
+        if normalized_type not in {"dailyFees", "dailyRevenue", "dailyHoldersRevenue"}:
+            raise ValueError(
+                "data_type must be dailyFees, dailyRevenue or dailyHoldersRevenue"
+            )
         response = await self._get(
             f"/summary/fees/{_path_part(protocol_slug, 'protocolSlug')}",
             params={"dataType": normalized_type},
         )
-        result = (
-            response.get("result") if isinstance(response.get("result"), dict) else {}
-        )
+        result = response.get("result")
+        if not isinstance(result, dict):
+            result = {}
         rows = _last_daily_rows(result.get("totalDataChart"), days=days)
         chain_rows = _last_daily_breakdown_rows(
             result.get("totalDataChartBreakdown"), days=days
@@ -163,6 +208,14 @@ class DefiLlamaFreeClient:
         response["result"] = {
             "protocolSlug": protocol_slug,
             "dataType": normalized_type,
+            "description": result.get("description"),
+            "methodology": result.get("methodology"),
+            "methodologyURL": result.get("methodologyURL"),
+            "breakdownMethodology": result.get("breakdownMethodology"),
+            "totals": _overview_totals(result),
+            "periodDefinitions": PERIOD_DEFINITIONS,
+            "periodComparisons": _period_comparisons(result),
+            "periodComparisonFields": PERIOD_COMPARISON_FIELDS,
             "days": days,
             "dailyRows": rows,
             "weeklyRollups": _weekly_sum_rollups(rows),
@@ -267,7 +320,9 @@ class DefiLlamaFreeClient:
         return _enforce_response_budget(response)
 
     async def current_prices(self, coins: str) -> dict[str, Any]:
-        return await self._get(f"/prices/current/{_path_part(coins, 'coins')}")
+        return await self._get(
+            f"/prices/current/{_path_part(coins, 'coins')}", base_url=COINS_BASE_URL
+        )
 
     async def dex_overview(
         self,
@@ -296,20 +351,50 @@ class DefiLlamaFreeClient:
         *,
         limit: int = DEFAULT_PAGE_LIMIT,
         cursor: str = "_",
+        data_type: str = "dailyFees",
+        protocol_slugs: list[str] | None = None,
     ) -> dict[str, Any]:
+        if data_type not in {"dailyFees", "dailyRevenue", "dailyHoldersRevenue"}:
+            raise ValueError("Unsupported fees data_type")
+        params = {**OVERVIEW_PARAMS, "dataType": data_type}
         if chain:
             response = await self._get(
                 f"/overview/fees/{_path_part(chain, 'chain')}",
-                params=OVERVIEW_PARAMS,
+                params=params,
             )
         else:
-            response = await self._get("/overview/fees", params=OVERVIEW_PARAMS)
-        return _compact_overview_response(
+            response = await self._get("/overview/fees", params=params)
+        result = response.get("result")
+        if not isinstance(result, dict) or not isinstance(
+            result.get("protocols"), list
+        ):
+            raise ValueError("DeFiLlama fees overview unavailable")
+        missing = []
+        if protocol_slugs:
+            wanted = {slug.casefold() for slug in protocol_slugs}
+            result["protocols"] = [
+                p
+                for p in result["protocols"]
+                if isinstance(p, dict)
+                and str(p.get("slug") or p.get("module") or "").casefold() in wanted
+            ]
+            found = {
+                str(p.get("slug") or p.get("module") or "").casefold()
+                for p in result["protocols"]
+            }
+            missing = sorted(wanted - found)
+        response = _compact_overview_response(
             response,
             dataset="fees_overview",
             limit=limit,
             cursor=cursor,
         )
+        response["result"].update(
+            dataType=data_type,
+            unavailableSlugs=missing,
+            coverageNote="Missing/null is unavailable, not zero. Overview totals cover the provider universe, not the filtered shortlist. Read finalist methodology before interpreting holder revenue.",
+        )
+        return response
 
     async def open_interest_overview(
         self,
@@ -502,7 +587,9 @@ def _compact_overview_response(
     limit: int,
     cursor: str,
 ) -> dict[str, Any]:
-    result = response.get("result") if isinstance(response.get("result"), dict) else {}
+    result = response.get("result")
+    if not isinstance(result, dict):
+        result = {}
     protocols = result.get("protocols")
     if not isinstance(protocols, list):
         protocols = []
@@ -511,6 +598,10 @@ def _compact_overview_response(
         for protocol in protocols
         if isinstance(protocol, dict)
     ]
+    # Flow comparisons do not describe outstanding open-interest snapshots.
+    if dataset != "open_interest_overview":
+        for item in items:
+            item["periodComparisons"] = _period_comparisons(item)
     items.sort(key=lambda item: _number(item.get("total24h")), reverse=True)
     response["result"] = _paged_result(
         dataset=dataset,
@@ -520,6 +611,17 @@ def _compact_overview_response(
         cursor=cursor,
         totals=_overview_totals(result),
     )
+    response["result"]["periodDefinitions"] = PERIOD_DEFINITIONS
+    if dataset != "open_interest_overview":
+        response["result"]["periodComparisons"] = _period_comparisons(result)
+        response["result"]["periodComparisonFields"] = PERIOD_COMPARISON_FIELDS
+    if dataset == "open_interest_overview":
+        response["result"]["periodDefinitions"] = {
+            **PERIOD_DEFINITIONS,
+            "total24h": "Latest reported daily open-interest snapshot (outstanding notional), not traded volume or necessarily real-time exposure.",
+            "multiDayTotals": "total7d, total30d and other multi-day totals are provider aggregates of open-interest snapshots, not current open interest, traded volume or revenue. Do not annualize them or treat them as new positions opened during the period.",
+            "total1y": "Trailing-year aggregate of open-interest snapshots, not current open interest or annual traded volume.",
+        }
     response["result"]["omittedFields"] = [
         "totalDataChart",
         "totalDataChartBreakdown",
@@ -527,6 +629,35 @@ def _compact_overview_response(
         "protocols[].breakdown30d",
     ]
     return _enforce_response_budget(response)
+
+
+def _period_comparisons(result: dict[str, Any]) -> dict[str, dict[str, float | None]]:
+    comparisons: dict[str, dict[str, float | None]] = {}
+    for period, fields in PERIOD_COMPARISON_FIELDS.items():
+        current, previous, reported = (
+            value
+            if isinstance(value := result.get(field), (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            else None
+            for field in fields
+        )
+        if current is None and previous is None and reported is None:
+            continue
+        computed = (
+            (current / previous - 1) * 100
+            if current is not None and previous is not None and previous > 0
+            else None
+        )
+        comparisons[period] = {
+            "currentUsd": current,
+            "previousUsd": previous,
+            "reportedChangePct": reported,
+            "computedChangePct": computed
+            if computed is not None and math.isfinite(computed)
+            else None,
+        }
+    return comparisons
 
 
 def _overview_totals(result: dict[str, Any]) -> dict[str, Any]:
@@ -561,12 +692,18 @@ def _compact_protocol(protocol: dict[str, Any]) -> dict[str, Any]:
         "name": protocol.get("name"),
         "slug": protocol.get("slug"),
         "symbol": protocol.get("symbol"),
+        "parentProtocol": protocol.get("parentProtocol"),
         "category": protocol.get("category"),
         "chains": protocol.get("chains"),
         "tvl": protocol.get("tvl"),
         "change_1d": protocol.get("change_1d"),
         "change_7d": protocol.get("change_7d"),
         "url": protocol.get("url"),
+        "description": str(protocol["description"])[:1000]
+        if protocol.get("description")
+        else None,
+        "gecko_id": protocol.get("gecko_id"),
+        "address": protocol.get("address"),
     }
 
 
@@ -633,16 +770,23 @@ def _compact_overview_protocol(protocol: dict[str, Any]) -> dict[str, Any]:
         "displayName": protocol.get("displayName"),
         "slug": protocol.get("slug"),
         "module": protocol.get("module"),
+        "parentProtocol": protocol.get("parentProtocol"),
         "category": protocol.get("category"),
         "chains": protocol.get("chains"),
-        "total24h": protocol.get("total24h"),
-        "total7d": protocol.get("total7d"),
-        "total30d": protocol.get("total30d"),
-        "total1y": protocol.get("total1y"),
-        "totalAllTime": protocol.get("totalAllTime"),
-        "change_1d": protocol.get("change_1d"),
-        "change_7d": protocol.get("change_7d"),
-        "change_1m": protocol.get("change_1m"),
+        # Preserve nullable legacy fields while adding the provider's period totals.
+        **dict.fromkeys(
+            (
+                "total24h",
+                "total7d",
+                "total30d",
+                "total1y",
+                "totalAllTime",
+                "change_1d",
+                "change_7d",
+                "change_1m",
+            )
+        ),
+        **_overview_totals(protocol),
         "topBreakdown24h": _top_breakdown(protocol.get("breakdown24h"), limit=5),
         "topBreakdown30d": _top_breakdown(protocol.get("breakdown30d"), limit=5),
     }
@@ -694,35 +838,39 @@ def _number(value: Any) -> float:
 
 
 def _enforce_response_budget(response: dict[str, Any]) -> dict[str, Any]:
-    rendered = json.dumps(response, default=str, separators=(",", ":"))
-    if len(rendered) <= MAX_RESPONSE_CHARACTERS:
-        return response
-
-    result = response.get("result")
-    if not isinstance(result, dict) or not isinstance(result.get("items"), list):
+    while True:
+        # Measure the pretty-printed tool response, not compact provider JSON.
+        rendered = json.dumps({"ok": True, "result": response}, default=str, indent=2)
+        if (
+            len(rendered) <= MAX_RESPONSE_CHARACTERS
+            and rendered.count("\n") < MAX_RESPONSE_LINES
+        ):
+            return response
+        result = response.get("result")
+        if (
+            isinstance(result, dict)
+            and isinstance(result.get("items"), list)
+            and len(result["items"]) > 1
+        ):
+            result["items"] = result["items"][: len(result["items"]) // 2]
+            page = result.get("page")
+            if isinstance(page, dict):
+                offset = _cursor_offset(str(page.get("cursor") or "0"))
+                page["returned"] = len(result["items"])
+                page["nextCursor"] = str(offset + len(result["items"]))
+                page["hasMore"] = True
+            continue
+        # One oversized row cannot be paged. Report unavailable output explicitly
+        # rather than returning an empty page with a cursor that skips the row.
         response["result"] = {
             "truncated": True,
             "reason": "response_exceeds_budget",
             "maxResponseCharacters": MAX_RESPONSE_CHARACTERS,
+            "maxResponseLines": MAX_RESPONSE_LINES,
             "actualCharacters": len(rendered),
             "rawPayloadOmitted": True,
             "attribution": ATTRIBUTION,
         }
+        if isinstance(result, dict) and isinstance(result.get("items"), list):
+            response["result"]["items"] = []
         return response
-
-    while result["items"] and len(rendered) > MAX_RESPONSE_CHARACTERS:
-        result["items"] = result["items"][: max(1, len(result["items"]) // 2)]
-        page = result.get("page")
-        if isinstance(page, dict):
-            offset = _cursor_offset(str(page.get("cursor") or "0"))
-            page["returned"] = len(result["items"])
-            page["nextCursor"] = str(offset + len(result["items"]))
-            page["hasMore"] = True
-        rendered = json.dumps(response, default=str, separators=(",", ":"))
-
-    if len(rendered) > MAX_RESPONSE_CHARACTERS:
-        result["items"] = []
-        result["truncated"] = True
-        result["reason"] = "response_exceeds_budget"
-        result["maxResponseCharacters"] = MAX_RESPONSE_CHARACTERS
-    return response

@@ -492,5 +492,15 @@ def compact_order_book(
         "topAsks": asks[:depth_levels],
         "topBidNotional": sum(level["notional"] for level in bids[:depth_levels]),
         "topAskNotional": sum(level["notional"] for level in asks[:depth_levels]),
+        "buyPayoff": (
+            {
+                "breakEvenProbabilityBeforeCosts": best_ask,
+                "winReturnBeforeCosts": 1 / best_ask - 1,
+                "lossReturn": -1.0,
+                "note": "Buy this exact outcome at the best ask; settlement pays 1 if it wins, 0 if it loses. Not a probability forecast or a sized fill quote; fees/spread increase the hurdle.",
+            }
+            if best_ask is not None and 0 < best_ask < 1
+            else None
+        ),
         "rawAvailableWithSummaryFalse": True,
     }
