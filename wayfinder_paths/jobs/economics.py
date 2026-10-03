@@ -497,9 +497,7 @@ def paired_fold_evaluation(
             "candidate": audit_rows["candidate"],
             "delta_utility": audit_delta,
         },
-        "candidate_last_entry_at": _last_entry_at(
-            [*candidate_pool["trades"], *audit_trades["candidate"]]
-        ),
+        **_entry_summary([*candidate_pool["trades"], *audit_trades["candidate"]]),
     }
     if target_regimes:
         regime_config = evaluation.get("regime") or {}
@@ -757,13 +755,16 @@ def _chain_fold_equity(
     return [{**row, "equity": float(row["equity"]) * factor} for row in equity]
 
 
-def _last_entry_at(trades: Sequence[Mapping[str, Any]]) -> str | None:
+def _entry_summary(trades: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     entries = [
         pd.Timestamp(trade["timestamp"])
         for trade in trades
         if (trade.get("raw") or {}).get("intent_action") == "OPEN"
     ]
-    return str(max(entries)) if entries else None
+    return {
+        "candidate_entry_count": len(entries),
+        "candidate_last_entry_at": str(max(entries)) if entries else None,
+    }
 
 
 def _oos_window(

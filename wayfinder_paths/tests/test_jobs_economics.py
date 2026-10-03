@@ -635,6 +635,7 @@ def test_paired_folds_report_the_candidates_last_entry(monkeypatch) -> None:
         for stamp in stamps
     ]
     dataset = PreparedExecutionDataset(CompletedBarsView.from_rows(rows), {}, [])
+
     def candidate(params):
         return types.SimpleNamespace(decide=lambda ctx: [], warmup_bars=60)
 
@@ -681,7 +682,8 @@ def test_paired_folds_report_the_candidates_last_entry(monkeypatch) -> None:
             "objective": {"weights": {}},
         },
     )
+    assert report["candidate_entry_count"] == 5
     audit_start = pd.Timestamp(report["audit_slice"]["start"])
-    assert pd.Timestamp(report["candidate_last_entry_at"]) == audit_start + pd.Timedelta(
-        minutes=50
-    )
+    assert pd.Timestamp(
+        report["candidate_last_entry_at"]
+    ) == audit_start + pd.Timedelta(minutes=50)

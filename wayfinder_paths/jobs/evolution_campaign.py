@@ -10171,10 +10171,12 @@ def _quiet_before_staging(
     probation without a trade, and a replay of the trial window agreed."""
     limit = float(policy.get("probation_max_quiet_days") or 0.0)
     cutoff = (economic.get("audit_slice") or {}).get("end")
-    if limit <= 0 or cutoff is None:
+    count = economic.get("candidate_entry_count")
+    # A reused evaluation from before the entry summary carries no count.
+    if limit <= 0 or cutoff is None or count is None:
         return None
     last_entry = economic.get("candidate_last_entry_at")
-    if last_entry is None:
+    if not count or last_entry is None:
         return "no entry in the paired folds or the audit slice; the trial would see no trades"
     quiet = (pd.Timestamp(cutoff) - pd.Timestamp(last_entry)).total_seconds() / 86_400
     if quiet <= limit:

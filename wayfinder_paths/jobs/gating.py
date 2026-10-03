@@ -558,6 +558,7 @@ def evaluate_economic_gate(
         "positive_folds": evaluation.get("positive_folds"),
         "fold_count": evaluation.get("fold_count"),
         "audit_slice": _audit_summary(evaluation.get("audit_slice")),
+        "candidate_entry_count": evaluation.get("candidate_entry_count"),
         "candidate_last_entry_at": evaluation.get("candidate_last_entry_at"),
         "status": evaluation.get("status"),
         "sim_wall_seconds": 0.0 if reused else round(sim_wall_seconds, 3),

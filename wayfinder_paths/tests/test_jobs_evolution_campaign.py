@@ -8731,6 +8731,7 @@ def test_a_finalist_whose_signal_went_quiet_is_untestable() -> None:
     def economic(last_entry: str | None) -> dict[str, Any]:
         return {
             "audit_slice": {"end": "2026-08-31 15:00:00+00:00"},
+            "candidate_entry_count": 0 if last_entry is None else 5,
             "candidate_last_entry_at": last_entry,
         }
 
@@ -8754,6 +8755,8 @@ def test_a_finalist_whose_signal_went_quiet_is_untestable() -> None:
         )
         is None
     )
+    reused = {"audit_slice": {"end": "2026-08-31 15:00:00+00:00"}}
+    assert evolution_campaign._quiet_before_staging(reused, policy) is None
 
 
 def test_unbuildable_seed_falls_back_to_de_novo_instead_of_wedging(
