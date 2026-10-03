@@ -246,6 +246,9 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         # A finalist with no entry in this many days before the gate's
         # cutoff is not staged: its signal has gone quiet (0 = off).
         "probation_max_quiet_days": 0,
+        # A finalist that lost money over the audit slice (the days just
+        # before the cutoff) is not staged.
+        "probation_requires_audit_profit": False,
         # Full development also requires a profitable train window, so a book
         # that wins only on validation cannot take a finalist slot.
         "full_dev_requires_train_profit": False,

@@ -6200,6 +6200,9 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
                     or _quiet_before_staging(
                         economic, _campaign_policy(store, job_id, campaign_id)
                     )
+                    or _audit_slice_loss(
+                        economic, _campaign_policy(store, job_id, campaign_id)
+                    )
                 ) is not None:
                     outcome = {
                         "status": "proposal_rejected",
@@ -10184,6 +10187,25 @@ def _quiet_before_staging(
     return (
         f"signal has gone quiet: last entry {quiet:.0f} days before the cutoff "
         f"(probation allows {limit:g}); the trial would likely see no trades"
+    )
+
+
+def _audit_slice_loss(
+    economic: Mapping[str, Any], policy: Mapping[str, Any]
+) -> str | None:
+    """The days just before the cutoff predict the next two weeks: across 80
+    v14-v16 full-development books (policy kernels excluded) the trailing
+    7-day return ranked forward 14-day returns at +0.23 within each week, and
+    of the books that passed full development, 5 of 6 that made money over
+    that week also made money forward against 4 of 12 that did not."""
+    if not policy.get("probation_requires_audit_profit"):
+        return None
+    growth = (economic.get("audit_slice") or {}).get("candidate_net_log_growth")
+    if growth is None or float(growth) > 0:
+        return None
+    return (
+        f"lost {float(growth):+.2%} over the audit slice just before the cutoff; "
+        "recent losers rarely recover in the next two weeks"
     )
 
 

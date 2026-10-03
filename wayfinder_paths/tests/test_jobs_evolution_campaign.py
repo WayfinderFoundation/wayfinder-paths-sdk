@@ -8759,6 +8759,18 @@ def test_a_finalist_whose_signal_went_quiet_is_untestable() -> None:
     assert evolution_campaign._quiet_before_staging(reused, policy) is None
 
 
+def test_a_finalist_that_lost_over_the_audit_slice_is_not_staged() -> None:
+    def economic(growth: float | None) -> dict[str, Any]:
+        return {"audit_slice": {"candidate_net_log_growth": growth}}
+
+    policy = {"probation_requires_audit_profit": True}
+    reason = evolution_campaign._audit_slice_loss(economic(-0.012), policy)
+    assert reason is not None and "-1.20%" in reason
+    assert evolution_campaign._audit_slice_loss(economic(0.004), policy) is None
+    assert evolution_campaign._audit_slice_loss(economic(None), policy) is None
+    assert evolution_campaign._audit_slice_loss(economic(-0.012), {}) is None
+
+
 def test_unbuildable_seed_falls_back_to_de_novo_instead_of_wedging(
     tmp_path, monkeypatch
 ) -> None:

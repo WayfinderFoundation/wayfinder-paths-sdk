@@ -637,6 +637,9 @@ def _audit_summary(audit: dict[str, Any] | None) -> dict[str, Any] | None:
         "end": audit["end"],
         "bars": audit["bars"],
         "delta_utility": audit["delta_utility"],
+        "candidate_net_log_growth": (audit.get("candidate") or {}).get(
+            "net_log_growth"
+        ),
     }
 
 
