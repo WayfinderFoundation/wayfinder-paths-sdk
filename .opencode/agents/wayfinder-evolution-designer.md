@@ -25,6 +25,8 @@ permission:
     "/wf/user_vault/governance/**": deny
     "/wf/user_vault/audit/**": deny
   bash: deny
+  webfetch: deny
+  websearch: deny
   wayfinder_*: deny
   wayfinder_core_jobs: allow
 ---

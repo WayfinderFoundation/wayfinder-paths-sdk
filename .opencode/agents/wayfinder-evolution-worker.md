@@ -38,6 +38,10 @@ permission:
     "/wf/user_vault/governance/**": deny
     "/wf/user_vault/audit/**": deny
   bash: deny
+  # No network: a v14 bench worker searched the web for an SDK signature, and
+  # a fetch could just as well return post-cutoff market data.
+  webfetch: deny
+  websearch: deny
   # ORDER IS LOAD-BEARING. OpenCode resolves the last matching rule, so the
   # broad MCP deny must precede the two narrow read/research capabilities.
   wayfinder_*: deny
@@ -96,7 +100,12 @@ it; edit that file instead of reading other strategies to learn the API):
   `wayfinder_paths.jobs.strategies._starter_utils` (adds `starter_stop_atr`);
   `atr`, `bounded_ema`, `wilder_rsi`, `realized_volatility` from
   `wayfinder_paths.jobs.indicators`; `compile_signal_expression` and
-  `library_signal_on_bars` from `wayfinder_paths.jobs.signal_library`.
+  `library_signal_on_bars` from `wayfinder_paths.jobs.signal_library`:
+  in `precompute`, per symbol, `library_signal_on_bars(frame, signal,
+  "15m", bar_seconds=300)` returns a bool Series aligned to `frame` (the last
+  completed `15m` bar's value), where `signal` is a library signal name or
+  `compile_signal_expression(name=..., family=..., description=...,
+  min_bars=..., expression=...)` built from the recipe.
 - Stops and targets live in a literal `"bracket": {...}` key on the OPEN
   intent dict; never emit a CLOSE because a stop or target level was crossed
   on the close (the validator rejects that before simulation and the attempt
