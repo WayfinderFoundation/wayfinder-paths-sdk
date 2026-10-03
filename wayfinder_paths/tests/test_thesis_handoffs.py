@@ -964,18 +964,27 @@ def test_saved_evidence_sections_preserve_exact_values_and_provenance(
 
 
 @pytest.mark.parametrize(
-    "path",
+    "path,navigation",
     [
-        ["absent"],
-        ["items", 5],
-        ["items", "0"],
-        ["items", 0, "total30d", "x"],
-        ["state", "input", "secret"],
+        (
+            ["absent"],
+            {"resolved_path": [], "available_keys": ["items", "0"], "key_count": 2},
+        ),
+        (["items", 5], {"resolved_path": ["items"], "item_count": 2}),
+        (["items", "0"], {"resolved_path": ["items"], "item_count": 2}),
+        (["items", 0, "total30d", "x"], {"resolved_path": ["items", 0, "total30d"]}),
+        (
+            ["state", "input", "secret"],
+            {"resolved_path": [], "available_keys": ["items", "0"], "key_count": 2},
+        ),
     ],
 )
 def test_missing_sections_are_distinct_from_unavailable_observations(
-    saved_section_messages: list[dict[str, Any]], path: list[str | int]
+    saved_section_messages: list[dict[str, Any]],
+    path: list[str | int],
+    navigation: dict[str, Any],
 ) -> None:
+    before = deepcopy(saved_section_messages)
     report = research_observations(
         saved_section_messages,
         [],
@@ -985,8 +994,38 @@ def test_missing_sections_are_distinct_from_unavailable_observations(
     assert report["observations"] == []
     assert report["unavailable_part_ids"] == ["private", "unknown"]
     assert report["unavailable_result_paths"] == [
-        {"part_id": "read", "result_path": path}
+        {"part_id": "read", "result_path": path, **navigation}
     ]
+    assert saved_section_messages == before
+
+
+def test_missing_section_navigation_is_bounded_and_does_not_copy_values(
+    saved_section_messages: list[dict[str, Any]],
+) -> None:
+    result = {"x" * 201: "not a usable path key"}
+    result.update({f"field-{index}": "do not include values" for index in range(40)})
+    saved_section_messages[0]["parts"][0]["state"]["output"] = json.dumps(
+        {"ok": True, "result": result}
+    )
+    report = research_observations(
+        saved_section_messages,
+        [],
+        part_ids=["read", "private"],
+        result_path=["missing"],
+    )
+    assert report["observations"] == []
+    assert report["unavailable_part_ids"] == ["private"]
+    assert report["unavailable_result_paths"] == [
+        {
+            "part_id": "read",
+            "result_path": ["missing"],
+            "resolved_path": [],
+            "available_keys": [f"field-{index}" for index in range(25)],
+            "key_count": 41,
+        }
+    ]
+    assert "do not include values" not in json.dumps(report)
+    assert "not a usable path key" not in json.dumps(report)
 
 
 @pytest.mark.parametrize(

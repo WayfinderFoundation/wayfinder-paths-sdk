@@ -688,7 +688,7 @@ def research_observations(
             selected.append(observation)
             continue
         value = observation["result"]
-        for segment in result_path:
+        for depth, segment in enumerate(result_path):
             if (
                 isinstance(value, dict)
                 and isinstance(segment, str)
@@ -702,7 +702,19 @@ def research_observations(
             ):
                 value = value[segment]
             else:
-                unavailable_paths.append({"part_id": key, "result_path": result_path})
+                missing: dict[str, Any] = {
+                    "part_id": key,
+                    "result_path": result_path,
+                    "resolved_path": result_path[:depth],
+                }
+                if isinstance(value, dict):
+                    missing["available_keys"] = [
+                        field for field in value if len(field) <= 200
+                    ][:25]
+                    missing["key_count"] = len(value)
+                elif isinstance(value, list):
+                    missing["item_count"] = len(value)
+                unavailable_paths.append(missing)
                 break
         else:
             selected.append(
@@ -719,7 +731,7 @@ def research_observations(
         **(
             {
                 "unavailable_result_paths": unavailable_paths,
-                "note": "Exact selected sections, not complete sources; omitted fields are not absent or disproven. Omit result_path to retrieve the full saved result. Preserve metric scope, period, units and source context when comparing claims.",
+                "note": "Exact selected sections, not complete sources; omitted fields are not absent or disproven. Missing paths include the resolved prefix and up to 25 available object keys or the array length, not evidence values. Correct that path or omit result_path to retrieve the full saved result. Preserve metric scope, period, units and source context when comparing claims.",
             }
             if result_path is not None
             else {}
