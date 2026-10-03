@@ -79,10 +79,11 @@ it; edit that file instead of reading other strategies to learn the API):
   columns, and declared feature columns, appear in `ctx.view`.
 - Read: `ctx.view.symbol_frame(sym)` (oldest to newest) and
   `ctx.view.latest(sym)` (last row as a dict) for bars and your precompute
-  columns; `ctx.view.feature(name, symbol=None, default=0.0)` only for a
-  feature declared in the data contract (never for a precompute column);
-  `ctx.ledger.positions.get(sym)` (`side` "long"/"short", `size`,
-  `avg_price`, `bars_held`), `ctx.resting_orders`, `ctx.params`,
+  columns; `ctx.view.feature(name, sym, default=0.0)` (`default` is
+  keyword-only) only for a feature declared in the data contract (never for
+  a precompute column); `ctx.ledger.positions.get(sym)` (`side`
+  "long"/"short", `size`, `avg_price`, `bars_held`; read it every tick, never
+  store and clear an `in_position` flag), `ctx.resting_orders`, `ctx.params`,
   `ctx.timestamp`, and `ctx.strategy_state` (a JSON-serializable dict kept
   across ticks).
 - Emit dicts: `{"action": "OPEN" | "CLOSE", "symbol": sym, "side": "buy" |

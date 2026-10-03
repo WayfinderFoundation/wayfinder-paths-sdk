@@ -10223,6 +10223,9 @@ _CONTRACT_CHECKS = frozenset(
         "feature_policy_replayable",
         "undeclared_feature_read",
         "no_close_only_stop_tp",
+        "no_manual_position_clear",
+        "initial_capital_declared",
+        "lookback_bars_declared",
     }
 )
 

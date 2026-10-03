@@ -46,11 +46,15 @@ FORBIDDEN_ORDER_PATTERNS = (
     ".place_stop_loss(",
 )
 RAW_CANDLE_PATTERNS = ("ccxt", "fetch_ohlcv", "get_candles(")
-MANUAL_STATE_CLEAR_PATTERNS = (
-    "in_position = False",
-    '"in_position": False',
-    "'in_position': False",
-    "position = None",
+# Writes that clear a stored position flag instead of letting the ledger say
+# whether a position is open. A local default (`position = None` before
+# `ctx.ledger.positions.get(...)`) is not a state write and must not match:
+# that substring check rejected five v14 bench books before simulation.
+MANUAL_STATE_CLEAR_RE = re.compile(
+    r"\bin_position\s*=\s*False\b"
+    r"|[\"']in_position[\"']\s*:\s*False\b"
+    r"|\bself\s*\.\s*position\s*=\s*None\b"
+    r"|\[\s*[\"'](?:in_)?position[\"']\s*\]\s*=\s*(?:None|False)\b"
 )
 # The drawdown budget a job is measured against when it pins none, and the
 # share of it one stop-out may consume: a budget two stops exhaust halts the
@@ -1379,6 +1383,9 @@ def _timing_checks(
             "passed": bool(params.get("initial_capital")) or not is_jobs_v1,
             "value": params.get("initial_capital"),
             "blocking": False,
+            "hint": None
+            if params.get("initial_capital")
+            else "set execution_params.initial_capital in job.yaml",
         },
         {
             # The live driver and the backtest simulator hand decide() the
@@ -1393,6 +1400,12 @@ def _timing_checks(
             or not is_jobs_v1,
             "value": params.get("warmup_bars") or params.get("lookback_bars"),
             "blocking": is_jobs_v1 and is_starter,
+            "hint": None
+            if params.get("warmup_bars") or params.get("lookback_bars")
+            else (
+                "set execution_params.warmup_bars in job.yaml to cover the "
+                "longest lookback"
+            ),
         },
     ]
 
@@ -1659,6 +1672,26 @@ def _bounded_index_clock_hits(text: str) -> list[str]:
     return [f"line {line}: {segment}" for line, segment in unique]
 
 
+_CLOSE_STOP_RE = re.compile(r"(stop|take_profit|tp).*close", re.IGNORECASE)
+_BRACKET_DELEGATION_RE = re.compile(
+    r"[\"']bracket[\"']\s*(?::|\]\s*=)"
+    r"|[\"'](?:stop_loss|take_profit)(?:_pct)?[\"']\s*:"
+)
+
+
+def _matching_lines(
+    text: str, pattern: re.Pattern[str], *, limit: int = 3
+) -> list[str]:
+    """First matching non-comment source lines, so a rejected author sees what
+    tripped the check rather than only its name."""
+    hits = [
+        line.strip()[:120]
+        for line in text.splitlines()
+        if not line.lstrip().startswith("#") and pattern.search(line)
+    ]
+    return hits[:limit]
+
+
 def _code_only_text(text: str) -> str:
     """Strip comments and docstrings so static greps see only real code.
 
@@ -1716,17 +1749,25 @@ def _script_static_checks(
             "details": raw_hits,
         }
     )
+    # Comments and docstrings must neither trip these checks ("# time stop:
+    # close if held > N days") nor rescue them (a comment saying BracketEngine).
+    code_text = _code_only_text(text)
+    manual_clear = MANUAL_STATE_CLEAR_RE.search(code_text) is not None
+    manual_clears = _matching_lines(text, MANUAL_STATE_CLEAR_RE) if manual_clear else []
     checks.append(
         {
             "name": "no_manual_position_clear",
-            "passed": not any(
-                pattern in text for pattern in MANUAL_STATE_CLEAR_PATTERNS
-            ),
+            "passed": not manual_clear,
+            "details": manual_clears,
+            "hint": (
+                "read whether a position is open from "
+                "ctx.ledger.positions.get(sym) each tick instead of storing and "
+                f"clearing a flag ({'; '.join(manual_clears)})"
+            )
+            if manual_clear
+            else None,
         }
     )
-    # Comments and docstrings must neither trip this check ("# time stop:
-    # close if held > N days") nor rescue it (a comment saying BracketEngine).
-    code_text = _code_only_text(text)
     # Boot-relative warmup/cadence counters go dark for a full warmup period
     # after every state reset and never fire correctly in live's sliding
     # window — the live funding-carry job sat 27 days from one of these.
@@ -1788,27 +1829,37 @@ def _script_static_checks(
             else None,
         }
     )
-    close_stop_pattern = re.search(
-        r"(stop|take_profit|tp).*close", code_text, re.IGNORECASE
-    )
+    close_stop_pattern = _CLOSE_STOP_RE.search(code_text)
     # Intent bracket dicts ({"bracket": {"stop_loss": ...}}) delegate stop
     # evaluation to the engine, which honors ohlc_rules (intrabar highs/lows)
     # — pricing the level off a close is then correct, not a close-only stop.
     # Without this escape hatch `"stop_loss": current_close * 0.98` inside a
     # bracket trips the regex and agents contort strategy code to appease it.
-    bracket_delegation = re.search(r"[\"']bracket[\"']\s*:", code_text)
+    # The bracket may be a dict key, a subscript write (intent["bracket"] =
+    # ...) or a helper returning {"stop_loss": ...}: six v14 bench books built
+    # it those ways and were rejected before simulation.
+    bracket_delegation = _BRACKET_DELEGATION_RE.search(code_text)
+    close_stop_passed = (
+        close_stop_pattern is None
+        or "BracketEngine" in code_text
+        or "ohlc_" in code_text
+        or bracket_delegation is not None
+    )
     checks.append(
         {
             "name": "no_close_only_stop_tp",
-            "passed": close_stop_pattern is None
-            or "BracketEngine" in code_text
-            or "ohlc_" in code_text
-            or bracket_delegation is not None,
-            "hint": (
+            "passed": close_stop_passed,
+            "details": []
+            if close_stop_passed
+            else _matching_lines(text, _CLOSE_STOP_RE),
+            "hint": None
+            if close_stop_passed
+            else (
                 "stop and take-profit levels must be a literal "
                 '"bracket": {"stop_loss": price} (or stop_loss_pct / '
                 "take_profit_pct) key on the OPEN intent dict; decide() may not "
                 "close a position because a level was crossed on the close"
+                f" (matched: {'; '.join(_matching_lines(text, _CLOSE_STOP_RE))})"
             ),
         }
     )

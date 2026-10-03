@@ -383,7 +383,39 @@ def test_close_stop_check_still_fires_in_code(tmp_path: Path) -> None:
         "    return []\n\n"
         "def build_strategy(params):\n    return None\n",
     )
-    assert _check(report, "no_close_only_stop_tp")["passed"] is False
+    check = _check(report, "no_close_only_stop_tp")
+    assert check["passed"] is False
+    assert check["details"] == ["stop_hit = ctx.view.latest('SNX')['close'] < 9"]
+    assert "stop_hit = ctx.view.latest" in check["hint"]
+
+
+def test_manual_position_clear_ignores_local_default(tmp_path: Path) -> None:
+    report = _close_stop_report(
+        tmp_path,
+        "def decide(ctx):\n"
+        "    try:\n"
+        "        position = ctx.ledger.positions.get('SNX')\n"
+        "    except AttributeError:\n"
+        "        position = None\n"
+        "    return []\n\n"
+        "def build_strategy(params):\n    return None\n",
+    )
+    check = _check(report, "no_manual_position_clear")
+    assert check["passed"] is True and check["hint"] is None
+
+
+def test_manual_position_clear_flags_state_writes(tmp_path: Path) -> None:
+    report = _close_stop_report(
+        tmp_path,
+        "def decide(ctx):\n"
+        "    ctx.strategy_state['in_position'] = False\n"
+        "    return []\n\n"
+        "def build_strategy(params):\n    return None\n",
+    )
+    check = _check(report, "no_manual_position_clear")
+    assert check["passed"] is False
+    assert check["details"] == ["ctx.strategy_state['in_position'] = False"]
+    assert "ctx.ledger.positions.get" in check["hint"]
 
 
 def test_close_stop_check_allows_bracket_delegation(tmp_path: Path) -> None:
@@ -402,6 +434,30 @@ def test_close_stop_check_allows_bracket_delegation(tmp_path: Path) -> None:
         "def build_strategy(params):\n    return None\n",
     )
     assert _check(report, "no_close_only_stop_tp")["passed"] is True
+
+
+def test_close_stop_check_allows_subscript_and_helper_brackets(
+    tmp_path: Path,
+) -> None:
+    subscript = _close_stop_report(
+        tmp_path / "subscript",
+        "def decide(ctx):\n"
+        "    close = 10.0\n"
+        "    stop = close - 2 * 0.1\n"
+        "    intent = {'action': 'OPEN'}\n"
+        "    intent['bracket'] = {'stop_loss': stop}\n"
+        "    return [intent]\n\n"
+        "def build_strategy(params):\n    return None\n",
+    )
+    helper = _close_stop_report(
+        tmp_path / "helper",
+        "def _bracket(close, atr):\n"
+        "    stop = close - 2 * atr\n"
+        "    return {'stop_loss': stop}\n\n"
+        "def build_strategy(params):\n    return None\n",
+    )
+    assert _check(subscript, "no_close_only_stop_tp")["passed"] is True
+    assert _check(helper, "no_close_only_stop_tp")["passed"] is True
 
 
 def test_bracket_escape_hatch_must_be_code_not_comment(tmp_path: Path) -> None:
