@@ -46,7 +46,9 @@ async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     used in comparative decisions; copy current case references from the notebook,
     never guess IDs. Changed inputs appear in review.decision_evidence.comparison_updates.
     Original research is resolved in code. Only provide updated_research when facts
-    change. Record review_resolutions with exact public evidence_part_ids from
+    change; valid corrections persist through later decisions for the same entity
+    and research_ref. A different research_ref starts from that saved source.
+    Record review_resolutions with exact public evidence_part_ids from
     notebook status; match request_summary and paginate public_observations_page.
     Never guess a tool-part ID. accepted is only for nonblocking uncertainty.
     handoff_gaps acknowledges an incomplete worker after one targeted continuation,

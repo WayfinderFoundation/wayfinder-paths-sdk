@@ -67,6 +67,79 @@ def test_claim_provenance_and_inference_survive_projection(decision_run: Run) ->
     assert (parent, children) == original
 
 
+def test_research_correction_survives_later_decision_only_update(
+    decision_run: Run,
+) -> None:
+    parent, children = decision_run
+    cp = deepcopy(parent[1]["parts"][0]["state"]["input"]["checkpoint"])
+    research = children[0]["parts"][0]["state"]["input"]["checkpoint"][
+        "research_cases"
+    ][0]
+    cp["decisions"][0]["updated_research"] = {
+        **research,
+        "support": "Corrected observation, unsupported figures removed",
+        "gaps": ["Remaining forward assumption"],
+        "case_basis": "mixed",
+    }
+    parent.append(receipt(cp, 3))
+    cp["decisions"][0].update(
+        updated_research=None, reason="Reconsidered opportunity cost, same evidence"
+    )
+    parent.append(receipt(cp, 4))
+    original = deepcopy((parent, children))
+    projected, saved, errors = projected_records(parent, children)
+    assert not errors
+    current = projected[-1]["checkpoint"]["candidates"][0]
+    assert current["support"] == "Corrected observation, unsupported figures removed"
+    assert current["gaps"] == ["Remaining forward assumption"]
+    assert current["case_basis"] == "mixed"
+    assert current["reason"] == "Reconsidered opportunity cost, same evidence"
+    assert saved[0]["checkpoint"]["research_cases"][0]["support"] == research["support"]
+    notebook = research_notebook(
+        parent, children, entities=["network"], fields=["support"], history=False
+    )
+    assert notebook["cases"][0]["records"][0]["case"]["support"] == current["support"]
+    assert (parent, children) == original
+
+
+@pytest.mark.parametrize("change", ["source", "entity", "invalid_update"])
+def test_research_correction_is_scoped_and_only_valid_updates_replace_it(
+    decision_run: Run, change: str
+) -> None:
+    parent, children = decision_run
+    cp = deepcopy(parent[1]["parts"][0]["state"]["input"]["checkpoint"])
+    worker = deepcopy(children[0]["parts"][0]["state"]["input"]["checkpoint"])
+    research = worker["research_cases"][0]
+    cp["decisions"][0]["updated_research"] = {**research, "support": "Correction"}
+    parent.append(receipt(cp, 3))
+    cp["decisions"][0]["updated_research"] = None
+    if change == "source":
+        worker["research_cases"][0]["support"] = "Different saved research"
+        children.append(
+            receipt(worker, 1, session="other-worker", agent="thesis-researcher")
+        )
+        cp["decisions"][0]["research_ref"]["session_id"] = "other-worker"
+        expected = "Different saved research"
+    elif change == "entity":
+        cp["decisions"][0]["entity"] = "another-entity"
+        expected = research["support"]
+    else:
+        invalid = deepcopy(cp)
+        invalid["decisions"][0].update(
+            updated_research={**research, "support": "Must not replace correction"},
+            decision="REJECT",
+            decision_basis="implementation",
+            implementation_checks=[],
+        )
+        parent.append(receipt(invalid, 4))
+        assert projected_records(parent, children)[2]
+        expected = "Correction"
+    parent.append(receipt(cp, 5))
+    projected, _, errors = projected_records(parent, children)
+    assert not errors
+    assert projected[-1]["checkpoint"]["candidates"][0]["support"] == expected
+
+
 @pytest.mark.parametrize(
     "invalid", ["missing", "failed", "private", "future", "empty", "search_snippet"]
 )

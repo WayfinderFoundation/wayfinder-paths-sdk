@@ -125,6 +125,7 @@ def projected_records(
         for c in r["checkpoint"]["research_cases"]
     }
     errors_by_entity: dict[str, list[str]] = {}
+    current_research: dict[str, tuple[tuple[str, str, str], dict[str, Any]]] = {}
     construction = None
     for record in parent:
         cp = record["checkpoint"]
@@ -136,19 +137,31 @@ def projected_records(
             cp["construction"] = construction
         for candidate in cp["candidates"]:
             errors_by_entity.pop(candidate["entity"].casefold(), None)
+            current_research.pop(candidate["entity"].casefold(), None)
         for decision in cp["decisions"]:
             key = decision["entity"].casefold()
             ref = decision["research_ref"]
-            source = sources.get(
-                (ref["session_id"], ref["checkpoint_id"], ref["entity"].casefold())
+            source_key = (
+                ref["session_id"],
+                ref["checkpoint_id"],
+                ref["entity"].casefold(),
             )
+            source = sources.get(source_key)
             if source is None or (source[1] or 0) > (record["completed_at_ms"] or 0):
                 errors_by_entity[key] = [
                     f"{decision['entity']}: research_ref is not an earlier saved case in this run"
                 ]
                 continue
+            research = decision["updated_research"]
+            if research is None:
+                # A new verdict over the same source must not resurrect research
+                # corrected in an earlier parent decision. New refs start fresh.
+                previous = current_research.get(key)
+                research = (
+                    previous[1] if previous and previous[0] == source_key else source[0]
+                )
             payload = {
-                **deepcopy(decision["updated_research"] or source[0]),
+                **deepcopy(research),
                 **{
                     k: v
                     for k, v in decision.items()
@@ -172,6 +185,7 @@ def projected_records(
                 ]
                 continue
             errors_by_entity.pop(key, None)
+            current_research[key] = (source_key, research)
             cp["candidates"].append(validated.candidates[0].model_dump())
             if ref["entity"].casefold() != decision["entity"].casefold():
                 cp["discovery_dispositions"].append(
