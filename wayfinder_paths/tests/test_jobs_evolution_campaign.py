@@ -8715,6 +8715,18 @@ def test_slow_strategies_are_handed_back_before_the_screen(monkeypatch) -> None:
     )
 
 
+def test_clustered_validation_trades_are_untestable_when_the_floor_is_set() -> None:
+    def candidate(coverage: float | None) -> dict[str, Any]:
+        return {"dev": {"validation": {"cadence": {"window_coverage": coverage}}}}
+
+    policy = {"probation_min_window_coverage": 0.6}
+    reason = evolution_campaign._clustered_cadence(candidate(0.41), policy)
+    assert reason is not None and "41%" in reason
+    assert evolution_campaign._clustered_cadence(candidate(0.88), policy) is None
+    assert evolution_campaign._clustered_cadence(candidate(None), policy) is None
+    assert evolution_campaign._clustered_cadence(candidate(0.41), {}) is None
+
+
 def test_unbuildable_seed_falls_back_to_de_novo_instead_of_wedging(
     tmp_path, monkeypatch
 ) -> None:

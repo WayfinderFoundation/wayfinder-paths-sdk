@@ -6193,6 +6193,17 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
                         ),
                         "economic": economic,
                     }
+                elif (
+                    clustered := _clustered_cadence(
+                        candidate, _campaign_policy(store, job_id, campaign_id)
+                    )
+                ) is not None:
+                    outcome = {
+                        "status": "proposal_rejected",
+                        "proposal": {"status": "untestable", "reason": clustered},
+                        "economic": economic,
+                        "evidence": clustered,
+                    }
                 else:
                     from wayfinder_paths.jobs.probation import (
                         stage_evolution_probation,
@@ -10122,6 +10133,29 @@ def _testability(
         float(cadence.get("entries_per_day") or 0.0),
         days=_frequency_window_days(policy),
         min_trades=_frequency_min_entries(policy),
+    )
+
+
+def _clustered_cadence(
+    candidate: Mapping[str, Any], policy: Mapping[str, Any]
+) -> str | None:
+    """The trade-rate check at staging is Poisson, which assumes trades
+    spread evenly; a book whose validation trades cluster passes it and then
+    sits through a probation window without a trade. v14: entrants at 0.57
+    and 0.41 window coverage closed with zero trades in 14 days, the one at
+    0.88 made seven."""
+    floor = float(policy.get("probation_min_window_coverage") or 0.0)
+    if floor <= 0:
+        return None
+    cadence = ((candidate.get("dev") or {}).get("validation") or {}).get("cadence")
+    coverage = (cadence or {}).get("window_coverage")
+    if coverage is None or float(coverage) >= floor:
+        return None
+    return (
+        f"validation trades cluster: only {float(coverage):.0%} of "
+        f"{_frequency_window_days(policy)}-day windows hold "
+        f"{_frequency_min_entries(policy)}+ entries (probation needs "
+        f"{floor:.0%}); the trial would likely see no trades"
     )
 
 
