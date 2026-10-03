@@ -1,8 +1,54 @@
 from __future__ import annotations
 
+from unittest.mock import Mock
+
+import httpx
 import pytest
 
+from wayfinder_paths.mcp import utils
 from wayfinder_paths.mcp.utils import parse_amount_to_raw, repo_root, sha256_json
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize(
+    "error,prefix,expected",
+    [
+        (httpx.ReadTimeout(""), "", "ReadTimeout"),
+        (httpx.ReadTimeout(""), "Lookup failed:", "Lookup failed: ReadTimeout"),
+        (RuntimeError("  "), "", "RuntimeError"),
+        (
+            ValueError("Existing detail"),
+            "Lookup failed:",
+            "Lookup failed: Existing detail",
+        ),
+    ],
+)
+async def test_catch_errors_preserves_nonempty_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    is_async: bool,
+    error: Exception,
+    prefix: str,
+    expected: str,
+) -> None:
+    metric = Mock()
+    monkeypatch.setattr(utils, "_report_tool_metric", metric)
+
+    def sync_tool() -> None:
+        raise error
+
+    async def async_tool() -> None:
+        raise error
+
+    tool = async_tool if is_async else sync_tool
+    wrapped = utils.catch_errors(prefix)(tool) if prefix else utils.catch_errors(tool)
+    result = await wrapped() if is_async else wrapped()
+    assert result == {
+        "ok": False,
+        "error": {"code": "error", "message": expected, "details": None},
+    }
+    metric.assert_called_once()
+    assert metric.call_args.args[:2] == (tool.__name__, result)
 
 
 def test_repo_root_finds_pyproject():
