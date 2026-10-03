@@ -1136,6 +1136,58 @@ def test_explicit_reference_links_alias(compact_run):
     assert not assessment_report(parent, child)["errors"]
 
 
+@pytest.mark.parametrize("status", [None, "assessed", "out_of_scope", "needs_evidence"])
+def test_ranked_alias_shares_assessment_but_retains_original_dissent(
+    compact_run: tuple[list[dict], list[dict]], status: str | None
+) -> None:
+    parent, child = compact_run
+    original = deepcopy(child[0]["parts"][0]["state"]["input"]["checkpoint"])
+    alias = original["research_cases"][0]
+    alias.update(
+        entity="network-alias", counterevidence="Different contrary observation"
+    )
+    original["handoff"]["case_entities"] = ["network-alias"]
+    child.append(
+        receipt(original, 1, session="other-worker", agent="thesis-researcher")
+    )
+    saved = deepcopy(child)
+    if status:
+        parent.append(
+            receipt(
+                {
+                    "schema_version": 5,
+                    "stage": "judged",
+                    "construction": {"mode": "directional"},
+                    "discovery_dispositions": [
+                        {
+                            "entities": ["network-alias"],
+                            "status": status,
+                            "candidate_entity": "network"
+                            if status == "assessed"
+                            else None,
+                            "reason": "Same underlying; differing observations retained",
+                        }
+                    ],
+                },
+                3,
+            )
+        )
+    report = assessment_report(parent, child)
+    assert bool(report["errors"]) is (status != "assessed")
+    assert report["assessed_entities"] == 1
+    notebook = research_notebook(
+        parent, child, entities=["network-alias"], history=False
+    )
+    row = notebook["cases"][0]
+    assert (
+        row["records"][0]["case"]["counterevidence"] == "Different contrary observation"
+    )
+    if status == "assessed":
+        assert row["disposition"]["candidate_entity"] == "network"
+        assert not report["missing_entities"]
+    assert child == saved
+
+
 def test_incomplete_handoff_cannot_silently_pass(compact_run):
     parent, child = compact_run
     cp = child[0]["parts"][0]["state"]["input"]["checkpoint"]
