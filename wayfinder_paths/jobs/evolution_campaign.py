@@ -120,6 +120,7 @@ from wayfinder_paths.jobs.execution.validation import (
 )
 from wayfinder_paths.jobs.execution.walk_forward import _slice, _test_window_stats
 from wayfinder_paths.jobs.execution_grid import GridCosts, passive_entry_grid
+from wayfinder_paths.jobs.factor_model import FACTOR_PRED_FEATURE, FACTOR_RANK_FEATURE
 from wayfinder_paths.jobs.failures import TransientInfrastructureError, classify_failure
 from wayfinder_paths.jobs.forward_experience import (
     CALIBRATION_PATH,
@@ -883,12 +884,14 @@ def _campaign_regime_context(
             macro = _macro_regime_context(pd.DataFrame(rows))
             latest = _store_latest_values(
                 dataset_path.parents[2] / DEFAULT_FEATURES_PATH,
-                {MACRO_FEATURE_NAME, *leader_feature_names()},
+                {MACRO_FEATURE_NAME, *leader_feature_names(), FACTOR_RANK_FEATURE},
             )
             macro["runtime_feature"] = _macro_runtime_feature(
                 available=MACRO_FEATURE_NAME in latest
             )
             macro["leaders"] = _leader_context(latest)
+            if FACTOR_RANK_FEATURE in latest:
+                macro["factor"] = _factor_runtime_feature()
     except (KeyError, OSError, TypeError, ValueError) as exc:
         macro = {"available": False, "reason": str(exc)[:240]}
     if not enabled:
@@ -9317,6 +9320,27 @@ def _leader_context(latest: Mapping[str, tuple[str, float]]) -> dict[str, Any] |
             "declare": {"name": LEADER_FEATURE_NAME, "source": "file"},
             "read": f"ctx.view.feature({LEADER_FEATURE_NAME!r}, default=0.0)",
         },
+    }
+
+
+def _factor_runtime_feature() -> dict[str, Any]:
+    """The cross-sectional factor score the feature store carries for
+    universes of 8+ symbols, and the use its out-of-sample record supports."""
+    return {
+        "names": [FACTOR_RANK_FEATURE, FACTOR_PRED_FEATURE],
+        "declare": {"name": FACTOR_RANK_FEATURE, "source": "file"},
+        "read": f"ctx.view.feature({FACTOR_RANK_FEATURE!r}, sym, default=0.0)",
+        "meaning": (
+            "each symbol's rank in the universe (-0.5 worst to +0.5 best) by a "
+            "walk-forward ridge's predicted next-day return relative to the "
+            "universe; refreshed every 4h"
+        ),
+        "validated_use": (
+            "market-neutral: long the top fifth, short the bottom fifth, "
+            "rebalanced daily; out of sample at 8 bps per side it earned net "
+            "Sharpe +1.3 on the Hyperliquid 20 (5 of 5 quarters) and +2.2 on a "
+            "10-asset world; held for hours instead of a day it loses to costs"
+        ),
     }
 
 
