@@ -140,6 +140,7 @@ def quantify_variants(variants: list[Variant], markets: dict[str, dict]) -> dict
                 {
                     "instrument_id": p.instrument_id,
                     "observed_cost_nav_fraction": cost,
+                    "observed_cost_nav_pct": cost * 100 if cost is not None else None,
                 }
             )
             if cost is not None:
@@ -157,6 +158,15 @@ def quantify_variants(variants: list[Variant], markets: dict[str, dict]) -> dict
             next(iter(funding_windows)) if len(funding_windows) == 1 else (None, None)
         )
         complete_funding = complete_funding and start is not None and end is not None
+        reported_cost = net_funding_cost if complete_funding or not funding else None
+        net_flow = None
+        if complete_funding:
+            if net_funding_cost > 0:
+                net_flow = "paid"
+            elif net_funding_cost < 0:
+                net_flow = "received"
+            else:
+                net_flow = "zero"
         portfolios.append(
             {
                 "allocation_key": allocation_key(variant),
@@ -187,9 +197,11 @@ def quantify_variants(variants: list[Variant], markets: dict[str, dict]) -> dict
                         else "unavailable"
                     ),
                     # Do not turn missing hours or mismatched windows into net carry.
-                    "observed_cost_nav_fraction": (
-                        net_funding_cost if complete_funding or not funding else None
+                    "observed_cost_nav_fraction": reported_cost,
+                    "observed_cost_nav_pct": (
+                        reported_cost * 100 if reported_cost is not None else None
                     ),
+                    "observed_net_flow": net_flow,
                     "start_ms": start if complete_funding else None,
                     "end_ms": end if complete_funding else None,
                 },
@@ -219,6 +231,8 @@ def quantify_variants(variants: list[Variant], markets: dict[str, dict]) -> dict
             "funding, distributions, rebalancing, stops and liquidations. Funding is a separate observed "
             "7-day constant-notional cost, with coverage reported. Funding costs are already NAV-weighted "
             "including leverage/direction: positive is paid, negative is received; do not apply weights again. "
+            "observed_cost_nav_pct is the display percentage (fraction times 100), not another rate; "
+            "observed_net_flow labels the measured net payment/receipt, not a forecast. "
             "funding_summary nets complete, matching windows only; not total holding costs or a forecast. "
             "These are diagnostics, not forecasts, "
             "expected returns, a probability edge, or the execution-aware dashboard backtest."

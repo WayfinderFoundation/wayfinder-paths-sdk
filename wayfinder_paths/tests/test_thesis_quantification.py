@@ -124,8 +124,51 @@ def test_funding_total_weights_signed_notionals_once_across_budgets(short_rate):
         assert total["observed_cost_nav_fraction"] == pytest.approx(
             sum(row["observed_cost_nav_fraction"] for row in portfolio["funding"])
         )
+        assert total["observed_cost_nav_pct"] == pytest.approx(
+            total["observed_cost_nav_fraction"] * 100
+        )
+        assert total["observed_net_flow"] == (
+            "paid" if total["observed_cost_nav_fraction"] > 0 else "received"
+        )
     assert "already NAV-weighted" in report["method"]
     assert "positive is paid, negative is received" in report["method"]
+
+
+@pytest.mark.parametrize(
+    "rate,expected_pct,expected_flow",
+    [
+        (0.0001335429, 0.01335429, "paid"),
+        (0.00098528844, 0.098528844, "paid"),
+        (-0.0001335429, -0.01335429, "received"),
+        (0, 0, "zero"),
+    ],
+)
+def test_funding_display_preserves_measured_sign_and_percentage_scale(
+    rate: float, expected_pct: float, expected_flow: str
+) -> None:
+    report = quantify_variants(
+        [variant(capital_bps=10000)],
+        {
+            "BTC-USDC": {
+                "funding": {
+                    "sum_rates": rate,
+                    "observed_hours": 168,
+                    "expected_hours": 168,
+                    "start_ms": 0,
+                    "end_ms": 7 * DAY_MS,
+                }
+            }
+        },
+    )
+    portfolio = report["portfolios"][0]
+    total = portfolio["funding_summary"]
+    assert total["status"] == "measured"
+    assert total["observed_cost_nav_fraction"] == pytest.approx(rate)
+    assert total["observed_cost_nav_pct"] == pytest.approx(expected_pct)
+    assert total["observed_net_flow"] == expected_flow
+    assert portfolio["funding"][0]["observed_cost_nav_pct"] == pytest.approx(
+        expected_pct
+    )
 
 
 @pytest.mark.parametrize(
@@ -162,6 +205,8 @@ def test_funding_total_never_sums_missing_partial_or_mismatched_windows(bad_fund
     total = report["portfolios"][0]["funding_summary"]
     assert total["status"] == "unavailable"
     assert total["observed_cost_nav_fraction"] is None
+    assert total["observed_cost_nav_pct"] is None
+    assert total["observed_net_flow"] is None
     assert total["start_ms"] is None and total["end_ms"] is None
     assert report["portfolios"][0]["funding"][0]["observed_cost_nav_fraction"] == 0.005
 
@@ -173,6 +218,8 @@ def test_no_perps_have_zero_funding_not_zero_total_cost():
     summary = report["portfolios"][0]["funding_summary"]
     assert summary["status"] == "not_applicable"
     assert summary["observed_cost_nav_fraction"] == 0
+    assert summary["observed_cost_nav_pct"] == 0
+    assert summary["observed_net_flow"] is None
     assert summary["start_ms"] is None and summary["end_ms"] is None
     assert "not total holding costs or a forecast" in report["method"]
 
@@ -213,6 +260,7 @@ def test_missing_leg_never_becomes_cash_or_zero_risk():
     assert "price_return" not in portfolio["metrics"]
     assert portfolio["missing_history"] == ["BTC-USDC"]
     assert portfolio["funding"][0]["observed_cost_nav_fraction"] is None
+    assert portfolio["funding"][0]["observed_cost_nav_pct"] is None
     json.dumps(report, allow_nan=False)
 
 
