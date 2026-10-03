@@ -6194,15 +6194,18 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
                         "economic": economic,
                     }
                 elif (
-                    clustered := _clustered_cadence(
+                    untestable := _clustered_cadence(
                         candidate, _campaign_policy(store, job_id, campaign_id)
+                    )
+                    or _quiet_before_staging(
+                        economic, _campaign_policy(store, job_id, campaign_id)
                     )
                 ) is not None:
                     outcome = {
                         "status": "proposal_rejected",
-                        "proposal": {"status": "untestable", "reason": clustered},
+                        "proposal": {"status": "untestable", "reason": untestable},
                         "economic": economic,
-                        "evidence": clustered,
+                        "evidence": untestable,
                     }
                 else:
                     from wayfinder_paths.jobs.probation import (
@@ -10156,6 +10159,29 @@ def _clustered_cadence(
         f"{_frequency_window_days(policy)}-day windows hold "
         f"{_frequency_min_entries(policy)}+ entries (probation needs "
         f"{floor:.0%}); the trial would likely see no trades"
+    )
+
+
+def _quiet_before_staging(
+    economic: Mapping[str, Any], policy: Mapping[str, Any]
+) -> str | None:
+    """Window coverage spans the whole validation history, so a book that
+    traded steadily and then stopped still passes it. v14 and v15 each staged
+    one whose last entry came 13-17 days before the cutoff; both sat through
+    probation without a trade, and a replay of the trial window agreed."""
+    limit = float(policy.get("probation_max_quiet_days") or 0.0)
+    cutoff = (economic.get("audit_slice") or {}).get("end")
+    if limit <= 0 or cutoff is None:
+        return None
+    last_entry = economic.get("candidate_last_entry_at")
+    if last_entry is None:
+        return "no entry in the paired folds or the audit slice; the trial would see no trades"
+    quiet = (pd.Timestamp(cutoff) - pd.Timestamp(last_entry)).total_seconds() / 86_400
+    if quiet <= limit:
+        return None
+    return (
+        f"signal has gone quiet: last entry {quiet:.0f} days before the cutoff "
+        f"(probation allows {limit:g}); the trial would likely see no trades"
     )
 
 

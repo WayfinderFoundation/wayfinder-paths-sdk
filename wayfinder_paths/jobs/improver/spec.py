@@ -243,6 +243,9 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         # A finalist whose validation trades cluster below this share of
         # frequency_window_days windows is not staged (0 = off).
         "probation_min_window_coverage": 0.0,
+        # A finalist with no entry in this many days before the gate's
+        # cutoff is not staged: its signal has gone quiet (0 = off).
+        "probation_max_quiet_days": 0,
         # Full development also requires a profitable train window, so a book
         # that wins only on validation cannot take a finalist slot.
         "full_dev_requires_train_profit": False,

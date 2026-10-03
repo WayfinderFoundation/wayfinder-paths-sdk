@@ -440,6 +440,7 @@ def paired_fold_evaluation(
         delta_lcb = growth_lcb + risk_delta
 
     audit_rows: dict[str, dict[str, Any]] = {}
+    audit_trades: dict[str, list[dict[str, Any]]] = {}
     audit_regime: dict[str, dict[str, Any]] = {}
     for side, script, params in (
         ("baseline", baseline_script, baseline_params),
@@ -456,6 +457,7 @@ def paired_fold_evaluation(
             effective_warmup,
         )
         audit_rows[side] = objective_vector(equity, trades)
+        audit_trades[side] = trades
         if target_regimes:
             conditioned = regime_conditioned_objective(
                 equity,
@@ -495,6 +497,9 @@ def paired_fold_evaluation(
             "candidate": audit_rows["candidate"],
             "delta_utility": audit_delta,
         },
+        "candidate_last_entry_at": _last_entry_at(
+            [*candidate_pool["trades"], *audit_trades["candidate"]]
+        ),
     }
     if target_regimes:
         regime_config = evaluation.get("regime") or {}
@@ -750,6 +755,15 @@ def _chain_fold_equity(
         raise ValueError("fold equity curve starts at non-positive equity")
     factor = float(pooled[-1]["equity"]) / first
     return [{**row, "equity": float(row["equity"]) * factor} for row in equity]
+
+
+def _last_entry_at(trades: Sequence[Mapping[str, Any]]) -> str | None:
+    entries = [
+        pd.Timestamp(trade["timestamp"])
+        for trade in trades
+        if (trade.get("raw") or {}).get("intent_action") == "OPEN"
+    ]
+    return str(max(entries)) if entries else None
 
 
 def _oos_window(

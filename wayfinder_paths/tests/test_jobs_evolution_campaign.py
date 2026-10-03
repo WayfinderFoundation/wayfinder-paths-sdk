@@ -8727,6 +8727,35 @@ def test_clustered_validation_trades_are_untestable_when_the_floor_is_set() -> N
     assert evolution_campaign._clustered_cadence(candidate(0.41), {}) is None
 
 
+def test_a_finalist_whose_signal_went_quiet_is_untestable() -> None:
+    def economic(last_entry: str | None) -> dict[str, Any]:
+        return {
+            "audit_slice": {"end": "2026-08-31 15:00:00+00:00"},
+            "candidate_last_entry_at": last_entry,
+        }
+
+    policy = {"probation_max_quiet_days": 10}
+    reason = evolution_campaign._quiet_before_staging(
+        economic("2026-08-14 10:05:00+00:00"), policy
+    )
+    assert reason is not None and "17 days" in reason
+    assert (
+        evolution_campaign._quiet_before_staging(
+            economic("2026-08-27 10:05:00+00:00"), policy
+        )
+        is None
+    )
+    assert "no entry" in (
+        evolution_campaign._quiet_before_staging(economic(None), policy) or ""
+    )
+    assert (
+        evolution_campaign._quiet_before_staging(
+            economic("2026-08-14 10:05:00+00:00"), {}
+        )
+        is None
+    )
+
+
 def test_unbuildable_seed_falls_back_to_de_novo_instead_of_wedging(
     tmp_path, monkeypatch
 ) -> None:

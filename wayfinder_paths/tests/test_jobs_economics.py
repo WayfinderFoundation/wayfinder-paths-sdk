@@ -605,3 +605,83 @@ def test_paired_folds_warm_up_on_each_sides_declared_window(monkeypatch) -> None
             },
         )
     assert seen == [1_464]
+
+
+def test_paired_folds_report_the_candidates_last_entry(monkeypatch) -> None:
+    """Staging needs the last entry through the cutoff: validation coverage
+    alone passed books whose signal had stopped two weeks earlier."""
+    import types
+
+    import pandas as pd
+
+    from wayfinder_paths.jobs import economics
+    from wayfinder_paths.jobs.execution.primitives import (
+        CompletedBarsView,
+        ExecutionSpec,
+    )
+    from wayfinder_paths.jobs.execution.simulator import PreparedExecutionDataset
+
+    stamps = pd.date_range("2026-01-01", periods=6_000, freq="5min", tz="UTC")
+    rows = [
+        {
+            "timestamp": stamp.isoformat(),
+            "symbol": "SNX",
+            "open": 10.0,
+            "high": 10.1,
+            "low": 9.9,
+            "close": 10.0,
+            "volume": 1.0,
+        }
+        for stamp in stamps
+    ]
+    dataset = PreparedExecutionDataset(CompletedBarsView.from_rows(rows), {}, [])
+    def candidate(params):
+        return types.SimpleNamespace(decide=lambda ctx: [], warmup_bars=60)
+
+    def baseline(params):
+        return types.SimpleNamespace(decide=lambda ctx: [], warmup_bars=60)
+
+    def window(script, dataset, spec, params, timestamps, start, end, warmup):
+        equity = [
+            {"timestamp": str(timestamps[index]), "equity": 100.0}
+            for index in range(start, end, 288)
+        ]
+        trades = (
+            [
+                {
+                    "timestamp": str(timestamps[start + 10]),
+                    "symbol": "SNX",
+                    "fee": 0.0,
+                    "raw": {"intent_action": "OPEN"},
+                }
+            ]
+            if script is candidate
+            else []
+        )
+        return equity, trades
+
+    monkeypatch.setattr(economics, "_oos_window", window)
+    report = economics.paired_fold_evaluation(
+        baseline_script=baseline,
+        candidate_script=candidate,
+        dataset=dataset,
+        spec=ExecutionSpec.from_dict(
+            {"data_contract": {"bar_interval": "5m", "symbols": ["SNX"]}}
+        ),
+        baseline_params={"warmup_bars": 60},
+        candidate_params={"warmup_bars": 60},
+        constitution={
+            "evaluation": {
+                "folds": 4,
+                "audit_days": 1,
+                "block_days": 1,
+                "bootstrap_iterations": 50,
+                "confidence": 0.9,
+            },
+            "objective": {"weights": {}},
+        },
+    )
+    audit_start = pd.Timestamp(report["audit_slice"]["start"])
+    assert pd.Timestamp(report["candidate_last_entry_at"]) == audit_start + pd.Timedelta(
+        minutes=50
+    )
