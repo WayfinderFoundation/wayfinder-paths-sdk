@@ -5469,6 +5469,7 @@ def test_campaign_carries_the_feature_store_and_tells_the_designer_to_read_it(
             ("leader_ret_28d", 0.30),
             ("btc_ret_7d", 0.13),
             ("eth_ret_7d", 0.11),
+            ("xs_factor_rank", 0.25),
         )
     ]
     (root / "state").mkdir(exist_ok=True)
@@ -5504,6 +5505,11 @@ def test_campaign_carries_the_feature_store_and_tells_the_designer_to_read_it(
     )
     assert "ctx.view.feature('leader_state', default=0.0)" in prompt["next_action"]
     assert prompt["constraints"]["macro_regime"]["leaders"]["state"] == "rally"
+    factor = manifest["regime_context"]["macro"]["factor"]
+    assert factor["declare"] == {"name": "xs_factor_rank", "source": "file"}
+    assert prompt["constraints"]["macro_regime"]["factor"]["read"] == (
+        "ctx.view.feature('xs_factor_rank', sym, default=0.0)"
+    )
 
 
 def test_bounded_index_clock_candidate_is_rejected_without_charge(tmp_path) -> None:
