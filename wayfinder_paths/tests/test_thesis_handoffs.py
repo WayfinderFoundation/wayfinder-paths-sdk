@@ -21,7 +21,7 @@ from wayfinder_paths.core.theses.checkpoints import (
 from wayfinder_paths.core.theses.draft import draft_context, draft_status
 from wayfinder_paths.core.theses.review import REVIEW_TOOL, review_report
 from wayfinder_paths.tests import test_thesis_assessment
-from wayfinder_paths.tests.test_thesis_draft import receipt
+from wayfinder_paths.tests.test_thesis_draft import observation, receipt
 
 case = test_thesis_assessment.case
 discovery = test_thesis_assessment.discovery
@@ -572,6 +572,120 @@ def test_case_projection_keeps_classification_and_identifies_current_assessment(
     historical = research_notebook(parent, child, entities=["network"], limit=2)
     assert not any(r["current_assessment"] for r in historical["cases"][0]["records"])
     assert (parent, child) == original
+
+
+def test_case_sources_link_exact_saved_documents_without_summarizing(
+    compact_run: tuple[list[dict], list[dict]],
+) -> None:
+    parent, child = compact_run
+    for number, text in [(10, "Growth observed"), (11, "Contrary observation")]:
+        child.append(
+            observation(
+                "wayfinder_core_web_fetch",
+                {
+                    "results": [
+                        {
+                            "url": "https://unrelated.test",
+                            "contentExcerpt": "Other data",
+                        },
+                        {"url": "https://example.test", "contentExcerpt": text},
+                    ]
+                },
+                number,
+            )
+        )
+        child[-1]["parts"][0]["id"] = f"e{number}"
+    original = deepcopy((parent, child))
+    row = research_notebook(parent, child, entities=["network"], fields=["reason"])[
+        "cases"
+    ][0]
+    assert row["source_reads"] == [
+        {
+            "url": "https://example.test",
+            "part_id": f"e{n}",
+            "result_path": ["results", 1],
+        }
+        for n in (10, 11)
+    ]
+    assert "contentExcerpt" not in json.dumps(row)
+    for pointer in row["source_reads"]:
+        saved = research_observations(
+            parent,
+            child,
+            part_ids=[pointer["part_id"]],
+            result_path=pointer["result_path"],
+        )["observations"][0]
+        assert saved["result"]["url"] == pointer["url"]
+    assert (parent, child) == original
+
+
+@pytest.mark.parametrize(
+    "invalid", ["failed", "private", "search", "empty", "request_only"]
+)
+def test_case_source_pointer_requires_a_successful_document_read(
+    compact_run: tuple[list[dict], list[dict]], invalid: str
+) -> None:
+    parent, child = compact_run
+    read = observation(
+        "wayfinder_core_web_fetch",
+        {"results": [{"url": "https://example.test", "contentExcerpt": "text"}]},
+        10,
+    )
+    part = read["parts"][0]
+    part["id"] = "e10"
+    if invalid == "failed":
+        part["state"]["output"] = '{"ok":false}'
+    elif invalid == "private":
+        part["tool"] = "wayfinder_core_get_wallets"
+    elif invalid == "search":
+        part["tool"] = "wayfinder_core_web_search"
+    elif invalid == "empty":
+        part["state"]["output"] = (
+            '{"ok":true,"result":{"results":[{"url":"https://example.test"}]}}'
+        )
+    else:
+        part["state"]["input"] = {"urls": ["https://example.test"]}
+        part["state"]["output"] = (
+            '{"ok":true,"result":{"results":[{"url":"https://other.test","contentExcerpt":"text"}]}}'
+        )
+    child.append(read)
+    row = research_notebook(parent, child, entities=["network"])["cases"][0]
+    assert row["source_reads"] == []
+
+
+@pytest.mark.parametrize(
+    "action,field,slug_key",
+    [("get_event", "event", "slug"), ("get_market", "market", "eventSlug")],
+)
+def test_prediction_case_links_saved_rules(
+    compact_run: tuple[list[dict], list[dict]], action: str, field: str, slug_key: str
+) -> None:
+    parent, child = compact_run
+    raw = deepcopy(child[0]["parts"][0]["state"]["input"]["checkpoint"])
+    raw["research_cases"][0]["sources"] = ["https://polymarket.com/event/example"]
+    child = [receipt(raw, 1, session="worker", agent="thesis-researcher")]
+    child.append(
+        observation(
+            "wayfinder_polymarket_read",
+            {
+                "action": action,
+                field: {
+                    slug_key: "example",
+                    "description": "Full calendar, including time before entry",
+                },
+            },
+            10,
+        )
+    )
+    child[-1]["parts"][0]["id"] = "e10"
+    row = research_notebook(parent, child, entities=["network"])["cases"][0]
+    assert row["source_reads"] == [
+        {
+            "url": "https://polymarket.com/event/example",
+            "part_id": "e10",
+            "result_path": [field],
+        }
+    ]
 
 
 def test_conflicting_worker_metrics_survive_focused_case_read(compact_run):

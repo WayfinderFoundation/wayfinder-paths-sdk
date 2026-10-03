@@ -461,6 +461,8 @@ def research_notebook(
     history: bool = True,
 ) -> dict[str, Any]:
     """An inventory, current cases or their history; never an LLM re-summary."""
+    from wayfinder_paths.core.theses.review import public_observations
+
     if (
         offset < 0
         or not 1 <= limit <= 100
@@ -524,11 +526,55 @@ def research_notebook(
                     }
                 )
     if entities is not None:
+        source_reads: dict[str, list[dict[str, Any]]] = {}
+        for observation in public_observations(
+            [*parent_messages, *child_messages], include_results=True
+        ).values():
+            result = observation["result"]
+            if not isinstance(result, dict):
+                continue
+            pages: list[tuple[Any, list[str | int]]]
+            if observation["tool"] == "wayfinder_core_web_fetch":
+                pages = [
+                    (page.get("url"), ["results", index])
+                    for index, page in enumerate(result.get("results", []))
+                    if isinstance(page, dict)
+                    and (
+                        page.get("contentExcerpt")
+                        or page.get("text")
+                        or page.get("content")
+                    )
+                ]
+            elif observation["tool"] == "wayfinder_polymarket_read" and result.get(
+                "action"
+            ) in {"get_event", "get_market"}:
+                field = "event" if result["action"] == "get_event" else "market"
+                page = result.get(field) or {}
+                slug = page.get("slug" if field == "event" else "eventSlug")
+                pages = (
+                    [(f"https://polymarket.com/event/{slug}", [field])]
+                    if slug and (page.get("description") or page.get("rules"))
+                    else []
+                )
+            else:
+                continue
+            for url, path in pages:
+                if isinstance(url, str) and url:
+                    source_reads.setdefault(url, []).append(
+                        {"part_id": observation["part_id"], "result_path": path}
+                    )
         requested = list(dict.fromkeys(e.casefold() for e in entities))
         for key in requested:
             if key not in rows:
                 continue
             row = rows[key]
+            row["source_reads"] = [
+                {"url": url, **read}
+                for url in sorted(
+                    {source for r in row["records"] for source in r["case"]["sources"]}
+                )
+                for read in source_reads.get(url, [])
+            ]
             if key in dispositions:
                 row["disposition"] = dispositions[key]
             current = next(
