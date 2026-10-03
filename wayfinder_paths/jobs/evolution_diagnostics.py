@@ -31,17 +31,39 @@ if TYPE_CHECKING:
 # regime rows and composition survivors a full pack wants ~30 KB, and at
 # 24 KB the ladder was dropping lessons and attribution and cutting the
 # tiers to a handful of rows (2026-09-04 replay).
-# The budget is on the persisted form (indented, sorted keys, trailing
-# newline: exactly what atomic_write_json writes), which runs ~30% larger
-# than compact JSON. 56 KB persisted is ~40 KB compact.
-DIAGNOSTIC_PACK_MAX_BYTES = 56_000
+# The budget is on the persisted form (pack_text). It was 56 KB of
+# two-space-indented JSON, ~40 KB compact; the designer's read tool returns
+# about 50 KB (line prefixes included) per call, so every full pack took two
+# reads and the indentation alone was a quarter of its tokens.
+DIAGNOSTIC_PACK_MAX_BYTES = 41_000
+_PACK_LINE_CHARS = 1_800
+
+
+def pack_text(pack: Mapping[str, Any]) -> str:
+    """The pack as persisted: valid JSON nested only until a value fits on
+    one line (well under the read tool's 2,000-character line cut), so each
+    signal row or grid reads as one compact line."""
+    return _pack_value(pack, 0) + "\n"
+
+
+def _pack_value(value: Any, depth: int) -> str:
+    compact = json.dumps(value, sort_keys=True, default=str, separators=(",", ":"))
+    if len(compact) + depth <= _PACK_LINE_CHARS or not isinstance(value, dict | list):
+        return compact
+    pad = " " * (depth + 1)
+    if isinstance(value, dict):
+        items = [
+            f"{pad}{json.dumps(key)}:{_pack_value(item, depth + 1)}"
+            for key, item in sorted(value.items(), key=lambda kv: str(kv[0]))
+        ]
+        return "{\n" + ",\n".join(items) + "\n" + " " * depth + "}"
+    items = [f"{pad}{_pack_value(item, depth + 1)}" for item in value]
+    return "[\n" + ",\n".join(items) + "\n" + " " * depth + "]"
 
 
 def pack_bytes(pack: Mapping[str, Any]) -> int:
-    """Size of the pack exactly as atomic_write_json persists it."""
-    return len(
-        (json.dumps(pack, indent=2, sort_keys=True, default=str) + "\n").encode()
-    )
+    """Size of the pack exactly as persisted."""
+    return len(pack_text(pack).encode())
 
 
 RESULT_STAT_KEYS = (

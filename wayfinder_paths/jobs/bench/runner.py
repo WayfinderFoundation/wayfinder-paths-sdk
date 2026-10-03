@@ -12,7 +12,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -802,6 +802,10 @@ def _drive_campaign(
                 result["stdout_tail"][-1_200:], root=sandbox
             ),
         }
+        if _overlap_generation(store, job_id, state) and _overlap_ready(
+            store, job_id, now=virtual_now
+        ):
+            continue
         try:
             settled = _wait_for_settle(store, job_id, timeout_s=settle_timeout_s)
         except CampaignSettleError as exc:
@@ -809,6 +813,46 @@ def _drive_campaign(
         if not settled:
             return f"campaign stage {stage} did not settle"
     return f"campaign exceeded max_turns={max_turns}"
+
+
+def _overlap_generation(store: JobStore, job_id: str, state: Mapping[str, Any]) -> bool:
+    manifest_ref = state.get("manifest")
+    if not manifest_ref:
+        return False
+    manifest = store.read_json(job_id, str(manifest_ref), default={}) or {}
+    return bool((manifest.get("policy") or {}).get("overlap_generation"))
+
+
+def _overlap_ready(
+    store: JobStore, job_id: str, *, now: Any, claim_timeout_s: float = 20.0
+) -> bool:
+    """With the campaign's overlap_generation on, the next stage may start
+    while the one screen it just launched runs. Wait for that launch to be
+    claimed first (a still-prepared candidate would be handed out again),
+    then ask the campaign; anything else settles as before. A detached screen
+    is claimed within seconds, so a still-prepared candidate after the
+    timeout means the stage ended without launching it (v14: 125 s lost per
+    such stage at a 120 s timeout)."""
+    deadline = time.monotonic() + claim_timeout_s
+    while time.monotonic() < deadline:
+        state = campaign_status(store, job_id)
+        # A queued screen (requested behind the running one) is in flight.
+        statuses = [
+            "quick_running"
+            if candidate.get("evaluation_requested_at")
+            else str(candidate.get("status") or "")
+            for candidate in state.get("candidates") or []
+        ]
+        if state.get("status") != "active":
+            return False
+        if "prepared" in statuses:
+            time.sleep(1.0)
+            continue
+        if "quick_running" not in statuses:
+            return False
+        block = campaign_prompt_block(store, job_id, now=now)
+        return bool(block) and block.get("status") != "blocked"
+    return False
 
 
 class CampaignSettleError(RuntimeError):

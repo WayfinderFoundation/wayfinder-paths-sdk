@@ -1395,3 +1395,40 @@ def test_a_sparse_finalist_is_untestable_not_staged(tmp_path: Path) -> None:
     trial = load_probation(store, job_id)["trials"][0]
     assert staged["status"] != "untestable"
     assert 20 <= trial["forward"]["max_paired_days"] <= 28
+
+
+@pytest.mark.parametrize("extend", [True, False])
+def test_a_favourable_inconclusive_trial_runs_on_to_the_cap(
+    tmp_path: Path, extend: bool
+) -> None:
+    store, job_id = _job(tmp_path)
+    if extend:
+        (store.job_dir(job_id) / "improver.yaml").write_text(
+            "evolution:\n  probation:\n    extend_favourable_to_cap: true\n",
+            encoding="utf-8",
+        )
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    trial = _forward_trial(store, job_id, "favourable", started)
+    # Two winning trades in 15 days: ahead of the incumbent, short of the floor.
+    _write_forward_days(
+        store,
+        job_id,
+        trial,
+        started,
+        days=15,
+        candidate_pnl=5.0,
+        candidate_trade_days=2,
+    )
+
+    outcomes = maybe_adjudicate_probation(
+        store, job_id, now=started + timedelta(days=15)
+    )
+
+    updated = load_probation(store, job_id)["trials"][0]
+    if extend:
+        assert outcomes[0]["action"] == "probation_extended"
+        assert updated["status"] == "active"
+        assert updated["forward"]["max_paired_days"] == 21
+        assert updated["forward"]["extensions"][0]["at_day"] == 14
+    else:
+        assert updated["status"] == "inconclusive"
