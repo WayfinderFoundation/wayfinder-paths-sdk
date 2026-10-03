@@ -364,6 +364,51 @@ async def test_search_pair_does_not_match_other_underlyings_through_quote(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("include_market_data", [True, False])
+async def test_search_labels_fuzzy_candidates_without_losing_recall(
+    market_inventory: None,
+    monkeypatch: pytest.MonkeyPatch,
+    include_market_data: bool,
+) -> None:
+    monkeypatch.setattr(
+        HyperliquidAdapter,
+        "get_meta_and_asset_ctxs",
+        AsyncMock(return_value=(True, [{"universe": [{"name": "xyz:ZM"}]}, []])),
+    )
+    monkeypatch.setattr(
+        HyperliquidAdapter,
+        "get_spot_assets",
+        AsyncMock(return_value=(True, {"ZAMA/USDC": 10001})),
+    )
+    result = (
+        await hyperliquid_search_market("ZAMA", include_market_data=include_market_data)
+    )["result"]
+    assert result["perps"][0]["name"] == "xyz:ZM"
+    assert result["perps"][0]["match_type"] == "fuzzy"
+    assert result["spots"] == [{"name": "ZAMA/USDC", "match_type": "symbol"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "bucket", "expected"),
+    [
+        ("BTC-USDC", "perps", "exact"),
+        ("BTC", "perps", "symbol"),
+        ("bitcoin", "perps", "alias"),
+        ("UBTC/USDC", "spots", "exact"),
+        ("UBTC", "spots", "symbol"),
+        ("bitcoin", "spots", "alias"),
+        ("kinetiq", "spots", "fuzzy"),
+    ],
+)
+async def test_search_match_type_describes_lexical_match_only(
+    market_inventory: None, query: str, bucket: str, expected: str
+) -> None:
+    result = (await hyperliquid_search_market(query, limit=1))["result"]
+    assert result[bucket][0]["match_type"] == expected
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("query", ["usdc", "usdh", "xyz"])
 async def test_search_ignores_quote_and_dex_tokens(
     market_inventory: None, query: str

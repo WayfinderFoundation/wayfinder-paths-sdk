@@ -2339,7 +2339,12 @@ async def hyperliquid_search_market(
         no instrument exists. Then query exact finalist names with the default True
         for funding, delisting and other market checks. A name alone is not tradability proof.
 
-    Returns canonical asset names. Perp results also include public market
+    Returns canonical asset names. Non-empty queries include match_type on
+    perp/spot rows: exact (full name), symbol (base ticker), alias or fuzzy.
+    These describe lexical matching, NOT verified economic identity. Fuzzy
+    matches can be unrelated assets; verify the tracked underlying before
+    attaching any result as an implementation of the researched entity.
+    Perp results also include public market
     metadata, funding, 24h notional volume, margin modes and impact prices when
     available (perp metadata cached up to 60s, spot mappings up to 300s).
     funding_apr is a decimal fraction (0.0876 = 8.76%); funding_apr_pct is
@@ -2505,6 +2510,12 @@ async def hyperliquid_search_market(
 
         perp_hits = [{"name": p} for p in top(perps, lambda p: p, market_name=True)]
         spot_hits = [{"name": s} for s in top(spots, lambda s: s, market_name=True)]
+        for hit in (*perp_hits, *spot_hits):
+            hit["match_type"] = {
+                2.0: "exact",
+                1.75: "symbol",
+                1.5: "alias",
+            }.get(score(hit["name"], market_name=True), "fuzzy")
         outcome_hits = top(outcome_data, outcome_text)
 
     # Detailed perp rows otherwise overflow OpenCode's tool output at limit=100.
