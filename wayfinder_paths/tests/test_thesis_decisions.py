@@ -248,3 +248,68 @@ def test_comparison_requires_real_earlier_other_case(
     else:
         parent[1] = receipt(cp, 2)
         assert "not an earlier saved case" in report(parent, children)["errors"][0]
+
+
+@pytest.mark.parametrize(
+    "field", ["decision", "reason", "claims", "implementation_checks"]
+)
+@pytest.mark.parametrize("judged_first", [True, False])
+def test_worker_comparison_tracks_later_parent_decision_changes(
+    decision_run: Run, field: str, judged_first: bool
+) -> None:
+    parent, children = decision_run
+    worker = deepcopy(children[0]["parts"][0]["state"]["input"]["checkpoint"])
+    worker["research_cases"][0]["entity"] = "rival"
+    children.append(
+        receipt(worker, 1, session="other-worker", agent="thesis-researcher")
+    )
+    ref = {"session_id": "other-worker", "checkpoint_id": "t1", "entity": "rival"}
+    dependent = deepcopy(parent[1]["parts"][0]["state"]["input"]["checkpoint"])
+    dependent["decisions"][0]["comparison_refs"] = [ref]
+    rival = deepcopy(dependent["decisions"][0])
+    rival.update(entity="rival", research_ref=ref, comparison_refs=[])
+    judged = {"schema_version": 7, "stage": "judged", "decisions": [rival]}
+    parent = [
+        parent[0],
+        receipt(judged if judged_first else dependent, 2),
+        receipt(dependent if judged_first else judged, 3),
+    ]
+    assert report(parent, children)["comparison_updates"] == []
+
+    if field == "decision":
+        rival["decision"] = "REJECT"
+    elif field == "reason":
+        rival["reason"] = "The original preference no longer holds"
+    elif field == "claims":
+        rival["claims"][0]["statement"] = "Corrected interpretation of observed usage"
+    else:
+        rival["implementation_checks"] = [
+            {
+                "kind": "spot",
+                "instrument_id": None,
+                "status": "unverified",
+                "reason": "Reconsidered implementation",
+                "observations": [],
+            }
+        ]
+    parent.append(receipt(judged, 4))
+    original = deepcopy((parent, children))
+    result = report(parent, children)
+    assert not result["errors"]
+    assert len(result["comparison_updates"]) == 1
+    update = result["comparison_updates"][0]
+    assert update["entity"] == "network"
+    assert update["compared_entity"] == "rival"
+    assert update["compared_ref"] == ref
+    assert update["changed_fields"] == [field]
+    assert update["current_ref"]["checkpoint_id"] == "t4"
+    assert (parent, children) == original
+
+    # Refreshing the dependent assessment marks reconsideration, not approval.
+    parent.append(receipt(dependent, 5))
+    assert report(parent, children)["comparison_updates"] == []
+    rival["reason"] = "Another material change after reconsideration"
+    parent.append(receipt(judged, 6))
+    assert report(parent, children)["comparison_updates"][0]["changed_fields"] == [
+        "reason"
+    ]

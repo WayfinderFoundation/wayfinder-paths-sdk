@@ -91,6 +91,7 @@ def decision_evidence(
     """Resolve evidence/dependency links; never infer that a citation proves a claim."""
     snapshots = {}
     current = {}
+    assessments: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
     for record in sorted(
         [*records, *research_records], key=lambda row: row["completed_at_ms"] or 0
     ):
@@ -99,6 +100,8 @@ def decision_evidence(
                 key = case["entity"].casefold()
                 snapshot = (case, record)
                 snapshots[(record["session_id"], record["id"], key)] = snapshot
+                if field == "candidates":
+                    assessments.setdefault(key, []).append(snapshot)
                 if field == "candidates" or key not in current:
                     current[key] = snapshot
                 elif "decision" not in current[key][0]:
@@ -153,11 +156,35 @@ def decision_evidence(
                 continue
             latest, latest_record = current[other]
             fields = [*CaseResearch.model_fields, "case_basis"]
-            if "decision" in baseline[0]:
-                fields.extend(("decision", "reason", "claims", "implementation_checks"))
             changed = [
                 field for field in fields if baseline[0].get(field) != latest.get(field)
             ]
+            decision_baseline = baseline[0]
+            if "decision" not in decision_baseline:
+                # Worker refs preserve research provenance, but must not hide a
+                # later change to the verdict the dependent decision relied on.
+                history = assessments.get(other, [])
+                decision_baseline = next(
+                    (
+                        assessed
+                        for assessed, saved in reversed(history)
+                        if (saved["completed_at_ms"] or 0)
+                        <= (record["completed_at_ms"] or 0)
+                    ),
+                    # If not yet judged, track revisions after its first verdict.
+                    history[0][0] if history else {},
+                )
+            if decision_baseline:
+                changed.extend(
+                    field
+                    for field in (
+                        "decision",
+                        "reason",
+                        "claims",
+                        "implementation_checks",
+                    )
+                    if decision_baseline.get(field) != latest.get(field)
+                )
             if changed:
                 updates.append(
                     {
