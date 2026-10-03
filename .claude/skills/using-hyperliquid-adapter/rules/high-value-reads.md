@@ -18,6 +18,7 @@ This adapter wraps the `hyperliquid` SDK `Info` client for read paths.
 ### Perp market metadata + contexts
 
 - For broad MCP discovery, call `hyperliquid_search_market(query="", market_type="hip3", limit=100, include_market_data=False)` and follow `pagination.perps.next_offset`. This lists names compactly without guessing tickers. Use `market_type="perp"` for core markets; query exact finalists with default market data enabled to check funding and delisting. Verify the tracked underlying in venue specifications. Empty fuzzy/name searches do not establish that an economic exposure is unavailable.
+- `specification_sources` supplies known official documentation links for dexes on the returned page. They are navigation aids, not fetched evidence or verified terms. Reuse one relevant document across finalists from that venue; check the actual underlying and quote direction instead of assuming them from ticker names. Missing links mean documentation coverage is unknown, not that the market is unsupported.
 - Call: `HyperliquidAdapter.get_meta_and_asset_ctxs()`
 - Output: `[meta, assetCtxs]` (SDK-native shape)
 - Typical use:

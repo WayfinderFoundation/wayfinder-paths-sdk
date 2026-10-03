@@ -57,6 +57,10 @@ from wayfinder_paths.mcp.utils import (
     throw_if_not_number,
 )
 
+# Navigation only: never treat a documentation link as observed contract terms.
+HIP3_SPECIFICATION_URLS: dict[str, str] = {
+    "xyz": "https://docs.trade.xyz/perpetuals/specifications-and-schedules/specification-index.md",
+}
 HIP4_DESCRIPTION_CHAR_LIMIT = 300
 HIP4_COMPACT_LARGE_NAMED_OUTCOME_LIMIT = 8
 HIP4_SPORT_TERMS = {"world", "cup", "fifa", "football", "soccer"}
@@ -2343,6 +2347,10 @@ async def hyperliquid_search_market(
     realized or forecast annual carry. Positive funding: longs pay shorts;
     negative: shorts pay longs. Missing funding remains unavailable, not zero.
     Impact prices/volume are NOT executable quotes or orderbook depth.
+    specification_sources maps returned HIP-3 dexes to known official documentation.
+    These links are not fetched or verified contract terms. Read the relevant
+    specification before inferring a tracked underlying, FX quote direction or
+    spot-versus-futures payoff from a ticker; absent links mean unknown coverage.
     Missing-provider warnings mean discovery is incomplete, not that a market is absent.
     """
     if not 1 <= limit <= 100 or offset < 0:
@@ -2553,6 +2561,11 @@ async def hyperliquid_search_market(
             "outcomes": outcome_hits,
             "warnings": warnings,
             "pagination": pagination,
+            "specification_sources": {
+                dex: url
+                for dex, url in HIP3_SPECIFICATION_URLS.items()
+                if any(hit["name"].startswith(f"{dex}:") for hit in perp_hits)
+            },
         }
     )
 

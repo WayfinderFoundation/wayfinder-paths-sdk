@@ -189,6 +189,47 @@ async def test_market_browsing_pages_after_type_filter(market_inventory):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("include_market_data", [True, False])
+async def test_specification_links_follow_returned_dex_not_query(
+    market_inventory: None, include_market_data: bool
+) -> None:
+    result = (
+        await hyperliquid_search_market(
+            "NVDA",
+            market_type="hip3",
+            limit=1,
+            include_market_data=include_market_data,
+        )
+    )["result"]
+    assert _names(result["perps"]) == {"xyz:NVDA"}
+    assert result["specification_sources"] == {
+        "xyz": "https://docs.trade.xyz/perpetuals/specifications-and-schedules/specification-index.md"
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "market_type", "offset"),
+    [
+        ("BTC", "perp", 0),
+        ("BTC", "spot", 0),
+        ("flx:BTC", "hip3", 0),
+        ("", "hip3", 1),
+        ("", "hip3", 999),
+    ],
+)
+async def test_specification_links_do_not_imply_unobserved_coverage(
+    market_inventory: None, query: str, market_type: HyperliquidMarketType, offset: int
+) -> None:
+    result = (
+        await hyperliquid_search_market(
+            query, market_type=market_type, limit=1, offset=offset
+        )
+    )["result"]
+    assert result["specification_sources"] == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_market_data", [True, False])
 async def test_large_perp_browse_uses_bounded_pages_without_skipping(
     monkeypatch: pytest.MonkeyPatch,
     include_market_data: bool,
@@ -539,6 +580,7 @@ async def test_search_market_handles_perp_meta_failure_without_error(monkeypatch
         "spots": [],
         "outcomes": [],
         "warnings": ["perp metadata unavailable; discovery is incomplete"],
+        "specification_sources": {},
     }
 
 
