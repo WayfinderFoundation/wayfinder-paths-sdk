@@ -3479,6 +3479,18 @@ def train_candidate_model(
                 "columns model_score, model_rank (-0.5 worst .. +0.5 best); merge them into "
                 "the frames you return"
             ),
+            "decide": (
+                "from wayfinder_paths.jobs.strategies._starter_utils import "
+                "available_feature_values, ranked_weights\n"
+                "from wayfinder_paths.jobs.strategies.portfolio import "
+                "target_weights_to_intents\n"
+                "# in decide(ctx), on the rebalance bar (ctx.every_n_bars):\n"
+                "ranks = available_feature_values(ctx, SYMBOLS, 'model_rank')  "
+                "# markets without a bar this tick drop out\n"
+                "if len(ranks) < 2 * legs: return []\n"
+                "return target_weights_to_intents(ctx, ranked_weights(ranks, "
+                "weight_per_leg=w, legs=legs))"
+            ),
             "warmup_bars": warmup_bars,
             "note": (
                 f"execution_params.warmup_bars must be at least {warmup_bars} so live and "

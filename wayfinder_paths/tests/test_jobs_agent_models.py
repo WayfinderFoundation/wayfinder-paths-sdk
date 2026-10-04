@@ -6,6 +6,14 @@ import pytest
 from sklearn.ensemble import HistGradientBoostingRegressor
 
 from wayfinder_paths.jobs import agent_models as am
+from wayfinder_paths.jobs.execution.primitives import (
+    CompletedBarsView,
+    ExecutionContext,
+    ExecutionSpec,
+    PositionLedger,
+    StateSnapshot,
+)
+from wayfinder_paths.jobs.strategies._starter_utils import available_feature_values
 
 
 def _bars(symbols: int = 10, days: int = 150, seed: int = 5) -> pd.DataFrame:
@@ -194,3 +202,44 @@ def test_sliding_windows_agree_with_the_full_pass(tmp_path) -> None:
     fresh = am.model_scores(_frames(late), model)["S1"]
     pd.testing.assert_frame_equal(hot, fresh)
     assert hot["model_score"].iloc[:200].notna().any()
+
+
+def test_rank_reads_drop_markets_without_a_bar_this_tick() -> None:
+    stamps = pd.date_range("2026-06-01", periods=3, freq="15min", tz="UTC")
+    rows = []
+    for symbol, rank, last in (
+        ("AAA", 0.4, True),
+        ("BBB", -0.2, True),
+        ("EQ", 0.1, False),
+    ):
+        for i, stamp in enumerate(stamps):
+            if i == len(stamps) - 1 and not last:
+                continue
+            rows.append(
+                {
+                    "timestamp": stamp,
+                    "symbol": symbol,
+                    "open": 1.0,
+                    "high": 1.0,
+                    "low": 1.0,
+                    "close": 1.0,
+                    "volume": 1.0,
+                    "model_rank": np.nan if symbol == "BBB" and i == 0 else rank,
+                }
+            )
+    rows.append(
+        {**rows[0], "symbol": "NAN", "timestamp": stamps[-1], "model_rank": np.nan}
+    )
+    ctx = ExecutionContext(
+        view=CompletedBarsView.from_rows(rows),
+        ledger=PositionLedger(),
+        state_snapshot=StateSnapshot(status="valid"),
+        capacity=None,
+        params={},
+        timestamp=stamps[-1].isoformat(),
+        execution_spec=ExecutionSpec(),
+    )
+    ranks = available_feature_values(
+        ctx, ["AAA", "BBB", "EQ", "NAN", "GONE"], "model_rank"
+    )
+    assert ranks == {"AAA": 0.4, "BBB": -0.2}

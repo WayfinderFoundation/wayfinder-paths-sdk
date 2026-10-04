@@ -99,6 +99,35 @@ def current_feature_values(
     return values
 
 
+def available_feature_values(
+    ctx: ExecutionContext,
+    symbols: Sequence[str],
+    column: str,
+) -> dict[str, float]:
+    """Finite current values for the symbols that printed a bar this tick.
+
+    For universe rankings (a trained model's ``model_rank``): a market out of
+    hours or without a value drops out of the ranking instead of raising or
+    standing the whole book down; the caller decides how many it needs.
+    """
+    timestamps = ctx.view.timestamps
+    if not timestamps:
+        return {}
+    latest_timestamp = pd.Timestamp(timestamps[-1])
+    values: dict[str, float] = {}
+    for symbol in symbols:
+        frame = ctx.view.symbol_frame(symbol)
+        if frame.empty or column not in frame.columns:
+            continue
+        row = frame.iloc[-1]
+        if pd.Timestamp(row["timestamp"]) != latest_timestamp:
+            continue
+        value = pd.to_numeric(pd.Series([row[column]]), errors="coerce").iloc[0]
+        if pd.notna(value):
+            values[symbol] = float(value)
+    return values
+
+
 def current_rows(
     ctx: ExecutionContext,
     symbols: Sequence[str],
