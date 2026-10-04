@@ -512,11 +512,12 @@ _SCORE_CACHE: dict[tuple[Any, ...], dict[str, pd.DataFrame]] = {}
 _RECENT_SCORES: dict[
     tuple[Any, ...], tuple[pd.Timestamp, pd.Timestamp, dict[str, pd.DataFrame]]
 ] = {}
-# Each key's previous window (start, total rows). The warm cache serves only a
-# live-style slide of it: same length, start a little later. Any other call (a
+# Each key's previous window (start, time span). The warm cache serves only a
+# live-style slide of it: same span, start a little later (row counts move
+# with markets that skip bars, so the span is the window's length). Any other call (a
 # backtest over a new slice) takes a full pass, so a backtest never depends on
 # what ran before it in the process.
-_LAST_WINDOW: dict[tuple[Any, ...], tuple[pd.Timestamp, int]] = {}
+_LAST_WINDOW: dict[tuple[Any, ...], tuple[pd.Timestamp, pd.Timedelta]] = {}
 _SLIDE_LIMIT = pd.Timedelta(days=1)
 _SCORE_CACHE_LIMIT = 64
 
@@ -557,6 +558,14 @@ def _same_closes(
             return False
         matched += 1
     return matched > 0
+
+
+def _utc_stamps(column: pd.Series) -> pd.DatetimeIndex:
+    # pd.to_datetime walks every value of an already-parsed column to decide
+    # on caching; this runs every live tick.
+    if isinstance(column.dtype, pd.DatetimeTZDtype):
+        return pd.DatetimeIndex(column).tz_convert("UTC")
+    return pd.DatetimeIndex(pd.to_datetime(column, utc=True))
 
 
 def _nan_scores(frames: Mapping[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
@@ -609,14 +618,14 @@ def model_scores(
     warm scores from the cache and leaves those rows NaN: its latest row is
     always warm, and it is the row a live decision reads."""
     stamps_by_symbol = {
-        symbol: pd.DatetimeIndex(pd.to_datetime(frame["timestamp"], utc=True))
-        for symbol, frame in frames.items()
+        symbol: _utc_stamps(frame["timestamp"]) for symbol, frame in frames.items()
     }
     nonempty = [stamps for stamps in stamps_by_symbol.values() if len(stamps)]
     if not nonempty:
         return _nan_scores(frames)
     first_bar = min(stamps[0] for stamps in nonempty)
-    latest_stamp = max(stamps[-1] for stamps in nonempty).floor(TIMEFRAME)
+    last_bar = max(stamps[-1] for stamps in nonempty)
+    latest_stamp = last_bar.floor(TIMEFRAME)
     if latest_stamp - first_bar < pd.Timedelta(TIMEFRAME):
         # Shorter than one complete 4h bar: nothing to score yet.
         return _nan_scores(frames)
@@ -624,12 +633,12 @@ def model_scores(
     key = _cache_key(model, tuple(sorted(frames)))
     cached = _SCORE_CACHE.get(key)
     recent = _RECENT_SCORES.get(key)
-    rows = sum(len(stamps) for stamps in stamps_by_symbol.values())
+    span = last_bar - first_bar
     last = _LAST_WINDOW.get(key)
-    _LAST_WINDOW[key] = (first_bar, rows)
+    _LAST_WINDOW[key] = (first_bar, span)
     sliding = (
         last is not None
-        and last[1] == rows
+        and last[1] == span
         and last[0] <= first_bar <= last[0] + _SLIDE_LIMIT
     )
     if (
@@ -661,7 +670,7 @@ def model_scores(
             _SCORE_CACHE.clear()
             _RECENT_SCORES.clear()
             _LAST_WINDOW.clear()
-            _LAST_WINDOW[key] = (first_bar, rows)
+            _LAST_WINDOW[key] = (first_bar, span)
         _SCORE_CACHE[key] = _carry_warm(full, warm_from, previous)
         _RECENT_SCORES[key] = (first_bar, latest_stamp, full)
         source, cold_from = full, None
