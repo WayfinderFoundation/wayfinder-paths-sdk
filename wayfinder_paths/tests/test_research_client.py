@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
+from wayfinder_paths.core.clients.GatewayClient import GatewayClient
 from wayfinder_paths.core.clients.ResearchClient import (
     ResearchClient,
     ResearchGatewayAPIError,
@@ -308,6 +311,109 @@ async def test_search_raises_structured_gateway_error(
     assert exc_info.value.code == "credits_exhausted"
     assert exc_info.value.details == {"remaining": 0}
     client._authed_request.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "denied_again", "cancelled"])
+async def test_opt_in_hourly_reset_wait_retries_identical_request_once(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    monkeypatch.setenv("WAYFINDER_RESEARCH_WAIT_FOR_HOURLY_RESET", "1")
+    error = ResearchGatewayAPIError(
+        status_code=429,
+        error_type="rate_limit",
+        code="research_budget_exhausted",
+        message="Hour exhausted",
+        details={
+            "window": "hour",
+            "resetAt": (datetime.now(UTC) + timedelta(seconds=75)).isoformat(),
+        },
+    )
+    post = AsyncMock(side_effect=[error, error if outcome == "denied_again" else {}])
+    monkeypatch.setattr(GatewayClient, "_post_gateway", post)
+    sleep = AsyncMock(
+        side_effect=asyncio.CancelledError if outcome == "cancelled" else None
+    )
+    monkeypatch.setattr(research_client_module.asyncio, "sleep", sleep)
+    client = ResearchClient()
+    if outcome == "success":
+        assert (
+            await client.search(query="test mechanism", session_id="same-session") == {}
+        )
+    else:
+        with pytest.raises(
+            asyncio.CancelledError
+            if outcome == "cancelled"
+            else ResearchGatewayAPIError
+        ):
+            await client.search(query="test mechanism", session_id="same-session")
+    sleep.assert_awaited_once()
+    assert sleep.await_args is not None
+    assert 70 < sleep.await_args.args[0] <= 76
+    assert post.await_count == (1 if outcome == "cancelled" else 2)
+    assert all(call == post.await_args_list[0] for call in post.await_args_list)
+    # A cancelled pending read releases backpressure, without retrying it later.
+    async with asyncio.timeout(1):
+        for _ in range(4):
+            await client._requests.acquire()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "enabled,status,code,details",
+    [
+        (False, 429, "research_budget_exhausted", "valid"),
+        (True, 401, "research_budget_exhausted", "valid"),
+        (True, 429, "credits_exhausted", "valid"),
+        (True, 429, "concurrency_limit", "valid"),
+        (True, 503, "research_budget_unavailable", "valid"),
+        (True, 429, "research_budget_exhausted", None),
+        (True, 429, "research_budget_exhausted", []),
+        (True, 429, "research_budget_exhausted", {"window": "day"}),
+        (True, 429, "research_budget_exhausted", {"window": "month"}),
+        (True, 429, "research_budget_exhausted", {"window": "hour"}),
+        (True, 429, "research_budget_exhausted", {"window": "hour", "resetAt": 123}),
+        (True, 429, "research_budget_exhausted", {"window": "hour", "resetAt": "bad"}),
+        (True, 429, "research_budget_exhausted", "naive"),
+        (True, 429, "research_budget_exhausted", "past"),
+        (True, 429, "research_budget_exhausted", "distant"),
+    ],
+)
+async def test_hourly_reset_wait_does_not_hide_other_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    enabled: bool,
+    status: int,
+    code: str,
+    details: Any,
+) -> None:
+    monkeypatch.delenv("WAYFINDER_RESEARCH_WAIT_FOR_HOURLY_RESET", raising=False)
+    if enabled:
+        monkeypatch.setenv("WAYFINDER_RESEARCH_WAIT_FOR_HOURLY_RESET", "1")
+    if isinstance(details, str):
+        reset = datetime.now(UTC) + timedelta(seconds=75)
+        if details == "naive":
+            reset = reset.replace(tzinfo=None)
+        elif details == "past":
+            reset -= timedelta(hours=1)
+        elif details == "distant":
+            reset += timedelta(hours=2)
+        details = {"window": "hour", "resetAt": reset.isoformat()}
+    error = ResearchGatewayAPIError(
+        status_code=status,
+        error_type="rate_limit",
+        code=code,
+        message="Denied",
+        details=details,
+    )
+    post = AsyncMock(side_effect=error)
+    monkeypatch.setattr(GatewayClient, "_post_gateway", post)
+    sleep = AsyncMock()
+    monkeypatch.setattr(research_client_module.asyncio, "sleep", sleep)
+    with pytest.raises(ResearchGatewayAPIError) as caught:
+        await ResearchClient().fetch(urls=["https://example.com/source"])
+    assert caught.value is error
+    post.assert_awaited_once()
+    sleep.assert_not_awaited()
 
 
 @pytest.mark.asyncio

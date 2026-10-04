@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import httpx
@@ -28,6 +31,8 @@ from wayfinder_paths.core.clients.research_types import (
     ResearchWebSearchType,
 )
 from wayfinder_paths.core.config import get_api_base_url
+
+logger = logging.getLogger(__name__)
 
 VALID_SEARCH_TYPES: set[str] = {
     "auto",
@@ -76,9 +81,34 @@ class ResearchClient(GatewayClient):
         self._requests = asyncio.Semaphore(4)
 
     async def _post_gateway(self, path: str, payload: Mapping[str, Any]) -> Any:
-        # Native workers share this client. Queue bursts locally, without
-        # retrying failures or changing the backend's authoritative limits.
+        # Native workers share backpressure, including an opt-in hourly pause.
         async with self._requests:
+            try:
+                return await super()._post_gateway(path, payload)
+            except ResearchGatewayAPIError as exc:
+                if (
+                    os.getenv("WAYFINDER_RESEARCH_WAIT_FOR_HOURLY_RESET") != "1"
+                    or exc.status_code != 429
+                    or exc.code != "research_budget_exhausted"
+                    or not isinstance(exc.details, dict)
+                    or exc.details.get("window") != "hour"
+                ):
+                    raise
+                try:
+                    reset = datetime.fromisoformat(exc.details.get("resetAt", ""))
+                except (TypeError, ValueError):
+                    raise exc from None
+                if reset.tzinfo is None:
+                    raise
+                delay = (reset - datetime.now(UTC)).total_seconds()
+                if not 0 < delay <= 3600:
+                    raise
+                logger.warning(
+                    "Research hourly budget paused until %s", reset.isoformat()
+                )
+                await asyncio.sleep(delay + 1)
+            # Exactly one retry, same request/key/session. Other limits and a
+            # second denial remain terminal; cancellation is never swallowed.
             return await super()._post_gateway(path, payload)
 
     async def aclose(self) -> None:
