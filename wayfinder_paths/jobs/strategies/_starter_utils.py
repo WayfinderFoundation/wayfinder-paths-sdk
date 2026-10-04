@@ -128,6 +128,41 @@ def available_feature_values(
     return values
 
 
+def staggered_rank_weights(
+    ctx: ExecutionContext,
+    ranks: Mapping[str, float],
+    *,
+    tranches: int,
+    bars_per_day: int,
+    weight_per_leg: float,
+    legs: int,
+    state_key: str = "rank_tranches",
+) -> dict[str, float]:
+    """A rank book held in ``tranches`` staggered sub-books: call it on the
+    daily bar (``ctx.every_n_bars(bars_per_day)``); today's tranche, fixed by
+    the epoch-aligned day, re-ranks and the others keep their books, so each
+    is held ``tranches`` days and the result is their average.
+
+    On a trained daily rank (a 27-market ridge, Nov 2025 to Jun 2026, 8 bps a
+    side) three 3-day tranches made +32% (Sharpe 2.2) against +10% (0.6) for a
+    daily rotation, with the worst 35 days -6% against -13%: the edge is thin
+    next to daily turnover, and a single rebalance day is luck (one-day phase
+    shifts moved the 3-day book from +18% to +47%).
+    """
+    ordinal = ctx.bar_ordinal
+    if ordinal is None:
+        return {}
+    books: dict[str, dict[str, float]] = ctx.strategy_state.setdefault(state_key, {})
+    today = str((ordinal // bars_per_day) % tranches)
+    if len(ranks) >= 2 * legs:
+        books[today] = ranked_weights(ranks, weight_per_leg=weight_per_leg, legs=legs)
+    combined: dict[str, float] = {}
+    for book in books.values():
+        for symbol, weight in book.items():
+            combined[symbol] = combined.get(symbol, 0.0) + weight / tranches
+    return combined
+
+
 def current_rows(
     ctx: ExecutionContext,
     symbols: Sequence[str],

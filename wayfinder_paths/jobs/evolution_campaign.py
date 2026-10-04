@@ -3481,15 +3481,15 @@ def train_candidate_model(
             ),
             "decide": (
                 "from wayfinder_paths.jobs.strategies._starter_utils import "
-                "available_feature_values, ranked_weights\n"
+                "available_feature_values, staggered_rank_weights\n"
                 "from wayfinder_paths.jobs.strategies.portfolio import "
                 "target_weights_to_intents\n"
-                "# in decide(ctx), on the rebalance bar (ctx.every_n_bars):\n"
+                "# in decide(ctx): if not ctx.every_n_bars(BARS_PER_DAY): return []\n"
                 "ranks = available_feature_values(ctx, SYMBOLS, 'model_rank')  "
                 "# markets without a bar this tick drop out\n"
-                "if len(ranks) < 2 * legs: return []\n"
-                "return target_weights_to_intents(ctx, ranked_weights(ranks, "
-                "weight_per_leg=w, legs=legs))"
+                "weights = staggered_rank_weights(ctx, ranks, tranches=3, "
+                "bars_per_day=BARS_PER_DAY, weight_per_leg=w, legs=legs)\n"
+                "return target_weights_to_intents(ctx, weights)"
             ),
             "warmup_bars": warmup_bars,
             "note": (
@@ -3498,10 +3498,11 @@ def train_candidate_model(
                 "so validation and forward bars are out of sample for it"
             ),
             "regimes": (
-                "the screen runs a recent and an earlier slice; market-neutral rotations "
-                "have tended to give back more than the slice bound in bear "
-                "(macro_regime == -1). Decide the bear branch before the first screen: "
-                "stand aside there, or keep only the side the rank still earns on "
+                "a daily rank's edge is thin next to daily turnover and comes and goes "
+                "by month: hold it in staggered tranches (use.decide) rather than "
+                "rotating the whole book every day; daily rotations gave back more than "
+                "the screen's slice bound in its earlier (bear) slice three times of "
+                "three. If a bear slice still fails, keep only the side that earns there "
                 "(on past runs, the bottom-fifth short leg)"
             ),
         },

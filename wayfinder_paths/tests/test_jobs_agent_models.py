@@ -13,7 +13,10 @@ from wayfinder_paths.jobs.execution.primitives import (
     PositionLedger,
     StateSnapshot,
 )
-from wayfinder_paths.jobs.strategies._starter_utils import available_feature_values
+from wayfinder_paths.jobs.strategies._starter_utils import (
+    available_feature_values,
+    staggered_rank_weights,
+)
 
 
 def _bars(symbols: int = 10, days: int = 150, seed: int = 5) -> pd.DataFrame:
@@ -269,3 +272,47 @@ def test_a_growing_replay_window_scores_each_bar_like_the_backtest(tmp_path) -> 
             expected, rel=1e-9
         ), (tick, live, expected)
     assert backtest.iloc[:30].notna().any()
+
+
+def test_staggered_tranches_rerank_one_book_a_day_and_average() -> None:
+    spec = ExecutionSpec()
+    spec.data_contract["bar_interval"] = "1d"
+    state: dict = {}
+
+    def ctx_on(day: str) -> ExecutionContext:
+        rows = [
+            {
+                "timestamp": pd.Timestamp(day, tz="UTC"),
+                "symbol": "A",
+                "open": 1.0,
+                "high": 1.0,
+                "low": 1.0,
+                "close": 1.0,
+                "volume": 1.0,
+            }
+        ]
+        return ExecutionContext(
+            view=CompletedBarsView.from_rows(rows),
+            ledger=PositionLedger(),
+            state_snapshot=StateSnapshot(status="valid"),
+            capacity=None,
+            params={},
+            timestamp=pd.Timestamp(day, tz="UTC").isoformat(),
+            execution_spec=spec,
+            strategy_state=state,
+        )
+
+    up = {"A": 0.4, "B": 0.1, "C": -0.1, "D": -0.4}
+    down = {"A": -0.4, "B": -0.1, "C": 0.1, "D": 0.4}
+    kwargs = {"tranches": 3, "bars_per_day": 1, "weight_per_leg": 0.3, "legs": 1}
+    first = staggered_rank_weights(ctx_on("2026-01-01"), up, **kwargs)
+    assert first == pytest.approx({"A": 0.1, "B": 0.0, "C": 0.0, "D": -0.1})
+    second = staggered_rank_weights(ctx_on("2026-01-02"), down, **kwargs)
+    assert second == pytest.approx({"A": 0.0, "B": 0.0, "C": 0.0, "D": 0.0})
+    third = staggered_rank_weights(ctx_on("2026-01-03"), down, **kwargs)
+    assert third["D"] == pytest.approx(0.1) and third["A"] == pytest.approx(-0.1)
+    # The day-one tranche comes round again and re-ranks; a short universe
+    # (fewer than two legs ranked) keeps that tranche's previous book.
+    fourth = staggered_rank_weights(ctx_on("2026-01-04"), {"A": 0.4}, **kwargs)
+    assert fourth == pytest.approx(third)
+    assert set(state["rank_tranches"]) == {"0", "1", "2"}
