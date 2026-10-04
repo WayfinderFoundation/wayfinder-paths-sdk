@@ -24,7 +24,7 @@ from wayfinder_paths.core.theses.draft import (
     draft_status,
     publication_result,
 )
-from wayfinder_paths.core.theses.models import Construction, Variant
+from wayfinder_paths.core.theses.models import Construction, Proposal, Variant
 from wayfinder_paths.core.theses.quantification import (
     DAY_MS,
     allocation_key,
@@ -715,6 +715,39 @@ def test_missing_benchmark_and_infeasible_minimums_are_not_silently_repaired(
     )
     with pytest.raises(ValueError, match="minimums"):
         size_variant(Variant.model_validate(v), relative)
+
+
+@pytest.mark.parametrize(
+    "kind,instrument",
+    [("token", "asset-ethereum"), ("token", "ASSET/USDC"), ("hip3", "dex:ASSET")],
+)
+def test_matched_sizing_scopes_minimum_to_hyperliquid(
+    target: Proposal, relative: Construction, kind: str, instrument: str
+) -> None:
+    payload = relative_variant(target, budget=100).model_dump()
+    payload["positions"][0]["capital_bps"] = 6500
+    payload["positions"].append(
+        {
+            **payload["positions"][0],
+            "id": "satellite",
+            "kind": kind,
+            "instrument_id": instrument,
+            "capital_bps": 500,
+        }
+    )
+    original = Variant.model_validate(payload)
+    if instrument != "asset-ethereum":
+        with pytest.raises(ValueError, match="minimums"):
+            size_variant(original, relative)
+        return
+    sized = size_variant(original, relative)
+    assert not construction_errors(sized, relative)
+    assert [p.instrument_id for p in sized.positions] == [
+        p.instrument_id for p in original.positions
+    ]
+    assert sum(p.capital_bps for p in sized.positions) == 10000
+    assert sized.cash_bps == 0
+    assert 0 < sized.positions[-1].capital_bps < 1000
 
 
 def test_v3_receipts_still_match_pre_incremental_bytes(spec):

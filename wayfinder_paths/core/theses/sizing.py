@@ -102,8 +102,12 @@ def size_variant(variant: Variant, construction: Construction) -> Variant:
     for rounded_up in combinations(range(len(legs)), remainder):
         amounts = [n + (i in rounded_up) for i, n in enumerate(floors)]
         if any(
-            n <= 0 or variant.budget_usd * n * lev / 10000 < 10
-            for n, lev in zip(amounts, leverage, strict=True)
+            n <= 0
+            or (
+                (p.kind in {"perp", "hip3"} or "/" in p.instrument_id)
+                and variant.budget_usd * n * lev / 10000 < 10
+            )
+            for n, lev, p in zip(amounts, leverage, legs, strict=True)
         ):
             continue
         net = sum(
@@ -126,7 +130,7 @@ def size_variant(variant: Variant, construction: Construction) -> Variant:
             best, allocation = rank, amounts
     if allocation is None:
         raise ValueError(
-            f"{variant.budget_usd}: matched sizing violates $10 minimums or rounding; revise the researched holdings, not leverage or cash"
+            f"{variant.budget_usd}: matched sizing violates Hyperliquid $10 minimums or rounding; revise the researched holdings, not leverage or cash"
         )
     result = Variant.model_validate(
         {

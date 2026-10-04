@@ -76,8 +76,11 @@ def validate_proposal(
                     errors.append(
                         "Hyperliquid spot portfolios require USDC-quoted pairs"
                     )
-                if variant.budget_usd * position.capital_bps / 10000 < 10:
-                    errors.append("Spot notional must be at least $10")
+                if (
+                    "/" in position.instrument_id
+                    and variant.budget_usd * position.capital_bps / 10000 < 10
+                ):
+                    errors.append("Hyperliquid spot notional must be at least $10")
             if position.kind not in {"perp", "hip3"}:
                 continue
             notional = (

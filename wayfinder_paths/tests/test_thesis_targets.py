@@ -8,6 +8,8 @@ from wayfinder_paths.core.clients.direct.DefiLlamaFreeClient import (
 )
 from wayfinder_paths.core.theses.checkpoints import ResearchCheckpoint
 from wayfinder_paths.core.theses.models import Proposal
+from wayfinder_paths.core.theses.publication import validate_proposal
+from wayfinder_paths.core.theses.quantification import allocation_key
 from wayfinder_paths.core.theses.research import (
     RESEARCH_EVIDENCE_TOOLS,
     execution_readiness,
@@ -80,6 +82,51 @@ def test_legacy_partial_portfolio_readable_but_not_a_new_target(target):
     legacy = Proposal.model_validate(payload)
     with pytest.raises(ValueError, match="10000 bps"):
         validate_full_allocation(legacy)
+
+
+@pytest.mark.parametrize("capital_bps", [999, 1000])
+@pytest.mark.parametrize("instrument", ["ASSET/USDC", "asset-ethereum"])
+def test_spot_minimum_is_venue_specific(
+    target: Proposal, capital_bps: int, instrument: str
+) -> None:
+    payload = target.model_dump()
+    for variant in payload["variants"]:
+        first = variant["positions"][0]
+        first["capital_bps"] = 10000 - capital_bps
+        variant["positions"].append(
+            {
+                **first,
+                "id": "spot",
+                "kind": "token",
+                "instrument_id": instrument,
+                "symbol": "ASSET",
+                "capital_bps": capital_bps,
+            }
+        )
+    proposal = Proposal.model_validate(payload)
+    evidence = research_evidence(
+        [
+            {"perps": [{"name": "BTC-USDC"}], "spots": [{"name": "ASSET/USDC"}]},
+            {
+                "token_id": "asset-ethereum",
+                "address": "0x123",
+                "chain": {"code": "ethereum"},
+                "identity": {"is_canonical": False, "verification": "unverified"},
+            },
+        ]
+    )
+    evidence["fetched_urls"] = ["https://example.test"]
+    evidence["quantified_allocations"] = {
+        allocation_key(v): {"coverage": "unavailable"} for v in proposal.variants
+    }
+    if instrument == "ASSET/USDC" and capital_bps < 1000:
+        with pytest.raises(ValueError, match="Hyperliquid spot notional"):
+            validate_proposal(payload, evidence)
+    else:
+        assert validate_proposal(payload, evidence) == proposal
+        report = execution_readiness(proposal, evidence)
+        assert report["execution_authorized"] is False
+        assert all(v["status"] == "execution_pending" for v in report["variants"])
 
 
 @pytest.mark.asyncio
