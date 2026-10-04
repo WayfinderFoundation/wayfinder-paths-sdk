@@ -407,7 +407,7 @@ def test_shared_position_matrix_keeps_different_directions_across_budgets():
     assert [r["correlation"] for r in rows] == pytest.approx([1, -1])
 
 
-@pytest.mark.parametrize("ask", [0.2, 0.99, 0, 1, None])
+@pytest.mark.parametrize("ask", [0.2, 0.28, 0.99, 0, 1, None])
 def test_prediction_payoff_is_entry_hurdle_not_probability_forecast(ask):
     book = compact_order_book(
         {"asks": [] if ask is None else [{"price": str(ask), "size": "100"}]}
@@ -417,7 +417,11 @@ def test_prediction_payoff_is_entry_hurdle_not_probability_forecast(ask):
         assert payoff is None
     else:
         assert payoff["breakEvenProbabilityBeforeCosts"] == ask
+        assert payoff["grossPayoutMultipleBeforeCosts"] == pytest.approx(1 / ask)
         assert payoff["winReturnBeforeCosts"] == pytest.approx(1 / ask - 1)
+        assert payoff["grossPayoutMultipleBeforeCosts"] == pytest.approx(
+            1 + payoff["winReturnBeforeCosts"]
+        )
         assert payoff["lossReturn"] == -1
 
 
@@ -633,5 +637,6 @@ async def test_prediction_resolution_and_book_survive_missing_history():
             90 * DAY_MS,
         )
     assert result["prices"] == {}
+    assert result["book"]["buyPayoff"]["grossPayoutMultipleBeforeCosts"] == 2.5
     assert result["book"]["buyPayoff"]["winReturnBeforeCosts"] == 1.5
     adapter.close.assert_awaited_once()

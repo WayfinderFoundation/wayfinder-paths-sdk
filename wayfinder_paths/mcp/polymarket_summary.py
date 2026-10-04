@@ -481,9 +481,10 @@ def compact_order_book(
         "buyPayoff": (
             {
                 "breakEvenProbabilityBeforeCosts": best_ask,
+                "grossPayoutMultipleBeforeCosts": 1 / best_ask,
                 "winReturnBeforeCosts": 1 / best_ask - 1,
                 "lossReturn": -1.0,
-                "note": "Buy this exact outcome at the best ask; settlement pays 1 if it wins, 0 if it loses. Not a probability forecast or a sized fill quote; fees/spread increase the hurdle.",
+                "note": "Buy this exact outcome at the best ask; settlement pays 1 if it wins, 0 if it loses. Gross payout includes the initial stake; winReturnBeforeCosts is fractional profit, not gross payout or a percentage. Not a probability forecast or a sized fill quote; fees/spread increase the hurdle.",
             }
             if best_ask is not None and 0 < best_ask < 1
             else None
