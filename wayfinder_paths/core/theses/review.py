@@ -274,6 +274,15 @@ def review_report(
                         checkpoint.receipt_json(),
                     )
                 }
+                if all(f.scope == "assessment" for f in checkpoint.findings):
+                    # Older model dumps included a null revision but no scope.
+                    digests.add(
+                        hashlib.sha256(
+                            checkpoint.model_dump_json(
+                                exclude={"findings": {"__all__": {"scope"}}}
+                            ).encode()
+                        ).hexdigest()
+                    )
                 if output.get("result", {}).get("sha256") not in digests:
                     continue
             except (ValueError, TypeError, ValidationError):
@@ -355,7 +364,22 @@ def review_report(
                 for ref in refs
             )
             # A label/weight-only edit without cited public observations cannot close a finding.
-            if action == "changed" and case is not None:
+            if action == "changed" and finding["scope"] == "draft":
+                updated_draft = any(
+                    r["checkpoint"]["draft"] or r["checkpoint"]["proposal"]
+                    for r in records
+                    if (finding["completed_at_ms"] or 0)
+                    <= (r["completed_at_ms"] or 0)
+                    <= resolved_at
+                )
+                valid &= updated_draft
+                if not updated_draft:
+                    errors.append(
+                        f"Review finding {key[1]} ({finding['entity']}): update the "
+                        "draft before resolving a draft-only finding as changed; "
+                        "do not rewrite an unaffected assessment"
+                    )
+            elif action == "changed" and case is not None:
                 # The original worker record stays immutable, but the parent's
                 # decision must reflect its correction, not just the final prose.
                 updated_case = any(

@@ -142,6 +142,12 @@ class ReviewFinding(Contract):
     blocking: bool
     issue: Text
     required_change: Text
+    scope: Annotated[
+        Literal["assessment", "draft"],
+        Field(
+            description="Default assessment requires correcting the affected case. Use draft only when current assessments are already sound and the required correction is solely to proposal text or sizing. Mixed findings remain assessment. The reviewer, not the parent resolution, sets this scope."
+        ),
+    ] = "assessment"
 
 
 class ReviewCheckpoint(Contract):
@@ -149,10 +155,17 @@ class ReviewCheckpoint(Contract):
     reviewed_revision: Identifier | None = None
 
     def receipt_json(self) -> str:
-        # Preserve receipts from reviewers predating revision-bound sign-off.
-        return self.model_dump_json(
-            exclude={"reviewed_revision"} if self.reviewed_revision is None else set()
-        )
+        # Default scope preserves old receipts; a draft-only scope is hash-bound.
+        exclude: dict[str, Any] = {
+            "findings": {
+                i: {"scope"}
+                for i, finding in enumerate(self.findings)
+                if finding.scope == "assessment"
+            }
+        }
+        if self.reviewed_revision is None:
+            exclude["reviewed_revision"] = True
+        return self.model_dump_json(exclude=exclude)
 
     @model_validator(mode="after")
     def unique_findings(self) -> Self:

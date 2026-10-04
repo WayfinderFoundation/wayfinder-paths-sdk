@@ -1,7 +1,7 @@
 import hashlib
 import json
 from copy import deepcopy
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -438,6 +438,31 @@ def test_replacement_reviewer_cannot_bypass_delta_review() -> None:
     children = [signoff("old", 3), signoff("current", 5, session="replacement")]
     errors = review_report([], children, [], set(), revision="current")["errors"]
     assert any("one native reviewer" in error for error in errors)
+
+
+@pytest.mark.parametrize("revision_field", [None, "current", "omitted"])
+def test_legacy_findings_keep_assessment_scope_and_bind_new_scope(
+    revision_field: str | None,
+) -> None:
+    message = review()
+    state = message["parts"][0]["state"]
+    raw = state["input"]["checkpoint"]
+    raw["findings"][0].pop("scope", None)
+    if revision_field == "omitted":
+        raw.pop("reviewed_revision", None)
+    else:
+        raw["reviewed_revision"] = revision_field
+    old_hash = hashlib.sha256(
+        json.dumps(raw, separators=(",", ":")).encode()
+    ).hexdigest()
+    state["output"] = json.dumps({"ok": True, "result": {"sha256": old_hash}})
+    report = review_report([], [message], [], set())
+    assert report["findings"][0]["scope"] == "assessment"
+    # A legacy receipt must not authorize changing which artifact needs repair.
+    raw["findings"][0]["scope"] = "draft"
+    assert not review_report([], [message], [], set())["findings"]
+    checkpoint = ReviewCheckpoint.model_validate(raw)
+    assert hashlib.sha256(checkpoint.receipt_json().encode()).hexdigest() != old_hash
 
 
 def test_review_read_from_another_session_cannot_supply_signoff() -> None:
@@ -1282,7 +1307,9 @@ async def test_live_review_requires_nested_revision_but_legacy_model_remains_rea
     ]
 
 
-def review(blocking=True):
+def review(
+    blocking: bool = True, *, scope: Literal["assessment", "draft"] | None = None
+) -> dict[str, Any]:
     cp = ReviewCheckpoint(
         findings=[
             {
@@ -1291,6 +1318,7 @@ def review(blocking=True):
                 "blocking": blocking,
                 "issue": "Spot unchecked",
                 "required_change": "Compare spot",
+                **({"scope": scope} if scope is not None else {}),
             }
         ]
     )
@@ -1396,35 +1424,53 @@ def test_large_review_ledger_is_paged_without_hiding_unresolved_findings(
 
 
 @pytest.mark.parametrize(
-    "blocking,action,refs,updated_at,valid",
+    "scope,blocking,action,refs,updated_at,artifact,valid",
     [
-        (True, "accepted", [], [], False),
-        (False, "accepted", [], [], True),
-        (True, "changed", [], [], False),
-        (True, "changed", ["public"], [], False),
-        (True, "changed", ["public"], [2], False),
-        (True, "changed", ["public"], [4], True),
-        (True, "changed", ["public"], [6], False),
-        (True, "changed", ["public"], [4, 6], True),
-        (True, "evidence", ["invented"], [], False),
-        (True, "evidence", ["public"], [], True),
-        (True, "removed", [], [], False),
+        (None, True, "accepted", [], [], "assessment", False),
+        (None, False, "accepted", [], [], "assessment", True),
+        (None, True, "changed", [], [], "assessment", False),
+        (None, True, "changed", ["public"], [], "assessment", False),
+        (None, True, "changed", ["public"], [2], "assessment", False),
+        (None, True, "changed", ["public"], [4], "assessment", True),
+        (None, True, "changed", ["public"], [6], "assessment", False),
+        (None, True, "changed", ["public"], [4, 6], "assessment", True),
+        (None, True, "evidence", ["invented"], [], "assessment", False),
+        (None, True, "evidence", ["public"], [], "assessment", True),
+        (None, True, "removed", [], [], "assessment", False),
+        ("assessment", True, "changed", ["public"], [4], "draft", False),
+        ("draft", True, "changed", ["public"], [4], "draft", True),
+        ("draft", True, "changed", ["public"], [], "draft", False),
+        ("draft", True, "changed", ["public"], [2], "draft", False),
+        ("draft", True, "changed", ["public"], [6], "draft", False),
+        ("draft", True, "changed", ["public"], [4], "assessment", False),
+        ("draft", True, "changed", [], [4], "draft", False),
+        ("draft", True, "changed", ["invented"], [4], "draft", False),
+        ("draft", True, "accepted", [], [4], "draft", False),
     ],
 )
 def test_findings_require_substantive_resolution(
     compact_run: tuple[list[dict], list[dict]],
+    scope: Literal["assessment", "draft"] | None,
     blocking: bool,
     action: str,
     refs: list[str],
     updated_at: list[int],
+    artifact: str,
     valid: bool,
 ) -> None:
     parent, child = compact_run
     original_child = deepcopy(child)
     for timestamp in updated_at:
-        decision = deepcopy(parent[0]["parts"][0]["state"]["input"]["checkpoint"])
-        decision["decisions"][0]["reason"] = "Corrected implementation comparison"
-        parent.append(receipt(decision, timestamp))
+        if artifact == "draft":
+            update = {
+                "schema_version": 6,
+                "stage": "draft",
+                "draft": {"remove_components": ["removed-leg"]},
+            }
+        else:
+            update = deepcopy(parent[0]["parts"][0]["state"]["input"]["checkpoint"])
+            update["decisions"][0]["reason"] = "Corrected implementation comparison"
+        parent.append(receipt(update, timestamp))
     parent.append(
         receipt(
             {
@@ -1472,10 +1518,28 @@ def test_findings_require_substantive_resolution(
     )
     records = projected_records(parent, child)[0]
     report = review_report(
-        parent, [*child, review(blocking)], records, {"NETWORK-USDC"}
+        parent, [*child, review(blocking, scope=scope)], records, {"NETWORK-USDC"}
     )
     assert (not report["errors"]) == valid
     assert child == original_child
+    if valid and scope == "draft":
+        # Correct bookkeeping still cannot substitute for current native sign-off.
+        report = review_report(
+            parent,
+            [*child, review(blocking, scope=scope)],
+            records,
+            {"NETWORK-USDC"},
+            revision="corrected-draft",
+        )
+        assert any("sign-off" in error for error in report["errors"])
+        report = review_report(
+            parent,
+            [*child, review(blocking, scope=scope), signoff("corrected-draft", 7)],
+            records,
+            {"NETWORK-USDC"},
+            revision="corrected-draft",
+        )
+        assert not report["errors"]
 
 
 def test_worker_cannot_issue_review(compact_run):
