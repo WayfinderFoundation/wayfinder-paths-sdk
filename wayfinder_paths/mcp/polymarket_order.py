@@ -3,8 +3,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal, cast
 
-from wayfinder_paths.mcp.utils import throw_if_not_number
-
 
 def as_float(value: Any) -> float | None:
     if value is None or value == "":
@@ -36,6 +34,9 @@ def validate_pm_market_order_size(
     buy_amount_pusd: float | None,
     sell_amount_shares: float | None,
 ) -> dict[str, Any]:
+    # Read-only summaries share this module; do not load execution clients there.
+    from wayfinder_paths.mcp.utils import throw_if_not_number
+
     has_buy = buy_amount_pusd is not None
     has_sell = sell_amount_shares is not None
     if has_buy and has_sell:

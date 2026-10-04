@@ -1,5 +1,8 @@
 import asyncio
 import json
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -10,6 +13,26 @@ from wayfinder_paths.core.clients.direct.DefiLlamaFreeClient import (
 )
 from wayfinder_paths.mcp.tools import thesis_quantification as tool
 from wayfinder_paths.tests.test_thesis_quantification import variant
+
+
+@pytest.mark.parametrize("module", ["assessment", "draft"])
+def test_notebook_import_does_not_initialize_execution_clients(module: str) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            f"import wayfinder_paths.core.theses.{module}; "
+            "import sys; "
+            "assert not {'wayfinder_paths.mcp.utils', "
+            "'wayfinder_paths.core.clients', 'web3', 'pandas'} & sys.modules.keys()",
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.asyncio
