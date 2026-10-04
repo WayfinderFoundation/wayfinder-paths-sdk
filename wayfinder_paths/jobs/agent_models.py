@@ -160,6 +160,10 @@ def model_panel(bars: pd.DataFrame, horizon_bars: int) -> pd.DataFrame:
         bars[["timestamp", "symbol", "open", "high", "low", "close", "volume"]],
         TIMEFRAME,
     )
+    if four_hour.empty:
+        # No complete 4h bin in the window: nothing to score, and a backtest
+        # over the same bars has no row for them either.
+        return pd.DataFrame(columns=["timestamp", "symbol", "close_4h"])
     panel = factor_panel(four_hour, horizon_bars)
     panel = panel.merge(
         four_hour[["timestamp", "symbol", "close"]].rename(
@@ -626,9 +630,6 @@ def model_scores(
     first_bar = min(stamps[0] for stamps in nonempty)
     last_bar = max(stamps[-1] for stamps in nonempty)
     latest_stamp = last_bar.floor(TIMEFRAME)
-    if latest_stamp - first_bar < pd.Timedelta(TIMEFRAME):
-        # Shorter than one complete 4h bar: nothing to score yet.
-        return _nan_scores(frames)
     warm_from = first_bar + pd.Timedelta(days=WARMUP_DAYS)
     key = _cache_key(model, tuple(sorted(frames)))
     cached = _SCORE_CACHE.get(key)

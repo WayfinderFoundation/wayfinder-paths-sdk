@@ -243,3 +243,29 @@ def test_rank_reads_drop_markets_without_a_bar_this_tick() -> None:
         ctx, ["AAA", "BBB", "EQ", "NAN", "GONE"], "model_rank"
     )
     assert ranks == {"AAA": 0.4, "BBB": -0.2}
+
+
+def test_a_growing_replay_window_scores_each_bar_like_the_backtest(tmp_path) -> None:
+    # The forward-parity replay starts both engines at the same bar: the live
+    # side grows its window from one bar, the backtest scores the slice once.
+    # Every tick must read the score the backtest has for that bar, the first
+    # hours included (a book that trades there must trade on both sides).
+    bars = _bars()
+    model = am.load(
+        am.save(
+            am.train(bars, name="probe", kind="ridge", features=["returns"]),
+            tmp_path,
+        )
+    )
+    start = bars["timestamp"].min() + pd.Timedelta(days=95, hours=1)
+    replay = bars[bars["timestamp"] >= start]
+    backtest = am.model_scores(_frames(replay), model)["S1"]["model_score"]
+    stamps = sorted(replay["timestamp"].unique())
+    for tick, stamp in enumerate(stamps[:30]):
+        window = replay[replay["timestamp"] <= stamp]
+        live = am.model_scores(_frames(window), model)["S1"]["model_score"].iloc[-1]
+        expected = backtest.iloc[tick]
+        assert (np.isnan(live) and np.isnan(expected)) or live == pytest.approx(
+            expected, rel=1e-9
+        ), (tick, live, expected)
+    assert backtest.iloc[:30].notna().any()
