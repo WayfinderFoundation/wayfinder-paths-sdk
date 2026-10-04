@@ -107,7 +107,8 @@ For each candidate:
   `model_rank` as the slot says (default: daily rotation, long the top fifth
   and short the bottom fifth, rebalanced with `ctx.every_n_bars`). Read ranks
   with `available_feature_values`, never `ctx.view.latest(symbol)`: it raises
-  for a market that printed no bar in the window. The diagnostics are out
+  for a market that printed no bar in the window. Read `use.regimes` before
+  writing the book. The diagnostics are out
   of sample on discovery data; a rank IC under about +0.02 or a t under 2 means
   the model has nothing to trade, so keep its rank as a filter or report it,
   rather than retraining with a different feature list (the budget is per

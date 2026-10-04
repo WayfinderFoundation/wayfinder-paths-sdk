@@ -3497,6 +3497,13 @@ def train_candidate_model(
                 "backtest score identically; the model is frozen after the discovery window, "
                 "so validation and forward bars are out of sample for it"
             ),
+            "regimes": (
+                "the screen runs a recent and an earlier slice; market-neutral rotations "
+                "have tended to give back more than the slice bound in bear "
+                "(macro_regime == -1). Decide the bear branch before the first screen: "
+                "stand aside there, or keep only the side the rank still earns on "
+                "(on past runs, the bottom-fifth short leg)"
+            ),
         },
     }
 
