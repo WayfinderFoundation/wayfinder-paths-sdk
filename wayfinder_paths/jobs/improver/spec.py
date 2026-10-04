@@ -184,6 +184,9 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "signal_first_extra_horizons": {"1h": [72, 168], "4h": [42, 84]},
         "signal_scan_min_events": 30,
         "policy_scan_enabled": True,
+        # Bounded models a worker may train for its candidates per campaign
+        # (evolution_train_model); 0 = off.
+        "model_training_budget": 0,
         "policy_scan_limit": 6,
         # Drop scan survivors whose exact configuration already lost on
         # validation in an earlier campaign (they return identical every time).

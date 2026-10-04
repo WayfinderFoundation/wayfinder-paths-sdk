@@ -138,6 +138,7 @@ JobAction = Literal[
     "evolution_compose",
     "evolution_redesign",
     "evolution_mechanism_grid",
+    "evolution_train_model",
     "evolution_prepare",
     "evolution_submit_seed",
     "evolution_evaluate",
@@ -594,6 +595,7 @@ async def core_jobs(
     signal_proposals: list[dict[str, Any]] | None = None,
     redesign: dict[str, Any] | None = None,
     signal_ref: str | None = None,
+    model: dict[str, Any] | None = None,
     side: Literal["long", "short"] | None = None,
     base_revision: str | None = None,
     evidence_refs: list[str] | None = None,
@@ -1513,6 +1515,18 @@ async def core_jobs(
         return await _run_job_op(
             "evolution_mechanism_grid",
             {"job_id": job_id, "signal_ref": signal_ref, "side": side},
+        )
+
+    if action == "evolution_train_model":
+        if not job_id or not candidate_id or not model:
+            return err(
+                "invalid_request",
+                "evolution_train_model requires job_id, candidate_id and model "
+                "({name, kind: ridge|tree, features: [groups or columns], horizon: 4h|1d|3d})",
+            )
+        return await _run_job_op(
+            "evolution_train_model",
+            {"job_id": job_id, "candidate_id": candidate_id, "model": dict(model)},
         )
 
     if action == "evolution_prepare":

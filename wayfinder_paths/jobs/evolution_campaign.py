@@ -32,6 +32,7 @@ from typing import Any
 import pandas as pd
 import yaml
 
+from wayfinder_paths.jobs import agent_models
 from wayfinder_paths.jobs.archive import (
     ARCHIVE_STATUSES,
     elite_activity_eligible,
@@ -3237,6 +3238,76 @@ def _cross_sectional_instruction(block: Mapping[str, Any]) -> str:
     )
 
 
+def _slot_model_request(
+    slot_id: str, raw: Any, policy: Mapping[str, Any]
+) -> dict[str, Any]:
+    if int(policy.get("model_training_budget") or 0) <= 0:
+        raise ValueError(f"slot {slot_id} asks for a model; this campaign trains none")
+    if not isinstance(raw, Mapping):
+        raise ValueError(
+            f"slot {slot_id} model must be an object {{kind, features, horizon}}"
+        )
+    kind = str(raw.get("kind") or "ridge")
+    horizon = str(raw.get("horizon") or "1d")
+    features = [str(item) for item in raw.get("features") or []]
+    menu = {c for cols in agent_models.FEATURE_GROUPS.values() for c in cols}
+    unknown = [
+        f for f in features if f not in agent_models.FEATURE_GROUPS and f not in menu
+    ]
+    if kind not in agent_models.KINDS or horizon not in agent_models.HORIZONS:
+        raise ValueError(
+            f"slot {slot_id} model kind must be one of {agent_models.KINDS} and horizon "
+            f"one of {sorted(agent_models.HORIZONS)}"
+        )
+    if not features or unknown:
+        raise ValueError(
+            f"slot {slot_id} model features must be groups from "
+            f"{sorted(agent_models.FEATURE_GROUPS)} or their columns; unknown: {unknown}"
+        )
+    return {"kind": kind, "horizon": horizon, "features": features}
+
+
+def _model_instruction(
+    store: JobStore,
+    job_id: str,
+    policy: Mapping[str, Any],
+    state: Mapping[str, Any],
+) -> str:
+    """When the campaign may train models: what one is for, how a slot asks for
+    it, and the bound that keeps it one design option among several."""
+    budget = int(policy.get("model_training_budget") or 0)
+    if budget <= 0:
+        return ""
+    symbols = list(
+        (
+            (_load_job_yaml(store.job_dir(job_id)).get("execution_spec") or {}).get(
+                "data_contract"
+            )
+            or {}
+        ).get("symbols")
+        or []
+    )
+    if len(symbols) < agent_models.MIN_SYMBOLS:
+        return ""
+    used = int((state.get("counts") or {}).get("models_trained") or 0)
+    return (
+        f"Trained models ({used}/{budget} used this campaign): with {len(symbols)} "
+        "symbols a cross-sectional model can rank the universe. At most "
+        f"{budget} slots may ask for one, and they should be one design among "
+        "signal designs, not all of them: give the slot an optional field "
+        'model={"kind": "ridge" or "tree", "features": [groups], "horizon": "1d"} '
+        "and the worker trains it on discovery data with evolution_train_model "
+        "(walk-forward, frozen after discovery, reporting out-of-sample rank IC) "
+        "and trades its rank as a daily rotation (long the top fifth, short the "
+        "bottom fifth). Evidence: a one-day horizon is the only one whose ranking "
+        "survived 8 bps a side; ridge on returns, trend and realized moments "
+        "(plus funding where declared) reached rank IC about +0.05, trees about "
+        "+0.04; intraday horizons lost to fees. Input groups: "
+        f"{', '.join(sorted(agent_models.FEATURE_GROUPS))} (funding and factor_feed "
+        "need those features declared). "
+    )
+
+
 def _mechanism_instruction(
     job_id: str, pack: Mapping[str, Any], offered: Sequence[Mapping[str, Any]]
 ) -> str:
@@ -3308,6 +3379,114 @@ def _signal_def_for_entry(entry: Mapping[str, Any]) -> Any:
     if spec is None:
         raise ValueError(f"unknown library signal {entry['signal']!r}")
     return spec
+
+
+MODEL_STATUSES = {
+    "prepared",
+    "repair_pending",
+    "quick_complete",
+    "low_fidelity_rejected",
+}
+
+
+def train_candidate_model(
+    store: JobStore,
+    job_id: str,
+    *,
+    candidate_id: str,
+    model: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Fit one bounded cross-sectional model for a candidate and save it in the
+    candidate's bundle (workspace/models/<name>/). Charged against the
+    campaign's ``model_training_budget``; trains on the campaign's discovery
+    data only, with the candidate's declared features merged, so the inputs it
+    can use are the ones its strategy will see."""
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = _active_campaign(store, job_id)
+        campaign_id = str(state["campaign_id"])
+        policy = _campaign_policy(store, job_id, campaign_id)
+        budget = int(policy.get("model_training_budget") or 0)
+        used = int((state.get("counts") or {}).get("models_trained") or 0)
+        if budget <= 0:
+            raise ValueError("model training is not enabled for this campaign")
+        if used >= budget:
+            raise ValueError(
+                f"the campaign's model budget is spent ({used}/{budget}); build this "
+                "candidate from signals, or reuse a model another candidate trained"
+            )
+        candidate = _candidate(state, candidate_id)
+        if candidate.get("status") not in MODEL_STATUSES:
+            raise ValueError(
+                f"candidate {candidate_id} is {candidate.get('status')}; models train before full development"
+            )
+        candidate_root = resolve_candidate_bundle(
+            store, job_id, candidate, campaign_id=campaign_id
+        )
+    subject = _load_subject(store, job_id, candidate_root, campaign_id=campaign_id)
+    discovery = _discovery_dataset(subject["dataset"], policy)
+    bars = subject["dataset"].bars.to_frame()
+    discovery_end = pd.Timestamp(discovery.bars.timestamps[-1])
+    spec = dict(model)
+    trained = agent_models.train(
+        bars[pd.to_datetime(bars["timestamp"], utc=True) <= discovery_end],
+        name=str(spec.get("name") or ""),
+        kind=str(spec.get("kind") or "ridge"),
+        features=list(spec.get("features") or []),
+        horizon=str(spec.get("horizon") or "1d"),
+        discovery_end=discovery_end,
+        params=dict(spec.get("params") or {}),
+    )
+    path = agent_models.save(trained, candidate_root)
+    record = {
+        "name": trained.name,
+        "kind": trained.kind,
+        "features": trained.features,
+        "horizon": trained.horizon,
+        "diagnostics": trained.diagnostics,
+        "path": str(path.relative_to(candidate_root)),
+        "trained_at": utc_now_iso(),
+    }
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = _active_campaign(store, job_id)
+        counts = state.setdefault("counts", {})
+        counts["models_trained"] = int(counts.get("models_trained") or 0) + 1
+        target = _candidate(state, candidate_id)
+        target.setdefault("models", []).append(record)
+        _save_campaign(store, job_id, state)
+    store.append_journal(
+        job_id,
+        {
+            "type": "evolution_model_trained",
+            "campaign_id": campaign_id,
+            "candidate_id": candidate_id,
+            **record,
+        },
+    )
+    bar_seconds = (
+        bar_interval_seconds(subject["spec"].data_contract.get("bar_interval")) or 900
+    )
+    warmup_bars = int(agent_models.WARMUP_DAYS * 86_400 // bar_seconds) + 8
+    return {
+        "status": "trained",
+        **record,
+        "budget": {"used": counts["models_trained"], "limit": budget},
+        "use": {
+            "precompute": (
+                "from pathlib import Path\n"
+                "from wayfinder_paths.jobs.agent_models import load, model_scores\n"
+                f"MODEL = load(Path(__file__).resolve().parents[1] / 'models' / {trained.name!r})\n"
+                "# in precompute(frames): scores = model_scores(frames, MODEL) -> per symbol "
+                "columns model_score, model_rank (-0.5 worst .. +0.5 best); merge them into "
+                "the frames you return"
+            ),
+            "warmup_bars": warmup_bars,
+            "note": (
+                f"execution_params.warmup_bars must be at least {warmup_bars} so live and "
+                "backtest score identically; the model is frozen after the discovery window, "
+                "so validation and forward bars are out of sample for it"
+            ),
+        },
+    }
 
 
 def mechanism_grid(
@@ -3887,7 +4066,17 @@ def _validate_campaign_design(
             normalized_slot["research_seed_id"] = research_seed_id
         if near_miss_id:
             normalized_slot["near_miss_id"] = near_miss_id
+        if slot.get("model"):
+            normalized_slot["model"] = _slot_model_request(
+                slot_id, slot["model"], manifest["policy"]
+            )
         normalized_slots.append(normalized_slot)
+    model_slots = sum(1 for slot in normalized_slots if slot.get("model"))
+    model_budget = int(manifest["policy"].get("model_training_budget") or 0)
+    if model_slots > model_budget:
+        raise ValueError(
+            f"{model_slots} slots ask for a model; the campaign may train {model_budget}"
+        )
     wildcard_count = sum(bool(slot["wildcard"]) for slot in normalized_slots)
     if extension:
         if wildcard_count:
@@ -4403,6 +4592,7 @@ def _prepare_candidate(
         "attempt_count": 0,
         "attempts": [],
         "prepared_at": utc_now_iso(),
+        **({"model_request": design_slot["model"]} if design_slot.get("model") else {}),
     }
     atomic_write_json(candidate_root / "candidate.json", candidate)
     state["candidates"].append(candidate)
@@ -7425,6 +7615,7 @@ def campaign_prompt_block(
             )
             + _cross_sectional_instruction(validated.get("cross_sectional") or {})
             + _policy_scan_instruction(diagnostic_pack.get("policy_scan") or {})
+            + _model_instruction(store, job_id, policy, state)
         )
         regime_context = manifest.get("regime_context") or {}
         specialist_design = bool(
