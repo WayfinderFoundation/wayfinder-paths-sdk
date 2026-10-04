@@ -205,14 +205,27 @@ class DefiLlamaFreeClient:
         chain_rows = _last_daily_breakdown_rows(
             result.get("totalDataChartBreakdown"), days=days
         )
+        totals = _overview_totals(result)
+        # Summary `chain` can be a legacy label, not a filter on these totals.
+        provider_chain_label = totals.pop("chain", None)
         response["result"] = {
             "protocolSlug": protocol_slug,
             "dataType": normalized_type,
+            "name": result.get("name"),
+            "parentProtocol": result.get("parentProtocol"),
+            "chains": result.get("chains"),
+            "providerChainLabel": provider_chain_label,
+            "coverageNote": (
+                "Totals and daily rows cover this listing's reported deployments, "
+                "not necessarily its parent or the entire business. "
+                "No chain filter was applied. providerChainLabel is provider metadata, "
+                "not the scope of the totals; use chainDailyRows for per-chain values."
+            ),
             "description": result.get("description"),
             "methodology": result.get("methodology"),
             "methodologyURL": result.get("methodologyURL"),
             "breakdownMethodology": result.get("breakdownMethodology"),
-            "totals": _overview_totals(result),
+            "totals": totals,
             "periodDefinitions": PERIOD_DEFINITIONS,
             "periodComparisons": _period_comparisons(result),
             "periodComparisonFields": PERIOD_COMPARISON_FIELDS,

@@ -48,14 +48,18 @@ async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     Original research is resolved in code. Only provide updated_research when facts
     change; valid corrections persist through later decisions for the same entity
     and research_ref. A different research_ref starts from that saved source.
-    Record review_resolutions with exact public evidence_part_ids from
-    notebook status; match request_summary and paginate public_observations_page.
+    Record review_resolutions with exact public evidence_part_ids from case
+    source_reads or existing claims; only use the status observation index when
+    that source is not already linked. Read the original result before citing it.
     Never guess a tool-part ID. accepted is only for nonblocking uncertainty.
     handoff_gaps acknowledges an incomplete worker after one targeted continuation,
     never fabricated research.
-    Compact shapes: discovery={schema_version:7,stage:discovery,discoveries:[...]};
-    judged={schema_version:7,stage:judged,decisions:[...]} (at most six changed cases);
-    draft={schema_version:7,stage:draft,draft:{variant:...}} (one budget per write).
+    Call shapes: checkpoint={schema_version:7,stage:"discovery",discoveries:[...]};
+    checkpoint={schema_version:7,stage:"judged",decisions:[...]} (at most six cases);
+    checkpoint={schema_version:7,stage:"draft",draft:{metadata:...,components:[...]}};
+    checkpoint={schema_version:7,stage:"draft",draft:{variant:...}} (one budget).
+    Every draft write repeats checkpoint.schema_version=7 and checkpoint.stage="draft".
+    Proposal metadata has schema_version=1 inside draft.metadata, never draft itself.
     Do not put a draft under judged or a worker handoff under a parent stage.
     After any review correction, resume the SAME reviewer to sign the new
     review.revision from notebook status. Parent resolution receipts aren't approval.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any, Literal
 from unittest.mock import AsyncMock
 
@@ -535,6 +536,76 @@ async def test_defillama_protocol_fees_preserves_definitions_and_reported_totals
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "data_type", ["dailyFees", "dailyRevenue", "dailyHoldersRevenue"]
+)
+@pytest.mark.parametrize("chains", [["Ethereum", "OP Mainnet"], ["Ethereum"], None])
+async def test_protocol_fee_totals_keep_listing_scope_not_legacy_chain_label(
+    monkeypatch: pytest.MonkeyPatch, data_type: str, chains: list[str] | None
+) -> None:
+    # The Aave V3 summary labels `chain=Optimism` even though totals span deployments.
+    timestamp = int(datetime.now(UTC).timestamp())
+    body: dict[str, Any] = {
+        "name": "Example V3",
+        "parentProtocol": "parent#example",
+        "chain": "Optimism",
+        "total30d": 300,
+        "totalDataChart": [[timestamp, 100]],
+        "totalDataChartBreakdown": [
+            [
+                timestamp,
+                {"Ethereum": {"Example V3": 90}, "OP Mainnet": {"Example V3": 10}},
+            ]
+        ],
+    }
+    if chains is not None:
+        body["chains"] = chains
+    _FakeAsyncClient.get_body = body
+    monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    result = (
+        await llama_module.DefiLlamaFreeClient().protocol_fees(
+            "example-v3", data_type=data_type
+        )
+    )["result"]
+
+    assert result["name"] == "Example V3"
+    assert result["parentProtocol"] == "parent#example"
+    assert result["chains"] == chains  # Missing coverage is not inferred from `chain`.
+    assert result["providerChainLabel"] == "Optimism"
+    assert result["totals"] == {"total30d": 300}
+    assert result["dailyRows"][0]["value"] == 100
+    assert (
+        result["chainDailyRows"][0]["breakdown"]
+        == body["totalDataChartBreakdown"][0][1]
+    )
+    assert result["dataType"] == data_type
+    assert "No chain filter" in result["coverageNote"]
+    assert "not necessarily its parent" in result["coverageNote"]
+    assert body["chain"] == "Optimism"  # Do not mutate the provider observation.
+
+
+@pytest.mark.asyncio
+async def test_chain_fee_overview_still_preserves_its_chain_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.get_body = {
+        "chain": "Optimism",
+        "allChains": ["Ethereum", "Optimism"],
+        "total30d": 30,
+        "protocols": [],
+    }
+    monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    response = await llama_module.DefiLlamaFreeClient().fees_overview(chain="Optimism")
+
+    assert _FakeAsyncClient.calls[0][1] == "https://api.llama.fi/overview/fees/Optimism"
+    assert response["result"]["totals"]["chain"] == "Optimism"
+    assert response["result"]["totals"]["total30d"] == 30
+
+
+@pytest.mark.asyncio
 async def test_defillama_protocol_fees_rejects_unknown_metric_before_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -577,6 +648,11 @@ async def test_defillama_tool_keeps_large_chain_history_opt_in(
     metrics = {
         "protocolSlug": "example",
         "dataType": data_type,
+        "name": "Example",
+        "parentProtocol": "parent#example",
+        "chains": [f"Chain {chain}" for chain in range(40)],
+        "providerChainLabel": "Chain 0",
+        "coverageNote": "No chain filter was applied.",
         "totals": {"total30d": 120000},
         "dailyRows": [{"date": row["date"], "value": 4000} for row in breakdown],
         "methodology": {"Revenue": "Net protocol fees, not holder distributions."},

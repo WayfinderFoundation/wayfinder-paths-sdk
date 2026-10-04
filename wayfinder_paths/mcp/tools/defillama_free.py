@@ -75,6 +75,8 @@ async def research_defillama_free(
             current pace. Fees and buybacks funded from those fees are the same
             flow at different stages, not additive revenue. Each row's slug,
             parentProtocol and chains define its scope, not the entire business.
+            protocol_fees aggregates the requested listing without a chain filter;
+            providerChainLabel is metadata, not the totals' chain scope.
         days: Lookback days for protocol_fees/protocol_tvl_history.
         limit: Result cap for page-able collection datasets.
         cursor: Page cursor returned by a prior response, or "_".
