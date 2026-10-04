@@ -385,16 +385,20 @@ class DefiLlamaFreeClient:
         missing = []
         if protocol_slugs:
             wanted = {slug.casefold() for slug in protocol_slugs}
-            result["protocols"] = [
-                p
-                for p in result["protocols"]
-                if isinstance(p, dict)
-                and str(p.get("slug") or p.get("module") or "").casefold() in wanted
-            ]
-            found = {
-                str(p.get("slug") or p.get("module") or "").casefold()
-                for p in result["protocols"]
-            }
+            found: set[str] = set()
+            selected = []
+            for protocol in result["protocols"]:
+                if not isinstance(protocol, dict):
+                    continue
+                aliases = {
+                    str(protocol[field]).casefold()
+                    for field in ("slug", "module")
+                    if protocol.get(field)
+                }
+                if matched := wanted & aliases:
+                    selected.append(protocol)
+                    found.update(matched)
+            result["protocols"] = selected
             missing = sorted(wanted - found)
         response = _compact_overview_response(
             response,

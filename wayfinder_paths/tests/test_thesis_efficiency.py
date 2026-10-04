@@ -143,6 +143,62 @@ async def test_bulk_fees_filter_before_limit_and_preserve_missing():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "data_type", ["dailyFees", "dailyRevenue", "dailyHoldersRevenue"]
+)
+@pytest.mark.parametrize("include_slug", [False, True])
+async def test_bulk_fees_accepts_exact_module_alias_without_merging_family(
+    data_type: str,
+    include_slug: bool,
+) -> None:
+    client = DefiLlamaFreeClient()
+    client._get = AsyncMock(
+        return_value={
+            "url": "https://api.llama.fi/overview/fees",
+            "result": {
+                "protocols": [
+                    {"slug": "unrelated", "module": "unrelated", "total24h": 1000},
+                    {
+                        "slug": "jupiter-aggregator",
+                        "module": "jupiter",
+                        "parentProtocol": "parent#jupiter",
+                        "total24h": None,
+                    },
+                    {
+                        "slug": "jupiter-perpetual-exchange",
+                        "module": "jupiter-perpetual",
+                        "parentProtocol": "parent#jupiter",
+                        "total24h": 500,
+                    },
+                    {"module": "module-only", "total24h": 0},
+                ]
+            },
+        }
+    )
+    result = (
+        await client.fees_overview(
+            limit=1,
+            protocol_slugs=[
+                "JUPITER",
+                *(["jupiter-aggregator"] if include_slug else []),
+                "module-only",
+                "parent#jupiter",
+                "missing",
+            ],
+            data_type=data_type,
+        )
+    )["result"]
+    assert [row["slug"] for row in result["items"]] == ["jupiter-aggregator"]
+    assert result["items"][0]["total24h"] is None
+    assert result["items"][0]["parentProtocol"] == "parent#jupiter"
+    assert result["page"]["totalAvailable"] == 2
+    assert result["page"]["hasMore"]
+    # Both aliases are found before pagination; family membership is not a match.
+    assert result["unavailableSlugs"] == ["missing", "parent#jupiter"]
+    assert client._get.await_count == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("compare_implementations", [False, True])
 async def test_alternatives_are_measured_not_allocated_and_sizing_reuses_history(
     compare_implementations: bool,
