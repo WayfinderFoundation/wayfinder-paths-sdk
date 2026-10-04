@@ -112,7 +112,13 @@ class CandidateCase(CaseResearch):
 
 
 class CaseDecision(Contract):
-    """Parent judgment over immutable research; changes never overwrite its source."""
+    """Parent judgment over immutable research; changes never overwrite its source.
+
+    Decision-only updates retain earlier implementation_checks/comparison_refs
+    when their lists are empty. Supply a nonempty replacement list, or supply
+    updated_research to replace the full case (including clearing those lists).
+    Inheritance is scoped to the same entity and exact research_ref.
+    """
 
     research_ref: CaseReference
     entity: Identifier

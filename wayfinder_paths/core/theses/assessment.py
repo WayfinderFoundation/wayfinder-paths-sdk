@@ -168,6 +168,12 @@ def projected_records(
                     if k not in {"research_ref", "updated_research"}
                 },
             }
+            # A decision-only correction retains its prior implementation and
+            # comparison evidence. A full research replacement starts fresh.
+            if decision["updated_research"] is None:
+                for field in ("implementation_checks", "comparison_refs"):
+                    if not decision[field]:
+                        payload[field] = deepcopy(research.get(field, []))
             try:
                 # Reuse the existing judgment checks, including viable alternatives.
                 validated = ResearchCheckpoint.model_validate(
@@ -185,8 +191,9 @@ def projected_records(
                 ]
                 continue
             errors_by_entity.pop(key, None)
-            current_research[key] = (source_key, research)
-            cp["candidates"].append(validated.candidates[0].model_dump())
+            current = validated.candidates[0].model_dump()
+            current_research[key] = (source_key, current)
+            cp["candidates"].append(current)
             if ref["entity"].casefold() != decision["entity"].casefold():
                 cp["discovery_dispositions"].append(
                     {

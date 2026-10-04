@@ -102,6 +102,58 @@ def test_research_correction_survives_later_decision_only_update(
     assert (parent, children) == original
 
 
+@pytest.mark.parametrize(
+    "change", ["decision_only", "full_replacement", "source", "entity"]
+)
+def test_decision_only_update_preserves_implementation_and_comparison_evidence(
+    decision_run: Run, change: str
+) -> None:
+    parent, children = decision_run
+    cp = deepcopy(parent[1]["parts"][0]["state"]["input"]["checkpoint"])
+    decision = cp["decisions"][0]
+    checks = [
+        {
+            "kind": "spot",
+            "instrument_id": "network-solana",
+            "status": "viable",
+            "reason": "Observed alternate implementation",
+            "observations": ["Saved chain-scoped lookup"],
+        }
+    ]
+    worker = deepcopy(children[0]["parts"][0]["state"]["input"]["checkpoint"])
+    worker["research_cases"][0]["entity"] = "rival"
+    children.append(
+        receipt(worker, 1, session="other-worker", agent="thesis-researcher")
+    )
+    refs = [{"session_id": "other-worker", "checkpoint_id": "t1", "entity": "rival"}]
+    decision.update(implementation_checks=checks, comparison_refs=refs)
+    parent.append(receipt(cp, 3))
+    decision.update(
+        reason="Corrected rationale without changing the implementation comparison",
+        implementation_checks=[],
+        comparison_refs=[],
+    )
+    if change == "full_replacement":
+        decision["updated_research"] = deepcopy(
+            children[0]["parts"][0]["state"]["input"]["checkpoint"]["research_cases"][0]
+        )
+    elif change == "source":
+        decision["research_ref"] = dict(refs[0])
+    elif change == "entity":
+        decision["entity"] = "different-underlying"
+    parent.append(receipt(cp, 4))
+    original = deepcopy((parent, children))
+    projected, _, errors = projected_records(parent, children)
+    assert not errors
+    current = projected[-1]["checkpoint"]["candidates"][0]
+    assert current["implementation_checks"] == (
+        checks if change == "decision_only" else []
+    )
+    assert current["comparison_refs"] == (refs if change == "decision_only" else [])
+    assert current["reason"] == decision["reason"]
+    assert (parent, children) == original
+
+
 @pytest.mark.parametrize("change", ["source", "entity", "invalid_update"])
 def test_research_correction_is_scoped_and_only_valid_updates_replace_it(
     decision_run: Run, change: str
