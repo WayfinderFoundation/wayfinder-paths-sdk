@@ -34,6 +34,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import HistGradientBoostingRegressor
 
 from wayfinder_paths.jobs.factor_model import (
     FACTOR_RANK_FEATURE,
@@ -128,7 +129,7 @@ def _realized(bars: pd.DataFrame, stamps: pd.DatetimeIndex) -> pd.DataFrame:
         frame = frame.set_index("timestamp")
         logc = np.log(frame["close"].astype(float))
         r = logc.diff()
-        f = pd.DataFrame(index=frame.index)
+        f: dict[str, pd.Series] = {}
         for days in (1, 3):
             n = per_day * days
             r2 = (r**2).rolling(n).sum()
@@ -145,9 +146,10 @@ def _realized(bars: pd.DataFrame, stamps: pd.DatetimeIndex) -> pd.DataFrame:
             f["fund_7d"] = fund.rolling(per_day * 7).mean()
         if FACTOR_RANK_FEATURE in frame:
             f["xs_factor_rank_in"] = frame[FACTOR_RANK_FEATURE].astype(float)
-        f = f[f.index.isin(stamps)]
-        f["symbol"] = symbol
-        out.append(f.rename_axis("timestamp").reset_index())
+        columns = pd.DataFrame(f, index=frame.index)
+        columns = columns[columns.index.isin(stamps)].copy()
+        columns["symbol"] = symbol
+        out.append(columns.rename_axis("timestamp").reset_index())
     return pd.concat(out, ignore_index=True)
 
 
@@ -300,8 +302,6 @@ def _fit_tree(
     horizon_bars: int,
     params: Mapping[str, Any],
 ) -> TreeModel:
-    from sklearn.ensemble import HistGradientBoostingRegressor
-
     bar = pd.Timedelta(TIMEFRAME)
     ridge = fit_ridge(
         panel[["timestamp", "symbol", *features, "y_xs"]],
@@ -380,6 +380,7 @@ def train(
     trained = TrainedModel(name=name, kind=kind, features=columns, horizon=horizon)
     train_end = first
     while train_end <= last:
+        model: RidgeFactorModel | TreeModel
         if kind == "ridge":
             model = fit_ridge(
                 panel[["timestamp", "symbol", *columns, "y_xs"]],
@@ -499,29 +500,25 @@ def load(path: str | Path) -> TrainedModel:
     return model
 
 
-# Scores per (model, symbol set, 4h stamp), kept only where the window that
-# produced them held the full warmup. Live ticks and the forward-parity replay
-# call precompute every bar on a sliding window, but a 4h score only changes
-# when a 4h bar closes: recomputing once per bin instead of once per tick is
-# what keeps the parity replay in minutes.
-_SCORE_CACHE: dict[tuple[Any, ...], pd.DataFrame] = {}
+# Warm scores per (model, symbol set) and symbol, indexed by 4h close. A
+# score is warm when its window held WARMUP_DAYS before it; warm scores do not
+# depend on where the window started, so they carry across the sliding windows
+# live ticks and the forward-parity replay hand precompute every bar. A score
+# changes only when a 4h bar closes: between closes a call reads the cache.
+_SCORE_CACHE: dict[tuple[Any, ...], dict[str, pd.DataFrame]] = {}
+# The last full pass per key, cold rows included, reused for the same window
+# start and 4h close: a bounded replay's opening month grows from one bar and
+# must see the scores the one-pass backtest computed for those bars.
+_RECENT_SCORES: dict[
+    tuple[Any, ...], tuple[pd.Timestamp, pd.Timestamp, dict[str, pd.DataFrame]]
+] = {}
+# Each key's previous window (start, total rows). The warm cache serves only a
+# live-style slide of it: same length, start a little later. Any other call (a
+# backtest over a new slice) takes a full pass, so a backtest never depends on
+# what ran before it in the process.
+_LAST_WINDOW: dict[tuple[Any, ...], tuple[pd.Timestamp, int]] = {}
+_SLIDE_LIMIT = pd.Timedelta(days=1)
 _SCORE_CACHE_LIMIT = 64
-
-
-def _same_data(cached: pd.DataFrame, bars: pd.DataFrame) -> bool:
-    """The cache holds a series, not a dataset: serve it only when these bars
-    carry the same closes at the newest stamp both have."""
-    stamps = cached.index.get_level_values(0)
-    shared = stamps[stamps <= bars["timestamp"].max()]
-    if len(shared) == 0:
-        return False
-    stamp = shared.max()
-    here = bars[bars["timestamp"] == stamp].set_index("symbol")["close"].astype(float)
-    there = cached.xs(stamp, level="timestamp")["close_4h"]
-    common = here.index.intersection(there.index)
-    return len(common) > 0 and np.allclose(
-        here.loc[common], there.loc[common], rtol=1e-12, atol=0
-    )
 
 
 def _cache_key(model: TrainedModel, symbols: tuple[str, ...]) -> tuple[Any, ...]:
@@ -534,64 +531,156 @@ def _cache_key(model: TrainedModel, symbols: tuple[str, ...]) -> tuple[Any, ...]
     )
 
 
+def _same_closes(
+    cached: Mapping[str, pd.DataFrame],
+    frames: Mapping[str, pd.DataFrame],
+    stamps_by_symbol: Mapping[str, pd.DatetimeIndex],
+    stamp: pd.Timestamp,
+) -> bool:
+    """The cache holds a series, not a dataset: serve it only when these
+    frames carry the same closes at the stamp."""
+    matched = 0
+    for symbol, frame in frames.items():
+        series = cached.get(symbol)
+        if series is None or stamp not in series.index:
+            continue
+        stamps = stamps_by_symbol[symbol]
+        at = stamps.searchsorted(stamp, side="right") - 1
+        if at < 0 or stamps[at] != stamp:
+            continue
+        if not np.isclose(
+            float(frame["close"].iloc[at]),
+            float(series.at[stamp, "close_4h"]),
+            rtol=1e-12,
+            atol=0,
+        ):
+            return False
+        matched += 1
+    return matched > 0
+
+
+def _nan_scores(frames: Mapping[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    return {
+        symbol: pd.DataFrame(
+            {"model_score": np.nan, "model_rank": np.nan}, index=range(len(frame))
+        )
+        for symbol, frame in frames.items()
+    }
+
+
+def _pass_scores(
+    frames: Mapping[str, pd.DataFrame], model: TrainedModel
+) -> dict[str, pd.DataFrame]:
+    panel = model_panel(bars_from_frames(frames), HORIZONS[model.horizon])
+    scored = model.score(panel).merge(
+        panel[["timestamp", "symbol", "close_4h"]], on=["timestamp", "symbol"]
+    )
+    return {
+        str(symbol): rows.set_index("timestamp")[
+            ["model_score", "model_rank", "close_4h"]
+        ].sort_index()
+        for symbol, rows in scored.groupby("symbol")
+    }
+
+
+def _carry_warm(
+    full: Mapping[str, pd.DataFrame],
+    warm_from: pd.Timestamp,
+    previous: Mapping[str, pd.DataFrame],
+) -> dict[str, pd.DataFrame]:
+    warm: dict[str, pd.DataFrame] = {}
+    for symbol, series in full.items():
+        series = series[series.index >= warm_from]
+        if symbol in previous:
+            series = pd.concat([previous[symbol], series])
+            series = series[~series.index.duplicated(keep="last")].sort_index()
+        warm[symbol] = series
+    return warm
+
+
 def model_scores(
     frames: Mapping[str, pd.DataFrame], model: TrainedModel
 ) -> dict[str, pd.DataFrame]:
     """For ``precompute``: per symbol, ``model_score`` and ``model_rank``
     (-0.5 worst .. +0.5 best in the universe) aligned to the strategy's own
-    bars, stepped forward from each 4h close."""
-    bars = bars_from_frames(frames)
-    if resample_bars(
-        bars[["timestamp", "symbol", "open", "high", "low", "close", "volume"]],
-        TIMEFRAME,
-    ).empty:
-        # A window shorter than one complete 4h bar (the first ticks of a
-        # bounded replay) has nothing to score yet.
-        return {
-            symbol: pd.DataFrame(
-                {"model_score": np.nan, "model_rank": np.nan}, index=range(len(frame))
-            )
-            for symbol, frame in frames.items()
-        }
-    symbols = tuple(sorted(frames))
-    key = _cache_key(model, symbols)
+    bars, stepped forward from each 4h close. Rows inside the window's first
+    ``WARMUP_DAYS`` are scored from the shorter history the window has (a
+    35-day screen trades on them), except on a live-style slide, which reads
+    warm scores from the cache and leaves those rows NaN: its latest row is
+    always warm, and it is the row a live decision reads."""
+    stamps_by_symbol = {
+        symbol: pd.DatetimeIndex(pd.to_datetime(frame["timestamp"], utc=True))
+        for symbol, frame in frames.items()
+    }
+    nonempty = [stamps for stamps in stamps_by_symbol.values() if len(stamps)]
+    if not nonempty:
+        return _nan_scores(frames)
+    first_bar = min(stamps[0] for stamps in nonempty)
+    latest_stamp = max(stamps[-1] for stamps in nonempty).floor(TIMEFRAME)
+    if latest_stamp - first_bar < pd.Timedelta(TIMEFRAME):
+        # Shorter than one complete 4h bar: nothing to score yet.
+        return _nan_scores(frames)
+    warm_from = first_bar + pd.Timedelta(days=WARMUP_DAYS)
+    key = _cache_key(model, tuple(sorted(frames)))
     cached = _SCORE_CACHE.get(key)
-    last_bar = bars["timestamp"].max()
-    latest_stamp = last_bar.floor(TIMEFRAME)
-    if cached is not None and not _same_data(cached, bars):
-        cached = None
-    if cached is None or latest_stamp not in cached.index.get_level_values(0):
-        panel = model_panel(bars, HORIZONS[model.horizon])
-        scored = model.score(panel).merge(
-            panel[["timestamp", "symbol", "close_4h"]], on=["timestamp", "symbol"]
+    recent = _RECENT_SCORES.get(key)
+    rows = sum(len(stamps) for stamps in stamps_by_symbol.values())
+    last = _LAST_WINDOW.get(key)
+    _LAST_WINDOW[key] = (first_bar, rows)
+    sliding = (
+        last is not None
+        and last[1] == rows
+        and last[0] <= first_bar <= last[0] + _SLIDE_LIMIT
+    )
+    if (
+        recent is not None
+        and recent[:2] == (first_bar, latest_stamp)
+        and _same_closes(recent[2], frames, stamps_by_symbol, latest_stamp)
+    ):
+        source, cold_from = recent[2], None
+    elif (
+        sliding
+        and latest_stamp >= warm_from
+        and cached is not None
+        and _same_closes(cached, frames, stamps_by_symbol, latest_stamp)
+    ):
+        source, cold_from = cached, warm_from
+    else:
+        full = _pass_scores(frames, model)
+        # Warm rows from earlier windows carry over while this window agrees
+        # with them one 4h bar back; otherwise the cache starts over.
+        previous = (
+            cached
+            if cached is not None
+            and _same_closes(
+                cached, frames, stamps_by_symbol, latest_stamp - pd.Timedelta(TIMEFRAME)
+            )
+            else {}
         )
-        scored = scored.set_index(["timestamp", "symbol"]).sort_index()
-        warm_from = bars["timestamp"].min() + pd.Timedelta(days=WARMUP_DAYS)
-        complete = scored[scored.index.get_level_values(0) >= warm_from]
-        merged = complete if cached is None else pd.concat([cached, complete])
-        merged = merged[~merged.index.duplicated(keep="last")].sort_index()
         if len(_SCORE_CACHE) >= _SCORE_CACHE_LIMIT:
             _SCORE_CACHE.clear()
-        _SCORE_CACHE[key] = merged
-        # Rows before the warm boundary come from this window's own pass.
-        source = pd.concat(
-            [scored[scored.index.get_level_values(0) < warm_from], merged]
-        )
-        source = source[~source.index.duplicated(keep="last")].sort_index()
-    else:
-        source = cached
+            _RECENT_SCORES.clear()
+            _LAST_WINDOW.clear()
+            _LAST_WINDOW[key] = (first_bar, rows)
+        _SCORE_CACHE[key] = _carry_warm(full, warm_from, previous)
+        _RECENT_SCORES[key] = (first_bar, latest_stamp, full)
+        source, cold_from = full, None
     out = {}
-    for symbol, frame in frames.items():
-        stamps = pd.DatetimeIndex(pd.to_datetime(frame["timestamp"], utc=True))
-        mine = (
-            source.xs(symbol, level="symbol")[["model_score", "model_rank"]]
-            if symbol in source.index.get_level_values(1)
-            else None
-        )
-        if mine is None:
+    for symbol, stamps in stamps_by_symbol.items():
+        series = source.get(symbol)
+        if series is None or series.empty:
             out[symbol] = pd.DataFrame(
                 {"model_score": np.nan, "model_rank": np.nan}, index=range(len(stamps))
             )
             continue
-        out[symbol] = mine.reindex(stamps, method="ffill").reset_index(drop=True)
+        # Step each score forward from its 4h close (a searchsorted ffill: this
+        # runs every live tick). Cached rows from before this window's warm
+        # boundary belong to earlier windows, not this one.
+        first = 0 if cold_from is None else series.index.searchsorted(cold_from)
+        at = series.index.searchsorted(stamps, side="right") - 1
+        values = series[["model_score", "model_rank"]].to_numpy(float)[
+            np.maximum(at, 0)
+        ]
+        values[at < first] = np.nan
+        out[symbol] = pd.DataFrame(values, columns=["model_score", "model_rank"])
     return out

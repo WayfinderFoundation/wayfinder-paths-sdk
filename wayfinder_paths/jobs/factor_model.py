@@ -83,7 +83,8 @@ def _symbol_factors(frame: pd.DataFrame) -> pd.DataFrame:
     close = frame["close"]
     logc = np.log(close)
     r1 = logc.diff()
-    f = pd.DataFrame(index=frame.index)
+    # Columns collected first: one frame build instead of a column insert each.
+    f: dict[str, pd.Series] = {}
     for k in _RET_LAGS:
         f[f"r_{k}"] = logc - logc.shift(k)
     for k in (16, 64):
@@ -115,7 +116,7 @@ def _symbol_factors(frame: pd.DataFrame) -> pd.DataFrame:
     f["hour_cos"] = np.cos(2 * np.pi * hour / 24)
     f["dow_sin"] = np.sin(2 * np.pi * stamps.dt.dayofweek / 7)
     f["dow_cos"] = np.cos(2 * np.pi * stamps.dt.dayofweek / 7)
-    return f
+    return pd.DataFrame(f, index=frame.index)
 
 
 def factor_panel(

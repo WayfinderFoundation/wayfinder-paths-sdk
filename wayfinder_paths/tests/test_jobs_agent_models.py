@@ -145,19 +145,52 @@ def test_cached_scores_never_leak_across_datasets(tmp_path) -> None:
     pd.testing.assert_series_equal(first, again)
 
 
-def test_a_window_shorter_than_one_4h_bar_scores_nothing(tmp_path) -> None:
+def _frames(bars: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    return {
+        s: g.drop(columns="symbol").reset_index(drop=True)
+        for s, g in bars.groupby("symbol")
+    }
+
+
+def test_sliding_windows_agree_with_the_full_pass(tmp_path) -> None:
     bars = _bars()
     model = am.load(
         am.save(
-            am.train(bars, name="probe", kind="ridge", features=["returns"]), tmp_path
+            am.train(
+                bars, name="probe", kind="ridge", features=["returns", "realized"]
+            ),
+            tmp_path,
         )
     )
     first = bars["timestamp"].min()
     tiny = bars[bars["timestamp"] < first + pd.Timedelta(hours=2)]
-    frames = {
-        s: g.drop(columns="symbol").reset_index(drop=True)
-        for s, g in tiny.groupby("symbol")
-    }
-    scores = am.model_scores(frames, model)
-    assert all(frame["model_rank"].isna().all() for frame in scores.values())
-    assert all(len(scores[s]) == len(frames[s]) for s in frames)
+    assert all(
+        frame["model_rank"].isna().all()
+        for frame in am.model_scores(_frames(tiny), model).values()
+    )
+    full = am.model_scores(_frames(bars), model)["S1"]
+    stamps = bars.loc[bars["symbol"] == "S1", "timestamp"].reset_index(drop=True)
+    # A live tick's window: its latest row matches the one-pass score whether
+    # the cache is cold or hot, and a hot cache never fills the window's own
+    # warmup rows with scores from earlier windows.
+    for days in (100, 100.25, 100.5):
+        end = first + pd.Timedelta(days=days)
+        start = end - pd.Timedelta(days=am.WARMUP_DAYS + 5)
+        window = bars[(bars["timestamp"] > start) & (bars["timestamp"] <= end)]
+        sliding = am.model_scores(_frames(window), model)["S1"]
+        local = window.loc[window["symbol"] == "S1", "timestamp"].reset_index(drop=True)
+        expected = full.loc[stamps == local.iloc[-1], "model_score"].iloc[0]
+        assert sliding["model_score"].iloc[-1] == pytest.approx(expected, rel=1e-9)
+        cold = local < local.min() + pd.Timedelta(days=am.WARMUP_DAYS)
+        if days != 100:
+            assert sliding.loc[cold, "model_score"].isna().all()
+    # A backtest over a new slice is not a slide: it scores its own warmup
+    # rows the same however hot the cache is.
+    late = bars[bars["timestamp"] > first + pd.Timedelta(days=95)]
+    hot = am.model_scores(_frames(late), model)["S1"]
+    am._SCORE_CACHE.clear()
+    am._RECENT_SCORES.clear()
+    am._LAST_WINDOW.clear()
+    fresh = am.model_scores(_frames(late), model)["S1"]
+    pd.testing.assert_frame_equal(hot, fresh)
+    assert hot["model_score"].iloc[:200].notna().any()
