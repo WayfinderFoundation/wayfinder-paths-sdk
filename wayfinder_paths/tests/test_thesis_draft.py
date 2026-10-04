@@ -2,6 +2,7 @@ import hashlib
 import json
 from copy import deepcopy
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
@@ -14,6 +15,7 @@ from wayfinder_paths.core.theses.assessment import (
 )
 from wayfinder_paths.core.theses.checkpoints import (
     CaseResearch,
+    DiscoveryCheckpoint,
     ResearchCheckpoint,
     ReviewCheckpoint,
 )
@@ -41,32 +43,37 @@ target = test_thesis_targets.target
     "headers",
     [{}, {"stage": "draft"}, {"schema_version": 7}],
 )
-def test_draft_header_feedback_reports_stage_and_version_together(
+def test_draft_headers_default_without_mutating_input(
     headers: dict[str, Any],
 ) -> None:
     payload = {**headers, "draft": {"remove_components": ["old-component"]}}
     original = deepcopy(payload)
-    with pytest.raises(ValueError) as error:
-        ResearchCheckpoint.model_validate(payload)
-    message = str(error.value)
-    assert 'checkpoint.stage="draft"' in message
-    assert "checkpoint.schema_version" in message
-    assert "not inherited" in message
-    assert payload == original
+    inferred = ResearchCheckpoint.model_validate(payload)
     corrected = ResearchCheckpoint.model_validate(
         {**payload, "schema_version": 7, "stage": "draft"}
     )
+    assert payload == original
+    assert inferred.receipt_json() == corrected.receipt_json()
     assert corrected.draft is not None
     assert corrected.draft.remove_components == ["old-component"]
 
 
-def test_draft_header_feedback_preserves_legacy_and_other_validation(
+def test_draft_header_defaults_preserve_legacy_and_other_validation(
     spec: dict[str, Any],
 ) -> None:
     legacy = ResearchCheckpoint.model_validate(
         {"stage": "interpretation", "spec": spec}
     )
     assert legacy.schema_version == 1
+    legacy_draft = ResearchCheckpoint.model_validate(
+        {
+            "schema_version": 4,
+            "construction": {"mode": "directional"},
+            "draft": {"remove_components": ["old"]},
+        }
+    )
+    assert legacy_draft.schema_version == 4
+    assert legacy_draft.stage == "draft"
     with pytest.raises(ValueError, match="Only draft checkpoints"):
         ResearchCheckpoint.model_validate(
             {
@@ -87,24 +94,102 @@ def test_draft_header_feedback_preserves_legacy_and_other_validation(
     schema = ResearchCheckpoint.model_json_schema()
     assert "stage" in schema["required"]
     assert schema["properties"]["schema_version"]["default"] == 1
-    assert "not inherited" in schema["properties"]["stage"]["description"]
+    assert "draft" in schema["properties"]["stage"]["description"]
 
 
 @pytest.mark.asyncio
-async def test_mcp_draft_header_error_can_be_repaired_in_one_retry() -> None:
+async def test_mcp_inferred_draft_headers_replay_with_bound_receipt() -> None:
     native = Tool.from_function(research_thesis_checkpoint)
     payload = {"checkpoint": {"draft": {"remove_components": ["old"]}}}
-    with pytest.raises(ToolError) as error:
-        await native.run(payload)
-    assert 'checkpoint.stage="draft"' in str(error.value)
-    assert "checkpoint.schema_version" in str(error.value)
-    result = await native.run(
-        {"checkpoint": {**payload["checkpoint"], "stage": "draft", "schema_version": 7}}
-    )
+    with patch("wayfinder_paths.mcp.utils._report_tool_metric"):
+        result = await native.run(payload)
     assert result["ok"] is True
     assert result["result"]["stage"] == "draft"
     assert result["result"]["schema_version"] == 7
     assert result["result"]["execution_authorized"] is False
+    assert result["result"]["evidence_verified"] is False
+    message: dict[str, Any] = {
+        "parts": [
+            {
+                "tool": CHECKPOINT_TOOL,
+                "state": {
+                    "status": "completed",
+                    "input": payload,
+                    "output": json.dumps(result),
+                },
+            }
+        ]
+    }
+    records = checkpoints([message])
+    assert len(records) == 1
+    assert records[0]["checkpoint"]["stage"] == "draft"
+    assert records[0]["checkpoint"]["schema_version"] == 7
+    result["result"]["schema_version"] = 6
+    message["parts"][0]["state"]["output"] = json.dumps(result)
+    assert not checkpoints([message])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"stage": "judged"},
+        {"schema_version": 3},
+        {"stage": None},
+        {"schema_version": None},
+    ],
+)
+async def test_draft_header_defaults_never_override_explicit_conflicts(
+    headers: dict[str, Any],
+) -> None:
+    native = Tool.from_function(research_thesis_checkpoint)
+    with pytest.raises(ToolError):
+        await native.run(
+            {"checkpoint": {**headers, "draft": {"remove_components": ["old"]}}}
+        )
+
+
+def test_draft_header_defaults_do_not_infer_other_stages(spec: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="stage"):
+        ResearchCheckpoint.model_validate({"schema_version": 7, "spec": spec})
+
+
+@pytest.mark.parametrize("contract", [DiscoveryCheckpoint, ReviewCheckpoint])
+def test_draft_header_defaults_do_not_expand_worker_or_reviewer_contracts(
+    contract: type[DiscoveryCheckpoint] | type[ReviewCheckpoint],
+) -> None:
+    with pytest.raises(ValueError, match="draft"):
+        contract.model_validate({"draft": {"remove_components": ["old"]}})
+
+
+def test_inferred_draft_headers_still_require_review_and_evidence(run: Any) -> None:
+    parent, children = run
+    for message in parent:
+        for part in message.get("parts", []):
+            if part.get("tool") != CHECKPOINT_TOOL:
+                continue
+            payload = part["state"]["input"]["checkpoint"]
+            if payload.get("stage") == "draft":
+                payload.pop("stage")
+                payload.pop("schema_version")
+                normalized = ResearchCheckpoint.model_validate(payload)
+                part["state"]["output"] = json.dumps(
+                    {
+                        "ok": True,
+                        "result": {
+                            "schema_version": 7,
+                            "sha256": hashlib.sha256(
+                                normalized.receipt_json().encode()
+                            ).hexdigest(),
+                        },
+                    }
+                )
+    status = draft_status(parent, children)
+    assert not status["ready"]
+    assert any("research_thesis_review" in error for error in status["errors"])
+    assert any(
+        "Compare selected implementations" in error for error in status["errors"]
+    )
 
 
 def test_v5_requires_review_receipt_and_implementation_comparisons(run):

@@ -58,7 +58,8 @@ async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     checkpoint={schema_version:7,stage:"judged",decisions:[...]} (at most six cases);
     checkpoint={schema_version:7,stage:"draft",draft:{metadata:...,components:[...]}};
     checkpoint={schema_version:7,stage:"draft",draft:{variant:...}} (one budget).
-    Every draft write repeats checkpoint.schema_version=7 and checkpoint.stage="draft".
+    Draft updates infer omitted schema_version=7 and stage="draft"; explicit headers
+    must still match the payload. Other stages and legacy versions are unchanged.
     Proposal metadata has schema_version=1 inside draft.metadata, never draft itself.
     Do not put a draft under judged or a worker handoff under a parent stage.
     After any review correction, resume the SAME reviewer to sign the new

@@ -196,13 +196,13 @@ class ResearchCheckpoint(Contract):
     schema_version: Annotated[
         Literal[1, 2, 3, 4, 5, 6, 7],
         Field(
-            description="Set 7 on every current parent write; omission means legacy v1, not the previous call's version."
+            description="Use 7 for current parent writes. Draft updates default to 7; other omitted versions retain legacy v1. Never inherited from an earlier call."
         ),
     ] = 1
     stage: Annotated[
         Literal["interpretation", "discovery", "provisional", "judged", "draft"],
         Field(
-            description="Required on every write, including corrections. Use draft for a draft update; this header is not inherited."
+            description="Use draft for a draft update (inferred when omitted with draft data). Other writes require an explicit stage; never inherited from an earlier call."
         ),
     ]
     spec: ThesisSpec | None = None
@@ -222,21 +222,11 @@ class ResearchCheckpoint(Contract):
 
     @model_validator(mode="before")
     @classmethod
-    def require_draft_headers(cls, value: Any) -> Any:
-        # Otherwise a missing stage hides the legacy-version error until a retry.
-        # Both forms already fail validation; do not infer or repair the payload.
-        if (
-            isinstance(value, dict)
-            and value.get("draft") is not None
-            and ("stage" not in value or "schema_version" not in value)
-        ):
-            raise ValueError(
-                'Draft writes need both checkpoint.stage="draft" and explicit '
-                "checkpoint.schema_version (use 7 for current parent research). "
-                "They are not inherited from earlier writes. Retry the same draft "
-                'inside {"checkpoint":{"schema_version":7,"stage":"draft",'
-                '"draft":...}}; do not repeat the interpretation or other budgets.'
-            )
+    def default_draft_headers(cls, value: Any) -> Any:
+        # Drafts are unambiguous; validate explicit headers without overriding them.
+        # The same normalization binds tool receipts and subsequent transcript reads.
+        if isinstance(value, dict) and value.get("draft") is not None:
+            return {"stage": "draft", "schema_version": 7, **value}
         return value
 
     def receipt_json(self) -> str:
