@@ -8,6 +8,7 @@ from wayfinder_paths.core.theses.research import (
     research_evidence,
     validate_market_capacity,
 )
+from wayfinder_paths.mcp.polymarket_summary import compact_market_detail
 
 
 @pytest.fixture
@@ -50,6 +51,18 @@ def proposal() -> Proposal:
             ],
         }
     )
+
+
+def test_outcome_label_is_not_resolution_evidence() -> None:
+    market = compact_market_detail(
+        {"slug": "one-event", "eventSlug": "event-count", "groupItemTitle": "1"}
+    )
+    assert market["groupItemTitle"] == "1"
+    assert market["rules"] is None
+    evidence = research_evidence(
+        [{"action": "get_market", "summaryMode": True, "market": market}]
+    )
+    assert evidence["fetched_urls"] == []
 
 
 def test_observed_outcomes_and_latest_book_not_market_liquidity() -> None:
