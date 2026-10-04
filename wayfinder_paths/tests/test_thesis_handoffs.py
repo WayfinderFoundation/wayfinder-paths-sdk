@@ -9,6 +9,7 @@ from wayfinder_paths.core.theses.assessment import (
     DISCOVERY_TOOL,
     assessment_report,
     checkpoints,
+    notebook_response,
     projected_records,
     research_notebook,
     research_observations,
@@ -897,6 +898,62 @@ def test_current_case_pagination_and_history_are_separate(
     assert research_notebook(parent, child, entities=["network"]) == full
 
 
+@pytest.mark.parametrize("history", [False, True])
+def test_native_case_pages_fit_without_dropping_records(
+    compact_run: tuple[list[dict], list[dict]], history: bool
+) -> None:
+    parent, child = compact_run
+    raw = deepcopy(child[0]["parts"][0]["state"]["input"]["checkpoint"])
+    raw["research_cases"][0]["support"] = "é" * 1500
+    for index in range(20):
+        child.append(
+            receipt(
+                raw, 10 + index, session=f"worker-{index}", agent="thesis-researcher"
+            )
+        )
+    original = deepcopy((parent, child))
+    expected = research_notebook(parent, child, entities=["network"], history=history)
+    assert len(json.dumps(expected).encode()) > 48_000
+    records = []
+    offset = 0
+    while offset is not None:
+        output = notebook_response(
+            {
+                "parent_messages": parent,
+                "child_messages": child,
+                "entities": ["network"],
+                "history": history,
+                "offset": offset,
+            }
+        )
+        assert len(output.encode()) + 1 <= 48_000
+        page = json.loads(output)
+        assert page["evidence_verified"] is False
+        row = page["cases"][0]
+        assert row["record_count"] == expected["cases"][0]["record_count"]
+        assert row["source_reads"] == expected["cases"][0]["source_reads"]
+        records.extend(row["records"])
+        offset = row["next_offset"]
+    assert records == expected["cases"][0]["records"]
+    assert (parent, child) == original
+
+
+def test_native_oversized_evidence_remains_exact_for_transport_rejection() -> None:
+    saved = {"results": [{"contentExcerpt": "é" * 25000}]}
+    message = observation("wayfinder_core_web_fetch", saved, 1)
+    message["parts"][0]["id"] = "large-read"
+    output = notebook_response(
+        {
+            "view": "evidence",
+            "parent_messages": [message],
+            "child_messages": [],
+            "part_ids": ["large-read"],
+        }
+    )
+    assert len(output.encode()) > 48_000
+    assert json.loads(output)["observations"][0]["result"] == saved
+
+
 def test_current_case_projection_preserves_metadata_and_unassessed_inventory(
     revised_notebook_run: tuple[list[dict], list[dict]],
 ) -> None:
@@ -1483,10 +1540,18 @@ def test_large_review_ledger_is_paged_without_hiding_unresolved_findings(
     seen = []
     offset = 0
     while offset is not None:
-        page = draft_status(
-            parent, child, include_proposal=include_proposal, offset=offset, limit=1
+        output = notebook_response(
+            {
+                "view": "draft" if include_proposal else "status",
+                "parent_messages": parent,
+                "child_messages": child,
+                "offset": offset,
+            }
         )
-        assert len(json.dumps(page).encode()) < 48_000
+        assert len(output.encode()) + 1 <= 48_000
+        page = json.loads(output)
+        if include_proposal:
+            assert page["proposal"] == proposal
         assert not page["ready"] and page["proposal_ref"] is None
         assert any("finding-01" in error for error in page["errors"])
         rows = page["review"]["findings"]

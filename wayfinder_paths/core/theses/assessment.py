@@ -762,31 +762,44 @@ def research_observations(
     }
 
 
+def notebook_response(request: dict[str, Any]) -> str:
+    """Fit record pages to the native transport, never truncate evidence or a draft."""
+    request = dict(request)
+    view = request.pop("view", "cases")
+    while True:
+        limit = request.get("limit", 25)
+        if view in {"status", "draft"}:
+            from wayfinder_paths.core.theses.draft import draft_status
+
+            result = draft_status(
+                request["parent_messages"],
+                request["child_messages"],
+                include_proposal=view == "draft",
+                offset=request.get("offset", 0),
+                limit=limit,
+            )
+        elif view == "cases":
+            result = research_notebook(**request)
+        elif view == "evidence":
+            result = research_observations(
+                request["parent_messages"],
+                request["child_messages"],
+                part_ids=request.get("part_ids", []),
+                result_path=request.get("result_path"),
+            )
+        else:
+            raise ValueError("Unknown notebook view")
+        output = json.dumps(result, separators=(",", ":"))
+        if view == "evidence" or limit == 1 or len(output.encode()) + 1 <= 48_000:
+            return output
+        # Reuse the same transcript and existing next_offset cursors. Counts,
+        # publication checks and the entire proposal still cover the full run.
+        # Unpageable oversize data remains intact for the native size guard.
+        request["limit"] = max(1, limit // 2)
+
+
 if __name__ == "__main__":
     # Native OpenCode tool passes only its verified session tree over stdin.
     import sys
 
-    request = json.load(sys.stdin)
-    view = request.pop("view", "cases")
-    if view in {"status", "draft"}:
-        from wayfinder_paths.core.theses.draft import draft_status
-
-        result = draft_status(
-            request["parent_messages"],
-            request["child_messages"],
-            include_proposal=view == "draft",
-            offset=request.get("offset", 0),
-            limit=request.get("limit", 25),
-        )
-    elif view == "cases":
-        result = research_notebook(**request)
-    elif view == "evidence":
-        result = research_observations(
-            request["parent_messages"],
-            request["child_messages"],
-            part_ids=request.get("part_ids", []),
-            result_path=request.get("result_path"),
-        )
-    else:
-        raise ValueError("Unknown notebook view")
-    print(json.dumps(result))
+    print(notebook_response(json.load(sys.stdin)))
