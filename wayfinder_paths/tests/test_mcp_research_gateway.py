@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
+from wayfinder_paths.core.clients.ResearchClient import ResearchClient
 from wayfinder_paths.mcp.tools import research_gateway
 
 
@@ -11,6 +14,61 @@ from wayfinder_paths.mcp.tools import research_gateway
 def disable_tool_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "wayfinder_paths.mcp.utils._report_tool_metric", lambda *a, **k: None
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("success", [True, False])
+async def test_research_tool_keeps_busy_retries_inside_one_call(
+    monkeypatch: pytest.MonkeyPatch, success: bool
+) -> None:
+    client = ResearchClient()
+    request = httpx.Request("POST", "https://example.com/research/websearch/")
+    response = httpx.Response(
+        429,
+        request=request,
+        json={
+            "error": {
+                "code": "research_busy",
+                "type": "rate_limit",
+                "message": "Wait for the current research",
+                "details": {"retryAfterSeconds": 2},
+            }
+        },
+    )
+    busy = httpx.HTTPStatusError("busy", request=request, response=response)
+    transport = AsyncMock(
+        side_effect=(
+            [busy, httpx.Response(200, json={"results": []}, request=request)]
+            if success
+            else [busy] * 5
+        )
+    )
+    monkeypatch.setattr(client, "_authed_request", transport)
+    monkeypatch.setattr(research_gateway, "RESEARCH_CLIENT", client)
+    sleep = AsyncMock()
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+
+    result = await research_gateway.core_web_search(
+        query="category mechanism", sessionID="same-native-child"
+    )
+
+    if success:
+        assert result == {"ok": True, "result": {"results": []}}
+        sleep.assert_awaited_once_with(2)
+    else:
+        assert result == {
+            "ok": False,
+            "error": {
+                "code": "research_busy",
+                "message": "Wait for the current research",
+                "details": {"retryAfterSeconds": 2},
+            },
+        }
+        assert sleep.await_count == 4
+    assert transport.await_count == (2 if success else 5)
+    assert all(
+        call == transport.await_args_list[0] for call in transport.await_args_list
     )
 
 

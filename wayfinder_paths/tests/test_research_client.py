@@ -315,6 +315,85 @@ async def test_search_raises_structured_gateway_error(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", ["success", "denied_again", "cancelled"])
+async def test_busy_backpressure_retries_same_read_with_bounded_wait(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    error = ResearchGatewayAPIError(
+        status_code=429,
+        error_type="rate_limit",
+        code="research_busy",
+        message="Research is already in progress",
+        details={"retryAfterSeconds": 2},
+    )
+    post = AsyncMock(
+        side_effect=[error] * 4 + [error if outcome == "denied_again" else {}]
+    )
+    monkeypatch.setattr(GatewayClient, "_post_gateway", post)
+    sleep = AsyncMock(
+        side_effect=asyncio.CancelledError if outcome == "cancelled" else None
+    )
+    monkeypatch.setattr(research_client_module.asyncio, "sleep", sleep)
+    client = ResearchClient()
+    if outcome == "success":
+        assert (
+            await client.search(query="same question", session_id="same-session") == {}
+        )
+    else:
+        with pytest.raises(
+            asyncio.CancelledError
+            if outcome == "cancelled"
+            else ResearchGatewayAPIError
+        ):
+            await client.search(query="same question", session_id="same-session")
+    assert [call.args[0] for call in sleep.await_args_list] == (
+        [2] if outcome == "cancelled" else [2, 4, 8, 16]
+    )
+    assert post.await_count == (1 if outcome == "cancelled" else 5)
+    assert all(call == post.await_args_list[0] for call in post.await_args_list)
+    async with asyncio.timeout(1):
+        for _ in range(4):
+            await client._requests.acquire()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "details",
+    [
+        None,
+        [],
+        {},
+        {"retryAfterSeconds": True},
+        {"retryAfterSeconds": "2"},
+        {"retryAfterSeconds": -1},
+        {"retryAfterSeconds": 0},
+        {"retryAfterSeconds": 31},
+        {"retryAfterSeconds": float("nan")},
+        {"retryAfterSeconds": float("inf")},
+    ],
+)
+async def test_busy_retry_requires_valid_server_delay(
+    monkeypatch: pytest.MonkeyPatch, details: Any
+) -> None:
+    error = ResearchGatewayAPIError(
+        status_code=429,
+        error_type="rate_limit",
+        code="research_busy",
+        message="Busy",
+        details=details,
+    )
+    post = AsyncMock(side_effect=error)
+    monkeypatch.setattr(GatewayClient, "_post_gateway", post)
+    sleep = AsyncMock()
+    monkeypatch.setattr(research_client_module.asyncio, "sleep", sleep)
+    with pytest.raises(ResearchGatewayAPIError) as caught:
+        await ResearchClient().fetch(urls=["https://example.com/source"])
+    assert caught.value is error
+    post.assert_awaited_once()
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "denied_again", "cancelled"])
 async def test_opt_in_hourly_reset_wait_retries_identical_request_once(
     monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:
@@ -366,6 +445,9 @@ async def test_opt_in_hourly_reset_wait_retries_identical_request_once(
         (True, 401, "research_budget_exhausted", "valid"),
         (True, 429, "credits_exhausted", "valid"),
         (True, 429, "concurrency_limit", "valid"),
+        (True, 503, "research_busy", {"retryAfterSeconds": 2}),
+        (True, 401, "research_busy", {"retryAfterSeconds": 2}),
+        (True, 429, "provider_rate_limit", {"retryAfterSeconds": 2}),
         (True, 503, "research_budget_unavailable", "valid"),
         (True, 429, "research_budget_exhausted", None),
         (True, 429, "research_budget_exhausted", []),

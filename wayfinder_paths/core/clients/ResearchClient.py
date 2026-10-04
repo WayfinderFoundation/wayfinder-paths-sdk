@@ -83,33 +83,47 @@ class ResearchClient(GatewayClient):
     async def _post_gateway(self, path: str, payload: Mapping[str, Any]) -> Any:
         # Native workers share backpressure, including an opt-in hourly pause.
         async with self._requests:
-            try:
-                return await super()._post_gateway(path, payload)
-            except ResearchGatewayAPIError as exc:
-                if (
-                    os.getenv("WAYFINDER_RESEARCH_WAIT_FOR_HOURLY_RESET") != "1"
-                    or exc.status_code != 429
-                    or exc.code != "research_budget_exhausted"
-                    or not isinstance(exc.details, dict)
-                    or exc.details.get("window") != "hour"
-                ):
-                    raise
+            for attempt in range(5):
                 try:
-                    reset = datetime.fromisoformat(exc.details.get("resetAt", ""))
-                except (TypeError, ValueError):
-                    raise exc from None
-                if reset.tzinfo is None:
-                    raise
-                delay = (reset - datetime.now(UTC)).total_seconds()
-                if not 0 < delay <= 3600:
-                    raise
-                logger.warning(
-                    "Research hourly budget paused until %s", reset.isoformat()
-                )
-                await asyncio.sleep(delay + 1)
-            # Exactly one retry, same request/key/session. Other limits and a
-            # second denial remain terminal; cancellation is never swallowed.
-            return await super()._post_gateway(path, payload)
+                    return await super()._post_gateway(path, payload)
+                except ResearchGatewayAPIError as exc:
+                    if exc.status_code != 429 or not isinstance(exc.details, dict):
+                        raise
+                    if exc.code == "research_busy":
+                        delay = exc.details.get("retryAfterSeconds")
+                        if (
+                            attempt == 4
+                            or isinstance(delay, bool)
+                            or not isinstance(delay, (int, float))
+                            or not 0 < delay <= 30
+                        ):
+                            raise
+                        # Busy requests were not admitted or charged. Back off
+                        # within the same call instead of paying for model retries.
+                        await asyncio.sleep(max(delay, 2 ** (attempt + 1)))
+                        continue
+                    if (
+                        os.getenv("WAYFINDER_RESEARCH_WAIT_FOR_HOURLY_RESET") != "1"
+                        or exc.code != "research_budget_exhausted"
+                        or exc.details.get("window") != "hour"
+                    ):
+                        raise
+                    try:
+                        reset = datetime.fromisoformat(exc.details.get("resetAt", ""))
+                    except (TypeError, ValueError):
+                        raise exc from None
+                    if reset.tzinfo is None:
+                        raise
+                    delay = (reset - datetime.now(UTC)).total_seconds()
+                    if not 0 < delay <= 3600:
+                        raise
+                    logger.warning(
+                        "Research hourly budget paused until %s", reset.isoformat()
+                    )
+                    await asyncio.sleep(delay + 1)
+                    # One hourly retry, same request/key/session. Other limits
+                    # and a second denial remain terminal; cancellation propagates.
+                    return await super()._post_gateway(path, payload)
 
     async def aclose(self) -> None:
         await super().aclose()

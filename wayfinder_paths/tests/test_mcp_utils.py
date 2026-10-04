@@ -5,8 +5,46 @@ from unittest.mock import Mock
 import httpx
 import pytest
 
+from wayfinder_paths.core.clients.GatewayClient import GatewayAPIError
 from wayfinder_paths.mcp import utils
 from wayfinder_paths.mcp.utils import parse_amount_to_raw, repo_root, sha256_json
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("prefix", ["", "Lookup failed:"])
+async def test_catch_errors_preserves_gateway_retry_details(
+    monkeypatch: pytest.MonkeyPatch, is_async: bool, prefix: str
+) -> None:
+    metric = Mock()
+    monkeypatch.setattr(utils, "_report_tool_metric", metric)
+    error = GatewayAPIError(
+        status_code=429,
+        error_type="rate_limit",
+        code="research_busy",
+        message="Research is already in progress",
+        details={"retryAfterSeconds": 2},
+    )
+
+    def sync_tool() -> None:
+        raise error
+
+    async def async_tool() -> None:
+        raise error
+
+    tool = async_tool if is_async else sync_tool
+    wrapped = utils.catch_errors(prefix)(tool) if prefix else utils.catch_errors(tool)
+    result = await wrapped() if is_async else wrapped()
+    assert result == {
+        "ok": False,
+        "error": {
+            "code": "research_busy",
+            "message": f"{prefix} Research is already in progress".strip(),
+            "details": {"retryAfterSeconds": 2},
+        },
+    }
+    metric.assert_called_once()
+    assert metric.call_args.args[:2] == (tool.__name__, result)
 
 
 @pytest.mark.asyncio
