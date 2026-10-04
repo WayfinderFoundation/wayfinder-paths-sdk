@@ -26,6 +26,7 @@ BenchAction = Literal[
     "evolution_compose",
     "evolution_redesign",
     "evolution_mechanism_grid",
+    "evolution_train_model",
     "evolution_prepare",
     "evolution_submit_seed",
     "evolution_evaluate",
@@ -45,6 +46,7 @@ _ALLOWED_ACTIONS = {
     "evolution_compose",
     "evolution_redesign",
     "evolution_mechanism_grid",
+    "evolution_train_model",
     "evolution_prepare",
     "evolution_submit_seed",
     "evolution_evaluate",
@@ -60,6 +62,7 @@ async def core_jobs(
     signal_proposals: list[dict[str, Any]] | None = None,
     redesign: dict[str, Any] | None = None,
     signal_ref: str | None = None,
+    model: dict[str, Any] | None = None,
     side: Literal["long", "short"] | None = None,
     family: str | None = None,
     summary: str | None = None,
@@ -100,6 +103,7 @@ async def core_jobs(
             "evolution_compose",
             "evolution_redesign",
             "evolution_mechanism_grid",
+            "evolution_train_model",
         }
         else background
     )
@@ -110,6 +114,7 @@ async def core_jobs(
         signal_proposals=signal_proposals,
         redesign=redesign,
         signal_ref=signal_ref,
+        model=model,
         side=side,
         family=family,
         summary=summary,

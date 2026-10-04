@@ -4104,7 +4104,11 @@ def _validate_campaign_design(
     accepted_prefixes = (prefix, *(("/policy_scan/survivors/",) if policy_pool else ()))
     if pool or policy_pool:
         for slot in grounded:
-            if slot["parent_source"] not in {"de_novo", "research_context"}:
+            # A model slot's evidence is its own out-of-sample rank IC, which
+            # the training op reports; it does not build on a scanned signal.
+            if slot["parent_source"] not in {"de_novo", "research_context"} or slot.get(
+                "model"
+            ):
                 continue
             refs = list(
                 (hypothesis_by_id.get(str(slot.get("hypothesis_id") or "")) or {}).get(

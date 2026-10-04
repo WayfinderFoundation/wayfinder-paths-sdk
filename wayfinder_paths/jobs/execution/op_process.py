@@ -37,6 +37,7 @@ _CAMPAIGN_OWNED_OPS = frozenset(
         "evolution_compose",
         "evolution_redesign",
         "evolution_mechanism_grid",
+        "evolution_train_model",
         "evolution_prepare",
         "evolution_evaluate",
         "evolution_finalize",
