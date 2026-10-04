@@ -508,6 +508,7 @@ def run_probation_phase(
     invalid_reason: str | None,
     campaign_id: str | None = None,
     holdout_output: Path | None = None,
+    observe_only: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], str | None]:
     """Replay the staged trial over the sealed holdout and race it against
     the incumbent. ``campaign_id`` scopes both to one campaign's trial."""
@@ -541,6 +542,10 @@ def run_probation_phase(
         campaign_id=campaign_id,
     )
     trials = list(load_probation(store, job_id).get("trials") or [])
+    if observe_only:
+        # An observation week only advances open trials; there is no new
+        # campaign survivor to race.
+        return forward, {"verdict": "observation_only"}, invalid_reason
     if campaign_id is None:
         trial = next(iter(trials), None)
     else:
