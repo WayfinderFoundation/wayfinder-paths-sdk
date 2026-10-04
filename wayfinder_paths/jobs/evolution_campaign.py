@@ -10279,10 +10279,13 @@ _CONTRACT_CHECKS = frozenset(
     }
 )
 
-# A screen is ~10,000 bars per slice; below this rate it takes minutes and
-# every queued screen waits behind it (a v14 book ran at 37 bars/s, 105 ms
-# per tick, ~15 minutes). Measured on a short tail before the screen.
-_MIN_SCREEN_BARS_PER_SECOND = 100.0
+# A screen slice should finish in about two minutes: 10,080 five-minute bars
+# at 100 bars/s. A v14 book ran at 37 bars/s (105 ms per tick, ~15 minutes)
+# and every queued screen waited behind it. The budget is time, not a rate:
+# on a 27-market world the engine alone runs ~100 bars/s and a 15-minute
+# slice is a third as long, so a rate floor tuned on 4 symbols rejected
+# strategies that screen in 40 seconds.
+_MAX_SCREEN_SECONDS = 120.0
 _SPEED_PROBE_BARS = 400
 
 
@@ -10292,10 +10295,8 @@ def _screen_speed_shortfall(
     params: Mapping[str, Any],
     policy: Mapping[str, Any],
 ) -> str | None:
-    floor = float(
-        policy.get("min_screen_bars_per_second", _MIN_SCREEN_BARS_PER_SECOND) or 0.0
-    )
-    if floor <= 0:
+    budget = float(policy.get("max_screen_seconds", _MAX_SCREEN_SECONDS) or 0.0)
+    if budget <= 0:
         return None
     warmup = _strategy_warmup_bars(subject["script"], dict(params))
     probe = simulate_execution(
@@ -10305,13 +10306,16 @@ def _screen_speed_shortfall(
         dict(params),
     )
     rate = (probe.profile or {}).get("bars_per_second")
-    if rate is None or float(rate) >= floor:
+    if rate is None or float(rate) <= 0:
+        return None
+    projected = len(quick.bars.timestamps) / float(rate)
+    if projected <= budget:
         return None
     # Stable text: a repeated identical rejection is how the campaign
     # abandons a candidate that cannot be fixed.
     return (
-        f"decide() runs below {floor:.0f} bars/s, so the screen would take many "
-        "minutes and stall every queued screen. Move indicator work into "
+        f"the screen would take over {budget:.0f}s at this speed and stall every "
+        "queued screen. Move indicator work into "
         "precompute(frames) (vectorized once per window) and have decide() read "
         "the latest row (ctx.view.latest(sym)); no per-bar pandas rolling, "
         "resampling or loops over history in decide()."

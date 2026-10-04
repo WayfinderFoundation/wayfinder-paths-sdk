@@ -8694,7 +8694,7 @@ def test_a_requested_screen_runs_next_in_the_same_op(tmp_path) -> None:
 
 
 def test_slow_strategies_are_handed_back_before_the_screen(monkeypatch) -> None:
-    rates = iter([37.0, 580.0])
+    rates = iter([37.0, 580.0, 87.0])
     monkeypatch.setattr(evolution_campaign, "_strategy_warmup_bars", lambda *a: 20)
     monkeypatch.setattr(evolution_campaign, "_tail", lambda dataset, bars: dataset)
     monkeypatch.setattr(
@@ -8703,13 +8703,26 @@ def test_slow_strategies_are_handed_back_before_the_screen(monkeypatch) -> None:
         lambda *a, **k: SimpleNamespace(profile={"bars_per_second": next(rates)}),
     )
     subject = {"script": "strategy.py", "spec": {}}
-    slow = evolution_campaign._screen_speed_shortfall(subject, None, {}, {})
+
+    def screen(bars: int) -> SimpleNamespace:
+        return SimpleNamespace(bars=SimpleNamespace(timestamps=[0] * bars))
+
+    # A five-minute slice at 37 bars/s takes four and a half minutes.
+    slow = evolution_campaign._screen_speed_shortfall(subject, screen(10_080), {}, {})
     assert slow is not None and "precompute(frames)" in slow
-    assert evolution_campaign._screen_speed_shortfall(subject, None, {}, {}) is None
+    assert (
+        evolution_campaign._screen_speed_shortfall(subject, screen(10_080), {}, {})
+        is None
+    )
+    # A 27-market fifteen-minute slice at 87 bars/s screens in 40 seconds.
+    assert (
+        evolution_campaign._screen_speed_shortfall(subject, screen(3_360), {}, {})
+        is None
+    )
     # The policy can switch the probe off.
     assert (
         evolution_campaign._screen_speed_shortfall(
-            subject, None, {}, {"min_screen_bars_per_second": 0}
+            subject, screen(10_080), {}, {"max_screen_seconds": 0}
         )
         is None
     )
