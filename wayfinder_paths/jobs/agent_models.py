@@ -541,6 +541,18 @@ def model_scores(
     (-0.5 worst .. +0.5 best in the universe) aligned to the strategy's own
     bars, stepped forward from each 4h close."""
     bars = bars_from_frames(frames)
+    if resample_bars(
+        bars[["timestamp", "symbol", "open", "high", "low", "close", "volume"]],
+        TIMEFRAME,
+    ).empty:
+        # A window shorter than one complete 4h bar (the first ticks of a
+        # bounded replay) has nothing to score yet.
+        return {
+            symbol: pd.DataFrame(
+                {"model_score": np.nan, "model_rank": np.nan}, index=range(len(frame))
+            )
+            for symbol, frame in frames.items()
+        }
     symbols = tuple(sorted(frames))
     key = _cache_key(model, symbols)
     cached = _SCORE_CACHE.get(key)

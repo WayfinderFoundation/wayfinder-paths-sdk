@@ -71,7 +71,12 @@ def resample_bars(bars: pd.DataFrame, rule: str = FACTOR_TIMEFRAME) -> pd.DataFr
         agg = agg[agg.index - stamps.max() <= step]
         agg["symbol"] = symbol
         out.append(agg.rename_axis("timestamp").reset_index())
-    return pd.concat(out).sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+    frame = pd.concat(out) if out else pd.DataFrame()
+    if frame.empty:
+        return pd.DataFrame(
+            columns=["timestamp", "open", "high", "low", "close", "volume", "symbol"]
+        )
+    return frame.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
 
 
 def _symbol_factors(frame: pd.DataFrame) -> pd.DataFrame:

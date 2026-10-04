@@ -143,3 +143,21 @@ def test_cached_scores_never_leak_across_datasets(tmp_path) -> None:
     assert not np.allclose(first.dropna(), second.dropna())
     again = am.model_scores(frames, model)["S1"]["model_score"]
     pd.testing.assert_series_equal(first, again)
+
+
+def test_a_window_shorter_than_one_4h_bar_scores_nothing(tmp_path) -> None:
+    bars = _bars()
+    model = am.load(
+        am.save(
+            am.train(bars, name="probe", kind="ridge", features=["returns"]), tmp_path
+        )
+    )
+    first = bars["timestamp"].min()
+    tiny = bars[bars["timestamp"] < first + pd.Timedelta(hours=2)]
+    frames = {
+        s: g.drop(columns="symbol").reset_index(drop=True)
+        for s, g in tiny.groupby("symbol")
+    }
+    scores = am.model_scores(frames, model)
+    assert all(frame["model_rank"].isna().all() for frame in scores.values())
+    assert all(len(scores[s]) == len(frames[s]) for s in frames)
