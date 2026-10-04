@@ -173,19 +173,21 @@ def research_evidence(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def source_citation_pattern(url: str) -> re.Pattern[str]:
+    """Match a returned URL in prose without accepting another page, query or port."""
+    return re.compile(
+        r"(?<![\w./:@%-])(?:https?://)?"
+        + re.escape(re.sub(r"^https?://", "", url).rstrip("/"))
+        + r"/?(?=$|[\s<>\]\),;]|:(?:\s|$))"
+    )
+
+
 def missing_source_reads(
     proposal: Proposal | PortfolioSections, evidence: dict[str, Any]
 ) -> list[str]:
     """A cited source was read, not a certification of its truth or relevance."""
-    # Match citations against independently fetched URLs, allowing display-only
-    # omission of the scheme/trailing slash and a colon introducing prose,
-    # without accepting a different page or port.
     fetched_sources = [
-        re.compile(
-            r"(?<![\w./:@%-])(?:https?://)?"
-            + re.escape(re.sub(r"^https?://", "", url).rstrip("/"))
-            + r"/?(?=$|[\s<>\]\),;]|:(?:\s|$))"
-        )
+        source_citation_pattern(url)
         for url in set(evidence.get("fetched_urls", []))
         if url.startswith(("https://", "http://"))
     ]

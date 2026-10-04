@@ -14,6 +14,7 @@ from wayfinder_paths.core.theses.checkpoints import (
     DiscoveryCheckpoint,
     ResearchCheckpoint,
 )
+from wayfinder_paths.core.theses.research import source_citation_pattern
 
 CHECKPOINT_TOOL = "wayfinder_research_thesis_checkpoint"
 DISCOVERY_TOOL = "wayfinder_research_thesis_discovery"
@@ -582,7 +583,7 @@ def research_notebook(
             elif tool == "wayfinder_research_defillama_free" and isinstance(
                 result.get("result"), (dict, list)
             ):
-                # Match the returned URL exactly, including metric query params.
+                # Retain the returned URL, including metric query params.
                 # Keep the whole provider result: totals alone omit scope/periods.
                 pages = [(result.get("url"), ["result"])]
             else:
@@ -592,17 +593,22 @@ def research_notebook(
                     source_reads.setdefault(url, []).append(
                         {"part_id": observation["part_id"], "result_path": path}
                     )
+        source_patterns = {
+            url: source_citation_pattern(url)
+            for url in source_reads
+            if url.startswith(("https://", "http://"))
+        }
         requested = list(dict.fromkeys(e.casefold() for e in entities))
         for key in requested:
             if key not in rows:
                 continue
             row = rows[key]
+            citations = {s for r in row["records"] for s in r["case"]["sources"]}
             row["source_reads"] = [
                 {"url": url, **read}
-                for url in sorted(
-                    {source for r in row["records"] for source in r["case"]["sources"]}
-                )
-                for read in source_reads.get(url, [])
+                for url, pattern in sorted(source_patterns.items())
+                if any(pattern.search(citation) for citation in citations)
+                for read in source_reads[url]
             ]
             if key in dispositions:
                 row["disposition"] = dispositions[key]

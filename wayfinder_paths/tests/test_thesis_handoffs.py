@@ -600,10 +600,30 @@ def test_case_projection_keeps_classification_and_identifies_current_assessment(
     assert (parent, child) == original
 
 
+@pytest.mark.parametrize(
+    "citation,linked",
+    [
+        ("https://example.test", True),
+        ("https://example.test (saved-read ID)", True),
+        ("[Source](https://example.test/)", True),
+        ("example.test: supporting observation", True),
+        ("https://example.test/unread", False),
+        ("https://example.test?dataType=other", False),
+        ("https://example.test:8443", False),
+        ("https://example.test.evil", False),
+        ("https://evil.test/example.test", False),
+        ("user@example.test", False),
+    ],
+)
 def test_case_sources_link_exact_saved_documents_without_summarizing(
     compact_run: tuple[list[dict], list[dict]],
+    citation: str,
+    linked: bool,
 ) -> None:
     parent, child = compact_run
+    raw = deepcopy(child[0]["parts"][0]["state"]["input"]["checkpoint"])
+    raw["research_cases"][0]["sources"] = [citation]
+    child = [receipt(raw, 1, session="worker", agent="thesis-researcher")]
     for number, text in [(10, "Growth observed"), (11, "Contrary observation")]:
         child.append(
             observation(
@@ -625,7 +645,7 @@ def test_case_sources_link_exact_saved_documents_without_summarizing(
     row = research_notebook(parent, child, entities=["network"], fields=["reason"])[
         "cases"
     ][0]
-    assert row["source_reads"] == [
+    expected = [
         {
             "url": "https://example.test",
             "part_id": f"e{n}",
@@ -633,6 +653,7 @@ def test_case_sources_link_exact_saved_documents_without_summarizing(
         }
         for n in (10, 11)
     ]
+    assert row["source_reads"] == (expected if linked else [])
     assert "contentExcerpt" not in json.dumps(row)
     for pointer in row["source_reads"]:
         saved = research_observations(
@@ -645,13 +666,15 @@ def test_case_sources_link_exact_saved_documents_without_summarizing(
     assert (parent, child) == original
 
 
+@pytest.mark.parametrize("annotation", ["", " (saved-read ID)"])
 def test_case_sources_link_exact_provider_results_and_preserve_metric_scope(
     compact_run: tuple[list[dict], list[dict]],
+    annotation: str,
 ) -> None:
     parent, child = compact_run
     source = "https://api.llama.fi/summary/fees/network?dataType=dailyFees"
     raw = deepcopy(child[0]["parts"][0]["state"]["input"]["checkpoint"])
-    raw["research_cases"][0]["sources"] = [source]
+    raw["research_cases"][0]["sources"] = [source + annotation]
     child = [receipt(raw, 1, session="worker", agent="thesis-researcher")]
     results = []
     for number, url in [
