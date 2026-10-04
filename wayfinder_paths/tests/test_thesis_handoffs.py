@@ -644,6 +644,85 @@ def test_case_sources_link_exact_saved_documents_without_summarizing(
     assert (parent, child) == original
 
 
+def test_case_sources_link_exact_provider_results_and_preserve_metric_scope(
+    compact_run: tuple[list[dict], list[dict]],
+) -> None:
+    parent, child = compact_run
+    source = "https://api.llama.fi/summary/fees/network?dataType=dailyFees"
+    raw = deepcopy(child[0]["parts"][0]["state"]["input"]["checkpoint"])
+    raw["research_cases"][0]["sources"] = [source]
+    child = [receipt(raw, 1, session="worker", agent="thesis-researcher")]
+    results = []
+    for number, url in [
+        (10, source),
+        (11, source.replace("dailyFees", "dailyHoldersRevenue")),
+        (12, source),
+    ]:
+        result = {
+            "protocolSlug": "network",
+            "dataType": url.split("=")[-1],
+            "totals": {"total30d": number, "chain": "ExampleChain"},
+            "periodDefinitions": {"total30d": "Trailing 30 days"},
+            "dailyRows": [{"date": "2026-10-01", "value": number}],
+        }
+        results.append(result)
+        child.append(
+            observation(
+                "wayfinder_research_defillama_free",
+                {"provider": "defillama_free", "url": url, "result": result},
+                number,
+            )
+        )
+        child[-1]["parts"][0]["id"] = f"e{number}"
+    original = deepcopy((parent, child))
+    row = research_notebook(parent, child, entities=["network"], fields=["reason"])[
+        "cases"
+    ][0]
+    assert row["source_reads"] == [
+        {"url": source, "part_id": f"e{n}", "result_path": ["result"]} for n in (10, 12)
+    ]
+    # No query-string stripping, stale-read coalescing, summary or verified-fact flag.
+    for pointer, expected in zip(
+        row["source_reads"], (results[0], results[2]), strict=True
+    ):
+        saved = research_observations(
+            parent,
+            child,
+            part_ids=[pointer["part_id"]],
+            result_path=pointer["result_path"],
+        )
+        assert saved["observations"][0]["result"] == expected
+        assert saved["evidence_verified"] is False
+    assert (parent, child) == original
+
+
+@pytest.mark.parametrize(
+    "invalid", ["failed", "private", "request_only", "missing_data"]
+)
+def test_provider_source_pointer_requires_successful_returned_public_data(
+    compact_run: tuple[list[dict], list[dict]], invalid: str
+) -> None:
+    parent, child = compact_run
+    read = observation(
+        "wayfinder_research_defillama_free",
+        {"url": "https://example.test", "result": {"total30d": 123}},
+        10,
+    )
+    part = read["parts"][0]
+    if invalid == "failed":
+        part["state"]["output"] = '{"ok":false}'
+    elif invalid == "private":
+        part["tool"] = "wayfinder_core_get_wallets"
+    elif invalid == "request_only":
+        part["state"]["input"] = {"url": "https://example.test"}
+        part["state"]["output"] = '{"ok":true,"result":{"result":{"total30d":123}}}'
+    else:
+        part["state"]["output"] = '{"ok":true,"result":{"url":"https://example.test"}}'
+    child.append(read)
+    row = research_notebook(parent, child, entities=["network"])["cases"][0]
+    assert row["source_reads"] == []
+
+
 @pytest.mark.parametrize(
     "invalid", ["failed", "private", "search", "empty", "request_only"]
 )

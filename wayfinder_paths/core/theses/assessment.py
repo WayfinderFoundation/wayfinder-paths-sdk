@@ -547,8 +547,9 @@ def research_notebook(
             result = observation["result"]
             if not isinstance(result, dict):
                 continue
+            tool = observation["tool"]
             pages: list[tuple[Any, list[str | int]]]
-            if observation["tool"] == "wayfinder_core_web_fetch":
+            if tool == "wayfinder_core_web_fetch":
                 pages = [
                     (page.get("url"), ["results", index])
                     for index, page in enumerate(result.get("results", []))
@@ -559,9 +560,10 @@ def research_notebook(
                         or page.get("content")
                     )
                 ]
-            elif observation["tool"] == "wayfinder_polymarket_read" and result.get(
-                "action"
-            ) in {"get_event", "get_market"}:
+            elif tool == "wayfinder_polymarket_read" and result.get("action") in {
+                "get_event",
+                "get_market",
+            }:
                 field = "event" if result["action"] == "get_event" else "market"
                 page = result.get(field) or {}
                 slug = page.get("slug" if field == "event" else "eventSlug")
@@ -570,6 +572,12 @@ def research_notebook(
                     if slug and (page.get("description") or page.get("rules"))
                     else []
                 )
+            elif tool == "wayfinder_research_defillama_free" and isinstance(
+                result.get("result"), (dict, list)
+            ):
+                # Match the returned URL exactly, including metric query params.
+                # Keep the whole provider result: totals alone omit scope/periods.
+                pages = [(result.get("url"), ["result"])]
             else:
                 continue
             for url, path in pages:
