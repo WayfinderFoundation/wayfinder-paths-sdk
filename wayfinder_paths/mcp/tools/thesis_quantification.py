@@ -176,6 +176,7 @@ async def research_quantify_portfolio(
     construction: Construction | None = None,
     alternatives: Annotated[list[Position], Field(max_length=12)] | None = None,
     compare_implementations: bool = False,
+    counterfactuals: Annotated[list[Variant], Field(max_length=2)] | None = None,
 ) -> dict:
     """Measure draft portfolios before final sizing; reuse the returned metrics in review.
 
@@ -190,6 +191,15 @@ async def research_quantify_portfolio(
     fetched by trusted code, never supplied by the model. Missing/short history
     stays unavailable; it does not mean zero risk or an unsuitable investment.
     All return/risk numbers are fractions, not percentages. No forecasts or trades.
+    counterfactuals: At most two complete alternative allocations against ONE proposed
+        variant at the same budget. Reduce a weak holding/reallocate to an approved
+        exposure, or substitute the closest credible challenger. The returned
+        allocation_comparison uses identical observed timestamps for every mix;
+        short history is explicitly limited, not zero risk. Selection stays with
+        the agent: compare thesis fit, growth, risk and carry, not trailing Sharpe.
+        Reuse a measured allocation exactly in the final draft. All mixes share
+        the same bounded market reads; alternatives alone are asset diagnostics,
+        not a whole-portfolio substitution comparison.
     alternatives: Hypothetical positions for closest competing implementations,
         using the SAME position schema. These are measured, never added to portfolios.
     compare_implementations: Include public depth/pool observations only for
@@ -202,12 +212,24 @@ async def research_quantify_portfolio(
     """
     # Direct Python callers need the same validation as MCP's generated schema.
     variants = [Variant.model_validate(v) for v in variants]
+    counterfactuals = [Variant.model_validate(v) for v in counterfactuals or []]
+    if counterfactuals and (
+        len(variants) != 1
+        or len(counterfactuals) > 2
+        or any(v.budget_usd != variants[0].budget_usd for v in counterfactuals)
+    ):
+        raise ValueError(
+            "Compare one proposed variant with at most two counterfactuals at the same budget"
+        )
     alternatives = [Position.model_validate(p) for p in alternatives or []]
     if construction is not None:
         construction = Construction.model_validate(construction)
         variants = [size_variant(v, construction) for v in variants]
     if not 1 <= len(variants) <= 4 or not 14 <= lookback_days <= 90:
         raise ValueError("Use 1–4 variants and 14–90 days")
+    if construction is not None:
+        counterfactuals = [size_variant(v, construction) for v in counterfactuals]
+    variants = [*variants, *counterfactuals]
     positions = {
         p.instrument_id: p
         for p in [*(p for v in variants for p in v.positions), *alternatives]
@@ -363,6 +385,18 @@ async def research_quantify_portfolio(
                 "note": "Discover and supply alternative routes separately. An absent route here was not checked; it is not evidence of unavailability.",
             },
             "implementation_comparisons": comparisons,
+            **(
+                {
+                    "allocation_comparison": {
+                        "basis": "identical observed UTC timestamps across proposed and counterfactual portfolios; no filled prices or expected returns",
+                        "portfolios": quantify_variants(
+                            variants, markets, align_portfolios=True
+                        )["portfolios"],
+                    }
+                }
+                if counterfactuals
+                else {}
+            ),
             **(
                 {"sized_variants": [v.model_dump(mode="json") for v in variants]}
                 if construction is not None

@@ -196,7 +196,13 @@ def draft_context(
                 ).encode()
             ).hexdigest()
         review = review_report(
-            parent_messages, child_messages, records, selected, revision=revision
+            parent_messages,
+            child_messages,
+            records,
+            selected
+            | {p["instrument_id"] for v in variants.values() for p in v["positions"]},
+            revision=revision,
+            variants=list(variants.values()),
         )
         evidence["review"].update(review)
         errors.extend(review["errors"])
@@ -241,6 +247,16 @@ def draft_status(
         errors = str(exc).splitlines()
     ready = not errors and reference is not None
     review = dict(evidence["review"])
+    if "case_checks" in review:
+        coverage = review["case_checks"]
+        required = coverage["required"]
+        review["case_checks"] = {
+            **coverage,
+            "required": required[offset : offset + limit],
+            "total": len(required),
+            "unchecked": sum(not row["checked"] for row in required),
+            "next_offset": offset + limit if offset + limit < len(required) else None,
+        }
     # Old resolved findings can outgrow the portfolio. Page presentation only;
     # validation above still considers every finding and its exact resolution.
     findings = sorted(

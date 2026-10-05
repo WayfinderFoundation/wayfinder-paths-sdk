@@ -486,6 +486,7 @@ def research_notebook(
     offset: int = 0,
     limit: int = 25,
     history: bool = True,
+    compact: bool = False,
 ) -> dict[str, Any]:
     """An inventory, current cases or their history; never an LLM re-summary."""
     from wayfinder_paths.core.theses.review import public_observations
@@ -624,6 +625,12 @@ def research_notebook(
             )
             for record in row["records"]:
                 record["current_assessment"] = record is current
+            if current is not None:
+                row["current_ref"] = {
+                    "session_id": current["session_id"],
+                    "checkpoint_id": current["checkpoint_id"],
+                    "entity": current["case"]["entity"],
+                }
             count = len(row["records"])
             row["record_count"] = count
             if not history:
@@ -642,7 +649,31 @@ def research_notebook(
             row["next_offset"] = (
                 offset + limit if offset + limit < len(row["records"]) else None
             )
+            baseline = current or next(
+                (r for r in row["records"] if r["kind"] == "research_cases"), None
+            )
             row["records"] = row["records"][offset : offset + limit]
+            if compact and not history and baseline is not None:
+                # Exact field differences, not an LLM summary. Dissent remains
+                # visible; identical fields reference the assessment/ranked case.
+                row["records"] = [
+                    record
+                    if record is baseline
+                    else {
+                        **record,
+                        "same_as": {
+                            "session_id": baseline["session_id"],
+                            "checkpoint_id": baseline["checkpoint_id"],
+                            "entity": baseline["case"]["entity"],
+                        },
+                        "case": {
+                            k: v
+                            for k, v in record["case"].items()
+                            if k == "entity" or v != baseline["case"].get(k)
+                        },
+                    }
+                    for record in row["records"]
+                ]
             if fields is not None:
                 for record in row["records"]:
                     record["case"] = {
@@ -705,39 +736,39 @@ def research_observations(
     parent_messages: list[dict[str, Any]],
     child_messages: list[dict[str, Any]],
     *,
-    part_ids: list[str],
+    part_ids: list[str] | None = None,
     result_path: list[str | int] | None = None,
+    reads: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Retrieve exact saved public results, never re-fetch or summarize them."""
+    from wayfinder_paths.core.theses.checkpoints import EvidenceRead
     from wayfinder_paths.core.theses.review import public_observations
 
-    if (
-        not isinstance(part_ids, list)
-        or not 1 <= len(part_ids) <= 3
-        or any(not isinstance(key, str) or not key for key in part_ids)
-    ):
-        raise ValueError("Use one to three exact public observation part_ids")
-    if result_path is not None and (
-        not isinstance(result_path, list)
-        or not 1 <= len(result_path) <= 12
-        or any(
-            not (
-                (type(segment) is str and len(segment) <= 200)
-                or (type(segment) is int and segment >= 0)
+    if reads is not None:
+        if part_ids is not None or result_path is not None or not 1 <= len(reads) <= 3:
+            raise ValueError(
+                "Use one to three reads, or legacy part_ids/result_path, not both"
             )
-            for segment in result_path
-        )
-    ):
-        raise ValueError(
-            "result_path needs 1-12 object keys or nonnegative array indices"
-        )
+        selectors = [EvidenceRead.model_validate(read) for read in reads]
+    else:
+        if (
+            not isinstance(part_ids, list)
+            or not 1 <= len(part_ids) <= 3
+            or any(not isinstance(key, str) or not key for key in part_ids)
+        ):
+            raise ValueError("Use one to three exact public observation part_ids")
+        selectors = [
+            EvidenceRead(part_id=key, result_path=result_path)
+            for key in dict.fromkeys(part_ids)
+        ]
     observations = public_observations(
         [*parent_messages, *child_messages], include_results=True
     )
-    requested = list(dict.fromkeys(part_ids))
+    requested = list(dict.fromkeys(read.part_id for read in selectors))
     selected = []
     unavailable_paths = []
-    for key in requested:
+    for read in selectors:
+        key, result_path = read.part_id, read.result_path
         if key not in observations:
             continue
         observation = observations[key]
@@ -790,7 +821,7 @@ def research_observations(
                 "unavailable_result_paths": unavailable_paths,
                 "note": "Exact selected sections, not complete sources; omitted fields are not absent or disproven. Missing paths include the resolved prefix and up to 25 available object keys or the array length, not evidence values. Correct that path or omit result_path to retrieve the full saved result. Preserve metric scope, period, units and source context when comparing claims.",
             }
-            if result_path is not None
+            if any(read.result_path is not None for read in selectors)
             else {}
         ),
         "evidence_verified": False,
@@ -819,11 +850,53 @@ def notebook_response(request: dict[str, Any]) -> str:
             result = research_observations(
                 request["parent_messages"],
                 request["child_messages"],
-                part_ids=request.get("part_ids", []),
+                part_ids=request.get("part_ids"),
                 result_path=request.get("result_path"),
+                reads=request.get("reads"),
             )
         else:
             raise ValueError("Unknown notebook view")
+        if view == "evidence":
+            # Fit each exact section independently. Never discard a small useful
+            # read because another document in the same batch is too large.
+            observations = result["observations"]
+            result["observations"] = []
+            unavailable = []
+            for observation in observations:
+                value = observation["result"]
+                navigation = {
+                    "part_id": observation["part_id"],
+                    "result_path": observation.get("result_path"),
+                    "reason": "Response size limit; request a smaller exact section",
+                    "result_utf8_bytes": len(
+                        json.dumps(value, separators=(",", ":")).encode()
+                    ),
+                }
+                if isinstance(value, dict):
+                    navigation["available_keys"] = [
+                        key for key in value if len(json.dumps(key).encode()) <= 200
+                    ][:10]
+                    navigation["key_count"] = len(value)
+                elif isinstance(value, list):
+                    navigation["item_count"] = len(value)
+                unavailable.append(navigation)
+            result["unavailable_reads"] = unavailable
+            for observation, navigation in zip(
+                observations, unavailable.copy(), strict=True
+            ):
+                result["observations"].append(observation)
+                unavailable.remove(navigation)
+                if (
+                    len(json.dumps(result, separators=(",", ":")).encode()) + 100
+                    > 48_000
+                ):
+                    result["observations"].pop()
+                    unavailable.append(navigation)
+            result["partial"] = bool(
+                unavailable
+                or result["unavailable_part_ids"]
+                or result.get("unavailable_result_paths")
+            )
         output = json.dumps(result, separators=(",", ":"))
         if view == "evidence" or limit == 1 or len(output.encode()) + 1 <= 48_000:
             return output

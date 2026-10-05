@@ -14,7 +14,7 @@ from wayfinder_paths.mcp.utils import catch_errors, err, ok
 async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     """Record typed research progress, NOT verified evidence or execution approval.
 
-    Parent only; use schema_version=7. Record spec and inferred construction ONCE
+    Parent only; use schema_version=8. Record spec and inferred construction ONCE
     in interpretation; subsequent checkpoints inherit construction when omitted. Record the
     interpretation, then small draft updates (metadata/components or ONE allocation)
     and incremental judgments. Use thesis_notebook(view="status") before finishing
@@ -63,10 +63,10 @@ async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     Never guess a tool-part ID. accepted is only for nonblocking uncertainty.
     handoff_gaps acknowledges an incomplete worker after one targeted continuation,
     never fabricated research.
-    Call shapes: checkpoint={schema_version:7,stage:"discovery",discoveries:[...]};
-    checkpoint={schema_version:7,stage:"judged",decisions:[...]} (at most six cases);
-    checkpoint={schema_version:7,stage:"draft",draft:{metadata:...,components:[...]}};
-    checkpoint={schema_version:7,stage:"draft",draft:{variant:...}} (one budget).
+    Call shapes: checkpoint={schema_version:8,stage:"discovery",discoveries:[...]};
+    checkpoint={schema_version:8,stage:"judged",decisions:[...]} (at most six cases);
+    checkpoint={schema_version:8,stage:"draft",draft:{metadata:...,components:[...]}};
+    checkpoint={schema_version:8,stage:"draft",draft:{variant:...}} (one budget).
     When the same allocation AND rationale fit several budgets, add
     draft.variant_budgets=[100,1000,10000,100000] (or an explicit subset including
     variant.budget_usd). Only those budgets are replaced; all still pass separate
@@ -137,6 +137,16 @@ async def research_thesis_review(checkpoint: ReviewCheckpoint) -> dict:
     implementation exclusions can block selection; disclosed noncritical uncertainty
     need not. Record an empty findings list when clear. Parent resolves findings;
     a smaller weight alone does not supply missing proof. No trades or authorization.
+    For v8 runs, copy case_ref/input_digest from review.case_checks.required and
+    record case_checks=[{case_ref,input_digest,evidence_reads:[{part_id,result_path}],
+    conclusion: supports/needs_change/unresolved,reason}]. Retrieve the current case
+    and decisive saved source sections before checking them. Cover selected cases,
+    including at least one retrieved source for each decisive claim,
+    their referenced challengers and affected comparison_updates; follow next_offset.
+    supports means the current assessment is supported (including a rejection),
+    not that every case is a holding. Missing proof remains unresolved. Code checks
+    reads and currency, not economic truth. Unchanged checked=true entries can be
+    reused; changed digests require a new check by this SAME reviewer.
     """
     if checkpoint.reviewed_revision is None:
         return err(
@@ -149,6 +159,7 @@ async def research_thesis_review(checkpoint: ReviewCheckpoint) -> dict:
             "sha256": hashlib.sha256(checkpoint.receipt_json().encode()).hexdigest(),
             "reviewed_revision": checkpoint.reviewed_revision,
             "finding_count": len(checkpoint.findings),
+            "case_check_count": len(checkpoint.case_checks),
             "finding_keys": [
                 {
                     "finding_id": finding.id,

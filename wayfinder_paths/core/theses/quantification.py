@@ -61,7 +61,9 @@ def price_metrics(prices: dict[int, float]) -> dict:
     }
 
 
-def quantify_variants(variants: list[Variant], markets: dict[str, dict]) -> dict:
+def quantify_variants(
+    variants: list[Variant], markets: dict[str, dict], *, align_portfolios: bool = False
+) -> dict:
     """Align actual UTC observations; unavailable legs never silently become cash."""
     returns = {
         key: daily_returns(market.get("prices", {})) for key, market in markets.items()
@@ -107,11 +109,25 @@ def quantify_variants(variants: list[Variant], markets: dict[str, dict]) -> dict
                 else None,
             }
         )
+    comparison_prices = [
+        markets[p.instrument_id].get("prices", {})
+        for v in variants
+        for p in v.positions
+    ]
+    common_times = (
+        sorted(set.intersection(*(set(p) for p in comparison_prices)))
+        if comparison_prices
+        else []
+    )
+    if common_times and any(p[common_times[0]] <= 0 for p in comparison_prices):
+        common_times = []
     portfolios = []
     for variant in variants:
         legs = variant.positions
         prices = [markets[p.instrument_id].get("prices", {}) for p in legs]
         times = sorted(set.intersection(*(set(p) for p in prices))) if prices else []
+        if align_portfolios:
+            times = common_times
         if times and any(p[times[0]] <= 0 for p in prices):
             times = []  # No finite entry quantity at a zero-priced outcome.
         weights = [
@@ -172,6 +188,10 @@ def quantify_variants(variants: list[Variant], markets: dict[str, dict]) -> dict
                 "allocation_key": allocation_key(variant),
                 "budget_usd": variant.budget_usd,
                 "cash_bps": variant.cash_bps,
+                "largest_capital_bps": max((p.capital_bps for p in legs), default=0),
+                "capital_concentration_hhi": sum(
+                    (p.capital_bps / 10000) ** 2 for p in legs
+                ),
                 "gross_notional_bps": sum(p.capital_bps * p.leverage for p in legs),
                 "signed_directional_notional_bps": sum(
                     p.capital_bps * p.leverage * (-1 if p.direction == "short" else 1)

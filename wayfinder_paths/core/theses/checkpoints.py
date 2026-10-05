@@ -178,9 +178,32 @@ class ReviewFinding(Contract):
     ] = "assessment"
 
 
+class EvidenceRead(Contract):
+    part_id: Identifier
+    result_path: (
+        Annotated[
+            list[
+                Annotated[str, Field(max_length=200, strict=True)]
+                | Annotated[int, Field(ge=0, strict=True)]
+            ],
+            Field(min_length=1, max_length=12),
+        ]
+        | None
+    ) = None
+
+
+class CaseReviewCheck(Contract):
+    case_ref: CaseReference
+    input_digest: Identifier
+    evidence_reads: Annotated[list[EvidenceRead], Field(min_length=1, max_length=12)]
+    conclusion: Literal["supports", "needs_change", "unresolved"]
+    reason: Text
+
+
 class ReviewCheckpoint(Contract):
     findings: Annotated[list[ReviewFinding], Field(max_length=24)]
     reviewed_revision: Identifier | None = None
+    case_checks: Annotated[list[CaseReviewCheck], Field(max_length=40)] = []
 
     def receipt_json(self) -> str:
         # Default scope preserves old receipts; a draft-only scope is hash-bound.
@@ -193,12 +216,18 @@ class ReviewCheckpoint(Contract):
         }
         if self.reviewed_revision is None:
             exclude["reviewed_revision"] = True
+        if not self.case_checks:
+            exclude["case_checks"] = True
         return self.model_dump_json(exclude=exclude)
 
     @model_validator(mode="after")
     def unique_findings(self) -> Self:
         if len({f.id for f in self.findings}) != len(self.findings):
             raise ValueError("Review finding IDs must be unique")
+        if len({c.case_ref.entity.casefold() for c in self.case_checks}) != len(
+            self.case_checks
+        ):
+            raise ValueError("Review case checks must have unique entities")
         return self
 
 
@@ -216,9 +245,9 @@ V5_FIELDS = {"decisions", "handoff", "handoff_gaps", "review_resolutions"}
 
 class ResearchCheckpoint(Contract):
     schema_version: Annotated[
-        Literal[1, 2, 3, 4, 5, 6, 7],
+        Literal[1, 2, 3, 4, 5, 6, 7, 8],
         Field(
-            description="Use 7 for current parent writes. Draft updates default to 7; other omitted versions retain legacy v1. Never inherited from an earlier call."
+            description="Use 8 for current parent writes with accountable review. Omitted draft versions retain legacy v7; other omitted versions retain v1. Never inherited from an earlier call."
         ),
     ] = 1
     stage: Annotated[

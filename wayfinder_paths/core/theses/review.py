@@ -7,6 +7,8 @@ from typing import Any
 from pydantic import ValidationError
 
 from wayfinder_paths.core.theses.checkpoints import CaseResearch, ReviewCheckpoint
+from wayfinder_paths.core.theses.models import Variant
+from wayfinder_paths.core.theses.quantification import allocation_key
 from wayfinder_paths.core.theses.research import RESEARCH_EVIDENCE_TOOLS
 
 REVIEW_TOOL = "wayfinder_research_thesis_review"
@@ -215,6 +217,7 @@ def review_report(
     selected: set[str],
     *,
     revision: str | None = None,
+    variants: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     from wayfinder_paths.core.theses.assessment import checkpoints
 
@@ -222,6 +225,9 @@ def review_report(
     reviews: set[str] = set()
     reviewed_revisions: dict[str, tuple[int, str]] = {}
     draft_reads: dict[tuple[str, str], list[int]] = {}
+    case_reads: dict[tuple[str, str, str, str], list[int]] = {}
+    evidence_reads: dict[tuple[str, str], list[tuple[int, list[str | int]]]] = {}
+    checks: dict[tuple[str, str], tuple[dict[str, Any], int]] = {}
     observations = public_observations([*parent, *children])
     decisions = decision_evidence(records, checkpoints(children), observations)
     for message in children:
@@ -230,22 +236,46 @@ def review_report(
             continue
         for part in message.get("parts", []):
             state = part.get("state", {})
+            if part.get("id") in observations and state.get("status") == "completed":
+                evidence_reads.setdefault(
+                    (info.get("sessionID"), part["id"]), []
+                ).append((state.get("time", {}).get("end", 0) or 0, []))
             if (
                 part.get("tool") != "thesis_notebook"
                 or state.get("status") != "completed"
-                or state.get("input", {}).get("view") != "draft"
             ):
                 continue
             try:
                 output = json.loads(state.get("output", ""))
             except (TypeError, ValueError):
                 continue
-            if not isinstance(output, dict) or not isinstance(
-                output.get("proposal"), dict
-            ):
+            if not isinstance(output, dict) or output.get("error"):
                 continue
+            session = info.get("sessionID")
+            timestamp = state.get("time", {}).get("end", 0) or 0
+            for row in output.get("cases", []):
+                for record in row.get("records", []):
+                    case_reads.setdefault(
+                        (
+                            session,
+                            record.get("session_id"),
+                            record.get("checkpoint_id"),
+                            row["entity"].casefold(),
+                        ),
+                        [],
+                    ).append(timestamp)
+            for observation in output.get("observations", []):
+                part_id = observation.get("part_id")
+                if part_id in observations:
+                    evidence_reads.setdefault((session, part_id), []).append(
+                        (timestamp, observation.get("result_path") or [])
+                    )
             read_revision = output.get("review", {}).get("revision")
-            if isinstance(read_revision, str):
+            if (
+                state.get("input", {}).get("view") == "draft"
+                and isinstance(output.get("proposal"), dict)
+                and isinstance(read_revision, str)
+            ):
                 draft_reads.setdefault(
                     (info.get("sessionID"), read_revision), []
                 ).append(state.get("time", {}).get("end", 0) or 0)
@@ -272,14 +302,28 @@ def review_report(
                     for serialized in (
                         checkpoint.model_dump_json(),
                         checkpoint.receipt_json(),
+                        checkpoint.model_dump_json(exclude_unset=True),
                     )
                 }
+                if not checkpoint.case_checks:
+                    digests.add(
+                        hashlib.sha256(
+                            checkpoint.model_dump_json(exclude={"case_checks"}).encode()
+                        ).hexdigest()
+                    )
                 if all(f.scope == "assessment" for f in checkpoint.findings):
                     # Older model dumps included a null revision but no scope.
                     digests.add(
                         hashlib.sha256(
                             checkpoint.model_dump_json(
-                                exclude={"findings": {"__all__": {"scope"}}}
+                                exclude={
+                                    "findings": {"__all__": {"scope"}},
+                                    **(
+                                        {"case_checks": True}
+                                        if not checkpoint.case_checks
+                                        else {}
+                                    ),
+                                }
                             ).encode()
                         ).hexdigest()
                     )
@@ -304,6 +348,10 @@ def review_report(
                     completed_at,
                     checkpoint.reviewed_revision,
                 )
+                for check in checkpoint.case_checks:
+                    key = (session, check.case_ref.entity.casefold())
+                    if completed_at >= checks.get(key, ({}, 0))[1]:
+                        checks[key] = (check.model_dump(mode="json"), completed_at)
             for item in checkpoint.findings:
                 findings[(session, item.id)] = {
                     **item.model_dump(),
@@ -343,6 +391,19 @@ def review_report(
         errors.append(
             "Use one native reviewer; resume its existing task for delta checks"
         )
+    coverage = None
+    if any(r["checkpoint"]["schema_version"] >= 8 for r in records):
+        coverage = case_review_coverage(
+            records,
+            checkpoints(children),
+            selected,
+            variants or [],
+            decisions,
+            checks,
+            case_reads,
+            evidence_reads,
+        )
+        errors.extend(coverage["errors"])
     for key, finding in findings.items():
         resolution, resolved_at = resolutions.get(key, ({}, 0))
         action = resolution.get("action")
@@ -478,7 +539,121 @@ def review_report(
         },
         "changes_since_review": changes,
         "decision_evidence": decisions,
+        **({"case_checks": coverage} if coverage is not None else {}),
         "errors": errors,
         "warnings": warnings,
         "public_observations": list(observations.values()),
+    }
+
+
+def case_review_coverage(
+    records: list[dict[str, Any]],
+    research: list[dict[str, Any]],
+    selected: set[str],
+    variants: list[dict[str, Any]],
+    decisions: dict[str, Any],
+    checks: dict[tuple[str, str], tuple[dict[str, Any], int]],
+    case_reads: dict[tuple[str, str, str, str], list[int]],
+    evidence_reads: dict[tuple[str, str], list[tuple[int, list[str | int]]]],
+) -> dict[str, Any]:
+    """Require current, actually retrieved comparisons, not mechanical truth claims."""
+    current: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+    for record in sorted(
+        [*records, *research], key=lambda r: r["completed_at_ms"] or 0
+    ):
+        for field in ("research_cases", "candidates"):
+            for case in record["checkpoint"][field]:
+                entity = case["entity"].casefold()
+                if (
+                    field == "candidates"
+                    or "decision" not in current.get(entity, ({}, {}))[0]
+                ):
+                    current[entity] = (case, record)
+    selected_entities = {
+        key
+        for key, (case, _) in current.items()
+        if set(case["instruments"]) & selected and case.get("decision") == "KEEP"
+    }
+    required = (
+        selected_entities
+        | {
+            ref["entity"].casefold()
+            for key in selected_entities
+            for ref in current[key][0].get("comparison_refs", [])
+        }
+        | {
+            update[key].casefold()
+            for update in decisions["comparison_updates"]
+            for key in ("entity", "compared_entity")
+        }
+    )
+    allocations = sorted(
+        (v["budget_usd"], allocation_key(Variant.model_validate(v))) for v in variants
+    )
+    rows: list[dict[str, Any]] = []
+    errors = []
+    for entity in sorted(required):
+        if entity not in current:
+            errors.append(f"Review case {entity}: current case unavailable")
+            continue
+        case, record = current[entity]
+        ref = {
+            "session_id": record["session_id"],
+            "checkpoint_id": record["id"],
+            "entity": case["entity"],
+        }
+        dependencies = sorted(
+            {r["entity"].casefold() for r in case.get("comparison_refs", [])}
+        )
+        inputs = {
+            "case_ref": ref,
+            "case": case,
+            "comparisons": {
+                key: current[key][0] for key in dependencies if key in current
+            },
+            "allocations": allocations,
+        }
+        digest = hashlib.sha256(
+            json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        valid = False
+        for (session, checked_entity), (check, stamp) in checks.items():
+            if (
+                checked_entity != entity
+                or check["case_ref"] != ref
+                or check["input_digest"] != digest
+            ):
+                continue
+            # A reused check remains valid only while all of its inputs do.
+            read = any(
+                t <= stamp
+                for t in case_reads.get(
+                    (session, ref["session_id"], ref["checkpoint_id"], entity), []
+                )
+            )
+            cited = {r["part_id"] for r in check["evidence_reads"]}
+            read &= all(
+                cited & set(claim["evidence_part_ids"])
+                for claim in case.get("claims", [])
+            )
+            read &= all(
+                any(
+                    t <= stamp and (source["result_path"] or [])[: len(path)] == path
+                    for t, path in evidence_reads.get((session, source["part_id"]), [])
+                )
+                for source in check["evidence_reads"]
+            )
+            valid = read and check["conclusion"] == "supports"
+        rows.append({"case_ref": ref, "input_digest": digest, "checked": valid})
+    missing = [row["case_ref"]["entity"] for row in rows if not row["checked"]]
+    if missing:
+        errors.append(
+            "Review coverage incomplete: "
+            + ", ".join(missing)
+            + ". Resume the SAME reviewer for current case_checks backed by actual case/source reads."
+        )
+    return {
+        "required": rows,
+        "errors": errors,
+        "note": "Checks bind current cases, dependent comparisons and allocations. They establish retrieval and accountability, not the truth of investment claims. Unchanged checks can be reused.",
     }

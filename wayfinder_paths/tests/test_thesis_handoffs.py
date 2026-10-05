@@ -1085,7 +1085,9 @@ def test_native_case_pages_fit_without_dropping_records(
     assert (parent, child) == original
 
 
-def test_native_oversized_evidence_remains_exact_for_transport_rejection() -> None:
+def test_native_oversized_evidence_is_explicitly_unavailable_without_truncation() -> (
+    None
+):
     saved = {"results": [{"contentExcerpt": "é" * 25000}]}
     message = observation("wayfinder_core_web_fetch", saved, 1)
     message["parts"][0]["id"] = "large-read"
@@ -1097,8 +1099,64 @@ def test_native_oversized_evidence_remains_exact_for_transport_rejection() -> No
             "part_ids": ["large-read"],
         }
     )
-    assert len(output.encode()) > 48_000
-    assert json.loads(output)["observations"][0]["result"] == saved
+    assert len(output.encode()) < 48_000
+    report = json.loads(output)
+    assert report["partial"]
+    assert report["observations"] == []
+    assert report["unavailable_reads"][0]["part_id"] == "large-read"
+    assert report["unavailable_reads"][0]["available_keys"] == ["results"]
+    assert json.loads(message["parts"][0]["state"]["output"])["result"] == saved
+
+
+def test_independent_evidence_selectors_keep_fitting_reads() -> None:
+    saved = {
+        "results": [{"text": "large" * 12000}, {"text": "scope and contrary evidence"}]
+    }
+    message = observation("wayfinder_core_web_fetch", saved, 1)
+    message["parts"][0]["id"] = "read"
+    result = json.loads(
+        notebook_response(
+            {
+                "view": "evidence",
+                "parent_messages": [message],
+                "child_messages": [],
+                "reads": [
+                    {"part_id": "read", "result_path": ["results", 0]},
+                    {"part_id": "read", "result_path": ["results", 1]},
+                ],
+            }
+        )
+    )
+    assert result["partial"]
+    assert result["observations"][0]["result"] == saved["results"][1]
+    assert result["observations"][0]["result_path"] == ["results", 1]
+    assert result["unavailable_reads"][0]["result_path"] == ["results", 0]
+    assert len(json.dumps(result).encode()) < 48000
+
+
+def test_compact_cases_preserve_original_disagreement_without_duplicate_prose(
+    compact_run,
+) -> None:
+    parent, child = compact_run
+    raw = deepcopy(parent[0]["parts"][0]["state"]["input"]["checkpoint"])
+    raw["decisions"][0]["updated_research"] = {
+        "value_capture": "No holder flow observed",
+        "gaps": [],
+    }
+    parent.append(receipt(raw, 3))
+    full = research_notebook(parent, child, entities=["network"], history=False)
+    compact = research_notebook(
+        parent, child, entities=["network"], history=False, compact=True
+    )
+    row = compact["cases"][0]
+    assert row["records"][0] == full["cases"][0]["records"][0]
+    assert row["records"][1]["case"]["value_capture"] == "Fees"
+    assert "support" not in row["records"][1]["case"]
+    assert row["records"][1]["same_as"] == row["current_ref"]
+    assert len(json.dumps(compact)) < len(json.dumps(full))
+    assert research_notebook(
+        parent, child, entities=["network"], history=True, compact=True
+    ) == research_notebook(parent, child, entities=["network"], history=True)
 
 
 def test_current_case_projection_preserves_metadata_and_unassessed_inventory(

@@ -1,4 +1,5 @@
 import json
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -55,6 +56,68 @@ def test_missing_days_are_not_filled_or_counted_as_one_day_returns():
     assert metrics["daily_returns"] == 1
     assert metrics["annualized_daily_volatility"] is None
     assert metrics["status"] == "limited_history"
+
+
+@pytest.mark.asyncio
+async def test_counterfactuals_share_reads_and_use_identical_history_windows() -> None:
+    base = variant(capital_bps=10000)
+    challenger = variant(instrument_id="ETH-USDC", capital_bps=10000)
+
+    async def market(position: Position, start: int, end: int) -> dict[str, Any]:
+        first = 0 if position.instrument_id == "BTC-USDC" else 20
+        return {"prices": {i * DAY_MS: 100 + i for i in range(first, 40)}}
+
+    with patch.object(tool, "_read_market", side_effect=market) as read:
+        result = await tool.research_quantify_portfolio(
+            [base], counterfactuals=[challenger]
+        )
+    assert result["ok"]
+    assert read.call_count == 2
+    comparison = result["result"]["allocation_comparison"]["portfolios"]
+    assert {row["metrics"]["start_ms"] for row in comparison} == {20 * DAY_MS}
+    assert {row["metrics"]["daily_returns"] for row in comparison} == {19}
+    assert {
+        row["allocation_key"]
+        for row in result["result"]["portfolio_quantification"]["portfolios"]
+    } == {allocation_key(base), allocation_key(challenger)}
+
+
+def test_sparse_challenger_cannot_claim_comparable_long_history() -> None:
+    markets = {
+        "BTC-USDC": {"prices": {i * DAY_MS: 100 + i for i in range(40)}},
+        "ETH-USDC": {"prices": {i * DAY_MS: 100 + i for i in range(35, 40)}},
+    }
+    rows = quantify_variants(
+        [variant(), variant(instrument_id="ETH-USDC")], markets, align_portfolios=True
+    )["portfolios"]
+    assert all(row["metrics"]["status"] == "limited_history" for row in rows)
+    assert all(row["metrics"]["annualized_daily_volatility"] is None for row in rows)
+    markets["ETH-USDC"]["prices"] = {}
+    assert all(
+        row["metrics"]["status"] == "unavailable"
+        for row in quantify_variants(
+            [variant(), variant(instrument_id="ETH-USDC")],
+            markets,
+            align_portfolios=True,
+        )["portfolios"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_counterfactuals_reject_mixed_budget_or_unbounded_comparisons_before_reads() -> (
+    None
+):
+    with patch.object(tool, "_read_market") as read:
+        for base, alternatives in [
+            ([variant(), variant()], [variant()]),
+            ([variant()], [variant()] * 3),
+            ([variant()], [variant().model_copy(update={"budget_usd": 1000})]),
+        ]:
+            result = await tool.research_quantify_portfolio(
+                base, counterfactuals=alternatives
+            )
+            assert not result["ok"]
+        read.assert_not_called()
 
 
 @pytest.mark.parametrize(
