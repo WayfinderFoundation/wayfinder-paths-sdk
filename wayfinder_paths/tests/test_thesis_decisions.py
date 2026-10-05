@@ -2,8 +2,10 @@ import hashlib
 import json
 from copy import deepcopy
 from typing import Any
+from unittest.mock import patch
 
 import pytest
+from mcp.server.fastmcp.tools.base import Tool
 
 from wayfinder_paths.core.theses.assessment import (
     checkpoints,
@@ -13,6 +15,7 @@ from wayfinder_paths.core.theses.assessment import (
 from wayfinder_paths.core.theses.checkpoints import ResearchCheckpoint
 from wayfinder_paths.core.theses.draft import draft_status
 from wayfinder_paths.core.theses.review import decision_evidence, public_observations
+from wayfinder_paths.mcp.tools.thesis_checkpoint import research_thesis_checkpoint
 from wayfinder_paths.tests import test_thesis_handoffs
 from wayfinder_paths.tests.test_thesis_draft import observation, receipt
 
@@ -102,8 +105,102 @@ def test_research_correction_survives_later_decision_only_update(
     assert (parent, children) == original
 
 
+def test_partial_research_corrections_merge_without_resurrecting_stale_fields(
+    decision_run: Run,
+) -> None:
+    parent, children = decision_run
+    original_children = deepcopy(children)
+    cp = deepcopy(parent[1]["parts"][0]["state"]["input"]["checkpoint"])
+    correction = {
+        "observed_identifiers": ["Observed provider slug, not an absent listing"],
+        "value_capture": "Demand-linked burn, not a holder cash distribution",
+        "counterevidence": "Declining measured usage remains a risk",
+        "gaps": [],
+    }
+    cp["decisions"][0]["updated_research"] = correction
+    parent.append(receipt(cp, 3))
+    cp["decisions"][0]["updated_research"] = {
+        "closest_alternative": "Current supported competitor; old claim withdrawn"
+    }
+    parent.append(receipt(cp, 4))
+    cp["decisions"][0]["updated_research"] = None
+    parent.append(receipt(cp, 5))
+    records, _, errors = projected_records(parent, children)
+    assert not errors
+    current = records[-1]["checkpoint"]["candidates"][0]
+    assert {field: current[field] for field in correction} == correction
+    assert current["closest_alternative"].startswith("Current supported competitor")
+    source = children[0]["parts"][0]["state"]["input"]["checkpoint"]["research_cases"][
+        0
+    ]
+    assert current["support"] == source["support"]
+    assert current["instruments"] == source["instruments"]
+    assert children == original_children
+    assert not report(parent, children)["errors"]
+
+
 @pytest.mark.parametrize(
-    "change", ["decision_only", "full_replacement", "source", "entity"]
+    "correction",
+    [
+        {},
+        {"support": None},
+        {"support": ""},
+        {"value_capture": ["wrong type"]},
+        {"gaps": ["gap"] * 7},
+        {"observed_identifiers": []},
+        {"decision": "KEEP"},
+        {"support": "Changed", "unrecognized": "Cannot silently ignore"},
+    ],
+)
+def test_partial_research_correction_rejects_invalid_fields(
+    decision_run: Run, correction: dict[str, Any]
+) -> None:
+    parent, _ = decision_run
+    cp = deepcopy(parent[1]["parts"][0]["state"]["input"]["checkpoint"])
+    cp["decisions"][0]["updated_research"] = correction
+    with pytest.raises(ValueError):
+        ResearchCheckpoint.model_validate(cp)
+
+
+def test_partial_research_correction_is_receipt_bound(decision_run: Run) -> None:
+    parent, children = decision_run
+    cp = deepcopy(parent[1]["parts"][0]["state"]["input"]["checkpoint"])
+    cp["decisions"][0]["updated_research"] = {"support": "Corrected observation"}
+    message = receipt(cp, 3)
+    assert len(checkpoints([message])) == 1
+    message["parts"][0]["state"]["input"]["checkpoint"]["decisions"][0][
+        "updated_research"
+    ]["value_capture"] = "An unsigned correction"
+    assert not checkpoints([message])
+    assert not draft_status([*parent, message], children)["ready"]
+
+
+@pytest.mark.asyncio
+async def test_partial_research_correction_mcp_receipt_replays(
+    decision_run: Run,
+) -> None:
+    parent, children = decision_run
+    cp = deepcopy(parent[1]["parts"][0]["state"]["input"]["checkpoint"])
+    cp["decisions"][0]["updated_research"] = {"closest_alternative": "Corrected rival"}
+    native = Tool.from_function(research_thesis_checkpoint)
+    with patch("wayfinder_paths.mcp.utils._report_tool_metric"):
+        result = await native.run({"checkpoint": cp})
+    assert result["ok"] is True
+    assert result["result"]["evidence_verified"] is False
+    assert result["result"]["execution_authorized"] is False
+    message = receipt(cp, 3)
+    message["parts"][0]["state"]["input"]["checkpoint"] = cp
+    message["parts"][0]["state"]["output"] = json.dumps(result)
+    records, _, errors = projected_records([*parent, message], children)
+    assert not errors
+    assert records[-1]["checkpoint"]["candidates"][0]["closest_alternative"] == (
+        "Corrected rival"
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["decision_only", "partial_correction", "full_replacement", "source", "entity"],
 )
 def test_decision_only_update_preserves_implementation_and_comparison_evidence(
     decision_run: Run, change: str
@@ -137,6 +234,8 @@ def test_decision_only_update_preserves_implementation_and_comparison_evidence(
         decision["updated_research"] = deepcopy(
             children[0]["parts"][0]["state"]["input"]["checkpoint"]["research_cases"][0]
         )
+    elif change == "partial_correction":
+        decision["updated_research"] = {"closest_alternative": "Corrected comparison"}
     elif change == "source":
         decision["research_ref"] = dict(refs[0])
     elif change == "entity":
@@ -147,22 +246,28 @@ def test_decision_only_update_preserves_implementation_and_comparison_evidence(
     assert not errors
     current = projected[-1]["checkpoint"]["candidates"][0]
     assert current["implementation_checks"] == (
-        checks if change == "decision_only" else []
+        checks if change in {"decision_only", "partial_correction"} else []
     )
-    assert current["comparison_refs"] == (refs if change == "decision_only" else [])
+    assert current["comparison_refs"] == (
+        refs if change in {"decision_only", "partial_correction"} else []
+    )
     assert current["reason"] == decision["reason"]
     assert (parent, children) == original
 
 
 @pytest.mark.parametrize("change", ["source", "entity", "invalid_update"])
+@pytest.mark.parametrize("partial", [False, True])
 def test_research_correction_is_scoped_and_only_valid_updates_replace_it(
-    decision_run: Run, change: str
+    decision_run: Run, change: str, partial: bool
 ) -> None:
     parent, children = decision_run
     cp = deepcopy(parent[1]["parts"][0]["state"]["input"]["checkpoint"])
     worker = deepcopy(children[0]["parts"][0]["state"]["input"]["checkpoint"])
     research = worker["research_cases"][0]
-    cp["decisions"][0]["updated_research"] = {**research, "support": "Correction"}
+    cp["decisions"][0]["updated_research"] = {
+        **({} if partial else research),
+        "support": "Correction",
+    }
     parent.append(receipt(cp, 3))
     cp["decisions"][0]["updated_research"] = None
     if change == "source":
@@ -178,7 +283,10 @@ def test_research_correction_is_scoped_and_only_valid_updates_replace_it(
     else:
         invalid = deepcopy(cp)
         invalid["decisions"][0].update(
-            updated_research={**research, "support": "Must not replace correction"},
+            updated_research={
+                **({} if partial else research),
+                "support": "Must not replace correction",
+            },
             decision="REJECT",
             decision_basis="implementation",
             implementation_checks=[],

@@ -351,7 +351,8 @@ def test_review_change_index_uses_saved_read_not_later_signoff(
 
 
 @pytest.mark.parametrize(
-    "change", ["decision", "resolution", "draft", "shared_draft", "research"]
+    "change",
+    ["decision", "correction", "resolution", "draft", "shared_draft", "research"],
 )
 def test_v6_review_is_invalidated_by_later_selection_or_resolution(
     compact_run: tuple[list[dict], list[dict]],
@@ -377,9 +378,13 @@ def test_v6_review_is_invalidated_by_later_selection_or_resolution(
     child.append(signoff(original_revision, 7))
     assert not draft_context(parent, child)[1]["review"]["errors"]
     update = {"schema_version": 6, "stage": "discovery"}
-    if change == "decision":
+    if change in {"decision", "correction"}:
         update = deepcopy(parent[1]["parts"][0]["state"]["input"]["checkpoint"])
         update["decisions"][0]["reason"] = "Relabeled as generic infrastructure beta"
+        if change == "correction":
+            update["decisions"][0]["updated_research"] = {
+                "closest_alternative": "Corrected comparison still requires review"
+            }
     elif change == "resolution":
         # Even a correct structural resolution needs a delta sign-off. A made-up
         # finding remains an independent error; it cannot be waved through by review.

@@ -48,6 +48,14 @@ async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     Original research is resolved in code. Only provide updated_research when facts
     change; valid corrections persist through later decisions for the same entity
     and research_ref. A different research_ref starts from that saved source.
+    For descriptive corrections, updated_research may contain only the changed
+    mechanism, observed_identifiers, value_capture, support, counterevidence,
+    closest_alternative or gaps. Omitted/null fields stay unchanged; gaps=[] clears
+    stale gaps. Correct ALL affected fields together, not just reason/claims.
+    These partial corrections preserve implementation_checks/comparison_refs;
+    supply their nonempty replacements separately when they change. A complete
+    ResearchCase still replaces all research and clears omitted comparison lists.
+    Neither form verifies facts or waives current reviewer sign-off.
     Record review_resolutions with exact public evidence_part_ids from case
     source_reads or existing claims; only use the status observation index when
     that source is not already linked. Read the original result before citing it.

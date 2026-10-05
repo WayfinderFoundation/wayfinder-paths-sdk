@@ -154,13 +154,18 @@ def projected_records(
                 ]
                 continue
             research = decision["updated_research"]
-            if research is None:
+            replacement = research is not None and "entity" in research
+            if not replacement:
                 # A new verdict over the same source must not resurrect research
                 # corrected in an earlier parent decision. New refs start fresh.
                 previous = current_research.get(key)
-                research = (
+                baseline = (
                     previous[1] if previous and previous[0] == source_key else source[0]
                 )
+                research = {
+                    **baseline,
+                    **{k: v for k, v in (research or {}).items() if v is not None},
+                }
             payload = {
                 **deepcopy(research),
                 **{
@@ -169,9 +174,9 @@ def projected_records(
                     if k not in {"research_ref", "updated_research"}
                 },
             }
-            # A decision-only correction retains its prior implementation and
-            # comparison evidence. A full research replacement starts fresh.
-            if decision["updated_research"] is None:
+            # Only a full replacement clears omitted implementation/comparison
+            # evidence; a descriptive correction must not discard it.
+            if not replacement:
                 for field in ("implementation_checks", "comparison_refs"):
                     if not decision[field]:
                         payload[field] = deepcopy(research.get(field, []))

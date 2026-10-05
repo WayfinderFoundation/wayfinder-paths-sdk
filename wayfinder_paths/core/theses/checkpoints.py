@@ -81,6 +81,26 @@ class ResearchCase(CaseResearch):
     case_basis: CaseBasis
 
 
+class ResearchCorrection(Contract):
+    """Correct stale descriptive fields without repeating or replacing a whole case."""
+
+    mechanism: Text | None = None
+    observed_identifiers: (
+        Annotated[list[Text], Field(min_length=1, max_length=12)] | None
+    ) = None
+    value_capture: Text | None = None
+    support: Text | None = None
+    counterevidence: Text | None = None
+    closest_alternative: Text | None = None
+    gaps: Annotated[list[Text], Field(max_length=6)] | None = None
+
+    @model_validator(mode="after")
+    def require_correction(self) -> Self:
+        if not self.model_dump(exclude_none=True):
+            raise ValueError("A research correction must change at least one field")
+        return self
+
+
 class CaseReference(Contract):
     session_id: Identifier
     checkpoint_id: Identifier
@@ -115,8 +135,10 @@ class CaseDecision(Contract):
     """Parent judgment over immutable research; changes never overwrite its source.
 
     Decision-only updates retain earlier implementation_checks/comparison_refs
-    when their lists are empty. Supply a nonempty replacement list, or supply
-    updated_research to replace the full case (including clearing those lists).
+    when their lists are empty. A partial updated_research merges descriptive
+    corrections into the current case and also retains those lists. Supply a
+    nonempty replacement list, or a full ResearchCase in updated_research to
+    replace the case (including clearing those lists).
     Inheritance is scoped to the same entity and exact research_ref.
     """
 
@@ -126,7 +148,7 @@ class CaseDecision(Contract):
     decision_basis: Literal["economic", "implementation", "portfolio", "unresolved"]
     reason: Text
     implementation_checks: list[ImplementationCheck] = []
-    updated_research: ResearchCase | None = None
+    updated_research: ResearchCase | ResearchCorrection | None = None
     claims: Annotated[list[DecisionClaim], Field(max_length=4)] = []
     comparison_refs: Annotated[list[CaseReference], Field(max_length=3)] = []
 
