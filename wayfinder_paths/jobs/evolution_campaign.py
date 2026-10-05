@@ -62,6 +62,7 @@ from wayfinder_paths.jobs.economics import (
     daily_log_returns,
     objective_vector,
     paired_daily_deltas,
+    probation_testability,
 )
 from wayfinder_paths.jobs.evidence import verify_job_evidence_refs
 from wayfinder_paths.jobs.evolution_diagnostics import (
@@ -74,6 +75,7 @@ from wayfinder_paths.jobs.evolution_diagnostics import (
     fit_diagnostic_pack,
     leader_attribution_sentence,
     maker_round_trip_bps,
+    pack_text,
     preview_progress,
     receipt_economics,
     receipt_exits,
@@ -824,7 +826,7 @@ def _start_campaign(
         withhold_artifacts=bool(certification_policy["enabled"]),
     )
     diagnostic_path = campaign_root / DIAGNOSTIC_PACK
-    atomic_write_json(diagnostic_path, diagnostic_pack)
+    atomic_write_text(diagnostic_path, pack_text(diagnostic_pack))
     manifest["diagnostic_pack"] = {
         "path": f"{relative_root}/{DIAGNOSTIC_PACK}",
         "sha256": _file_hash(diagnostic_path),
@@ -940,7 +942,9 @@ def _campaign_regime_context(
     }
 
 
-_COMPLEXITY_FLOOR_COMPARISONS = 24
+# A flat (cash) or tiny incumbent must not halve the budget: books that
+# passed validation in v11-v12 used 19-40 comparisons.
+_COMPLEXITY_FLOOR_COMPARISONS = 48
 _RISK_NORMALIZATION_FLOOR = 0.25
 _RISK_CEILING_REASON_PREFIXES = ("OOS max drawdown ", "OOS tail loss ")
 _SIZING_DIMENSIONS = frozenset(
@@ -1290,9 +1294,12 @@ SIGNAL_RECIPE_NOTES = (
     "exit with a passive reduce-only take-profit, never at the close. A "
     "library: population entry is a composed def: its expression is DSL "
     "source over f and wayfinder_paths.jobs.signal_library.SIGNAL_DSL; build "
-    "it in precompute() with compile_signal_expression (from "
-    "wayfinder_paths.jobs.signal_library) and pass the def object to "
-    "library_signal_on_bars."
+    "it in precompute() with compile_signal_expression and pass the def "
+    "object to library_signal_on_bars. Import both with: from "
+    "wayfinder_paths.jobs.signal_library import compile_signal_expression, "
+    "library_signal_on_bars. window_coverage_28d is the share of 28-day "
+    "windows with 3+ events: under about 0.6 the trigger fires in bursts and "
+    "a book on it alone sits idle through most probation windows."
 )
 
 
@@ -1322,6 +1329,7 @@ _PACK_SIGNAL_KEYS = (
     "edge_net_maker_bps",
     "execution_hint",
     "events",
+    "window_coverage_28d",
     "expression",
     "min_bars",
     "source",
@@ -1464,16 +1472,34 @@ def _policy_scan_block(
     if policy.get("policy_scan_retire_failed"):
         # The scan is deterministic on a slowly moving panel, so a survivor
         # that already lost on validation comes back identical every campaign.
-        failed = _failed_policy_ids(load_archive(store, job_id).get("candidates") or [])
+        archive = load_archive(store, job_id).get("candidates") or []
+        failed = _failed_policy_ids(archive)
+        # Each week's panel also offers new parameterizations of a family
+        # that keeps losing; after enough of them, retire the family.
+        family_after = int(policy.get("policy_scan_retire_family_after") or 0)
+        dead_families = (
+            {
+                family
+                for family, count in _failed_policy_families(archive).items()
+                if count >= family_after
+            }
+            if family_after
+            else set()
+        )
         survivors = list(block.get("survivors") or [])
-        block["survivors"] = [
-            row for row in survivors if str(row.get("policy_id") or "") not in failed
-        ]
+
+        def retired(row: Mapping[str, Any]) -> bool:
+            return (
+                str(row.get("policy_id") or "") in failed
+                or str(row.get("family") or "") in dead_families
+            )
+
+        block["survivors"] = [row for row in survivors if not retired(row)]
         block["retired"] = [
-            str(row.get("policy_id"))
-            for row in survivors
-            if str(row.get("policy_id") or "") in failed
+            str(row.get("policy_id")) for row in survivors if retired(row)
         ]
+        if dead_families:
+            block["retired_families"] = sorted(dead_families)
     return block
 
 
@@ -1490,6 +1516,20 @@ def _failed_policy_ids(archive: list[dict[str, Any]]) -> set[str]:
         if policy_id and validation is not None and float(validation) <= 0:
             failed.add(policy_id)
     return failed
+
+
+def _failed_policy_families(archive: list[dict[str, Any]]) -> dict[str, int]:
+    """Validation losses per policy-scan family (distinct configurations)."""
+    losses: dict[str, set[str]] = {}
+    for entry in archive:
+        metadata = entry.get("metadata") or {}
+        family = str(metadata.get("policy_family") or "")
+        validation = (
+            ((metadata.get("dev") or {}).get("validation") or {}).get("stats") or {}
+        ).get("net_return")
+        if family and validation is not None and float(validation) <= 0:
+            losses.setdefault(family, set()).add(str(metadata.get("policy_id") or ""))
+    return {family: len(ids) for family, ids in losses.items()}
 
 
 def _policy_scan_instruction(block: Mapping[str, Any]) -> str:
@@ -1535,6 +1575,14 @@ def _policy_scan_instruction(block: Mapping[str, Any]) -> str:
             f"{len(retired)} further survivor(s) are retired: the same "
             "configuration already lost on independent validation in an earlier "
             "campaign. "
+        )
+    retired_families = list(block.get("retired_families") or [])
+    if retired_families:
+        text += (
+            "Retired families (repeated validation losses in earlier campaigns, "
+            "whatever the parameters): "
+            + ", ".join(retired_families)
+            + " — do not rebuild them as de_novo books. "
         )
     if falsified:
         text += (
@@ -1854,6 +1902,7 @@ def _select_validated_rows(
             "execution_hint": hint,
             "events": events,
             "events_per_day": round(density, 3),
+            "window_coverage_28d": row.get("window_coverage_28d"),
             "folds_agreeing": row.get("folds_agreeing"),
             "t_stat_by_slice": {
                 label: round(value, 3) for label, value in slice_t.items()
@@ -2981,7 +3030,7 @@ def _merge_compose_survivors(
         **dict(fitted_block.get("composition") or {}),
         "survivors": int(composed.get("survivors") or 0) + merged,
     }
-    atomic_write_json(pack_path, fitted)
+    atomic_write_text(pack_path, pack_text(fitted))
     manifest["diagnostic_pack"] = {
         **dict(manifest.get("diagnostic_pack") or {}),
         "sha256": _file_hash(pack_path),
@@ -3638,7 +3687,7 @@ def mechanism_grid(
                 "reason": "persisting the grid would push the pack past its budget "
                 "and drop the signal it cites; nothing was persisted",
             }
-        atomic_write_json(pack_path, pack)
+        atomic_write_text(pack_path, pack_text(pack))
         manifest["diagnostic_pack"] = {
             **dict(manifest.get("diagnostic_pack") or {}),
             "sha256": _file_hash(pack_path),
@@ -4580,6 +4629,7 @@ def _prepare_candidate(
         "research_seed_id": (parent_plan.get("research_seed") or {}).get("seed_id"),
         "policy_ref": (parent_plan.get("policy") or {}).get("pointer"),
         "policy_id": (parent_plan.get("policy") or {}).get("policy_id"),
+        "policy_family": (parent_plan.get("policy") or {}).get("family"),
         "seed_fallback": (
             {
                 "from": parent_plan.get("fallback_from"),
@@ -4647,6 +4697,7 @@ def _prepare_candidate(
             "starter_seed_id": candidate.get("starter_seed_id"),
             "research_seed_id": candidate.get("research_seed_id"),
             "policy_id": candidate.get("policy_id"),
+            "policy_family": candidate.get("policy_family"),
             "seed_revision": seed_revision,
             "evidence_reset": candidate["evidence_reset"],
             "design_slot_id": candidate.get("design_slot_id"),
@@ -4733,6 +4784,67 @@ def _require_declared_window(subject: dict[str, Any], params: dict[str, Any]) ->
         )
 
 
+# A worker whose screen launch found another candidate's screen running
+# leaves a request; the running op evaluates it next. A request older than
+# this with nothing running is handed back to a worker session.
+EVALUATION_REQUEST_TTL = timedelta(minutes=30)
+_REQUESTABLE_STATUSES = frozenset({"prepared", "quick_failed", "repair_pending"})
+
+
+def request_candidate_evaluation(
+    store: JobStore, job_id: str, candidate_id: str
+) -> dict[str, Any] | None:
+    """Queue a screen behind the one running; None when the candidate is not
+    waiting for one (already running, or already screened)."""
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = _active_campaign(store, job_id)
+        candidate = _candidate(state, candidate_id)
+        if candidate.get("status") not in _REQUESTABLE_STATUSES:
+            return None
+        candidate["evaluation_requested_at"] = utc_now_iso()
+        _save_campaign(store, job_id, state)
+    return {"queued": True, "candidate_id": candidate_id}
+
+
+def evaluate_candidate_and_requests(
+    store: JobStore, job_id: str, candidate_id: str
+) -> dict[str, Any]:
+    """The evaluate op: this candidate, then every screen requested while it
+    ran, in request order."""
+    result = evaluate_candidate(store, job_id, candidate_id)
+    chained: list[str] = []
+    while (requested := _next_requested_evaluation(store, job_id)) is not None:
+        evaluate_candidate(store, job_id, requested)
+        chained.append(requested)
+    return {**result, "chained_evaluations": chained} if chained else result
+
+
+def _next_requested_evaluation(store: JobStore, job_id: str) -> str | None:
+    state = campaign_status(store, job_id)
+    if state.get("status") not in {"active", "finalizing"}:
+        return None
+    requested = sorted(
+        (
+            item
+            for item in state.get("candidates") or []
+            if item.get("evaluation_requested_at")
+            and item.get("status") in _REQUESTABLE_STATUSES
+        ),
+        key=lambda item: str(item["evaluation_requested_at"]),
+    )
+    return str(requested[0]["candidate_id"]) if requested else None
+
+
+def _evaluation_requested(candidate: Mapping[str, Any]) -> bool:
+    stamp = candidate.get("evaluation_requested_at")
+    if not stamp:
+        return False
+    try:
+        return _campaign_now() - _parse(str(stamp)) < EVALUATION_REQUEST_TTL
+    except (TypeError, ValueError):
+        return False
+
+
 def evaluate_candidate(
     store: JobStore, job_id: str, candidate_id: str
 ) -> dict[str, Any]:
@@ -4763,6 +4875,7 @@ def evaluate_candidate(
                 "evaluation_claimed_at": utc_now_iso(),
             }
         )
+        candidate.pop("evaluation_requested_at", None)
         candidate_snapshot = dict(candidate)
         _save_campaign(store, job_id, state)
     try:
@@ -5107,6 +5220,9 @@ def _evaluate_candidate(
                         },
                     },
                 }
+        too_slow = _screen_speed_shortfall(subject, quick, params, policy)
+        if too_slow is not None:
+            return _rejected_submission(too_slow)
         result = simulate_execution(subject["script"], quick, subject["spec"], params)
         if result.validation.get("execution_valid") and result.trades:
             entries = entry_window_parity_probe(
@@ -5167,6 +5283,9 @@ def _evaluate_candidate(
             raise TransientInfrastructureError(str(exc)) from exc
         return {"status": "invalid", "evidence": {"error": str(exc)[:500]}}
     compact = _compact_result(result)
+    compact["cadence"] = _cadence(
+        result.trades, quick.bars.timestamps[0], quick.bars.timestamps[-1], policy
+    )
     if not result.validation.get("execution_valid"):
         return {
             "status": "low_fidelity_rejected",
@@ -5182,6 +5301,7 @@ def _evaluate_candidate(
         "execution_calibration": calibration,
         "tuning_eligible": search_space is not None,
         "quick_simulation_ran": True,
+        "quick_entries": _quick_entry_signature(result.trades),
     }
     if candidate.get("reference_bundle"):
         receipt = result_receipt(
@@ -6031,11 +6151,18 @@ def _run_evolution_optuna(
     bars: int,
     timeout: float | None,
     max_drawdown_pct: float | None = None,
+    frequency_policy: Mapping[str, Any] | None = None,
 ) -> tuple[ExecutionGridResult, dict[str, Any]]:
     search_data = _tail(dataset, bars) if bars > 0 else dataset
     started = perf_counter()
     specialized = bool(declared_regimes(search_space))
     rank_by = "regime_score" if specialized else "net_return"
+    frequency_weight = float(
+        (frequency_policy or {}).get("frequency_objective_weight") or 0.0
+    )
+    objectives = [] if specialized else ["net_return", "max_drawdown_pct"]
+    if objectives and frequency_weight:
+        objectives.append("trade_count")
     grid = run_optuna_search(
         subject["script"],
         search_data,
@@ -6045,12 +6172,28 @@ def _run_evolution_optuna(
         n_trials=trials,
         seed=_OPTUNA_SEED,
         timeout=timeout,
-        objectives=[] if specialized else ["net_return", "max_drawdown_pct"],
+        objectives=objectives,
     )
     risk_pruned = 0
     if max_drawdown_pct is not None:
         grid, risk_pruned = _prune_risky_trials(grid, max_drawdown_pct)
+    selection: dict[str, str] = {}
+    if not specialized and frequency_weight:
+        stamps = search_data.bars.timestamps
+        days = max((stamps[-1] - stamps[0]).total_seconds() / 86_400.0, 1e-9)
+        for row in grid.runs:
+            # A fill-count proxy: entries are about half the fills.
+            testability = probation_testability(
+                float(row.get("trade_count") or 0) / 2.0 / days,
+                days=_frequency_window_days(frequency_policy or {}),
+                min_trades=_frequency_min_entries(frequency_policy or {}),
+            )
+            row["frequency_score"] = float(row.get("net_return") or 0.0) - (
+                frequency_weight * (1.0 - testability)
+            )
+        selection["selection_key"] = "frequency_score"
     return grid, {
+        **selection,
         "status": "complete" if grid.ranked else "no_valid_trials",
         "risk_pruned": risk_pruned,
         "max_drawdown_pct": max_drawdown_pct,
@@ -6274,6 +6417,23 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
                         ),
                         "economic": economic,
                     }
+                elif (
+                    untestable := _clustered_cadence(
+                        candidate, _campaign_policy(store, job_id, campaign_id)
+                    )
+                    or _quiet_before_staging(
+                        economic, _campaign_policy(store, job_id, campaign_id)
+                    )
+                    or _audit_slice_loss(
+                        economic, _campaign_policy(store, job_id, campaign_id)
+                    )
+                ) is not None:
+                    outcome = {
+                        "status": "proposal_rejected",
+                        "proposal": {"status": "untestable", "reason": untestable},
+                        "economic": economic,
+                        "evidence": untestable,
+                    }
                 else:
                     from wayfinder_paths.jobs.probation import (
                         stage_evolution_probation,
@@ -6431,9 +6591,13 @@ def _claim_full_dev(
             for item in state["candidates"]
             if item.get("status") in {"quick_complete", "full_dev_running"}
         ]
-        eligible.sort(key=_candidate_score, reverse=True)
+        eligible.sort(key=lambda item: _ranked_score(item, policy), reverse=True)
         if policy.get("full_dev_family_diversity"):
-            eligible = _diversified_full_dev_order(eligible, state["candidates"])
+            eligible = _diversified_full_dev_order(
+                eligible,
+                state["candidates"],
+                kernel_cap=policy.get("full_dev_policy_kernel_cap"),
+            )
         if not remaining or not eligible:
             return None
         tuning_limit = int(policy["inner_optuna_finalists"])
@@ -6487,38 +6651,54 @@ def _full_dev_family(candidate: Mapping[str, Any]) -> str:
 
 
 def _diversified_full_dev_order(
-    eligible: list[dict[str, Any]], candidates: list[dict[str, Any]]
+    eligible: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    *,
+    kernel_cap: int | None = None,
 ) -> list[dict[str, Any]]:
     """Keep the score order but spend full-development slots across families:
     a family already developed this campaign goes behind every family that
     has not been, so one screen-dominant family (e.g. a policy kernel that
     inverts on validation) cannot take every slot."""
-    developed = {
-        _full_dev_family(item)
+    spent = [
+        item
         for item in candidates
         if item.get("dev") or item.get("full_dev_failure_codes") is not None
-    }
+    ]
+    developed = {_full_dev_family(item) for item in spent}
     running = [item for item in eligible if item.get("status") == "full_dev_running"]
-    # Two revisions of one recipe screen identically; the second is spent only
-    # when nothing else is left.
-    seen = {
-        _quick_fingerprint(item)
-        for item in candidates
-        if item.get("dev") or item.get("full_dev_failure_codes") is not None
-    } | {_quick_fingerprint(item) for item in running}
+    # Two revisions of one recipe screen identically (or nearly: a tweak
+    # that drops two of sixteen entries); the second is spent only when
+    # nothing else is left.
+    seen = [*spent, *running]
+    # Kernel books screen best and rarely survive validation; each kernel id
+    # is its own family, so without a cap they took half the slots.
+    kernel_room = (
+        None
+        if kernel_cap is None
+        else int(kernel_cap) - sum(map(_is_policy_kernel, seen))
+    )
     twins: list[dict[str, Any]] = []
     distinct: list[dict[str, Any]] = []
     for item in eligible:
         if item in running:
             continue
-        fingerprint = _quick_fingerprint(item)
-        if fingerprint is not None and fingerprint in seen:
+        if any(_quick_twins(item, other) for other in seen):
             twins.append(item)
             continue
-        seen.add(fingerprint)
+        seen.append(item)
+        if kernel_room is not None and _is_policy_kernel(item):
+            if kernel_room <= 0:
+                twins.append(item)
+                continue
+            kernel_room -= 1
         distinct.append(item)
     fresh = [item for item in distinct if _full_dev_family(item) not in developed]
     return running + fresh + [item for item in distinct if item not in fresh] + twins
+
+
+def _is_policy_kernel(candidate: Mapping[str, Any]) -> bool:
+    return candidate.get("parent_source") == "policy_kernel"
 
 
 def _quick_fingerprint(candidate: Mapping[str, Any]) -> tuple[Any, ...] | None:
@@ -6530,6 +6710,50 @@ def _quick_fingerprint(candidate: Mapping[str, Any]) -> tuple[Any, ...] | None:
         stats.get("trade_count"),
         round(float(stats.get("total_fees") or 0.0), 8),
     )
+
+
+QUICK_ENTRY_CAP = 400
+NEAR_TWIN_OVERLAP = 0.8
+_NEAR_TWIN_MIN_ENTRIES = 5
+
+
+def _quick_entry_signature(fills: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Short hashes of the screen's entries (bar, symbol, side) for near-twin
+    detection; hashed so a few hundred entries cost a few kilobytes."""
+    entries = sorted(
+        {
+            f"{fill.get('timestamp')}|{fill.get('symbol')}|{fill.get('side')}"
+            for fill in fills
+            if (fill.get("raw") or {}).get("intent_action") == "OPEN"
+        }
+    )[:QUICK_ENTRY_CAP]
+    return [hashlib.sha1(entry.encode()).hexdigest()[:10] for entry in entries]
+
+
+def _entry_overlap(a: Sequence[str], b: Sequence[str]) -> float:
+    left, right = set(a), set(b)
+    if min(len(left), len(right)) < _NEAR_TWIN_MIN_ENTRIES:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _quick_twins(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    fingerprint = _quick_fingerprint(a)
+    if fingerprint is not None and fingerprint == _quick_fingerprint(b):
+        return True
+    if (
+        _entry_overlap(a.get("quick_entries") or (), b.get("quick_entries") or ())
+        < NEAR_TWIN_OVERLAP
+    ):
+        return False
+    # Shared entries with different sizing or exits are a real variation
+    # (two weightings of one rebalance schedule returned 27% and 55%); a twin
+    # also lands on nearly the same screen result.
+    left, right = (
+        float(((item.get("quick") or {}).get("stats") or {}).get("net_return") or 0.0)
+        for item in (a, b)
+    )
+    return abs(left - right) <= max(0.01, 0.25 * max(abs(left), abs(right)))
 
 
 def _select_full_dev_candidate(
@@ -6675,7 +6899,7 @@ def _claim_proposal(
             for item in state["candidates"]
             if item.get("status") in {"dev_frontier", "proposal_running"}
         ]
-        eligible.sort(key=_candidate_score, reverse=True)
+        eligible.sort(key=lambda item: _ranked_score(item, policy), reverse=True)
         if not remaining or not eligible:
             return None
         candidate = eligible[0]
@@ -7352,14 +7576,27 @@ def campaign_prompt_block(
     manifest = store.read_json(job_id, str(state["manifest"]), default={}) or {}
     candidates = state.get("candidates") or []
     running = [item for item in candidates if item.get("status") == "quick_running"]
-    if running:
-        return {
+    running_block = (
+        {
             "status": "blocked",
             "campaign_id": state["campaign_id"],
             "reason": (
                 f"candidate {running[0].get('candidate_id')} evaluation is running"
             ),
         }
+        if running
+        else None
+    )
+    # With overlap on, the next fresh design slot is written while one screen
+    # runs (its own screen queues on the compute lock); repairs, redesign and
+    # finalization still wait for every result.
+    overlap = (
+        bool((manifest.get("policy") or {}).get("overlap_generation"))
+        and len(running) == 1
+        and state.get("stage") == "generate"
+    )
+    if running_block is not None and not overlap:
+        return running_block
     if state.get("stage") == COMPOSE_STAGE and current < deadline:
         return _compose_prompt_block(store, job_id, state, manifest)
     if state.get("stage") in {"design", COMPOSE_STAGE}:
@@ -7529,6 +7766,14 @@ def campaign_prompt_block(
             + ". Continuous per-bar rebalancing is dead on arrival; cite "
             "/baseline/economics when sizing cadence. "
             if cost_budget
+            else ""
+        ) + (
+            f"Ranking rewards steady cadence: probation needs "
+            f"{_frequency_min_entries(policy)} trades inside any "
+            f"{_frequency_window_days(policy)}-day window, so a book that "
+            "trades in one burst and then sits idle for months ranks lower; "
+            "prefer triggers that recur across symbols and regimes. "
+            if float(policy.get("frequency_objective_weight") or 0.0)
             else ""
         )
         failure_target = (
@@ -7789,8 +8034,22 @@ def campaign_prompt_block(
     policy = manifest.get("policy") or {}
     budget = _program_budget(state, policy)
     awaiting_evaluation = _awaiting_evaluation(state, policy)
+    comparison_budget = _complexity_budget(
+        policy, _incumbent_complexity(store, job_id, str(state["campaign_id"]))
+    )
+    # 4 of v11-v12's first 63 attempts were rejected unseen on this budget.
+    complexity_note = (
+        f"Complexity budget: at most {comparison_budget} comparisons in the "
+        f"strategy ({2 * comparison_budget} when it reads the "
+        f"{MACRO_FEATURE_NAME} column); over budget is rejected before "
+        "simulation and spends the attempt. "
+    )
     deadline_elapsed = current >= deadline
     draining = deadline - CAMPAIGN_DRAIN <= current < deadline
+    if running_block is not None and (
+        awaiting_evaluation or deadline_elapsed or draining or len(candidates) >= budget
+    ):
+        return running_block
     if not deadline_elapsed and not draining and _redesign_due(state, policy):
         return _redesign_prompt_block(store, job_id, state, manifest)
     designed = str(state.get("schema_version") or "") == SCHEMA_VERSION
@@ -7876,7 +8135,8 @@ def campaign_prompt_block(
             if repair_work_order:
                 repair_instruction += _repair_work_order_sentence(repair_work_order)
         next_action = (
-            f"{seed_instruction}{mutation_instruction}{repair_instruction}Edit only files inside "
+            f"{seed_instruction}{mutation_instruction}{repair_instruction}"
+            f"{complexity_note}Edit only files inside "
             f"{candidate_root} "
             "(workspace, job.yaml, "
             "and optional search_space.json), then launch "
@@ -7907,7 +8167,8 @@ def campaign_prompt_block(
         preview = _parent_plan_handoff(next_parent_plan)
         next_action = (
             f"Next source plan: {json.dumps(preview, sort_keys=True)}. "
-            f"{research_instruction} {prepare_call} Then follow the returned "
+            f"{research_instruction} {prepare_call} {complexity_note}Then follow "
+            "the returned "
             "design assignment and edit only the exact `bundle_path` returned by "
             "that call and "
             'launch wayfinder_core_jobs with action="evolution_evaluate", '
@@ -7990,7 +8251,11 @@ def _awaiting_evaluation(
     focus set is served, best rank first.  The legacy depth-first order is
     kept behind ``screen_before_repair: false`` for the bench control arm.
     """
-    candidates = list(state.get("candidates") or [])
+    candidates = [
+        item
+        for item in state.get("candidates") or []
+        if not _evaluation_requested(item)
+    ]
     fresh = [
         item
         for item in candidates
@@ -8498,11 +8763,16 @@ def _full_dev(
             bars=search_bars,
             timeout=search_timeout,
             max_drawdown_pct=_tuning_drawdown_ceiling(root),
+            frequency_policy=policy,
         )
         selected, plateau = _plateau_select(
             grid,
             _typed_search_dimensions(candidate_search),
-            str(getattr(grid, "rank_by", None) or "net_return"),
+            str(
+                tuning.get("selection_key")
+                or getattr(grid, "rank_by", None)
+                or "net_return"
+            ),
         )
         tuning["plateau"] = plateau
         if selected is not None:
@@ -8594,6 +8864,12 @@ def _full_dev(
     )
     compact_validation["forensics"] = _validation_forensics(
         validation_result, validation
+    )
+    compact_validation["cadence"] = _cadence(
+        validation_result.trades,
+        validation.bars.timestamps[0],
+        validation.bars.timestamps[-1],
+        policy,
     )
     # The validation window is judged against what this campaign's search
     # would have produced from noise: its daily log returns must clear the
@@ -8918,6 +9194,12 @@ def _protected_fold_full_dev(
         "haircut": validation_haircut,
         "exits": receipt_exits({"trades": base_trades}),
         "forensics": _validation_forensics(synthetic, certificate_dataset),
+        "cadence": _cadence(
+            base_trades,
+            certificate_dataset.bars.timestamps[0],
+            certificate_dataset.bars.timestamps[-1],
+            policy,
+        ),
     }
     result_plan = {
         **evaluation_plan,
@@ -10115,6 +10397,146 @@ def _behavior(
     }
 
 
+def _ranked_score(candidate: dict[str, Any], policy: Mapping[str, Any]) -> float:
+    """The candidate score less a cadence penalty: a book that would leave
+    most probation windows short of the trade minimum cannot be judged in
+    its trial, however good its backtest."""
+    weight = float(policy.get("frequency_objective_weight") or 0.0)
+    testability = _testability(candidate, policy) if weight else None
+    penalty = 0.0 if testability is None else weight * (1.0 - testability)
+    return _candidate_score(candidate) - penalty
+
+
+def _testability(
+    candidate: Mapping[str, Any], policy: Mapping[str, Any]
+) -> float | None:
+    """Share of probation-length windows holding the trade minimum: measured
+    on the latest evaluated window when it spans at least one, else Poisson
+    at its entry rate."""
+    validation = (candidate.get("dev") or {}).get("validation") or {}
+    cadence = validation.get("cadence") or (candidate.get("quick") or {}).get("cadence")
+    if not cadence:
+        return None
+    if cadence.get("window_coverage") is not None:
+        return float(cadence["window_coverage"])
+    return probation_testability(
+        float(cadence.get("entries_per_day") or 0.0),
+        days=_frequency_window_days(policy),
+        min_trades=_frequency_min_entries(policy),
+    )
+
+
+def _clustered_cadence(
+    candidate: Mapping[str, Any], policy: Mapping[str, Any]
+) -> str | None:
+    """The trade-rate check at staging is Poisson, which assumes trades
+    spread evenly; a book whose validation trades cluster passes it and then
+    sits through a probation window without a trade. v14: entrants at 0.57
+    and 0.41 window coverage closed with zero trades in 14 days, the one at
+    0.88 made seven."""
+    floor = float(policy.get("probation_min_window_coverage") or 0.0)
+    if floor <= 0:
+        return None
+    cadence = ((candidate.get("dev") or {}).get("validation") or {}).get("cadence")
+    coverage = (cadence or {}).get("window_coverage")
+    if coverage is None or float(coverage) >= floor:
+        return None
+    return (
+        f"validation trades cluster: only {float(coverage):.0%} of "
+        f"{_frequency_window_days(policy)}-day windows hold "
+        f"{_frequency_min_entries(policy)}+ entries (probation needs "
+        f"{floor:.0%}); the trial would likely see no trades"
+    )
+
+
+def _quiet_before_staging(
+    economic: Mapping[str, Any], policy: Mapping[str, Any]
+) -> str | None:
+    """Window coverage spans the whole validation history, so a book that
+    traded steadily and then stopped still passes it. v14 and v15 each staged
+    one whose last entry came 13-17 days before the cutoff; both sat through
+    probation without a trade, and a replay of the trial window agreed."""
+    limit = float(policy.get("probation_max_quiet_days") or 0.0)
+    cutoff = (economic.get("audit_slice") or {}).get("end")
+    count = economic.get("candidate_entry_count")
+    # A reused evaluation from before the entry summary carries no count.
+    if limit <= 0 or cutoff is None or count is None:
+        return None
+    last_entry = economic.get("candidate_last_entry_at")
+    if not count or last_entry is None:
+        return "no entry in the paired folds or the audit slice; the trial would see no trades"
+    quiet = (pd.Timestamp(cutoff) - pd.Timestamp(last_entry)).total_seconds() / 86_400
+    if quiet <= limit:
+        return None
+    return (
+        f"signal has gone quiet: last entry {quiet:.0f} days before the cutoff "
+        f"(probation allows {limit:g}); the trial would likely see no trades"
+    )
+
+
+def _audit_slice_loss(
+    economic: Mapping[str, Any], policy: Mapping[str, Any]
+) -> str | None:
+    """The days just before the cutoff predict the next two weeks: across 80
+    v14-v16 full-development books (policy kernels excluded) the trailing
+    7-day return ranked forward 14-day returns at +0.23 within each week, and
+    of the books that passed full development, 5 of 6 that made money over
+    that week also made money forward against 4 of 12 that did not."""
+    if not policy.get("probation_requires_audit_profit"):
+        return None
+    growth = (economic.get("audit_slice") or {}).get("candidate_net_log_growth")
+    if growth is None or float(growth) > 0:
+        return None
+    return (
+        f"lost {float(growth):+.2%} over the audit slice just before the cutoff; "
+        "recent losers rarely recover in the next two weeks"
+    )
+
+
+def _frequency_window_days(policy: Mapping[str, Any]) -> int:
+    return int(policy.get("frequency_window_days") or 28)
+
+
+def _frequency_min_entries(policy: Mapping[str, Any]) -> int:
+    return int(policy.get("frequency_min_entries") or 3)
+
+
+def _cadence(
+    trades: Sequence[Mapping[str, Any]],
+    start: Any,
+    end: Any,
+    policy: Mapping[str, Any],
+) -> dict[str, Any]:
+    first, last = pd.Timestamp(start), pd.Timestamp(end)
+    entries = sorted(
+        stamp
+        for stamp in (
+            pd.Timestamp(trade["timestamp"])
+            for trade in trades
+            if (trade.get("raw") or {}).get("intent_action") == "OPEN"
+        )
+        if first <= stamp <= last
+    )
+    days = max((last - first).total_seconds() / 86_400.0, 1e-9)
+    window = pd.Timedelta(days=_frequency_window_days(policy))
+    minimum = _frequency_min_entries(policy)
+    coverage = None
+    if last - first >= window:
+        starts = pd.date_range(first, last - window, freq="1D")
+        series = pd.Series(1, index=pd.DatetimeIndex(entries)) if entries else None
+        hits = sum(
+            series is not None and int(series[begin : begin + window].sum()) >= minimum
+            for begin in starts
+        )
+        coverage = round(hits / len(starts), 4)
+    return {
+        "days": round(days, 2),
+        "entries": len(entries),
+        "entries_per_day": round(len(entries) / days, 4),
+        "window_coverage": coverage,
+    }
+
+
 def _candidate_score(candidate: dict[str, Any]) -> float:
     objective = candidate.get("objective") or {}
     return (
@@ -10134,8 +10556,54 @@ _CONTRACT_CHECKS = frozenset(
         "declared_features_valid",
         "feature_policy_replayable",
         "undeclared_feature_read",
+        "no_close_only_stop_tp",
+        "no_manual_position_clear",
+        "initial_capital_declared",
+        "lookback_bars_declared",
     }
 )
+
+# A screen slice should finish in about two minutes: 10,080 five-minute bars
+# at 100 bars/s. A v14 book ran at 37 bars/s (105 ms per tick, ~15 minutes)
+# and every queued screen waited behind it. The budget is time, not a rate:
+# on a 27-market world the engine alone runs ~100 bars/s and a 15-minute
+# slice is a third as long, so a rate floor tuned on 4 symbols rejected
+# strategies that screen in 40 seconds.
+_MAX_SCREEN_SECONDS = 120.0
+_SPEED_PROBE_BARS = 400
+
+
+def _screen_speed_shortfall(
+    subject: Mapping[str, Any],
+    quick: PreparedExecutionDataset,
+    params: Mapping[str, Any],
+    policy: Mapping[str, Any],
+) -> str | None:
+    budget = float(policy.get("max_screen_seconds", _MAX_SCREEN_SECONDS) or 0.0)
+    if budget <= 0:
+        return None
+    warmup = _strategy_warmup_bars(subject["script"], dict(params))
+    probe = simulate_execution(
+        subject["script"],
+        _tail(quick, warmup + _SPEED_PROBE_BARS),
+        subject["spec"],
+        dict(params),
+    )
+    rate = (probe.profile or {}).get("bars_per_second")
+    if rate is None or float(rate) <= 0:
+        return None
+    projected = len(quick.bars.timestamps) / float(rate)
+    if projected <= budget:
+        return None
+    # Stable text: a repeated identical rejection is how the campaign
+    # abandons a candidate that cannot be fixed.
+    return (
+        f"the screen would take over {budget:.0f}s at this speed and stall every "
+        "queued screen. Move indicator work into "
+        "precompute(frames) (vectorized once per window) and have decide() read "
+        "the latest row (ctx.view.latest(sym)); no per-bar pandas rolling, "
+        "resampling or loops over history in decide()."
+    )
 
 
 def _freeze_parent_pool(

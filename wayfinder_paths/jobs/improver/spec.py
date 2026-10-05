@@ -163,7 +163,7 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "incumbent_neighborhood_span": 0.3,
         # Complexity budget: comparisons (gates) may not exceed the larger of
         # the floor and the multiple of the incumbent's own count.
-        "complexity_floor_comparisons": 24,
+        "complexity_floor_comparisons": 48,
         "complexity_multiple": 1.5,
         # Signal-first seeding: library event studies on the two screen slices;
         # signals significant on both feed the design prompt. An A/B arm
@@ -191,6 +191,9 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         # Drop scan survivors whose exact configuration already lost on
         # validation in an earlier campaign (they return identical every time).
         "policy_scan_retire_failed": False,
+        # With retirement on: a policy-scan family whose configurations lost
+        # on validation this many times is retired (0 = off).
+        "policy_scan_retire_family_after": 0,
         # One redesign pass after the screens; off on the product branch until
         # the bench A/B measures its prepare-time cost against the extra slots.
         "redesign_checkpoint": False,
@@ -228,6 +231,27 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "full_dev_haircut_blocking": True,
         # Spend full-development slots across families before repeating one.
         "full_dev_family_diversity": False,
+        # With family diversity on, at most this many policy-kernel books take
+        # full development per campaign ahead of designed books (None: no cap).
+        "full_dev_policy_kernel_cap": None,
+        # Cadence as an objective: full-development and finalist ranking (and
+        # the inner tuning pick) subtract weight x (1 - share of
+        # frequency_window_days windows holding frequency_min_entries entries).
+        # 0 keeps ranking on the risk/return score alone.
+        "frequency_objective_weight": 0.0,
+        # Write the next fresh design slot while one quick screen runs.
+        "overlap_generation": False,
+        "frequency_window_days": 28,
+        "frequency_min_entries": 3,
+        # A finalist whose validation trades cluster below this share of
+        # frequency_window_days windows is not staged (0 = off).
+        "probation_min_window_coverage": 0.0,
+        # A finalist with no entry in this many days before the gate's
+        # cutoff is not staged: its signal has gone quiet (0 = off).
+        "probation_max_quiet_days": 0,
+        # A finalist that lost money over the audit slice (the days just
+        # before the cutoff) is not staged.
+        "probation_requires_audit_profit": False,
         # Full development also requires a profitable train window, so a book
         # that wins only on validation cannot take a finalist slot.
         "full_dev_requires_train_profit": False,
@@ -282,6 +306,9 @@ DEFAULT_IMPROVER: dict[str, Any] = {
             "max_paired_days": 14,
             "max_paired_days_cap": 28,
             "trade_confidence": 0.8,
+            # An inconclusive trial whose paired estimate favours the
+            # candidate runs on a week at a time up to max_paired_days_cap.
+            "extend_favourable_to_cap": False,
             "confidence": 0.90,
             "min_effect_utility": 0.001,
             "min_candidate_trades": 3,

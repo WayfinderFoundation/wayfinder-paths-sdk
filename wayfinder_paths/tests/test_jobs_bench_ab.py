@@ -59,7 +59,7 @@ from wayfinder_paths.jobs.evolution_campaign import _campaign_now
 from wayfinder_paths.jobs.execution import ExecutionSpec
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import WayfinderJob
-from wayfinder_paths.jobs.probation import stage_evolution_probation
+from wayfinder_paths.jobs.probation import load_probation, stage_evolution_probation
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.worker import build_evolution_stage_prompt
 
@@ -526,6 +526,50 @@ def test_compressed_replay_uses_real_burn_in_and_day14_endpoint(
     assert result["status"] == "inconclusive"
     assert result["forward"]["max_paired_days"] == 14
     assert (root / "results/forward/probation").exists()
+
+
+def test_every_finalist_a_campaign_stages_is_replayed_on_the_replay_clock(
+    tmp_path: Path,
+) -> None:
+    store, job_id, world_dir, sealed_dir, _ = _world(tmp_path)
+    root = store.job_dir(job_id)
+    cutoff = datetime.fromisoformat(
+        load_world(world_dir, sealed_dir)["manifest"]["generation_cutoff"]
+    )
+    for index in (1, 2):
+        candidate = root / f"research/candidates/candidate-{index}"
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(world_dir / "incumbent", candidate)
+        (candidate / "workspace/src/strategy.py").write_text(
+            f"# candidate {index}\ndef decide(ctx):\n    return []\n",
+            encoding="utf-8",
+        )
+        # Staging stamps the wall clock, months after the replayed cutoff.
+        stage_evolution_probation(
+            store,
+            job_id,
+            candidate_id=f"candidate-{index}",
+            candidate_root=candidate,
+            revision=compute_workspace_revision(candidate),
+            source="evolution_campaign",
+            family="test-family",
+            campaign_id="campaign-1",
+            now=cutoff + timedelta(days=60),
+        )
+    world = load_world(world_dir, sealed_dir)
+
+    replay_probation(
+        store,
+        job_id,
+        development_rows=world["development"]["bars"],
+        holdout_rows=world["holdout"]["bars"],
+        generation_cutoff=cutoff,
+        campaign_id="campaign-1",
+    )
+
+    trials = load_probation(store, job_id)["trials"]
+    assert len(trials) == 2
+    assert all(trial["burn_in"]["status"] == "passed" for trial in trials)
 
 
 def test_campaign_stage_is_retried_once_before_the_cell_is_invalidated(
@@ -2211,3 +2255,35 @@ def test_race_keeps_a_bundles_own_universe_under_the_frozen_environment() -> Non
     assert narrowed == {"symbols": ["HYPE"], "fee_bps": 5.0, "initial_capital": 100.0}
     unnamed = _bundle_params({"atr_period": 14}, environment)
     assert unnamed["symbols"] == ["SOL", "XRP", "POL", "HYPE"]
+
+
+def test_overlap_waits_for_the_launch_claim_then_asks_the_campaign(monkeypatch):
+    from wayfinder_paths.jobs.bench import runner as runner_module
+
+    states = [
+        {"status": "active", "candidates": [{"status": "prepared"}]},
+        {"status": "active", "candidates": [{"status": "quick_running"}]},
+    ]
+    polls: list[int] = []
+
+    def fake_status(store, job_id):
+        polls.append(1)
+        return states[min(len(polls) - 1, len(states) - 1)]
+
+    blocks = iter([{"session_stage": "candidate-02"}, {"status": "blocked"}])
+    monkeypatch.setattr(runner_module, "campaign_status", fake_status)
+    monkeypatch.setattr(
+        runner_module, "campaign_prompt_block", lambda *a, **k: next(blocks)
+    )
+    monkeypatch.setattr(runner_module.time, "sleep", lambda seconds: None)
+
+    # The launched candidate is claimed on the second poll; the campaign then
+    # offers the next slot.
+    assert runner_module._overlap_ready(None, "demo", now=None) is True
+    assert len(polls) == 2
+    # A blocked campaign (overlap off, or not a fresh slot) settles as before.
+    assert runner_module._overlap_ready(None, "demo", now=None) is False
+    # Nothing running: nothing to overlap with.
+    states[:] = [{"status": "active", "candidates": [{"status": "quick_complete"}]}]
+    polls.clear()
+    assert runner_module._overlap_ready(None, "demo", now=None) is False

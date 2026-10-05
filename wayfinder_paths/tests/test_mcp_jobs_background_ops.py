@@ -899,3 +899,40 @@ def test_cli_heavy_op_runs_as_before_off_hosted_boxes(tmp_path, monkeypatch) -> 
     assert outcome.exit_code == 0, outcome.output
     assert json.loads(outcome.output)["result"] == {"inline": True}
     assert spawned == ["robustness_check"]
+
+
+@pytest.mark.asyncio
+async def test_evaluate_behind_a_running_screen_is_queued(
+    tmp_path, monkeypatch
+) -> None:
+    import wayfinder_paths.jobs.evolution_campaign as campaign_module
+
+    async def busy_start(store, job_id, op, kwargs):
+        return {"ok": True, "result": {"already_running": True, "pid": 1}}
+
+    requested: list[str] = []
+    monkeypatch.setattr(jobs_module, "_start_background_op", busy_start)
+    monkeypatch.setattr(jobs_module, "JobStore", lambda: JobStore(repo_root=tmp_path))
+    monkeypatch.setattr(
+        campaign_module,
+        "request_candidate_evaluation",
+        lambda store, job_id, candidate_id: requested.append(candidate_id)
+        or {"queued": True, "candidate_id": candidate_id},
+    )
+
+    result = await core_jobs(
+        action="evolution_evaluate", job_id="bg-demo", candidate_id="c02"
+    )
+    assert result["result"]["queued"] is True
+    assert requested == ["c02"]
+
+    # The running screen is this candidate's own: nothing to queue.
+    monkeypatch.setattr(
+        campaign_module,
+        "request_candidate_evaluation",
+        lambda store, job_id, candidate_id: None,
+    )
+    again = await core_jobs(
+        action="evolution_evaluate", job_id="bg-demo", candidate_id="c01"
+    )
+    assert again["result"]["already_running"] is True

@@ -189,10 +189,12 @@ def _run_op(op: str, kwargs: dict[str, Any]) -> Any:
         kwargs["candidate_root"] = Path(kwargs["candidate_root"])
         return submit_research_seed(JobStore(), kwargs.pop("job_id"), **kwargs)
     if op == "evolution_evaluate":
-        from wayfinder_paths.jobs.evolution_campaign import evaluate_candidate
+        from wayfinder_paths.jobs.evolution_campaign import (
+            evaluate_candidate_and_requests,
+        )
         from wayfinder_paths.jobs.store import JobStore
 
-        return evaluate_candidate(
+        return evaluate_candidate_and_requests(
             JobStore(), kwargs.pop("job_id"), kwargs.pop("candidate_id")
         )
     if op == "evolution_finalize":

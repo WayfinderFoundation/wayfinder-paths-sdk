@@ -1577,9 +1577,25 @@ async def core_jobs(
             )
         kwargs = {"job_id": job_id, "candidate_id": candidate_id}
         if background is not False:
-            return await _start_background_op(
+            started = await _start_background_op(
                 store, job_id, "evolution_evaluate", kwargs
             )
+            busy = started.get("result") or {}
+            if busy.get("already_running") or busy.get("already_queued"):
+                from wayfinder_paths.jobs.evolution_campaign import (
+                    request_candidate_evaluation,
+                )
+
+                queued = request_candidate_evaluation(store, job_id, candidate_id)
+                if queued is not None:
+                    return ok(
+                        {
+                            **queued,
+                            "note": "another candidate's screen is running; this "
+                            "one runs next in the same op. End the stage.",
+                        }
+                    )
+            return started
         return await _run_job_op("evolution_evaluate", kwargs)
 
     if action == "evolution_finalize":

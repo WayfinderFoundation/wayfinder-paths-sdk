@@ -152,6 +152,27 @@ def test_merge_is_as_of_never_lookahead() -> None:
     assert by_ts["2026-01-01T00:15:00+00:00"] == -0.9
 
 
+def test_merge_replaces_a_column_the_bars_already_carry() -> None:
+    # Bars reused from an earlier merge (a saved input_bars.json) carried the
+    # declared column; merge_asof suffixed both copies and the strategy's
+    # ctx.view.feature("macro_regime") raised "No feature column".
+    rows = [{**row, "macro_regime": 5.0} for row in _bars(4)]
+    bars = CompletedBarsView.from_rows(rows)
+    frames = {
+        "macro_regime": pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(["2026-01-01T00:00:00Z"], utc=True),
+                "value": [-1.0],
+                "symbol": [None],
+            }
+        )
+    }
+    frame = merge_features(bars, frames, [FeatureSpec(name="macro_regime")]).to_frame()
+    assert "macro_regime" in frame.columns
+    assert not {"macro_regime_x", "macro_regime_y"} & set(frame.columns)
+    assert set(frame["macro_regime"]) == {-1.0}
+
+
 def test_per_symbol_features_do_not_leak_across_symbols() -> None:
     rows = _bars(2) + [{**row, "symbol": "IMX"} for row in _bars(2)]
     view = CompletedBarsView.from_rows(rows)

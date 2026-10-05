@@ -30,6 +30,8 @@ from wayfinder_paths.jobs.compute_lock import (
 from wayfinder_paths.jobs.evolution_campaign import (
     _archive_campaign_candidate,
     _attempt_cap,
+    _cadence,
+    _candidate,
     _candidate_handoff,
     _candidate_has_typed_search_space,
     _certification_fold_bounds,
@@ -39,6 +41,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _complexity_budget,
     _diversified_full_dev_order,
     _economic_gate_child,
+    _entry_overlap,
     _failure_mode_summary,
     _fleet_campaign_turn,
     _focus_rank,
@@ -62,11 +65,14 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _pooled_fold_stats,
     _protected_fold_verdict,
     _prune_risky_trials,
+    _quick_entry_signature,
+    _ranked_score,
     _record_compute_budget_override,
     _rejected_submission,
     _require_train_profit,
     _research_context_instruction,
     _risk_ceiling_scale,
+    _run_evolution_optuna,
     _same_family_nonwins,
     _screen_confidence,
     _screen_slice_report,
@@ -826,8 +832,11 @@ def test_strategy_complexity_budget_scales_with_the_incumbent() -> None:
     assert size["comparisons"] == 3
     assert size["numeric_literals"] == 4
     assert _complexity_budget({}, {"comparisons": 32}) == 48
-    assert _complexity_budget({}, {"comparisons": 4}) == 24
-    assert _complexity_budget({"complexity_multiple": 2.0}, {"comparisons": 20}) == 40
+    assert _complexity_budget({}, {"comparisons": 4}) == 48
+    # A campaign whose incumbent was retired to cash keeps the full floor.
+    assert _complexity_budget({}, {"comparisons": 0}) == 48
+    assert _complexity_budget({}, {"comparisons": 40}) == 60
+    assert _complexity_budget({"complexity_multiple": 2.0}, {"comparisons": 30}) == 60
     assert strategy_complexity("def broken(:")["comparisons"] == 0
 
 
@@ -3289,6 +3298,44 @@ def test_next_action_isolates_one_candidate_per_stage_session(tmp_path) -> None:
         "campaign_id": state["campaign_id"],
         "reason": f"candidate {state['candidates'][0]['candidate_id']} evaluation is running",
     }
+
+
+def test_overlap_generation_writes_the_next_slot_while_one_screen_runs(
+    tmp_path,
+) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    state = start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    working = datetime(2026, 8, 25, 13, tzinfo=UTC)
+    first = prepare_candidate(
+        store,
+        job_id,
+        family="breakout",
+        summary="first slot",
+        now=working,
+    )
+    state = campaign_status(store, job_id)
+    _candidate(state, first["candidate_id"])["status"] = "quick_running"
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+    blocked = campaign_prompt_block(store, job_id, now=working)
+    assert blocked["status"] == "blocked"
+
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    manifest["policy"]["overlap_generation"] = True
+    store.write_json(job_id, str(state["manifest"]), manifest)
+    overlapped = campaign_prompt_block(store, job_id, now=working)
+    assert overlapped.get("status") != "blocked"
+    assert 'action="evolution_prepare"' in overlapped["next_action"]
+    assert "Complexity budget: at most " in overlapped["next_action"]
+
+    # A second screen in flight, or a candidate awaiting its own launch,
+    # still waits.
+    state = campaign_status(store, job_id)
+    state["candidates"].append({**state["candidates"][0], "candidate_id": "x2"})
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+    assert campaign_prompt_block(store, job_id, now=working)["status"] == "blocked"
+    state["candidates"][-1]["status"] = "prepared"
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+    assert campaign_prompt_block(store, job_id, now=working)["status"] == "blocked"
 
 
 def test_stage_context_carries_bounded_candidate_evidence(tmp_path) -> None:
@@ -5836,6 +5883,7 @@ def test_bundle_owned_feature_is_gated_and_reaches_probation_the_same_way(
         if row["candidate_id"] == candidate["candidate_id"]
     )
     assert entry["metadata"]["quick"]["stats"]["trade_count"] >= 1
+    assert result["quick_entries"]
     receipt = result["attempt_receipt"]
     quick_entry = next(t for t in receipt["trades"] if not t.get("reduce_only"))
 
@@ -8467,6 +8515,315 @@ def test_full_dev_order_spends_behavior_twins_last() -> None:
     assert [item["candidate_id"] for item in order] == ["c17", "c16", "c15", "c18"]
 
 
+def _screened(
+    candidate_id: str,
+    family: str,
+    net_return: float,
+    *,
+    kernel: bool = False,
+    entries: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "candidate_id": candidate_id,
+        "family": family,
+        "status": "quick_complete",
+        "parent_source": "policy_kernel" if kernel else "de_novo",
+        "quick": {
+            "stats": {
+                "net_return": net_return,
+                "trade_count": len(entries or []) or 20,
+                "total_fees": net_return / 10,
+            }
+        },
+        "quick_entries": entries or [],
+    }
+
+
+def test_full_dev_order_caps_policy_kernels_per_campaign() -> None:
+    eligible = [
+        _screened("k1", "cross_sectional_rank_a", 2.6, kernel=True),
+        _screened("k2", "cross_sectional_momentum_b", 1.9, kernel=True),
+        _screened("k3", "sleeve_momentum_c", 0.9, kernel=True),
+        _screened("d1", "maker_mean_reversion", 0.3),
+        _screened("d2", "breakout", 0.2),
+    ]
+    capped = _diversified_full_dev_order(eligible, eligible, kernel_cap=1)
+    assert [item["candidate_id"] for item in capped] == ["k1", "d1", "d2", "k2", "k3"]
+    uncapped = _diversified_full_dev_order(eligible, eligible)
+    assert [item["candidate_id"] for item in uncapped] == [
+        "k1",
+        "k2",
+        "k3",
+        "d1",
+        "d2",
+    ]
+    # A kernel already developed this campaign uses the cap.
+    spent = {
+        **_screened("k0", "cross_sectional_rank_z", 3.0, kernel=True),
+        "dev": {"validation": {}},
+    }
+    after = _diversified_full_dev_order(eligible, [spent, *eligible], kernel_cap=1)
+    assert [item["candidate_id"] for item in after] == ["d1", "d2", "k1", "k2", "k3"]
+
+
+def test_full_dev_order_spends_entry_overlap_twins_last() -> None:
+    shared = [f"e{index}" for index in range(14)]
+    eligible = [
+        _screened("c02", "maker_mean_reversion", 0.21, entries=[*shared, "x1", "x2"]),
+        _screened("c11", "maker_mean_reversion_v2", 0.19, entries=shared),
+        _screened("c05", "breakout", 0.10, entries=[f"b{i}" for i in range(9)]),
+    ]
+    order = _diversified_full_dev_order(eligible, eligible)
+    # c11 takes 14 of c02's 16 entries (0.875): a near-twin despite different
+    # quick stats, so it goes behind c05.
+    assert [item["candidate_id"] for item in order] == ["c02", "c05", "c11"]
+
+    half = [*shared[:7], *[f"y{index}" for index in range(7)]]
+    distinct = [eligible[0], {**eligible[1], "quick_entries": half}, eligible[2]]
+    assert [
+        item["candidate_id"] for item in _diversified_full_dev_order(distinct, distinct)
+    ] == ["c02", "c11", "c05"]
+
+    # The same entries sized or exited differently are not twins.
+    reweighted = [
+        _screened("k1", "cross_sectional_rank", 0.55, entries=shared),
+        _screened("k2", "cross_sectional_rank_b", 0.27, entries=shared),
+        _screened("c05", "breakout", 0.10, entries=[f"b{i}" for i in range(9)]),
+    ]
+    assert [
+        item["candidate_id"]
+        for item in _diversified_full_dev_order(reweighted, reweighted)
+    ] == ["k1", "k2", "c05"]
+
+
+def test_entry_overlap_needs_enough_entries_and_signature_keeps_opens() -> None:
+    assert _entry_overlap(["a", "b"], ["a", "b"]) == 0.0
+    assert _entry_overlap(list("abcde"), list("abcdf")) == 4 / 6
+    fills = [
+        {
+            "timestamp": f"2026-08-0{day}T00:00:00+00:00",
+            "symbol": "ETH",
+            "side": "buy",
+            "raw": {"intent_action": action},
+        }
+        for day in range(1, 4)
+        for action in ("OPEN", "CLOSE")
+    ]
+    signature = _quick_entry_signature(fills)
+    assert len(signature) == 3
+    assert signature == _quick_entry_signature(list(reversed(fills)))
+
+
+def _entries(*days: int) -> list[dict[str, Any]]:
+    start = datetime(2026, 5, 1, tzinfo=UTC)
+    return [
+        {
+            "timestamp": (start + timedelta(days=day, hours=12)).isoformat(),
+            "raw": {"intent_action": action},
+        }
+        for day in days
+        for action in ("OPEN", "CLOSE")
+    ]
+
+
+def test_cadence_scores_bursts_below_steady_books_with_the_same_count() -> None:
+    start, end = datetime(2026, 5, 1, tzinfo=UTC), datetime(2026, 7, 30, tzinfo=UTC)
+    steady = _cadence(_entries(*range(0, 90, 6)), start, end, {})
+    burst = _cadence(_entries(*range(10, 40, 2)), start, end, {})
+    assert steady["entries"] == burst["entries"] == 15
+    assert steady["entries_per_day"] == burst["entries_per_day"]
+    assert steady["window_coverage"] == 1.0
+    assert burst["window_coverage"] < 0.6
+    short = _cadence(_entries(1, 3), start, start + timedelta(days=10), {})
+    assert short["window_coverage"] is None
+
+
+def test_ranked_score_charges_untestable_cadence_only_when_weighted() -> None:
+    def candidate(coverage: float | None, rate: float) -> dict[str, Any]:
+        return {
+            "objective": {"net_log_growth": 0.07, "max_drawdown_pct": 0.02},
+            "dev": {
+                "validation": {
+                    "cadence": {"entries_per_day": rate, "window_coverage": coverage}
+                }
+            },
+        }
+
+    bursty, steady = candidate(0.3, 0.17), candidate(1.0, 0.17)
+    assert _ranked_score(bursty, {}) == _ranked_score(steady, {}) == pytest.approx(0.05)
+    weighted = {"frequency_objective_weight": 0.03}
+    assert _ranked_score(steady, weighted) == pytest.approx(0.05)
+    assert _ranked_score(bursty, weighted) == pytest.approx(0.05 - 0.03 * 0.7)
+    # Without a measured window the Poisson chance at the entry rate stands in.
+    rare = candidate(None, 0.05)
+    assert 0.05 - 0.03 < _ranked_score(rare, weighted) < 0.05 - 0.02
+
+
+def test_tuning_selects_on_frequency_score_when_weighted(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+    stamps = pd.date_range("2026-07-01", periods=2, freq="35D", tz="UTC")
+
+    def fake_search(*_args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            runs=[
+                {"params": {"x": 1}, "net_return": 0.10, "trade_count": 4},
+                {"params": {"x": 9}, "net_return": 0.08, "trade_count": 40},
+            ],
+            invalid=[],
+            ranked=[{"params": {"x": 1}}],
+        )
+
+    monkeypatch.setattr(evolution_campaign, "run_optuna_search", fake_search)
+    dataset = SimpleNamespace(bars=SimpleNamespace(timestamps=list(stamps)))
+    grid, tuning = _run_evolution_optuna(
+        {"script": "strategy.py", "spec": {}},
+        dataset,
+        {"x": {"type": "int", "low": 1, "high": 9}},
+        trials=2,
+        bars=0,
+        timeout=None,
+        frequency_policy={"frequency_objective_weight": 0.05},
+    )
+    assert captured["objectives"] == ["net_return", "max_drawdown_pct", "trade_count"]
+    assert tuning["selection_key"] == "frequency_score"
+    sparse, active = grid.runs
+    assert active["frequency_score"] > sparse["frequency_score"]
+
+
+def test_a_requested_screen_runs_next_in_the_same_op(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    first = prepare_candidate(
+        store,
+        job_id,
+        family="breakout",
+        summary="first",
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
+    )
+    second = prepare_candidate(
+        store,
+        job_id,
+        family="breakout",
+        summary="second",
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
+    )
+    assert evolution_campaign.request_candidate_evaluation(
+        store, job_id, second["candidate_id"]
+    ) == {"queued": True, "candidate_id": second["candidate_id"]}
+    state = campaign_status(store, job_id)
+    # A fresh request is in flight: no worker session is issued for it.
+    policy = {"screen_before_repair": True, "generated_programs": 12}
+    waiting = [
+        item["candidate_id"]
+        for item in evolution_campaign._awaiting_evaluation(state, policy)
+    ]
+    assert second["candidate_id"] not in waiting
+    assert first["candidate_id"] in waiting
+
+    result = evolution_campaign.evaluate_candidate_and_requests(
+        store, job_id, first["candidate_id"]
+    )
+    assert result["chained_evaluations"] == [second["candidate_id"]]
+    after = {
+        item["candidate_id"]: item
+        for item in campaign_status(store, job_id)["candidates"]
+    }
+    assert after[second["candidate_id"]]["status"] != "prepared"
+    assert "evaluation_requested_at" not in after[second["candidate_id"]]
+
+
+def test_slow_strategies_are_handed_back_before_the_screen(monkeypatch) -> None:
+    rates = iter([37.0, 580.0, 87.0])
+    monkeypatch.setattr(evolution_campaign, "_strategy_warmup_bars", lambda *a: 20)
+    monkeypatch.setattr(evolution_campaign, "_tail", lambda dataset, bars: dataset)
+    monkeypatch.setattr(
+        evolution_campaign,
+        "simulate_execution",
+        lambda *a, **k: SimpleNamespace(profile={"bars_per_second": next(rates)}),
+    )
+    subject = {"script": "strategy.py", "spec": {}}
+
+    def screen(bars: int) -> SimpleNamespace:
+        return SimpleNamespace(bars=SimpleNamespace(timestamps=[0] * bars))
+
+    # A five-minute slice at 37 bars/s takes four and a half minutes.
+    slow = evolution_campaign._screen_speed_shortfall(subject, screen(10_080), {}, {})
+    assert slow is not None and "precompute(frames)" in slow
+    assert (
+        evolution_campaign._screen_speed_shortfall(subject, screen(10_080), {}, {})
+        is None
+    )
+    # A 27-market fifteen-minute slice at 87 bars/s screens in 40 seconds.
+    assert (
+        evolution_campaign._screen_speed_shortfall(subject, screen(3_360), {}, {})
+        is None
+    )
+    # The policy can switch the probe off.
+    assert (
+        evolution_campaign._screen_speed_shortfall(
+            subject, screen(10_080), {}, {"max_screen_seconds": 0}
+        )
+        is None
+    )
+
+
+def test_clustered_validation_trades_are_untestable_when_the_floor_is_set() -> None:
+    def candidate(coverage: float | None) -> dict[str, Any]:
+        return {"dev": {"validation": {"cadence": {"window_coverage": coverage}}}}
+
+    policy = {"probation_min_window_coverage": 0.6}
+    reason = evolution_campaign._clustered_cadence(candidate(0.41), policy)
+    assert reason is not None and "41%" in reason
+    assert evolution_campaign._clustered_cadence(candidate(0.88), policy) is None
+    assert evolution_campaign._clustered_cadence(candidate(None), policy) is None
+    assert evolution_campaign._clustered_cadence(candidate(0.41), {}) is None
+
+
+def test_a_finalist_whose_signal_went_quiet_is_untestable() -> None:
+    def economic(last_entry: str | None) -> dict[str, Any]:
+        return {
+            "audit_slice": {"end": "2026-08-31 15:00:00+00:00"},
+            "candidate_entry_count": 0 if last_entry is None else 5,
+            "candidate_last_entry_at": last_entry,
+        }
+
+    policy = {"probation_max_quiet_days": 10}
+    reason = evolution_campaign._quiet_before_staging(
+        economic("2026-08-14 10:05:00+00:00"), policy
+    )
+    assert reason is not None and "17 days" in reason
+    assert (
+        evolution_campaign._quiet_before_staging(
+            economic("2026-08-27 10:05:00+00:00"), policy
+        )
+        is None
+    )
+    assert "no entry" in (
+        evolution_campaign._quiet_before_staging(economic(None), policy) or ""
+    )
+    assert (
+        evolution_campaign._quiet_before_staging(
+            economic("2026-08-14 10:05:00+00:00"), {}
+        )
+        is None
+    )
+    reused = {"audit_slice": {"end": "2026-08-31 15:00:00+00:00"}}
+    assert evolution_campaign._quiet_before_staging(reused, policy) is None
+
+
+def test_a_finalist_that_lost_over_the_audit_slice_is_not_staged() -> None:
+    def economic(growth: float | None) -> dict[str, Any]:
+        return {"audit_slice": {"candidate_net_log_growth": growth}}
+
+    policy = {"probation_requires_audit_profit": True}
+    reason = evolution_campaign._audit_slice_loss(economic(-0.012), policy)
+    assert reason is not None and "-1.20%" in reason
+    assert evolution_campaign._audit_slice_loss(economic(0.004), policy) is None
+    assert evolution_campaign._audit_slice_loss(economic(None), policy) is None
+    assert evolution_campaign._audit_slice_loss(economic(-0.012), {}) is None
+
+
 def test_unbuildable_seed_falls_back_to_de_novo_instead_of_wedging(
     tmp_path, monkeypatch
 ) -> None:
@@ -8557,6 +8914,72 @@ def test_policy_scan_retires_configurations_that_failed_validation(
     untouched = _policy_scan_block(None, "job", tmp_path, policy={})
     assert len(untouched["survivors"]) == 3
     assert "retired" not in untouched
+
+
+def test_policy_scan_retires_a_family_after_repeated_validation_losses(
+    tmp_path, monkeypatch
+) -> None:
+    def developed(policy_id: str, family: str, validation: float) -> dict[str, Any]:
+        return {
+            "metadata": {
+                "policy_id": policy_id,
+                "policy_family": family,
+                "dev": {"validation": {"stats": {"net_return": validation}}},
+            }
+        }
+
+    archive = [
+        developed("rank-a", "cross_sectional_rank", -0.23),
+        developed("rank-b", "cross_sectional_rank", -0.12),
+        developed("sleeve-a", "sleeve_momentum", -0.01),
+    ]
+    survivors = [
+        {"policy_id": "rank-new", "family": "cross_sectional_rank"},
+        {"policy_id": "sleeve-new", "family": "sleeve_momentum"},
+        {"policy_id": "trend-new", "family": "time_series_trend"},
+    ]
+    monkeypatch.setattr(
+        evolution_campaign,
+        "_campaign_scan_frames",
+        lambda *_args, **_kwargs: {
+            "train": None,
+            "bar_seconds": 300,
+            "taker_round_trip_bps": 9.0,
+        },
+    )
+    monkeypatch.setattr(
+        evolution_campaign,
+        "policy_scan",
+        lambda *_args, **_kwargs: {
+            "available": True,
+            "survivors": [dict(row) for row in survivors],
+        },
+    )
+    monkeypatch.setattr(
+        evolution_campaign,
+        "load_archive",
+        lambda *_args, **_kwargs: {"candidates": archive},
+    )
+    policy = {"policy_scan_retire_failed": True, "policy_scan_retire_family_after": 2}
+    kept = _policy_scan_block(None, "job", tmp_path, policy=policy)
+    # Two distinct losing configurations retire the family's new ones too;
+    # one loss does not.
+    assert [row["policy_id"] for row in kept["survivors"]] == [
+        "sleeve-new",
+        "trend-new",
+    ]
+    assert kept["retired_families"] == ["cross_sectional_rank"]
+    assert "cross_sectional_rank" in _policy_scan_instruction(
+        {
+            "available": True,
+            "survivors": [],
+            "retired_families": ["cross_sectional_rank"],
+        }
+    )
+    off = _policy_scan_block(
+        None, "job", tmp_path, policy={"policy_scan_retire_failed": True}
+    )
+    assert len(off["survivors"]) == 3 and "retired_families" not in off
 
 
 def test_owner_compute_override_on_a_replayed_clock_lives_on_the_wall_clock(

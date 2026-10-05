@@ -47,6 +47,8 @@ from wayfinder_paths.jobs.regime import (
     utc_timestamp,
 )
 
+TAIL_TRADES = 5
+
 
 def objective_vector(
     equity_curve: Sequence[Mapping[str, Any]],
@@ -77,7 +79,11 @@ def objective_vector(
         if value is None:
             value = row.get("realized_pnl_delta")
         pnls.append(float(value or 0.0))
-    worst_k = max(1, len(pnls) // 10)
+    # The worst decile of trades, at most TAIL_TRADES of them: summing a
+    # decile made the tail grow with trade count, so a 1,200-trade book was
+    # charged its 120 worst (offset) losses (0.33 of equity, max drawdown
+    # 6.6%) while a 50-trade book was charged five.
+    worst_k = max(1, min(len(pnls) // 10, TAIL_TRADES))
     tail_loss = (
         abs(sum(sorted(pnls)[:worst_k])) / base_equity if base_equity > 0 else 0.0
     )
@@ -440,6 +446,7 @@ def paired_fold_evaluation(
         delta_lcb = growth_lcb + risk_delta
 
     audit_rows: dict[str, dict[str, Any]] = {}
+    audit_trades: dict[str, list[dict[str, Any]]] = {}
     audit_regime: dict[str, dict[str, Any]] = {}
     for side, script, params in (
         ("baseline", baseline_script, baseline_params),
@@ -456,6 +463,7 @@ def paired_fold_evaluation(
             effective_warmup,
         )
         audit_rows[side] = objective_vector(equity, trades)
+        audit_trades[side] = trades
         if target_regimes:
             conditioned = regime_conditioned_objective(
                 equity,
@@ -495,6 +503,7 @@ def paired_fold_evaluation(
             "candidate": audit_rows["candidate"],
             "delta_utility": audit_delta,
         },
+        **_entry_summary([*candidate_pool["trades"], *audit_trades["candidate"]]),
     }
     if target_regimes:
         regime_config = evaluation.get("regime") or {}
@@ -752,6 +761,18 @@ def _chain_fold_equity(
     return [{**row, "equity": float(row["equity"]) * factor} for row in equity]
 
 
+def _entry_summary(trades: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    entries = [
+        pd.Timestamp(trade["timestamp"])
+        for trade in trades
+        if (trade.get("raw") or {}).get("intent_action") == "OPEN"
+    ]
+    return {
+        "candidate_entry_count": len(entries),
+        "candidate_last_entry_at": str(max(entries)) if entries else None,
+    }
+
+
 def _oos_window(
     script: str | Path | Callable[..., Any],
     dataset: PreparedExecutionDataset,
@@ -793,3 +814,15 @@ def _max_drawdown(equity_curve: Sequence[Mapping[str, Any]]) -> float:
         if peak > 0:
             worst = max(worst, (peak - value) / peak)
     return worst
+
+
+def probation_testability(
+    trades_per_day: float, *, days: float, min_trades: int
+) -> float:
+    """Poisson chance of at least ``min_trades`` trades in ``days``."""
+    expected = max(float(trades_per_day), 0.0) * float(days)
+    below = sum(
+        math.exp(-expected) * expected**count / math.factorial(count)
+        for count in range(int(min_trades))
+    )
+    return max(0.0, 1.0 - below)

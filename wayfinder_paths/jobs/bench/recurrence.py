@@ -244,7 +244,7 @@ def _validate_recurrence_config(config: dict[str, Any], *, source_job: Path) -> 
         # Probation carries across loops, so burn-in, the paired days, and
         # the partial cutoff day must fit inside the whole observation window
         # or no verdict can ever fire.
-        if burn_in_days + max_paired + 1 > window["loops"] * window["loop_days"]:
+        if burn_in_days + max_paired + 1 > window["total_loops"] * window["loop_days"]:
             raise ValueError(
                 f"arm {arm['name']!r}: probation cannot reach a verdict inside the "
                 f"{window['loops']}x{window['loop_days']}-day window "
@@ -257,10 +257,17 @@ def _validate_recurrence_config(config: dict[str, Any], *, source_job: Path) -> 
 
 def _window(config: dict[str, Any]) -> dict[str, Any]:
     window = dict(config.get("window") or {})
+    loops = int(window.get("loops") or 3)
+    # Weeks after the last campaign that only advance probation: a trial
+    # staged in the final campaign week otherwise ends with the window, short
+    # of the paired days a verdict needs.
+    observation = int(window.get("observation_loops") or 0)
     return {
         "start_cutoff": _parse(str(window["start_cutoff"])),
         "loop_days": int(window.get("loop_days") or 7),
-        "loops": int(window.get("loops") or 3),
+        "loops": loops,
+        "observation_loops": observation,
+        "total_loops": loops + observation,
     }
 
 
@@ -276,7 +283,7 @@ def _recurrence_pins(
         raise ValueError("source job dataset has no bars")
     first_bar, last_bar = stamps[0], stamps[-1]
     start = window["start_cutoff"]
-    end = start + timedelta(days=window["loop_days"] * window["loops"])
+    end = start + timedelta(days=window["loop_days"] * window["total_loops"])
     if (start - first_bar).total_seconds() < _MIN_DEVELOPMENT_DAYS * 86_400:
         raise ValueError(
             f"start_cutoff needs {_MIN_DEVELOPMENT_DAYS:g} development days of bars"
@@ -295,9 +302,10 @@ def _recurrence_pins(
             "start_cutoff": start.isoformat(),
             "loop_days": window["loop_days"],
             "loops": window["loops"],
+            "observation_loops": window["observation_loops"],
             "cutoffs": [
                 (start + timedelta(days=window["loop_days"] * index)).isoformat()
-                for index in range(window["loops"])
+                for index in range(window["total_loops"])
             ],
             "end": end.isoformat(),
         },
@@ -352,7 +360,8 @@ def run_recurrence_arm(
     loop_rows: list[dict[str, Any]] = []
     lineage: list[dict[str, Any]] = []
     run_started = time.monotonic()
-    for loop in range(window["loops"]):
+    for loop in range(window["total_loops"]):
+        observing = loop >= window["loops"]
         cutoff = window["start_cutoff"] + timedelta(days=window["loop_days"] * loop)
         end = cutoff + timedelta(days=window["loop_days"])
         loop_dir = loops_root / f"loop-{loop}"
@@ -416,34 +425,44 @@ def run_recurrence_arm(
             os.environ["WAYFINDER_BENCHMARK_NOW"] = env["WAYFINDER_BENCHMARK_NOW"]
             sessions: list[dict[str, Any]] = []
             stage_sessions: dict[str, str] = {}
-            with bench_mcp_server(sandbox, env=env):
-                row["researcher"] = (
-                    _researcher_wake(
+            row["observation_only"] = observing
+            invalid_reason = None
+            if observing:
+                row["researcher"] = {"enabled": False, "observation_only": True}
+            else:
+                with bench_mcp_server(sandbox, env=env):
+                    row["researcher"] = (
+                        _researcher_wake(
+                            sandbox,
+                            config=config,
+                            env=env,
+                            loop=loop,
+                            sessions=sessions,
+                        )
+                        if researcher_enabled
+                        else {"enabled": False}
+                    )
+                    invalid_reason = run_campaign_phase(
                         sandbox,
                         config=config,
+                        seed=seed,
                         env=env,
-                        loop=loop,
+                        virtual_now=cutoff,
                         sessions=sessions,
+                        prompt_hashes=prompt_hashes,
+                        stage_sessions=stage_sessions,
+                        smoke=loop == 0 and bool(config.get("interface_smoke", True)),
                     )
-                    if researcher_enabled
-                    else {"enabled": False}
-                )
-                invalid_reason = run_campaign_phase(
-                    sandbox,
-                    config=config,
-                    seed=seed,
-                    env=env,
-                    virtual_now=cutoff,
-                    sessions=sessions,
-                    prompt_hashes=prompt_hashes,
-                    stage_sessions=stage_sessions,
-                    smoke=loop == 0 and bool(config.get("interface_smoke", True)),
-                )
             store: JobStore = sandbox["store"]
             job_id = str(sandbox["job_id"])
-            _preserve_finalize_record(store, job_id, loop_dir)
+            if not observing:
+                _preserve_finalize_record(store, job_id, loop_dir)
             state = campaign_status(store, job_id)
-            campaign_id = str(state.get("campaign_id") or "") or None
+            # An observation week stages nothing: rebasing the last campaign's
+            # trials onto this cutoff would restart their burn-in.
+            campaign_id = (
+                None if observing else str(state.get("campaign_id") or "") or None
+            )
             forward, holdout, invalid_reason = run_probation_phase(
                 sandbox,
                 world=world,
@@ -452,6 +471,7 @@ def run_recurrence_arm(
                 invalid_reason=invalid_reason,
                 campaign_id=campaign_id,
                 holdout_output=loop_dir / "holdout",
+                observe_only=observing,
             )
             if invalid_reason == "holdout_race_invalid":
                 # The candidate-vs-incumbent race is the campaign's own record;
