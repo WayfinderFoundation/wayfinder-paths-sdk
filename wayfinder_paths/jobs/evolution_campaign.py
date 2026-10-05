@@ -10173,6 +10173,8 @@ def _snapshot_starter_seeds(
 
     snapshots: list[dict[str, Any]] = []
     for definition in sorted(STARTER_DEFINITIONS, key=relevance, reverse=True):
+        if not definition.selectable:
+            continue
         module = importlib.import_module(definition.module)
         raw_source = getattr(module, "__file__", None)
         if not raw_source:

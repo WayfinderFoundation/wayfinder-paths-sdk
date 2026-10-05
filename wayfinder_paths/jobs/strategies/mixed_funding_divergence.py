@@ -129,10 +129,14 @@ class MixedFundingDivergenceStrategy:
         if ctx.bar_index < self.warmup_bars:
             return []
         rows = current_rows(
-            ctx, symbols, required_columns=("starter_signal", "starter_stop_atr")
+            ctx,
+            symbols,
+            required_columns=("starter_signal", "starter_stop_atr"),
+            require_all=False,
         )
-        if rows is None:
+        if not rows:
             return []
+        complete = len(rows) == len(symbols)
         intents: list[dict[str, Any]] = []
         entries: list[tuple[str, int]] = []
         max_hold = int(self.params["max_hold_bars"])
@@ -156,7 +160,7 @@ class MixedFundingDivergenceStrategy:
                         )
                     )
                 continue
-            if signal != 0:
+            if complete and signal != 0:
                 entries.append((symbol, signal))
         if entries:
             intents.extend(self._entries(ctx, rows, entries))
