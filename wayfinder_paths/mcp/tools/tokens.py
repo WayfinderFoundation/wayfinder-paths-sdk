@@ -7,6 +7,10 @@ import httpx
 
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID
+from wayfinder_paths.core.utils.token_refs import (
+    looks_like_evm_address,
+    looks_like_solana_address,
+)
 from wayfinder_paths.mcp.chain_context import with_chain_context
 from wayfinder_paths.mcp.utils import catch_errors, err, ok
 
@@ -24,13 +28,23 @@ async def onchain_resolve_token(
     Args:
         query: Prefer coingecko_id-chain_code or chain_code_address. Shorthands like
             polygon_usdc or usdc-polygon can resolve, but use the returned canonical ID
-            for quotes, execution, and scripts.
+            for quotes, execution, and scripts. A valid chain_code:address is normalized
+            to chain_code_address without changing the address or certifying identity.
         market_data: Include current price, market cap and volume when available.
             These are market snapshots, not chain-local depth or executable quotes.
 
     Native identities may include wrapped_native_address for pool/history reads.
     This is a registered pricing proxy, not a change to the asset being held.
     """
+    chain, separator, address = query.partition(":")
+    if separator and chain in CHAIN_CODE_TO_ID:
+        valid_address = (
+            looks_like_solana_address(address)
+            if chain == "solana"
+            else looks_like_evm_address(address)
+        )
+        if valid_address:
+            query = f"{chain}_{address.strip()}"
     try:
         token = await TOKEN_CLIENT.get_token_details(query, market_data=market_data)
     except httpx.HTTPStatusError as exc:

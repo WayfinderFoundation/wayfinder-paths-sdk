@@ -66,6 +66,67 @@ async def test_resolve_token_hides_backend_url_on_status_error():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "chain,address",
+    [
+        ("base", "0x940181a94A35A4569E4529A3CDfB74e38FD98631"),
+        ("ethereum", "0x0000000000000000000000000000000000000001"),
+        ("solana", "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn"),
+        ("solana", "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"),
+    ],
+)
+async def test_resolve_token_normalizes_only_chain_address_separator(
+    chain: str,
+    address: str,
+) -> None:
+    lookup_id = f"{chain}_{address}"
+    identity = {"is_canonical": False, "verification": "unverified", "suspicious": True}
+    client = AsyncMock()
+    client.get_token_details.return_value = {
+        "token_id": lookup_id,
+        "identity": identity,
+    }
+    with (
+        patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", client),
+        patch("wayfinder_paths.mcp.utils._report_tool_metric"),
+    ):
+        result = await onchain_resolve_token(f"{chain}:{address}", market_data=True)
+
+    client.get_token_details.assert_awaited_once_with(lookup_id, market_data=True)
+    assert result["ok"] is True
+    assert result["result"]["lookup_id"] == lookup_id
+    assert result["result"]["token_id"] == lookup_id
+    assert result["result"]["identity"] == identity  # Formatting is not verification.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        "unknown:0x0000000000000000000000000000000000000001",
+        "base:uniswap",
+        "base:0x1234",
+        "solana:0x0000000000000000000000000000000000000001",
+        "base:pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn",
+        "solana:not-a-mint",
+        "xyz:COIN",
+        "eip155:8453:0x0000000000000000000000000000000000000001",
+    ],
+)
+async def test_resolve_token_does_not_guess_colon_identifiers(query: str) -> None:
+    client = AsyncMock()
+    client.get_token_details.return_value = {"symbol": "FIXTURE"}
+    with (
+        patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", client),
+        patch("wayfinder_paths.mcp.utils._report_tool_metric"),
+    ):
+        result = await onchain_resolve_token(query)
+
+    client.get_token_details.assert_awaited_once_with(query, market_data=False)
+    assert result["result"]["lookup_id"] == query
+
+
+@pytest.mark.asyncio
 async def test_get_gas_token_happy_path():
     fake_client = AsyncMock()
     fake_client.get_gas_token = AsyncMock(return_value={"symbol": "ETH"})
