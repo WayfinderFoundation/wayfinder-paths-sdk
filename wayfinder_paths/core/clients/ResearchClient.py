@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from typing import cast
+import asyncio
+import logging
+import os
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from typing import Any, cast
 
 import httpx
 
@@ -26,6 +31,8 @@ from wayfinder_paths.core.clients.research_types import (
     ResearchWebSearchType,
 )
 from wayfinder_paths.core.config import get_api_base_url
+
+logger = logging.getLogger(__name__)
 
 VALID_SEARCH_TYPES: set[str] = {
     "auto",
@@ -68,6 +75,60 @@ class ResearchClient(GatewayClient):
     session_env_keys = SESSION_ENV_KEYS
     default_session_id = DEFAULT_SESSION_ID
     include_response_text_in_error = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._requests = asyncio.Semaphore(4)
+
+    async def _post_gateway(self, path: str, payload: Mapping[str, Any]) -> Any:
+        # Native workers share backpressure, including an opt-in hourly pause.
+        async with self._requests:
+            for attempt in range(5):
+                try:
+                    return await super()._post_gateway(path, payload)
+                except ResearchGatewayAPIError as exc:
+                    if exc.status_code != 429 or not isinstance(exc.details, dict):
+                        raise
+                    if exc.code == "research_busy":
+                        delay = exc.details.get("retryAfterSeconds")
+                        if (
+                            attempt == 4
+                            or isinstance(delay, bool)
+                            or not isinstance(delay, (int, float))
+                            or not 0 < delay <= 30
+                        ):
+                            raise
+                        # Busy requests were not admitted or charged. Back off
+                        # within the same call instead of paying for model retries.
+                        await asyncio.sleep(max(delay, 2 ** (attempt + 1)))
+                        continue
+                    if (
+                        os.getenv("WAYFINDER_RESEARCH_WAIT_FOR_HOURLY_RESET") != "1"
+                        or exc.code != "research_budget_exhausted"
+                        or exc.details.get("window") != "hour"
+                    ):
+                        raise
+                    try:
+                        reset = datetime.fromisoformat(exc.details.get("resetAt", ""))
+                    except (TypeError, ValueError):
+                        raise exc from None
+                    if reset.tzinfo is None:
+                        raise
+                    delay = (reset - datetime.now(UTC)).total_seconds()
+                    if not 0 < delay <= 3600:
+                        raise
+                    logger.warning(
+                        "Research hourly budget paused until %s", reset.isoformat()
+                    )
+                    await asyncio.sleep(delay + 1)
+                    # One hourly retry, same request/key/session. Other limits
+                    # and a second denial remain terminal; cancellation propagates.
+                    return await super()._post_gateway(path, payload)
+
+    async def aclose(self) -> None:
+        await super().aclose()
+        # The shared client can be reopened in a later asyncio.run invocation.
+        self._requests = asyncio.Semaphore(4)
 
     def _research_url(self, path: str) -> str:
         base = get_api_base_url().rstrip("/")

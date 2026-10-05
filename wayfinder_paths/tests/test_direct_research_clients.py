@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
+from typing import Any, Literal
+from unittest.mock import AsyncMock
+
 import httpx
 import pytest
+from mcp.server.fastmcp.tools.base import Tool
 
 from wayfinder_paths.core.clients.direct import DefiLlamaFreeClient as llama_module
 from wayfinder_paths.core.clients.direct import GoldskyDirectClient as goldsky_module
-from wayfinder_paths.mcp.tools import goldsky_direct
+from wayfinder_paths.mcp.tools import defillama_free, goldsky_direct
 
 
 class _FakeAsyncClient:
     calls: list[tuple[str, str, dict]] = []
-    get_body = {"data": []}
+    get_body: dict[str, Any] | list[dict[str, Any]] = {"data": []}
     post_body = {"data": {"ok": True}}
 
     def __init__(self, *args, **kwargs) -> None:
@@ -50,14 +56,45 @@ async def test_defillama_free_uses_direct_api(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.mark.asyncio
+async def test_defillama_current_prices_uses_coins_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.get_body = {"coins": {"coingecko:ethereum": {"price": 2000}}}
+    monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    response = await llama_module.DEFILLAMA_FREE_CLIENT.current_prices(
+        "coingecko:ethereum"
+    )
+
+    assert _FakeAsyncClient.calls == [
+        (
+            "GET",
+            "https://coins.llama.fi/prices/current/coingecko:ethereum",
+            {"params": {}},
+        )
+    ]
+    assert response["result"] == _FakeAsyncClient.get_body
+    assert response["evidence"][0]["url"].startswith("https://coins.llama.fi/")
+
+
+@pytest.mark.asyncio
 async def test_defillama_free_open_interest_overview(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _FakeAsyncClient.calls = []
-    _FakeAsyncClient.get_body = {"protocols": []}
+    _FakeAsyncClient.get_body = {
+        "total24h": 100,
+        "total30d": 3000,
+        "protocols": [
+            {"name": "Venue", "slug": "venue", "total24h": 100, "total30d": 3000}
+        ],
+    }
     monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
 
-    await llama_module.DEFILLAMA_FREE_CLIENT.open_interest_overview()
+    result = (await llama_module.DEFILLAMA_FREE_CLIENT.open_interest_overview())[
+        "result"
+    ]
 
     assert _FakeAsyncClient.calls == [
         (
@@ -71,6 +108,15 @@ async def test_defillama_free_open_interest_overview(
             },
         )
     ]
+    assert result["totals"]["total24h"] == result["items"][0]["total24h"] == 100
+    assert result["totals"]["total30d"] == result["items"][0]["total30d"] == 3000
+    assert "not traded volume" in result["periodDefinitions"]["total24h"]
+    assert "not current open interest" in result["periodDefinitions"]["multiDayTotals"]
+    assert "not current open interest" in result["periodDefinitions"]["total1y"]
+    assert "trailing-year total" not in result["periodDefinitions"]["total1y"].lower()
+    assert llama_module.PERIOD_DEFINITIONS["total1y"].startswith("Trailing-year total")
+    assert "periodComparisons" not in result
+    assert "periodComparisons" not in result["items"][0]
 
 
 @pytest.mark.asyncio
@@ -144,6 +190,7 @@ async def test_defillama_free_fees_overview_compacts_and_pages(
                 "params": {
                     "excludeTotalDataChart": "true",
                     "excludeTotalDataChartBreakdown": "true",
+                    "dataType": "dailyFees",
                 }
             },
         )
@@ -174,6 +221,7 @@ async def test_defillama_free_protocol_search_compacts_matches(
         {
             "name": "Pendle",
             "slug": "pendle",
+            "parentProtocol": None,
             "symbol": None,
             "category": "Yield",
             "chains": None,
@@ -181,8 +229,226 @@ async def test_defillama_free_protocol_search_compacts_matches(
             "change_1d": None,
             "change_7d": None,
             "url": None,
+            "description": None,
+            "gecko_id": None,
+            "address": None,
         }
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("match_field", ["name", "slug", "symbol", "partial_name"])
+async def test_protocol_search_ranks_identity_before_description_and_pagination(
+    monkeypatch: pytest.MonkeyPatch, match_field: str
+) -> None:
+    target = {"name": "Target", "slug": "target", "symbol": "TARGET"}
+    target["name" if match_field == "partial_name" else match_field] = (
+        "Pons V2" if match_field == "partial_name" else "PoNs"
+    )
+    catalog = [
+        {
+            "name": f"Noise {i}",
+            "slug": f"noise-{i}",
+            "description": "Responsible liquidity",
+        }
+        for i in range(12)
+    ] + [target]
+    client = llama_module.DefiLlamaFreeClient()
+    get = AsyncMock(
+        return_value={"url": "https://api.llama.fi/protocols", "result": catalog}
+    )
+    monkeypatch.setattr(client, "_get", get)
+    first = (await client.protocol_search(" pOnS ", limit=1))["result"]
+    assert first["matches"][0]["slug"] == target["slug"]
+    assert first["page"]["totalAvailable"] == 13
+    assert first["page"]["nextCursor"] == "1"
+    # Description matches remain available, and paging never mutates the catalog.
+    rest = (await client.protocol_search("pons", limit=20, cursor="1"))["result"]
+    assert [p["slug"] for p in rest["matches"]] == [f"noise-{i}" for i in range(12)]
+    assert rest["page"]["nextCursor"] is None
+    assert catalog[0]["slug"] == "noise-0"
+    get.assert_awaited_once_with("/protocols")
+
+
+@pytest.mark.asyncio
+async def test_protocol_search_exact_identity_precedes_partial_and_filters_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog = [
+        {"name": "Pons", "slug": "excluded", "category": "Bridge"},
+        {"name": "Pons V1", "slug": "partial", "category": "Launchpad"},
+        {"name": "Pons V2", "slug": "exact", "symbol": "PONS", "category": "Launchpad"},
+    ]
+    client = llama_module.DefiLlamaFreeClient()
+    monkeypatch.setattr(
+        client,
+        "_get",
+        AsyncMock(
+            return_value={"url": "https://api.llama.fi/protocols", "result": catalog}
+        ),
+    )
+    result = (await client.protocol_search("pons", category="launchpad", limit=1))[
+        "result"
+    ]
+    assert [p["slug"] for p in result["matches"]] == ["exact"]
+    assert result["page"]["totalAvailable"] == 2
+    # Category-only browsing retains source order, rather than ranking empty queries.
+    browse = (await client.protocol_search("_", category="Launchpad"))["result"]
+    assert [p["slug"] for p in browse["matches"]] == ["partial", "exact"]
+
+
+@pytest.mark.asyncio
+async def test_fee_compaction_preserves_periods_and_deployment_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocols = [
+        {
+            "name": "Venue",
+            "slug": "venue-perps",
+            "parentProtocol": "parent#venue",
+            "chains": ["Venue"],
+            "total24h": 150,
+            "total30DaysAgo": 250,
+            "total30d": 6000,
+            "total60dto30d": 5000,
+            "total1y": 70000,
+            "change_1m": -40,
+            "change_30dover30d": 20,
+        },
+        {
+            "name": "Venue New Deployment",
+            "slug": "venue-new",
+            "parentProtocol": "parent#venue",
+            "chains": ["NewChain"],
+            "total24h": 0,
+            "total30d": 0,
+        },
+    ]
+    _FakeAsyncClient.get_body = {"protocols": protocols}
+    monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
+    response = await llama_module.DEFILLAMA_FREE_CLIENT.fees_overview()
+    assert response["result"]["periodDefinitions"] == llama_module.PERIOD_DEFINITIONS
+    assert "NOT rolling-month" in response["result"]["periodDefinitions"]["change_1m"]
+    items = {row["slug"]: row for row in response["result"]["items"]}
+    for protocol in protocols:
+        for field, value in protocol.items():
+            assert items[protocol["slug"]][field] == value
+    # Missing is still null, not zero; no aggregation across deployments.
+    assert items["venue-new"]["total1y"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "data_type", ["dailyFees", "dailyRevenue", "dailyHoldersRevenue"]
+)
+async def test_fee_comparisons_distinguish_daily_decline_from_monthly_growth(
+    monkeypatch: pytest.MonkeyPatch, data_type: str
+) -> None:
+    # Regression from a real eval: change_1m was misread as rolling-month growth.
+    metrics = {
+        "total24h": 1427104,
+        "total30DaysAgo": 4221588,
+        "change_1m": -66.2,
+        "total7d": 10368888,
+        "total14dto7d": 17773613,
+        "change_7dover7d": -41.66,
+        "total30d": 129390324,
+        "total60dto30d": 26939684,
+        "change_30dover30d": 380.3,
+    }
+    _FakeAsyncClient.get_body = {
+        **metrics,
+        "protocols": [{"name": "Venue", "slug": "venue", **metrics}],
+    }
+    monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
+    client = llama_module.DefiLlamaFreeClient()
+    overview = (await client.fees_overview(data_type=data_type))["result"]
+    history = (await client.protocol_fees("venue", data_type=data_type))["result"]
+    for result in (overview, history):
+        comparisons = result["periodComparisons"]
+        assert comparisons["latest_day_vs_day_30d_ago"]["reportedChangePct"] == -66.2
+        assert comparisons["last_7d_vs_previous_7d"]["reportedChangePct"] == -41.66
+        month = comparisons["last_30d_vs_previous_30d"]
+        assert month["currentUsd"] == 129390324
+        assert month["previousUsd"] == 26939684
+        assert month["reportedChangePct"] == 380.3
+        assert month["computedChangePct"] == pytest.approx(380.3, abs=0.01)
+        assert result["periodComparisonFields"]["last_30d_vs_previous_30d"] == (
+            "total30d",
+            "total60dto30d",
+            "change_30dover30d",
+        )
+        for field, value in metrics.items():
+            assert result["totals"][field] == value
+    assert overview["items"][0]["periodComparisons"] == overview["periodComparisons"]
+    assert overview["dataType"] == history["dataType"] == data_type
+
+
+@pytest.mark.parametrize(
+    "previous", [None, 0, -1, True, "unknown", float("nan"), float("inf")]
+)
+def test_fee_comparison_does_not_invent_growth_from_unavailable_baseline(
+    previous: Any,
+) -> None:
+    comparisons = llama_module._period_comparisons(
+        {"total30d": 100, "total60dto30d": previous}
+    )
+    assert comparisons["last_30d_vs_previous_30d"]["computedChangePct"] is None
+    assert comparisons["last_30d_vs_previous_30d"]["reportedChangePct"] is None
+    assert "latest_day_vs_day_30d_ago" not in comparisons
+
+
+def test_fee_comparison_preserves_zero_decline_and_provider_disagreement() -> None:
+    comparisons = llama_module._period_comparisons(
+        {"total30d": 0, "total60dto30d": 100, "change_30dover30d": 0}
+    )
+    assert comparisons["last_30d_vs_previous_30d"] == {
+        "currentUsd": 0,
+        "previousUsd": 100,
+        "reportedChangePct": 0,
+        "computedChangePct": -100,
+    }
+    assert llama_module._period_comparisons({}) == {}
+
+
+@pytest.mark.asyncio
+async def test_dex_comparisons_preserve_pagination_and_response_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeAsyncClient.get_body = {
+        "protocols": [
+            {
+                "slug": f"venue-{index}",
+                "total24h": 200 - index,
+                "total30DaysAgo": 100,
+                "total7d": 1000,
+                "total14dto7d": 2000,
+                "total30d": 5000,
+                "total60dto30d": 4000,
+            }
+            for index in range(100)
+        ]
+    }
+    monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
+    client = llama_module.DefiLlamaFreeClient()
+    cursor = "_"
+    seen = []
+    while cursor is not None:
+        response = await client.dex_overview(limit=100, cursor=cursor)
+        rendered = json.dumps({"ok": True, "result": response}, indent=2)
+        assert len(rendered) <= llama_module.MAX_RESPONSE_CHARACTERS
+        assert rendered.count("\n") < llama_module.MAX_RESPONSE_LINES
+        result = response["result"]
+        for item in result["items"]:
+            assert (
+                item["periodComparisons"]["last_30d_vs_previous_30d"][
+                    "computedChangePct"
+                ]
+                == 25
+            )
+            seen.append(item["slug"])
+        cursor = result["page"]["nextCursor"]
+    assert seen == [f"venue-{index}" for index in range(100)]
 
 
 @pytest.mark.asyncio
@@ -214,6 +480,259 @@ async def test_defillama_free_protocol_fees_returns_daily_and_weekly(
     assert result["result"]["chainDailyRows"][0]["breakdown"] == {
         "Ethereum": {"Pendle": 100}
     }
+    assert result["result"]["methodology"] is None
+    assert result["result"]["methodologyURL"] is None
+    assert result["result"]["breakdownMethodology"] is None
+    assert result["result"]["totals"] == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "data_type", ["dailyFees", "dailyRevenue", "dailyHoldersRevenue"]
+)
+async def test_defillama_protocol_fees_preserves_definitions_and_reported_totals(
+    monkeypatch: pytest.MonkeyPatch, data_type: str
+) -> None:
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.get_body = {
+        "description": "Example protocol",
+        "methodology": {
+            "Fees": "Onchain buy-and-burn only; excludes offchain subscription sales.",
+            "Revenue": "Onchain buy-and-burn only, not total business revenue.",
+            "HoldersRevenue": "Token buybacks and burns, not a cash yield to every holder.",
+        },
+        "methodologyURL": "https://example.org/adapter",
+        "breakdownMethodology": {"Fees": {"Burn": "USD value of tokens burned."}},
+        "total24h": 0,
+        "total7d": 700,
+        "total30d": 2500,
+        "total1y": None,
+        "annualized1y": 30416.67,
+    }
+    monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    response = await llama_module.DEFILLAMA_FREE_CLIENT.protocol_fees(
+        "example", data_type=data_type
+    )
+
+    assert _FakeAsyncClient.calls == [
+        (
+            "GET",
+            "https://api.llama.fi/summary/fees/example",
+            {"params": {"dataType": data_type}},
+        )
+    ]
+    result = response["result"]
+    for key in ("description", "methodology", "methodologyURL", "breakdownMethodology"):
+        assert result[key] == _FakeAsyncClient.get_body[key]
+    assert result["totals"] == {
+        "total24h": 0,
+        "total7d": 700,
+        "total30d": 2500,
+        "total1y": None,
+    }
+    assert result["dailyRows"] == []
+    assert response["evidence"][0]["url"] == response["url"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "data_type", ["dailyFees", "dailyRevenue", "dailyHoldersRevenue"]
+)
+@pytest.mark.parametrize("chains", [["Ethereum", "OP Mainnet"], ["Ethereum"], None])
+async def test_protocol_fee_totals_keep_listing_scope_not_legacy_chain_label(
+    monkeypatch: pytest.MonkeyPatch, data_type: str, chains: list[str] | None
+) -> None:
+    # The Aave V3 summary labels `chain=Optimism` even though totals span deployments.
+    timestamp = int(datetime.now(UTC).timestamp())
+    body: dict[str, Any] = {
+        "name": "Example V3",
+        "parentProtocol": "parent#example",
+        "chain": "Optimism",
+        "total30d": 300,
+        "totalDataChart": [[timestamp, 100]],
+        "totalDataChartBreakdown": [
+            [
+                timestamp,
+                {"Ethereum": {"Example V3": 90}, "OP Mainnet": {"Example V3": 10}},
+            ]
+        ],
+    }
+    if chains is not None:
+        body["chains"] = chains
+    _FakeAsyncClient.get_body = body
+    monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    result = (
+        await llama_module.DefiLlamaFreeClient().protocol_fees(
+            "example-v3", data_type=data_type
+        )
+    )["result"]
+
+    assert result["name"] == "Example V3"
+    assert result["parentProtocol"] == "parent#example"
+    assert result["chains"] == chains  # Missing coverage is not inferred from `chain`.
+    assert result["providerChainLabel"] == "Optimism"
+    assert result["totals"] == {"total30d": 300}
+    assert result["dailyRows"][0]["value"] == 100
+    assert (
+        result["chainDailyRows"][0]["breakdown"]
+        == body["totalDataChartBreakdown"][0][1]
+    )
+    assert result["dataType"] == data_type
+    assert "No chain filter" in result["coverageNote"]
+    assert "not necessarily its parent" in result["coverageNote"]
+    assert body["chain"] == "Optimism"  # Do not mutate the provider observation.
+
+
+@pytest.mark.asyncio
+async def test_chain_fee_overview_still_preserves_its_chain_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.get_body = {
+        "chain": "Optimism",
+        "allChains": ["Ethereum", "Optimism"],
+        "total30d": 30,
+        "protocols": [],
+    }
+    monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    response = await llama_module.DefiLlamaFreeClient().fees_overview(chain="Optimism")
+
+    assert _FakeAsyncClient.calls[0][1] == "https://api.llama.fi/overview/fees/Optimism"
+    assert response["result"]["totals"]["chain"] == "Optimism"
+    assert response["result"]["totals"]["total30d"] == 30
+
+
+@pytest.mark.asyncio
+async def test_defillama_protocol_fees_rejects_unknown_metric_before_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lookup = AsyncMock()
+    monkeypatch.setattr(llama_module.DEFILLAMA_FREE_CLIENT, "_get", lookup)
+
+    with pytest.raises(ValueError, match="dailyHoldersRevenue"):
+        await llama_module.DEFILLAMA_FREE_CLIENT.protocol_fees(
+            "example", data_type="dailyProfit"
+        )
+
+    lookup.assert_not_awaited()
+
+
+def test_defillama_tool_schema_exposes_supported_fee_metrics() -> None:
+    tool = Tool.from_function(defillama_free.research_defillama_free)
+
+    assert tool.parameters["properties"]["dataType"]["enum"] == [
+        "dailyFees",
+        "dailyRevenue",
+        "dailyHoldersRevenue",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_breakdown", [False, True])
+@pytest.mark.parametrize("data_type", ["dailyRevenue", "dailyHoldersRevenue"])
+async def test_defillama_tool_keeps_large_chain_history_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    include_breakdown: bool,
+    data_type: Literal["dailyRevenue", "dailyHoldersRevenue"],
+) -> None:
+    breakdown = [
+        {
+            "date": f"2026-09-{day:02}",
+            "breakdown": {f"Chain {chain}": {"Protocol": 100} for chain in range(40)},
+        }
+        for day in range(1, 31)
+    ]
+    metrics = {
+        "protocolSlug": "example",
+        "dataType": data_type,
+        "name": "Example",
+        "parentProtocol": "parent#example",
+        "chains": [f"Chain {chain}" for chain in range(40)],
+        "providerChainLabel": "Chain 0",
+        "coverageNote": "No chain filter was applied.",
+        "totals": {"total30d": 120000},
+        "dailyRows": [{"date": row["date"], "value": 4000} for row in breakdown],
+        "methodology": {"Revenue": "Net protocol fees, not holder distributions."},
+        "methodologyURL": "https://example.org/methodology",
+    }
+    evidence = [{"url": "https://api.llama.fi/summary/fees/example"}]
+    lookup = AsyncMock(
+        return_value={
+            "result": {**metrics, "chainDailyRows": breakdown},
+            "evidence": evidence,
+        }
+    )
+    monkeypatch.setattr(defillama_free.DEFILLAMA_FREE_CLIENT, "protocol_fees", lookup)
+    monkeypatch.setattr(
+        "wayfinder_paths.mcp.utils._report_tool_metric", lambda *a, **k: None
+    )
+
+    response = await defillama_free.research_defillama_free(
+        dataset="protocol_fees",
+        protocolSlug="example",
+        dataType=data_type,
+        **({"includeChainBreakdown": True} if include_breakdown else {}),
+    )
+
+    lookup.assert_awaited_once_with("example", data_type=data_type, days=30)
+    assert response["ok"]
+    assert response["result"]["evidence"] == evidence
+    if include_breakdown:
+        assert response["result"]["result"] == {**metrics, "chainDailyRows": breakdown}
+        assert len(json.dumps(response, indent=2)) > 50000
+    else:
+        assert response["result"]["result"] == {
+            **metrics,
+            "chainDailyRowsOmitted": True,
+        }
+        assert len(json.dumps(response, indent=2)) < 10000
+
+
+@pytest.mark.asyncio
+async def test_defillama_protocol_tool_keeps_metadata_without_bulk_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metadata = {
+        "name": "Example",
+        "address": "base:0x123",
+        "url": "https://example.org",
+        "description": "Protocol fundamentals",
+        "methodology": "Count deposits, exclude borrowed assets.",
+        "currentChainTvls": {"Base": 1234, "staking": 50},
+        "treasury": "https://example.org/treasury",
+    }
+    rows = [{"date": index, "totalLiquidityUSD": 1000} for index in range(2000)]
+    histories = {
+        "tvl": rows,
+        "chainTvls": {"Base": {"tvl": rows}},
+        "tokens": rows,
+        "tokensInUsd": rows,
+    }
+    evidence = [
+        {"provider": "defillama_free", "url": "https://api.llama.fi/protocol/example"}
+    ]
+    lookup = AsyncMock(
+        return_value={"result": {**metadata, **histories}, "evidence": evidence}
+    )
+    monkeypatch.setattr(llama_module.DEFILLAMA_FREE_CLIENT, "protocol", lookup)
+    monkeypatch.setattr(
+        "wayfinder_paths.mcp.utils._report_tool_metric", lambda *a, **k: None
+    )
+
+    response = await defillama_free.research_defillama_free(
+        dataset="protocol", protocolSlug="example"
+    )
+
+    lookup.assert_awaited_once_with("example")
+    assert response["ok"]
+    assert response["result"]["evidence"] == evidence
+    result = response["result"]["result"]
+    assert result == {**metadata, "historicalFieldsOmitted": list(histories)}
+    assert len(json.dumps(response)) < 3000
+    assert lookup.return_value["result"] == {**metadata, **histories}
 
 
 @pytest.mark.asyncio

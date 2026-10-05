@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from wayfinder_paths.core.clients.GatewayClient import GatewayAPIError
 from wayfinder_paths.core.clients.MetricsClient import METRICS_CLIENT
 from wayfinder_paths.core.utils.wallets import (  # noqa: F401
     SessionExpiredError,
@@ -104,8 +105,15 @@ def _wrap(fn: Callable, prefix: str) -> Callable:
                 )
             except SessionExpiredError as exc:
                 result = err("session_expired", str(exc))
+            except GatewayAPIError as exc:
+                result = err(
+                    exc.code, f"{prefix} {exc.message}".strip(), details=exc.details
+                )
             except Exception as exc:
-                result = err("error", f"{prefix} {exc}".strip())
+                result = err(
+                    "error",
+                    f"{prefix} {str(exc).strip() or type(exc).__name__}".strip(),
+                )
             _report_tool_metric(
                 fn.__name__, result, (time.perf_counter() - start) * 1000
             )
@@ -126,8 +134,14 @@ def _wrap(fn: Callable, prefix: str) -> Callable:
             )
         except SessionExpiredError as exc:
             result = err("session_expired", str(exc))
+        except GatewayAPIError as exc:
+            result = err(
+                exc.code, f"{prefix} {exc.message}".strip(), details=exc.details
+            )
         except Exception as exc:
-            result = err("error", f"{prefix} {exc}".strip())
+            result = err(
+                "error", f"{prefix} {str(exc).strip() or type(exc).__name__}".strip()
+            )
         _report_tool_metric(fn.__name__, result, (time.perf_counter() - start) * 1000)
         return result
 

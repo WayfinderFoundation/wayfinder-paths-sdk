@@ -10,7 +10,7 @@
 - Search markets/events: `mcp__wayfinder__polymarket_read(action="search", query="bitcoin daily", limit=10)` (compact `candidates` by default)
 - Trending markets: `mcp__wayfinder__polymarket_read(action="trending", limit=25)` (compact `candidates` by default)
 - Event candidates: `mcp__wayfinder__polymarket_read(action="get_event", event_slug="...", candidate_limit=10)`; for date/event ladders use `candidate_limit=20`
-- Market metadata by slug: `mcp__wayfinder__polymarket_read(action="get_market", market_slug="...")` (bounded rules/description by default)
+- Market metadata by slug: `mcp__wayfinder__polymarket_read(action="get_market", market_slug="...")` (complete settlement description/rules/source; unrelated metadata stays compact)
 - Book-based trade quote: `mcp__wayfinder__polymarket_read(action="quote", market_slug="...", outcome="YES", side="BUY", buy_amount_pusd=100)`
 - Price history (token_id): `mcp__wayfinder__polymarket_read(action="price_history", token_id="...", interval="1d", fidelity=5)`
 - Full user status: `mcp__wayfinder__polymarket_get_state(wallet_label="main")`
@@ -38,6 +38,7 @@ Use `summary=False` only when debugging raw Gamma/backend behavior or when a nee
 2) Pick the candidate by `slug`, `question`, outcome labels/token IDs, `resolvesAt`, liquidity, spread, and tradability flags. The compact `outcomes[]` shape handles binary and multi-outcome markets.
 3) Hydrate the selected market:
    - `polymarket_read(action="get_market", market_slug=...)`
+   - Read its complete settlement terms, including start, deadline, exceptions and tie rules. An event description or outcome label does not necessarily define that market's payoff. Detail reads preserve all returned settlement text without a second raw-payload fetch.
 4) Only then fetch book/quote/history for the selected outcome token. Avoid raw event payloads in normal agent context; use `summary=False` only for debugging or missing-field investigation.
 
 Slug rule: Polymarket event pages and market pages use different Gamma endpoints. If the slug came from an event page, call `get_event` first and select a contained market/outcome. Only call `get_market` once you have confirmed the slug is a tradeable market slug.

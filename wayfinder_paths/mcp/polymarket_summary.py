@@ -27,15 +27,6 @@ def compact_truncation(total: int, returned: int) -> dict[str, Any]:
     }
 
 
-def compact_text(value: Any, *, max_chars: int = 700) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    return text if len(text) <= max_chars else text[: max_chars - 1] + "…"
-
-
 def maybe_json_list(value: Any) -> list[Any]:
     if value is None:
         return []
@@ -417,21 +408,14 @@ def next_suggested_calls(
 
 def compact_market_detail(market: dict[str, Any]) -> dict[str, Any]:
     detail = compact_market_candidate(market)
+    # Settlement text defines the instrument, including exceptions at the end.
+    # Compact unrelated metadata, never the selected contract's actual terms.
     detail.update(
         {
-            "description": compact_text(market.get("description"), max_chars=900),
-            "resolutionSource": compact_text(
-                market.get("resolutionSource"), max_chars=500
-            ),
-            "rules": compact_text(
-                first_present(
-                    market,
-                    "rules",
-                    "resolutionRules",
-                    "resolutionCriteria",
-                    "groupItemTitle",
-                ),
-                max_chars=900,
+            "description": market.get("description"),
+            "resolutionSource": market.get("resolutionSource"),
+            "rules": first_present(
+                market, "rules", "resolutionRules", "resolutionCriteria"
             ),
         }
     )
@@ -442,7 +426,9 @@ def compact_event(event: dict[str, Any]) -> dict[str, Any]:
     return {
         "slug": event.get("slug"),
         "title": event.get("title"),
-        "description": compact_text(event.get("description"), max_chars=900),
+        "description": event.get("description"),
+        "resolutionSource": event.get("resolutionSource"),
+        "rules": first_present(event, "rules", "resolutionRules", "resolutionCriteria"),
         "startDate": first_present(event, "startDateIso", "startDate"),
         "endDate": first_present(event, "endDateIso", "endDate"),
         "active": as_bool(event.get("active")),
@@ -492,5 +478,16 @@ def compact_order_book(
         "topAsks": asks[:depth_levels],
         "topBidNotional": sum(level["notional"] for level in bids[:depth_levels]),
         "topAskNotional": sum(level["notional"] for level in asks[:depth_levels]),
+        "buyPayoff": (
+            {
+                "breakEvenProbabilityBeforeCosts": best_ask,
+                "grossPayoutMultipleBeforeCosts": 1 / best_ask,
+                "winReturnBeforeCosts": 1 / best_ask - 1,
+                "lossReturn": -1.0,
+                "note": "Buy this exact outcome at the best ask; settlement pays 1 if it wins, 0 if it loses. Gross payout includes the initial stake; winReturnBeforeCosts is fractional profit, not gross payout or a percentage. Not a probability forecast or a sized fill quote; fees/spread increase the hurdle.",
+            }
+            if best_ask is not None and 0 < best_ask < 1
+            else None
+        ),
         "rawAvailableWithSummaryFalse": True,
     }
