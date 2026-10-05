@@ -109,7 +109,10 @@ For each candidate:
   `staggered_rank_weights`, not rotated whole every day). Read ranks with
   `available_feature_values`, never `ctx.view.latest(symbol)`: it raises for
   a market that printed no bar in the window. Read `use.regimes` before
-  writing the book. The diagnostics are out
+  writing the book. Do not gate decide() on `ctx.bar_index` against the
+  warmup: screens run 35-day slices, `model_scores` already leaves a rank NaN
+  until it can score, and a warmup gate leaves the book flat for most of the
+  screen. The diagnostics are out
   of sample on discovery data; a rank IC under about +0.02 or a t under 2 means
   the model has nothing to trade, so keep its rank as a filter or report it,
   rather than retraining with a different feature list (the budget is per
