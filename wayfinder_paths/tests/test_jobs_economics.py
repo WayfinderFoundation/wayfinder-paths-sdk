@@ -46,6 +46,19 @@ def test_objective_vector_prefers_downside_over_variance() -> None:
     assert spiky_up["downside_deviation"] < 0.01
 
 
+def test_objective_vector_tail_does_not_grow_with_trade_count() -> None:
+    # Fifty trades: the worst decile is the worst five, as before.
+    small = [{"pnl": -float(i)} for i in range(1, 51)]
+    assert objective_vector(_equity([100, 100]), small)["tail_loss"] == pytest.approx(
+        (50 + 49 + 48 + 47 + 46) / 100
+    )
+    # A thousand trades of the same size: still the worst five, not a hundred.
+    many = [{"pnl": -1.0}] * 600 + [{"pnl": 1.2}] * 400
+    assert objective_vector(_equity([100, 100]), many)["tail_loss"] == pytest.approx(
+        5.0 / 100
+    )
+
+
 def test_objective_vector_tail_and_fees() -> None:
     trades = [
         {"pnl": -5.0, "fee": 0.5},
