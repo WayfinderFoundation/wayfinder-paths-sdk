@@ -1217,6 +1217,7 @@ def test_bench_mcp_exposes_read_only_research_actions(
         "evolution_compose",
         "evolution_redesign",
         "evolution_mechanism_grid",
+        "evolution_train_model",
     } <= BENCH_ALLOWED_ACTIONS
     assert BENCH_ALLOWED_ACTIONS.isdisjoint(
         {"propose", "fetch_dataset", "chart", "analogs", "evolution_start"}

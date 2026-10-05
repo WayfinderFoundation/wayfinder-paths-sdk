@@ -5516,6 +5516,7 @@ def test_campaign_carries_the_feature_store_and_tells_the_designer_to_read_it(
             ("leader_ret_28d", 0.30),
             ("btc_ret_7d", 0.13),
             ("eth_ret_7d", 0.11),
+            ("xs_factor_rank", 0.25),
         )
     ]
     (root / "state").mkdir(exist_ok=True)
@@ -5551,6 +5552,11 @@ def test_campaign_carries_the_feature_store_and_tells_the_designer_to_read_it(
     )
     assert "ctx.view.feature('leader_state', default=0.0)" in prompt["next_action"]
     assert prompt["constraints"]["macro_regime"]["leaders"]["state"] == "rally"
+    factor = manifest["regime_context"]["macro"]["factor"]
+    assert factor["declare"] == {"name": "xs_factor_rank", "source": "file"}
+    assert prompt["constraints"]["macro_regime"]["factor"]["read"] == (
+        "ctx.view.feature('xs_factor_rank', sym, default=0.0)"
+    )
 
 
 def test_bounded_index_clock_candidate_is_rejected_without_charge(tmp_path) -> None:
@@ -7876,6 +7882,40 @@ def test_redesign_checkpoint_runs_once_after_the_screens(tmp_path) -> None:
     block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=23))
     assert block and block["artifact_key"] != "redesign"
     assert block["candidate_id"] in focus
+
+
+def test_redesign_keeps_a_first_attempt_book_on_a_tradable_trained_model(
+    tmp_path,
+) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _active_campaign,
+        _save_campaign,
+        submit_campaign_redesign,
+    )
+
+    store, job_id, started, _ = _screened_campaign(tmp_path)
+    state = _active_campaign(store, job_id)
+    ids = [item["candidate_id"] for item in state["candidates"]]
+    state["candidates"][4]["models"] = [
+        {"name": "strong", "diagnostics": {"rank_ic": 0.075, "rank_ic_t": 3.9}}
+    ]
+    state["candidates"][5]["models"] = [
+        {"name": "weak", "diagnostics": {"rank_ic": 0.01, "rank_ic_t": 0.5}}
+    ]
+    _save_campaign(store, job_id, state)
+
+    block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=20))
+    assert block and "trained model rank IC +0.075 (t 3.9)" in block["next_action"]
+    assert "rank IC +0.010" not in block["next_action"]
+
+    submit_campaign_redesign(store, job_id, redesign={"abandon": [ids[4], ids[5]]})
+    state = campaign_status(store, job_id)
+    assert state["redesign"]["abandoned"] == [ids[5]]
+    assert state["redesign"]["kept"] == [ids[4]]
+    assert state["redesign"]["model_kept"] == [ids[4]]
+    by_id = {item["candidate_id"]: item for item in state["candidates"]}
+    assert by_id[ids[4]]["status"] == "repair_pending"
+    assert by_id[ids[5]]["status"] == "low_fidelity_rejected"
 
 
 def test_redesign_checkpoint_can_be_disabled(tmp_path) -> None:

@@ -31,6 +31,7 @@ import pandas as pd
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
+from wayfinder_paths.jobs.factor_model import factor_feature_frames
 from wayfinder_paths.jobs.indicators import panel_breadth
 from wayfinder_paths.jobs.models import NO_BACKTEST_CONTRACTS, utc_now_iso
 from wayfinder_paths.jobs.regime import LEADER_SYMBOLS
@@ -86,8 +87,17 @@ def derive_features_job(
     """Compute and append derived feature rows. Sets: cross, exog, venue,
     regime, macro, leaders (the leader coins' 7/28-day returns and the
     broad rally/selloff code, with each leader's closes persisted so the
-    trailing windows survive incremental fetches)."""
-    unknown = set(sets) - {"cross", "exog", "venue", "regime", "macro", "leaders"}
+    trailing windows survive incremental fetches), factor (the cross-sectional
+    factor model's per-symbol next-day score; universes of 8+ symbols)."""
+    unknown = set(sets) - {
+        "cross",
+        "exog",
+        "venue",
+        "regime",
+        "macro",
+        "leaders",
+        "factor",
+    }
     if unknown:
         raise ValueError(f"unknown feature sets: {sorted(unknown)}")
     store = store or JobStore()
@@ -172,6 +182,9 @@ def derive_features_job(
                 index=pd.to_datetime(sym_frame["timestamp"], utc=True),
             ).reindex(closes.index)
         columns["regime_code"] = regime_wide
+
+    if "factor" in sets:
+        columns.update(factor_feature_frames(frame, closes.index))
 
     # Newest stored stamp PER SERIES, streamed (never a per-row key set — at
     # the live store's 600k+ rows that set alone was ~100MB+ of tuples).
@@ -359,7 +372,7 @@ REFRESH_STAMP_PATH = "results/research/derived_refresh.json"
 # Just under the hourly design cadence so a 30m wake rhythm refreshes every
 # other wake instead of aliasing to 90m.
 REFRESH_MAX_AGE_S = 3300
-_REFRESH_SETS = ("cross", "exog", "venue", "regime", "macro", "leaders")
+_REFRESH_SETS = ("cross", "exog", "venue", "regime", "macro", "leaders", "factor")
 # Features derive over the job DATASET, so they can never advance past its
 # newest bar. The dataset historically refreshed only as a side effect of
 # applies/validations — features froze for 15h+ between agent activity.

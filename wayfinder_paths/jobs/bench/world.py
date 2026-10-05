@@ -35,6 +35,7 @@ from wayfinder_paths.jobs.execution.validation import (
     resolve_execution_spec,
     window_invariance_probe,
 )
+from wayfinder_paths.jobs.factor_model import factor_feature_frames, factor_store_rows
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 
 WORLD_SCHEMA_VERSION = "1.0"
@@ -366,11 +367,16 @@ def _freeze_derived_features(
                 else None
             ),
         }
+    written_at = datetime.now(UTC).isoformat()
     store_rows = feature_store_rows(
         columns,
         symbols=[str(symbol) for symbol in closes.columns],
         stamps=closes.index[::every_bars],
-        written_at=datetime.now(UTC).isoformat(),
+        written_at=written_at,
+    ) + factor_store_rows(
+        factor_feature_frames(frame, closes.index),
+        stamps=closes.index[::every_bars],
+        written_at=written_at,
     )
     development = [row for row in store_rows if _row_timestamp(row) <= cutoff]
     holdout = [row for row in store_rows if cutoff < _row_timestamp(row) <= end]

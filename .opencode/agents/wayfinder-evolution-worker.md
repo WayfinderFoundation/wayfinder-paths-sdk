@@ -152,6 +152,25 @@ For each candidate:
   `stop_atr` ATR, and a market exit after `hold_bars` bars (reference:
   `jobs/strategies/hype_passive_rsi.py`). The grid is a screen; the screen,
   full development and holdout certify the row in the real engine.
+- Only if `candidate.json` carries `model_request` ({kind, features, horizon}),
+  train it once with `wayfinder_core_jobs(action="evolution_train_model",
+  job_id, candidate_id, model={"name": <slug>, "kind", "features",
+  "horizon"})` before writing the strategy; never train for a slot that did not
+  ask. Use the returned `use.precompute` and `use.decide` lines verbatim, set
+  `execution_params.warmup_bars` to at least `use.warmup_bars`, and trade
+  `model_rank` as the slot says (default: daily rotation, long the top fifth
+  and short the bottom fifth, held in three staggered 3-day tranches with
+  `staggered_rank_weights`, not rotated whole every day). Read ranks with
+  `available_feature_values`, never `ctx.view.latest(symbol)`: it raises for
+  a market that printed no bar in the window. Read `use.regimes` before
+  writing the book. Do not gate decide() on `ctx.bar_index` against the
+  warmup: screens run 35-day slices, `model_scores` already leaves a rank NaN
+  until it can score, and a warmup gate leaves the book flat for most of the
+  screen. The diagnostics are out
+  of sample on discovery data; a rank IC under about +0.02 or a t under 2 means
+  the model has nothing to trade, so keep its rank as a filter or report it,
+  rather than retraining with a different feature list (the budget is per
+  campaign, and a refusal means it is spent).
 - Every trade must capture at least the hurdle multiple of the round-trip
   cost gross (the work order states both in bps); `gross_bps_per_trade` is
   the number a repair has to move. A book that pays to trade is rejected

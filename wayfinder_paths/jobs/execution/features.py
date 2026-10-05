@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from wayfinder_paths.jobs.execution.primitives import (
@@ -519,11 +520,15 @@ def apply_precompute(strategy: Any, view: CompletedBarsView) -> CompletedBarsVie
     if not callable(precompute):
         return view
     bars = view.to_frame().sort_values(["timestamp", "symbol"]).reset_index(drop=True)
+    # One grouping pass: the live driver and the parity replay run this every
+    # tick, and per-symbol boolean masks over an object column cost ~5 ms each.
+    positions = bars.groupby(bars["symbol"].astype(str), sort=True).indices
     frames = {
-        str(symbol): bars[bars["symbol"] == symbol].reset_index(drop=True)
-        for symbol in sorted(bars["symbol"].astype(str).unique())
+        symbol: bars.iloc[rows].reset_index(drop=True)
+        for symbol, rows in positions.items()
     }
     derived = precompute(frames) or {}
+    columns: dict[str, np.ndarray] = {}
     for symbol, feats in derived.items():
         base = frames.get(str(symbol))
         if feats is None or base is None:
@@ -533,14 +538,22 @@ def apply_precompute(strategy: Any, view: CompletedBarsView) -> CompletedBarsVie
                 f"precompute() returned {len(feats)} rows for {symbol!r}; "
                 f"expected {len(base)} (one per input bar, same order)"
             )
-        mask = (bars["symbol"] == str(symbol)).to_numpy()
+        rows = positions[str(symbol)]
         for column in feats.columns:
             if column in BAR_COLUMNS:
                 continue
-            if column not in bars.columns:
-                bars[column] = None
-            values = feats[column].to_numpy()
-            bars.loc[mask, column] = values
+            if column not in columns:
+                # A new column is object dtype with None where no symbol wrote,
+                # as per-symbol writes into a fresh None column produced; an
+                # existing column keeps its dtype.
+                columns[column] = (
+                    bars[column].to_numpy(copy=True)
+                    if column in bars.columns
+                    else np.full(len(bars), None, dtype=object)
+                )
+            columns[column][rows] = feats[column].to_numpy()
+    for column, values in columns.items():
+        bars[column] = values
     return CompletedBarsView(bars)
 
 
