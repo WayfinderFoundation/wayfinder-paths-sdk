@@ -7083,6 +7083,11 @@ def _redesign_prompt_block(
         - int(counts.get("quick_attempts") or 0),
     )
     max_new = int(policy.get("redesign_slots") or 3)
+    models = {
+        str(candidate.get("candidate_id")): model
+        for candidate in state.get("candidates") or []
+        if (model := _tradable_model(candidate)) is not None
+    }
     table_text = "; ".join(
         f"{row['candidate_id']} ({row['family']}, {row['parent_source']}"
         + (f" {row['starter_seed_id']}" if row.get("starter_seed_id") else "")
@@ -7104,6 +7109,11 @@ def _redesign_prompt_block(
             else ""
         )
         + f", fixability {row['fixability']}"
+        + (
+            f", trained model rank IC {model['rank_ic']:+.3f} (t {model['rank_ic_t']:.1f})"
+            if (model := models.get(str(row["candidate_id"])))
+            else ""
+        )
         for row in table
     )
     next_action = (
@@ -7157,6 +7167,24 @@ def _redesign_prompt_block(
     }
 
 
+# A trained model that clears the study's tradable bar (rank IC about +0.03 at
+# t >= 2 on its discovery diagnostics) is the expensive part of a model slot;
+# its first strategy draft can fail for reasons a repair fixes (v21: a warmup
+# gate left an IC +0.075 book flat for 32 of the screen's 35 days).
+_MODEL_REPAIR_IC = 0.03
+_MODEL_REPAIR_T = 2.0
+
+
+def _tradable_model(candidate: Mapping[str, Any]) -> dict[str, float] | None:
+    for model in candidate.get("models") or []:
+        diagnostics = model.get("diagnostics") or {}
+        ic = float(diagnostics.get("rank_ic") or 0.0)
+        t = float(diagnostics.get("rank_ic_t") or 0.0)
+        if ic >= _MODEL_REPAIR_IC and t >= _MODEL_REPAIR_T:
+            return {"rank_ic": ic, "rank_ic_t": t}
+    return None
+
+
 def submit_campaign_redesign(
     store: JobStore, job_id: str, *, redesign: Mapping[str, Any] | None
 ) -> dict[str, Any]:
@@ -7200,6 +7228,15 @@ def submit_campaign_redesign(
             raise ValueError(
                 f"only open (repair_pending) candidates can be abandoned or kept: {closed}"
             )
+        # A first-attempt book on a tradable trained model gets its repair.
+        model_kept = [
+            cid
+            for cid in abandon
+            if int(by_id[cid].get("attempt_count") or 0) <= 1
+            and _tradable_model(by_id[cid]) is not None
+        ]
+        abandon = [cid for cid in abandon if cid not in model_kept]
+        keep = [*keep, *model_kept]
         hypotheses = list(redesign.get("hypotheses") or [])
         slots = list(redesign.get("slots") or [])
         if bool(hypotheses) != bool(slots):
@@ -7265,6 +7302,7 @@ def submit_campaign_redesign(
             "sha256": _file_hash(artifact_path),
             "abandoned": abandon,
             "kept": keep,
+            "model_kept": model_kept,
             "added_slots": added,
             "extra_slots": len(added),
         }
