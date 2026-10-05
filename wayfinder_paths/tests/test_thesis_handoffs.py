@@ -21,7 +21,12 @@ from wayfinder_paths.core.theses.checkpoints import (
 )
 from wayfinder_paths.core.theses.draft import draft_context, draft_status
 from wayfinder_paths.core.theses.models import BUDGETS, Proposal
-from wayfinder_paths.core.theses.review import REVIEW_TOOL, review_report
+from wayfinder_paths.core.theses.review import (
+    REVIEW_TOOL,
+    decision_evidence,
+    public_observations,
+    review_report,
+)
 from wayfinder_paths.tests import test_thesis_assessment, test_thesis_targets
 from wayfinder_paths.tests.test_thesis_draft import observation, receipt
 
@@ -616,6 +621,107 @@ def test_case_projection_keeps_classification_and_identifies_current_assessment(
     historical = research_notebook(parent, child, entities=["network"], limit=2)
     assert not any(r["current_assessment"] for r in historical["cases"][0]["records"])
     assert (parent, child) == original
+
+
+@pytest.mark.parametrize("read_time", [2, 20])
+def test_case_claim_sources_link_exact_public_metadata_not_verified_support(
+    compact_run: tuple[list[dict], list[dict]], read_time: int
+) -> None:
+    parent, child = compact_run
+    raw = deepcopy(parent[0]["parts"][0]["state"]["input"]["checkpoint"])
+    raw["schema_version"] = 7
+    raw["decisions"][0]["claims"] = [
+        {
+            "statement": "The book is liquid; token supply is vesting",
+            "basis": "observation",
+            "scope": "Do not mistake a linked source for support for both claims",
+            "evidence_part_ids": ["book", "book", "missing"],
+        },
+        {
+            "statement": "Unavailable reads cannot support this claim",
+            "basis": "observation",
+            "scope": "Public successful reads only",
+            "evidence_part_ids": ["private", "failed", "empty"],
+        },
+    ]
+    parent = [receipt(raw, 10)]
+    for part_id, tool, result in [
+        ("book", "wayfinder_hyperliquid_search_mid_prices", {"depth": [1, 2]}),
+        ("private", "wallets", {"secret": "private result"}),
+        ("failed", "wayfinder_hyperliquid_search_mid_prices", {"depth": [3]}),
+        ("empty", "wayfinder_hyperliquid_search_mid_prices", {}),
+    ]:
+        message = observation(tool, result, read_time)
+        part = message["parts"][0]
+        part["id"] = part_id
+        part["state"]["input"] = {
+            "asset_names": ["NETWORK-USDC"],
+            "unrelated_config": "do not expose",
+        }
+        if part_id == "failed":
+            part["state"]["status"] = "error"
+        child.append(message)
+    original = deepcopy((parent, child))
+    report = research_notebook(parent, child, entities=["network"], fields=["reason"])
+    row = report["cases"][0]
+    assert row["claim_sources"] == [
+        {
+            "part_id": "book",
+            "tool": "wayfinder_hyperliquid_search_mid_prices",
+            "completed_at_ms": read_time,
+            "request_summary": '{"asset_names": ["NETWORK-USDC"]}',
+        }
+    ]
+    assert row["unavailable_claim_part_ids"] == [
+        "missing",
+        "private",
+        "failed",
+        "empty",
+    ]
+    assert row["records"][-1]["case"]["claims"] == raw["decisions"][0]["claims"]
+    assert report["evidence_verified"] is False
+    assert "depth" not in json.dumps(row["claim_sources"])
+    assert "unrelated_config" not in json.dumps(report)
+    projected, research, errors = projected_records(parent, child)
+    assert not errors
+    evidence = decision_evidence(
+        projected, research, public_observations([*parent, *child])
+    )
+    assert any("book" in error for error in evidence["errors"]) is (read_time > 10)
+    assert (parent, child) == original
+
+
+def test_claim_source_index_only_covers_visible_cases(
+    compact_run: tuple[list[dict], list[dict]],
+) -> None:
+    parent, child = compact_run
+    raw = deepcopy(parent[0]["parts"][0]["state"]["input"]["checkpoint"])
+    raw["schema_version"] = 7
+    for number in (3, 4):
+        part_id = f"read-{number}"
+        read = observation("wayfinder_hyperliquid_search_mid_prices", {"price": 1}, 2)
+        read["parts"][0]["id"] = part_id
+        child.append(read)
+        raw["decisions"][0]["claims"] = [
+            {
+                "statement": "Market observation",
+                "basis": "observation",
+                "scope": "Point-in-time",
+                "evidence_part_ids": [part_id],
+            }
+        ]
+        parent.append(receipt(raw, number))
+    for options, expected in [
+        ({"history": False}, ["read-4"]),
+        ({"offset": 2, "limit": 1}, ["read-3"]),
+        ({"limit": 1}, []),
+    ]:
+        row = research_notebook(parent, child, entities=["network"], **options)[
+            "cases"
+        ][0]
+        assert [s["part_id"] for s in row["claim_sources"]] == expected
+        assert row["unavailable_claim_part_ids"] == []
+    assert "claim_sources" not in research_notebook(parent, child)["items"][0]
 
 
 @pytest.mark.parametrize(

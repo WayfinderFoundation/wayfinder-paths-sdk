@@ -57,7 +57,8 @@ async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     ResearchCase still replaces all research and clears omitted comparison lists.
     Neither form verifies facts or waives current reviewer sign-off.
     Record review_resolutions with exact public evidence_part_ids from case
-    source_reads or existing claims; only use the status observation index when
+    source_reads or claim_sources (exact tool/request metadata for visible claims,
+    not verification of support); only use the status observation index when
     that source is not already linked. Read the original result before citing it.
     Never guess a tool-part ID. accepted is only for nonblocking uncertainty.
     handoff_gaps acknowledges an incomplete worker after one targeted continuation,

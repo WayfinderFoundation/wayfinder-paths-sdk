@@ -554,9 +554,10 @@ def research_notebook(
                 )
     if entities is not None:
         source_reads: dict[str, list[dict[str, Any]]] = {}
-        for observation in public_observations(
+        observations = public_observations(
             [*parent_messages, *child_messages], include_results=True
-        ).values():
+        )
+        for observation in observations.values():
             result = observation["result"]
             if not isinstance(result, dict):
                 continue
@@ -659,6 +660,22 @@ def research_notebook(
                             "comparison_refs",
                         }
                     }
+            # Navigation for the visible claims, not proof that a source supports
+            # them. Review validation still checks read chronology separately.
+            claim_ids = dict.fromkeys(
+                part_id
+                for record in row["records"]
+                for claim in record["case"].get("claims", [])
+                for part_id in claim["evidence_part_ids"]
+            )
+            row["claim_sources"] = [
+                {k: v for k, v in observations[part_id].items() if k != "result"}
+                for part_id in claim_ids
+                if part_id in observations
+            ]
+            row["unavailable_claim_part_ids"] = [
+                part_id for part_id in claim_ids if part_id not in observations
+            ]
         return {
             "errors": errors,
             "history": history,
