@@ -236,6 +236,9 @@ class ResearchCheckpoint(Contract):
         }
         if self.schema_version < 4:
             excluded.update(construction=True, draft=True)
+        elif self.draft and self.draft.variant_budgets is None:
+            # Preserve receipts issued before shared-budget draft writes existed.
+            excluded["draft"] = {"variant_budgets"}
         if self.schema_version < 7:
             for field in ("candidates", "decisions"):
                 if field not in excluded:

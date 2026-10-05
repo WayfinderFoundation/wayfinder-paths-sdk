@@ -147,9 +147,27 @@ class DraftUpdate(Contract):
     components: Annotated[list[Component], Field(max_length=8)] = []
     remove_components: Annotated[list[Identifier], Field(max_length=8)] = []
     variant: Variant | None = None
+    variant_budgets: (
+        Annotated[
+            list[Budget],
+            Field(
+                min_length=1,
+                max_length=4,
+                description="Apply this exact variant to these budgets, including variant.budget_usd. Omit for one budget. Use only when allocation and rationale are justified for every listed budget; each is still validated separately.",
+            ),
+        ]
+        | None
+    ) = None
 
     @model_validator(mode="after")
     def validate_update(self) -> Self:
+        if self.variant_budgets is not None:
+            if self.variant is None:
+                raise ValueError("variant_budgets requires a variant")
+            if self.variant.budget_usd not in self.variant_budgets:
+                raise ValueError("variant_budgets must include variant.budget_usd")
+            if len(set(self.variant_budgets)) != len(self.variant_budgets):
+                raise ValueError("variant_budgets must be unique")
         if not (
             self.metadata or self.components or self.remove_components or self.variant
         ):

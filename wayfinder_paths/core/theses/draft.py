@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from copy import deepcopy
 from typing import Any
 
 from pydantic import ValidationError
@@ -63,7 +64,13 @@ def draft_context(
                 components.pop(key, None)
             components.update((c["id"], c) for c in update["components"])
             if update["variant"]:
-                variants[update["variant"]["budget_usd"]] = update["variant"]
+                for budget in update.get("variant_budgets") or [
+                    update["variant"]["budget_usd"]
+                ]:
+                    variants[budget] = {
+                        **deepcopy(update["variant"]),
+                        "budget_usd": budget,
+                    }
     payload.update(
         components=list(components.values()),
         variants=[variants[b] for b in BUDGETS if b in variants],

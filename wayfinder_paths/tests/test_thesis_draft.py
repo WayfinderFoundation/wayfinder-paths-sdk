@@ -24,7 +24,13 @@ from wayfinder_paths.core.theses.draft import (
     draft_status,
     publication_result,
 )
-from wayfinder_paths.core.theses.models import Construction, Proposal, Variant
+from wayfinder_paths.core.theses.models import (
+    BUDGETS,
+    Construction,
+    DraftUpdate,
+    Proposal,
+    Variant,
+)
 from wayfinder_paths.core.theses.quantification import (
     DAY_MS,
     allocation_key,
@@ -409,6 +415,185 @@ def test_incremental_draft_reference_and_legacy_response(run, target):
     assert (
         publication_result(target.model_dump_json(), parent, child)["proposal"]
         == target.model_dump()
+    )
+
+
+def test_shared_budget_draft_matches_separate_writes(
+    run: tuple[list[dict[str, Any]], list[dict[str, Any]]], target: Proposal
+) -> None:
+    parent, child = run
+    payload = deepcopy(parent[2]["parts"][0]["state"]["input"]["checkpoint"])
+    payload["draft"]["variant_budgets"] = list(BUDGETS)
+    grouped = [*parent[:2], receipt(payload, 3), *parent[6:]]
+    status = draft_status(grouped, child, include_proposal=True)
+    assert status["ready"], status["errors"]
+    assert status["proposal"] == target.model_dump()
+    result = publication_result(
+        json.dumps({"proposal_ref": status["proposal_ref"]}), grouped, child
+    )
+    assert result["proposal"] == target.model_dump()
+    assert not result["feedback"]
+    assert not draft_status(parent[:2], [*child, *grouped[2:3]])["ready"]
+    # Materialized budgets must not share mutable position arrays or source input.
+    status["proposal"]["variants"][0]["positions"][0]["rationale"] = "Changed"
+    assert status["proposal"]["variants"][1]["positions"][0]["rationale"] == "Fit"
+    assert payload["draft"]["variant"]["positions"][0]["rationale"] == "Fit"
+
+
+def test_shared_budget_draft_only_updates_named_budgets(
+    run: tuple[list[dict[str, Any]], list[dict[str, Any]]], target: Proposal
+) -> None:
+    parent, child = run
+    variant = target.variants[2].model_dump()
+    variant["rationale"] = "Shared larger-budget comparison"
+    parent.append(
+        receipt(
+            {
+                "draft": {
+                    "variant": variant,
+                    "variant_budgets": [10000, 100000],
+                }
+            },
+            11,
+        )
+    )
+    proposal, _, old_ref = draft_context(parent, child)
+    assert [v["rationale"] for v in proposal["variants"]] == [
+        *[v.rationale for v in target.variants[:2]],
+        "Shared larger-budget comparison",
+        "Shared larger-budget comparison",
+    ]
+    variant["rationale"] = "Only this budget needs a different explanation"
+    parent.append(receipt({"draft": {"variant": variant}}, 12))
+    proposal, _, new_ref = draft_context(parent, child)
+    assert proposal["variants"][2]["rationale"] == variant["rationale"]
+    assert proposal["variants"][3]["rationale"] == "Shared larger-budget comparison"
+    assert new_ref != old_ref
+
+
+@pytest.mark.parametrize(
+    "budgets", [[], [100, 100], [200], [100, 1000, 10000, 100000, 100]]
+)
+def test_shared_budget_draft_rejects_invalid_budgets(
+    target: Proposal, budgets: list[int]
+) -> None:
+    with pytest.raises(ValueError):
+        DraftUpdate.model_validate(
+            {
+                "variant": target.variants[0].model_dump(),
+                "variant_budgets": budgets,
+            }
+        )
+
+
+def test_shared_budget_draft_requires_variant_and_its_budget(target: Proposal) -> None:
+    with pytest.raises(ValueError, match="variant_budgets requires a variant"):
+        DraftUpdate.model_validate(
+            {
+                "remove_components": ["old"],
+                "variant_budgets": [100],
+            }
+        )
+    with pytest.raises(ValueError, match="include variant.budget_usd"):
+        DraftUpdate.model_validate(
+            {
+                "variant": target.variants[0].model_dump(),
+                "variant_budgets": [1000],
+            }
+        )
+
+
+def test_shared_budget_draft_preserves_old_receipts_and_binds_new_budgets(
+    target: Proposal,
+) -> None:
+    payload = {"draft": {"variant": target.variants[0].model_dump()}}
+    cp = ResearchCheckpoint.model_validate(payload)
+    legacy_json = cp.model_dump_json(exclude={"draft": {"variant_budgets"}})
+    assert cp.receipt_json() == legacy_json
+    message = receipt(payload, 1)
+    message["parts"][0]["state"]["output"] = json.dumps(
+        {
+            "ok": True,
+            "result": {"sha256": hashlib.sha256(legacy_json.encode()).hexdigest()},
+        }
+    )
+    assert len(checkpoints([message])) == 1
+    message["parts"][0]["state"]["input"]["checkpoint"]["draft"]["variant_budgets"] = (
+        list(BUDGETS)
+    )
+    assert checkpoints([message]) == []
+
+
+def test_shared_budget_draft_keeps_per_budget_minimum_and_review_checks(
+    run: tuple[list[dict[str, Any]], list[dict[str, Any]]], target: Proposal
+) -> None:
+    parent, child = run
+    variant = target.variants[1].model_dump()
+    variant["positions"][0]["capital_bps"] = 500
+    variant["positions"].append(
+        {
+            **variant["positions"][0],
+            "id": "eth",
+            "instrument_id": "ETH-USDC",
+            "symbol": "ETH",
+            "capital_bps": 9500,
+        }
+    )
+    parent.append(
+        receipt(
+            {
+                "draft": {
+                    "variant": variant,
+                    "variant_budgets": list(BUDGETS),
+                }
+            },
+            11,
+        )
+    )
+    status = draft_status(parent, child)
+    assert not status["ready"]
+    assert any(
+        "100/a: perp notional must be at least $10" in e for e in status["errors"]
+    )
+    assert not any(
+        "1000/a: perp notional must be at least $10" in e for e in status["errors"]
+    )
+    assert any("quantif" in e for e in status["errors"])
+    assert any("research_thesis_review" in e for e in status["errors"])
+
+
+@pytest.mark.asyncio
+async def test_shared_budget_draft_mcp_receipt_replays(target: Proposal) -> None:
+    native = Tool.from_function(research_thesis_checkpoint)
+    payload = {
+        "checkpoint": {
+            "draft": {
+                "variant": target.variants[0].model_dump(),
+                "variant_budgets": list(BUDGETS),
+            }
+        }
+    }
+    with patch("wayfinder_paths.mcp.utils._report_tool_metric"):
+        result = await native.run(payload)
+    assert result["ok"] is True
+    assert result["result"]["execution_authorized"] is False
+    assert result["result"]["evidence_verified"] is False
+    messages = [
+        {
+            "parts": [
+                {
+                    "tool": CHECKPOINT_TOOL,
+                    "state": {
+                        "status": "completed",
+                        "input": payload,
+                        "output": json.dumps(result),
+                    },
+                }
+            ]
+        }
+    ]
+    assert checkpoints(messages)[0]["checkpoint"]["draft"]["variant_budgets"] == list(
+        BUDGETS
     )
 
 

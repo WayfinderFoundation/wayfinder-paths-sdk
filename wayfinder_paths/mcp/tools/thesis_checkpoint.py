@@ -16,7 +16,7 @@ async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
 
     Parent only; use schema_version=7. Record spec and inferred construction ONCE
     in interpretation; subsequent checkpoints inherit construction when omitted. Record the
-    interpretation, then small draft updates (metadata/components or ONE variant)
+    interpretation, then small draft updates (metadata/components or ONE allocation)
     and incremental judgments. Use thesis_notebook(view="status") before finishing
     with its proposal_ref; no complete portfolio JSON rewrite is required.
     Before giving named leads to workers, register them as parent discoveries.
@@ -58,6 +58,10 @@ async def research_thesis_checkpoint(checkpoint: ResearchCheckpoint) -> dict:
     checkpoint={schema_version:7,stage:"judged",decisions:[...]} (at most six cases);
     checkpoint={schema_version:7,stage:"draft",draft:{metadata:...,components:[...]}};
     checkpoint={schema_version:7,stage:"draft",draft:{variant:...}} (one budget).
+    When the same allocation AND rationale fit several budgets, add
+    draft.variant_budgets=[100,1000,10000,100000] (or an explicit subset including
+    variant.budget_usd). Only those budgets are replaced; all still pass separate
+    publication checks. Use separate writes where sizing or rationale differs.
     Draft updates infer omitted schema_version=7 and stage="draft"; explicit headers
     must still match the payload. Other stages and legacy versions are unchanged.
     Proposal metadata has schema_version=1 inside draft.metadata, never draft itself.

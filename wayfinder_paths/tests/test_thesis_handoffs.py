@@ -20,13 +20,15 @@ from wayfinder_paths.core.theses.checkpoints import (
     ReviewCheckpoint,
 )
 from wayfinder_paths.core.theses.draft import draft_context, draft_status
+from wayfinder_paths.core.theses.models import BUDGETS, Proposal
 from wayfinder_paths.core.theses.review import REVIEW_TOOL, review_report
-from wayfinder_paths.tests import test_thesis_assessment
+from wayfinder_paths.tests import test_thesis_assessment, test_thesis_targets
 from wayfinder_paths.tests.test_thesis_draft import observation, receipt
 
 case = test_thesis_assessment.case
 discovery = test_thesis_assessment.discovery
 spec = test_thesis_assessment.spec
+target = test_thesis_targets.target
 
 
 def test_v5_worker_can_append_handoff_without_repeating_frozen_spec() -> None:
@@ -348,11 +350,14 @@ def test_review_change_index_uses_saved_read_not_later_signoff(
     assert refreshed["parent_entity_keys"] == []
 
 
-@pytest.mark.parametrize("change", ["decision", "resolution", "draft", "research"])
+@pytest.mark.parametrize(
+    "change", ["decision", "resolution", "draft", "shared_draft", "research"]
+)
 def test_v6_review_is_invalidated_by_later_selection_or_resolution(
     compact_run: tuple[list[dict], list[dict]],
     spec: dict,
     discovery: dict,
+    target: Proposal,
     change: str,
 ) -> None:
     parent, child = compact_run
@@ -388,6 +393,14 @@ def test_v6_review_is_invalidated_by_later_selection_or_resolution(
         ]
     elif change == "draft":
         update.update(stage="draft", draft={"remove_components": ["old"]})
+    elif change == "shared_draft":
+        update.update(
+            stage="draft",
+            draft={
+                "variant": target.variants[0].model_dump(),
+                "variant_budgets": list(BUDGETS),
+            },
+        )
     else:
         child.append(
             receipt(
