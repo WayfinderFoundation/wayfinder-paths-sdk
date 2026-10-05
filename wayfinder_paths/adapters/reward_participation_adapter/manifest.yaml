@@ -1,0 +1,6 @@
+schema_version: "0.1"
+entrypoint: "wayfinder_paths.adapters.reward_participation_adapter.adapter.RewardParticipationAdapter"
+capabilities:
+  - reward_participation.observe
+dependencies:
+  - wayfinder_paths.core.clients.ParticipationReadClient.ParticipationReadClient

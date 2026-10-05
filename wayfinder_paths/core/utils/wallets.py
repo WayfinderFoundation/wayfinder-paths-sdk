@@ -1,5 +1,6 @@
 import base64
 import json
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -385,6 +386,22 @@ async def get_wallet_sign_typed_data_callback(label: str):
     if not wallet:
         raise ValueError(f"Wallet '{label}' not found.")
     return _build_typed_data_callback(wallet, label)
+
+
+async def get_wallet_sign_message_callback(
+    label: str,
+) -> tuple[Callable[[bytes], Awaitable[bytes]], str]:
+    """Ed25519 callback from the existing remote Solana wallet-ring leg."""
+    ring = await load_wallet_ring(label)
+    wallet = next((w for w in ring if wallet_chain_type(w) == CHAIN_TYPE_SOLANA), None)
+    if wallet is None or wallet.get("type") != "remote":
+        raise ValueError("remote Solana wallet leg required")
+    address = _require_wallet_address(wallet, label)
+
+    async def sign_message(message: bytes) -> bytes:
+        return await WALLET_CLIENT.sign_svm_message(address, message)
+
+    return sign_message, address
 
 
 async def get_wallet_sign_hash_callback(label: str):

@@ -158,6 +158,11 @@ def evaluate_launch_checklist(
         )
 
     if target == "live":
+        if contract == "freestyle_v1":
+            from wayfinder_paths.jobs.activities import activity_live_blockers
+
+            for blocker in activity_live_blockers(job.execution_params):
+                item("activity_execution_verified", "fail", blocker)
         if contract == "jobs_v1":
             gate = live_gate or evaluate_live_gate(job_id, store=store)
             identity.update(

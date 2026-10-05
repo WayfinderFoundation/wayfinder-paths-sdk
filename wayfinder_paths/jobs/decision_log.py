@@ -78,7 +78,30 @@ def _journal_entries(
         ts = str(event.get("ts") or "")
         pid = str(event.get("proposal_id") or "") or None
         title = _proposal_title(proposals, pid)
-        if kind == "proposal_created":
+        if kind == "strategy_activity":
+            activity = event.get("outcome") or {}
+            observation = activity.get("observation") or {}
+            entries.append(
+                _entry(
+                    ts,
+                    "risk" if activity.get("risk_alert") else "research",
+                    f"{event.get('activity', 'Activity')}: {activity.get('status', 'updated')}",
+                    str(
+                        activity.get("reason")
+                        or observation.get("reason")
+                        or "Activity receipt updated"
+                    ),
+                    "blocked" if activity.get("risk_alert") else "info",
+                    actor="system",
+                    metadata={
+                        "capability": activity.get("capability"),
+                        "cost_paid": activity.get("cost_paid"),
+                        "cost_unit": activity.get("cost_unit"),
+                        "rewards": observation.get("rewards") or [],
+                    },
+                )
+            )
+        elif kind == "proposal_created":
             entries.append(
                 _entry(
                     ts,

@@ -414,6 +414,12 @@ def _launch_payload(
         )
 
         payload["freestyle"] = freestyle_snapshot(store, job_id, job)
+        if (payload["freestyle"] or {}).get("objective") is not None:
+            # Existing authenticated scorecard mirror, no new backend table or API.
+            payload["scorecard"] = {
+                **(scorecard or {}),
+                "objective": payload["freestyle"]["objective"],
+            }
         payload["path"] = path_snapshot(store, job_id, job)
     except Exception:  # noqa: BLE001
         pass

@@ -28,6 +28,62 @@ SLUG = "demo-rotator"
 VERSION = "0.1.0"
 
 
+def test_path_params_proposal_validation_compilation_and_execution_agree(
+    tmp_path: Path,
+) -> None:
+    from wayfinder_paths.jobs.compiler import JobCompiler
+    from wayfinder_paths.jobs.paths_runtime import PARAMS_PATH, _exec_component
+    from wayfinder_paths.jobs.proposals import _overlay_change
+
+    store, path_dir = _install(tmp_path, dry_run="supported")
+    create_from_path(
+        SLUG, store=store, compile_job=False, params={"limit": 1, "enabled": True}
+    )
+    root = store.job_dir(SLUG)
+    job = store.load(SLUG)
+    _overlay_change(root, candidate_source=None, params={"limit": 7, "enabled": False})
+    expected = {"limit": 7, "enabled": False}
+    assert json.loads((root / PARAMS_PATH).read_text()) == expected
+    assert job.source["params"]["limit"] == 1  # pin remains immutable
+    assert (
+        json.loads(
+            JobCompiler(store=store)._job_env(job, root)["WAYFINDER_PATH_PARAMS"]
+        )
+        == expected
+    )
+    # Read exactly what the installed child sees in both validation and live mode.
+    probe = path_dir / "scripts/probe.py"
+    probe.write_text("import os\nprint(os.environ['WAYFINDER_PATH_PARAMS'])\n")
+    pin = {**job.source, "component_path": "scripts/probe.py"}
+    for mode in ("paper", "live"):
+        result = _exec_component(
+            root,
+            job.to_dict(),
+            pin,
+            path_dir,
+            mode=mode,
+            dry_run=mode == "paper",
+            timeout=10,
+        )
+        assert result["ok"] and json.loads(result["stdout_tail"]) == expected
+
+
+def test_path_params_empty_is_authoritative_and_legacy_falls_back(
+    tmp_path: Path,
+) -> None:
+    from wayfinder_paths.paths.job_params import PARAMS_PATH, effective_path_params
+
+    source = {"params": {"enabled": True}}
+    assert effective_path_params(tmp_path, source) == {"enabled": True}
+    path = tmp_path / PARAMS_PATH
+    path.parent.mkdir(parents=True)
+    path.write_text("{}")
+    assert effective_path_params(tmp_path, source) == {}
+    path.write_text("invalid")
+    with pytest.raises(ValueError):
+        effective_path_params(tmp_path, source)
+
+
 def _install(
     tmp_path: Path, *, dry_run: str | None = None, freestyle: bool = False
 ) -> tuple[JobStore, Path]:
