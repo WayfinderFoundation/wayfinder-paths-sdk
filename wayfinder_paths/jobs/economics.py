@@ -47,6 +47,8 @@ from wayfinder_paths.jobs.regime import (
     utc_timestamp,
 )
 
+TAIL_TRADES = 5
+
 
 def objective_vector(
     equity_curve: Sequence[Mapping[str, Any]],
@@ -77,7 +79,11 @@ def objective_vector(
         if value is None:
             value = row.get("realized_pnl_delta")
         pnls.append(float(value or 0.0))
-    worst_k = max(1, len(pnls) // 10)
+    # The worst decile of trades, at most TAIL_TRADES of them: summing a
+    # decile made the tail grow with trade count, so a 1,200-trade book was
+    # charged its 120 worst (offset) losses (0.33 of equity, max drawdown
+    # 6.6%) while a 50-trade book was charged five.
+    worst_k = max(1, min(len(pnls) // 10, TAIL_TRADES))
     tail_loss = (
         abs(sum(sorted(pnls)[:worst_k])) / base_equity if base_equity > 0 else 0.0
     )
