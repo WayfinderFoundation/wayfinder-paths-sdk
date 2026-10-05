@@ -3503,7 +3503,10 @@ def train_candidate_model(
                 "rotating the whole book every day; daily rotations gave back more than "
                 "the screen's slice bound in its earlier (bear) slice three times of "
                 "three. If a bear slice still fails, keep only the side that earns there "
-                "(on past runs, the bottom-fifth short leg)"
+                "(on past runs, the bottom-fifth short leg). Optional: stand flat while "
+                "the rank's own trailing ~20-day rank IC (scores against the realized "
+                "next-day returns) is not positive; in replays that raised profitable "
+                "28-day windows from 61% to 72% at the same return"
             ),
         },
     }
