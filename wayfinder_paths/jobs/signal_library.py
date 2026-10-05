@@ -942,3 +942,27 @@ def build_signal_frame(
 
 def signal_defs() -> dict[str, SignalDef]:
     return {spec.name: spec for spec in SIGNAL_LIBRARY}
+
+
+# Strategies build composed defs here and then call these, so both are
+# importable from one module (generated strategies reached for them here).
+def library_signal_on_bars(
+    frame: pd.DataFrame,
+    signal: str | SignalDef,
+    timeframe: str,
+    *,
+    bar_seconds: int,
+) -> pd.Series:
+    # circular import: research builds on this module
+    from wayfinder_paths.jobs.research import library_signal_on_bars as on_bars
+
+    return on_bars(frame, signal, timeframe, bar_seconds=bar_seconds)
+
+
+def library_signal_warmup_bars(
+    signal: str | SignalDef, timeframe: str, *, bar_seconds: int
+) -> int:
+    # circular import: research builds on this module
+    from wayfinder_paths.jobs.research import library_signal_warmup_bars as warmup
+
+    return warmup(signal, timeframe, bar_seconds=bar_seconds)

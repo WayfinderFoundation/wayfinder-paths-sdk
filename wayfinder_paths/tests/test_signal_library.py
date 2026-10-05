@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from wayfinder_paths.jobs import research, signal_library
 from wayfinder_paths.jobs.research import (
     bh_qvalues,
     event_path_stats,
@@ -648,3 +649,38 @@ def test_every_library_signal_is_exact_on_its_declared_window() -> None:
         if problem:
             shortfalls.append(problem)
     assert shortfalls == []
+
+
+def test_library_signal_helpers_import_from_signal_library() -> None:
+    frame = _bars(_wavy_closes(400))
+    assert signal_library.library_signal_warmup_bars(
+        "rsi14_le_30", "4h", bar_seconds=3600
+    ) == research.library_signal_warmup_bars("rsi14_le_30", "4h", bar_seconds=3600)
+    assert signal_library.library_signal_on_bars(
+        frame, "rsi14_le_30", "4h", bar_seconds=3600
+    ).equals(
+        research.library_signal_on_bars(frame, "rsi14_le_30", "4h", bar_seconds=3600)
+    )
+
+
+def test_event_window_coverage_separates_bursts_from_steady_triggers() -> None:
+    stamps = pd.date_range("2026-01-01", periods=365, freq="1D", tz="UTC").to_numpy()
+    steady = stamps[::5]
+    burst = stamps[100:130]
+    assert research.event_window_coverage(steady, stamps[0], stamps[-1]) == 1.0
+    covered = research.event_window_coverage(burst, stamps[0], stamps[-1])
+    assert covered is not None and covered < 0.2
+    assert research.event_window_coverage(steady, stamps[0], stamps[20]) is None
+
+
+def test_scan_rows_carry_window_coverage() -> None:
+    frame = _bars(_wavy_closes(1200))
+    rows = scan_signals(frame, timeframes=["1h"], horizons=[4])[
+        "_all_rows"
+    ]
+    assert rows
+    assert all(
+        row["window_coverage_28d"] is None or 0.0 <= row["window_coverage_28d"] <= 1.0
+        for row in rows
+    )
+    assert any(row["window_coverage_28d"] is not None for row in rows)

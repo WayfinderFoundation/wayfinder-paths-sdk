@@ -357,7 +357,16 @@ def replay_probation(
     if trial is None and not carried:
         return unavailable
     if trial is not None:
-        _rebase_trial(trial, cutoff=cutoff)
+        # Every trial this campaign put into burn-in starts on the replay
+        # clock; staging stamps the wall clock, so a second or third finalist
+        # left un-rebased never saw a replay bar and held its probation slot
+        # for the rest of the run (v14 week 2). Queued trials start when the
+        # adjudicator promotes them, on the replay clock.
+        for row in open_trials:
+            if row.get("campaign_id") == trial.get("campaign_id") and (
+                row.get("status") == "burn_in"
+            ):
+                _rebase_trial(row, cutoff=cutoff)
         store.write_json(job_id, "probation.json", doc)
     warmup_rows = _warmup_rows(
         development_rows,

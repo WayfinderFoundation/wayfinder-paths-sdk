@@ -433,6 +433,66 @@ def test_recurrence_carries_open_probation_into_the_next_loop(
     assert row["dynamics"]["staged"] == 1
 
 
+def test_observation_weeks_only_advance_probation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _source_job(tmp_path / "source")
+    output = tmp_path / "out"
+    config = _config(
+        source,
+        output,
+        window={
+            "start_cutoff": (START + timedelta(days=35)).isoformat(),
+            "loop_days": 5,
+            "loops": 1,
+            "observation_loops": 2,
+        },
+    )
+    _patch_common(monkeypatch)
+    campaigns: list[str] = []
+    replays: list[str | None] = []
+
+    def fake_campaign(sandbox: dict[str, Any], **kwargs: Any) -> str | None:
+        campaign_id = f"camp-{len(campaigns)}"
+        campaigns.append(campaign_id)
+        _write_campaign_state(sandbox, campaign_id)
+        _stage_candidate(
+            sandbox,
+            campaign_id=campaign_id,
+            strategy=LONG_ONCE,
+            now=kwargs["virtual_now"],
+        )
+        return None
+
+    def replay(store: JobStore, job_id: str, **kwargs: Any) -> dict[str, Any]:
+        replays.append(kwargs.get("campaign_id"))
+        doc = load_probation(store, job_id)
+        for row in doc["trials"]:
+            row["status"], row["phase"] = (
+                ("active", "forward")
+                if len(replays) == 1
+                else ("graduated", "graduated")
+            )
+        store.write_json(job_id, PROBATION_PATH, doc)
+        return {"available": False, "carried": [], "paired_daily_delta": []}
+
+    monkeypatch.setattr(recurrence_module, "run_campaign_phase", fake_campaign)
+    monkeypatch.setattr(runner_module, "replay_probation", replay)
+
+    row = run_recurrence_arm(
+        config=config, arm=config["arms"][0], seed=7, output_dir=output
+    )
+
+    loops = row["loops"]
+    assert campaigns == ["camp-0"]
+    assert replays == ["camp-0", None, None]
+    assert [loop.get("observation_only") for loop in loops] == [False, True, True]
+    assert [loop["holdout"]["verdict"] for loop in loops[1:]] == [
+        "observation_only"
+    ] * 2
+    assert loops[1]["apply"]["applied"] is True
+
+
 def test_recurrence_loop_failure_keeps_incumbent_and_continues(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

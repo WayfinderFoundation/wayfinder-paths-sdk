@@ -873,6 +873,43 @@ _DEFAULT_SCAN_HORIZONS = {
 _GENERIC_SCAN_HORIZONS = [1, 2, 4, 8, 16]
 
 
+def event_window_coverage(
+    event_stamps: np.ndarray,
+    start: Any,
+    end: Any,
+    *,
+    window_days: int = 28,
+    min_events: int = 3,
+) -> float | None:
+    """Share of ``window_days`` windows (one per day) holding ``min_events``
+    events: a probation-length view of how steadily a trigger fires, which
+    the event count alone hides (a trigger can fire forty times in one
+    month of a year)."""
+    first, last = _naive_utc(start), _naive_utc(end)
+    window = np.timedelta64(window_days, "D")
+    if last - first < window:
+        return None
+    starts = np.arange(
+        first, last - window + np.timedelta64(1, "ns"), np.timedelta64(1, "D")
+    )
+    ordered = np.sort(
+        pd.DatetimeIndex(pd.to_datetime(event_stamps, utc=True))
+        .tz_localize(None)
+        .to_numpy()
+    )
+    counts = np.searchsorted(ordered, starts + window) - np.searchsorted(
+        ordered, starts
+    )
+    return round(float(np.mean(counts >= min_events)), 4)
+
+
+def _naive_utc(stamp: Any) -> np.datetime64:
+    value = pd.Timestamp(stamp)
+    if value.tzinfo is not None:
+        value = value.tz_convert("UTC").tz_localize(None)
+    return value.to_datetime64()
+
+
 def _fold_stability(
     events: np.ndarray,
     fwd: np.ndarray,
@@ -1132,6 +1169,9 @@ def scan_signals(
             feature_arrays[tf_name] = per_column
         close = bars["close"].astype(float).to_numpy()
         n = len(close)
+        stamps = (
+            pd.to_datetime(bars["timestamp"], utc=True).dt.tz_localize(None).to_numpy()
+        )
         signals = build_signal_frame(
             bars,
             extra_signals,
@@ -1210,6 +1250,7 @@ def scan_signals(
                 n: int = n,
                 cell_min_events: int = min_events,
                 tf_name: str = tf_name,
+                stamps: np.ndarray = stamps,
                 extra: dict[str, Any] | None = None,
             ) -> dict[str, Any] | None:
                 n_events = int(events.sum())
@@ -1292,6 +1333,9 @@ def scan_signals(
                     "t_early": halves["t_early"],
                     "t_recent": halves["t_recent"],
                     "recency_trend": recency_trend,
+                    "window_coverage_28d": event_window_coverage(
+                        stamps[: len(events)][events], stamps[0], stamps[-1]
+                    ),
                     **(extra or {}),
                 }
 

@@ -344,6 +344,13 @@ def merge_features(
     if not specs:
         return view
     bars = view.to_frame().sort_values(["timestamp", "symbol"]).reset_index(drop=True)
+    # Bars saved after an earlier merge (a reused input_bars.json) already
+    # carry the declared columns; merge_asof would then suffix both copies
+    # _x/_y and the declared name would vanish from the view. The declared
+    # store rows are the source of truth.
+    bars = bars.drop(
+        columns=[c for spec in specs for c in _spec_columns(spec) if c in bars.columns]
+    )
     columns: list[str] = []
     for spec in specs:
         feature = frames.get(spec.name)
