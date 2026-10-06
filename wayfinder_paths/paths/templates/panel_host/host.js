@@ -1,0 +1,290 @@
+// Panel dev-sandbox host: emulates the Wayfinder workspace bridge (protocol
+// v1) so authors iterate on a panel with mock data before publishing. The
+// message contract here mirrors the real host — keep it in sync with
+// PATH_PANEL_BRIDGE.md.
+import {
+  THEME,
+  WALLET,
+  MARKETS,
+  FETCH_FIXTURES,
+  FETCH_FIXTURE_FNS,
+  RESOURCE_CAPABILITY,
+} from "./fixtures.js";
+
+// WF_CONFIG is injected by the Python server (panel id, slug, granted caps…).
+const CONFIG = window.WF_CONFIG || {};
+const PROTOCOL_VERSION = 1;
+const iframe = document.getElementById("panel-frame");
+const grantedCaps = new Set(CONFIG.capabilities || []);
+
+let marketIndex = 0;
+let ticking = true;
+let panelState = null;
+let acked = false;
+
+function log(dir, type, detail) {
+  const box = document.getElementById("messages");
+  const row = document.createElement("div");
+  row.className = "log-row";
+  const arrow = dir === "in" ? "← panel" : "host →";
+  row.innerHTML =
+    `<span class="dir ${dir}">${arrow}</span> <b>${type}</b> ` +
+    `<span class="dir">${detail ? escapeHtml(detail) : ""}</span>`;
+  box.prepend(row);
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+}
+
+function post(type, payload) {
+  iframe.contentWindow?.postMessage({ type, v: PROTOCOL_VERSION, ...payload }, "*");
+  log("out", type, "");
+}
+
+function currentContext() {
+  const m = MARKETS[marketIndex];
+  return {
+    instanceId: "wf-dev-instance",
+    theme: THEME,
+    wallet: WALLET,
+    market: { id: m.id, symbol: m.symbol, name: m.name, venue: m.venue },
+  };
+}
+
+function sendContext() {
+  const ctx = currentContext();
+  // Flat envelope — fields at the top level, exactly like the production
+  // host: {type, v, instanceId, theme, market, wallet}.
+  post("wf:context", ctx);
+  document.getElementById("context-json").textContent = JSON.stringify(ctx, null, 2);
+}
+
+// --- Data proxy emulation: mirror the host's allowlist + grant gates. ---
+function handleFetch(msg) {
+  const { requestId, capability, resource } = msg;
+  const required = RESOURCE_CAPABILITY[resource];
+  const rowDetail = `${capability} ${resource}`;
+  let allowed = true;
+  let error = null;
+  if (required === undefined) {
+    allowed = false;
+    error = { code: "denied", message: "resource not on allowlist" };
+  } else if (capability !== required) {
+    allowed = false;
+    error = { code: "denied", message: `resource requires capability '${required}'` };
+  } else if (!grantedCaps.has(capability)) {
+    allowed = false;
+    error = { code: "denied", message: `capability '${capability}' not granted` };
+  }
+
+  if (!allowed) {
+    logData(rowDetail, false);
+    post("wf:fetch_result", { requestId, ok: false, error });
+    return;
+  }
+
+  if (CONFIG.liveMode) {
+    // LIVE mode: the Python server proxies the real read-only API with the
+    // author's key (attached server-side; never present in this page). The
+    // proxy route is same-origin with this host page only — the panel frame
+    // is cross-origin and cannot call it directly.
+    const qs = new URLSearchParams({ resource, ...(msg.params || {}) });
+    fetch(`/live-proxy?${qs.toString()}`)
+      .then((r) => r.json())
+      .then((envelope) => {
+        logData(`${rowDetail} [live]`, envelope.ok === true);
+        post("wf:fetch_result", { requestId, ...envelope });
+      })
+      .catch(() => {
+        logData(`${rowDetail} [live]`, false);
+        post("wf:fetch_result", {
+          requestId,
+          ok: false,
+          error: { code: "upstream_error", message: "live proxy unreachable" },
+        });
+      });
+    return;
+  }
+
+  logData(rowDetail, true);
+  const fixtureFn = FETCH_FIXTURE_FNS[resource];
+  const data = fixtureFn
+    ? fixtureFn(msg.params)
+    : (FETCH_FIXTURES[resource] ?? { note: "no fixture; returned empty" });
+  post("wf:fetch_result", { requestId, ok: true, data });
+}
+
+// --- Market switch (wf:set_market): mirrors the host's capability gate,
+// then flips the sandbox's active market and re-sends context — the same
+// visible effect as the workspace chart + ticket following the panel. ---
+function handleSetMarket(msg) {
+  const { requestId, symbol } = msg;
+  const detail = `market.switch set_market ${symbol}`;
+  if (!grantedCaps.has("market.switch")) {
+    logData(detail, false);
+    post("wf:set_market_result", {
+      requestId,
+      ok: false,
+      error: { code: "denied", message: "capability 'market.switch' not granted" },
+    });
+    return;
+  }
+  const wanted = String(symbol || "").toLowerCase();
+  const index = MARKETS.findIndex(
+    (m) => m.id.toLowerCase() === wanted || m.symbol.toLowerCase() === wanted,
+  );
+  if (index === -1) {
+    logData(detail, false);
+    post("wf:set_market_result", {
+      requestId,
+      ok: false,
+      error: { code: "invalid", message: `market '${symbol}' not in this workspace` },
+    });
+    return;
+  }
+  marketIndex = index;
+  document.getElementById("market-switch").value = String(index);
+  sendContext();
+  logData(detail, true);
+  post("wf:set_market_result", { requestId, ok: true });
+}
+
+function logData(detail, allowed) {
+  const box = document.getElementById("data-log");
+  const row = document.createElement("div");
+  row.className = "log-row";
+  row.innerHTML =
+    `<span class="pill ${allowed ? "ok" : "deny"}">${allowed ? "allow" : "deny"}</span> ` +
+    `<span class="dir">${escapeHtml(detail)}</span>`;
+  box.prepend(row);
+}
+
+// --- Ask-agent confirmation (mock). ---
+function handleAskAgent(msg) {
+  const backdrop = document.getElementById("ask-modal");
+  document.getElementById("ask-prompt").textContent = msg.prompt || "";
+  backdrop.classList.add("show");
+  const finish = (status) => {
+    backdrop.classList.remove("show");
+    post("wf:ask_agent_result", { requestId: msg.requestId, status });
+  };
+  document.getElementById("ask-approve").onclick = () => finish("sent");
+  document.getElementById("ask-deny").onclick = () => finish("dismissed");
+}
+
+window.addEventListener("message", (event) => {
+  if (event.source !== iframe.contentWindow) return; // source-window boundary
+  const msg = event.data;
+  if (!msg || typeof msg !== "object") return;
+  log("in", msg.type || "?", "");
+  switch (msg.type) {
+    case "wf:hello_ack":
+      acked = true;
+      post("wf:state", { state: panelState });
+      sendContext();
+      break;
+    case "wf:set_state": {
+      const bytes = new Blob([JSON.stringify(msg.state ?? null)]).size;
+      if (bytes > 32768) {
+        log("in", "wf:set_state", `dropped: ${bytes}B > 32KB`);
+        return;
+      }
+      panelState = msg.state ?? null;
+      document.getElementById("state-json").textContent = JSON.stringify(panelState, null, 2);
+      document.getElementById("state-bytes").textContent = `${bytes} B / 32768 B`;
+      post("wf:state_ack", { ok: true, bytes });
+      break;
+    }
+    case "wf:fetch":
+      handleFetch(msg);
+      break;
+    case "wf:set_market":
+      handleSetMarket(msg);
+      break;
+    case "wf:ask_agent":
+      handleAskAgent(msg);
+      break;
+    default:
+      break; // ignore unknown types
+  }
+});
+
+// Kick off the handshake once the iframe loads, retrying until ack.
+function helloLoop() {
+  let attempts = 0;
+  const timer = setInterval(() => {
+    if (acked || attempts++ > 20) return clearInterval(timer);
+    post("wf:hello", {
+      protocolVersion: PROTOCOL_VERSION,
+      panelId: CONFIG.panelId,
+      pathSlug: CONFIG.slug,
+      capabilities: ["context", "state", "fetch", "set_market", "ask_agent"],
+    });
+  }, 500);
+}
+iframe.addEventListener("load", () => {
+  acked = false;
+  helloLoop();
+});
+
+// Ticking market price → periodic context refresh (identity is stable; this
+// mirrors "context re-sent on change" without spamming on every tick).
+setInterval(() => {
+  if (!ticking || !acked) return;
+  const m = MARKETS[marketIndex];
+  m.price = +(m.price * (1 + (Math.random() - 0.5) * 0.004)).toFixed(4);
+}, 1000);
+
+// --- Inspector controls ---
+document.querySelectorAll(".tabs button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tabs button").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll(".tabpage").forEach((p) => p.classList.remove("active"));
+    btn.classList.add("active");
+    document.getElementById(`tab-${btn.dataset.tab}`).classList.add("active");
+  });
+});
+document.getElementById("market-switch").addEventListener("change", (e) => {
+  marketIndex = Number(e.target.value);
+  if (acked) sendContext();
+});
+document.getElementById("tick-toggle").addEventListener("click", (e) => {
+  ticking = !ticking;
+  e.target.textContent = ticking ? "Pause ticker" : "Resume ticker";
+});
+document.getElementById("state-reset").addEventListener("click", () => {
+  panelState = null;
+  if (acked) post("wf:state", { state: null });
+  document.getElementById("state-json").textContent = "null";
+});
+document.querySelectorAll(".presets button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const panel = document.querySelector(".panel");
+    panel.style.width = btn.dataset.w + "px";
+    panel.style.height = btn.dataset.h + "px";
+  });
+});
+
+// Populate the market switcher.
+const sel = document.getElementById("market-switch");
+MARKETS.forEach((m, i) => {
+  const opt = document.createElement("option");
+  opt.value = String(i);
+  opt.textContent = `${m.symbol} · ${m.venue}`;
+  sel.appendChild(opt);
+});
+
+// Live W×H readout: amber at the manifest minimum — exactly the floor the
+// real workspace grid enforces on this panel.
+const panelEl = document.querySelector(".panel");
+const readout = document.getElementById("size-readout");
+const minW = Number(CONFIG.minWidth || 0);
+const minH = Number(CONFIG.minHeight || 0);
+new ResizeObserver(() => {
+  // offsetWidth/Height measure the border box — the same box the CSS
+  // min-width/min-height constrain, so the readout matches the floor.
+  const w = panelEl.offsetWidth;
+  const h = panelEl.offsetHeight;
+  readout.textContent = `${w} × ${h}  (min ${minW} × ${minH})`;
+  readout.classList.toggle("at-min", w <= minW || h <= minH);
+}).observe(panelEl);

@@ -1,0 +1,63 @@
+# {{panel_name}}
+
+A Wayfinder path **panel** — author-built UI that users add to the Shells
+workspace grid. It renders in a sandboxed iframe and talks to the host over
+the `wf:*` postMessage bridge (protocol v1).
+
+## Develop
+
+The scaffolded `dist/` is plain HTML/JS and runs immediately:
+
+```bash
+wayfinder path preview --panel {{panel_id}}
+```
+
+This opens a panel-shaped dev sandbox with a mock market feed, a theme, a
+state inspector, and a Data tab that shows every `bridge.fetch` call.
+
+### With your own bundler (HMR)
+
+Build the panel however you like (Vite/esbuild/…). Two rules:
+
+- Set the bundler **base to `'./'`** so assets resolve under the served panel
+  path (root-absolute `/assets/...` URLs will fail — `doctor` flags this).
+- Output to the `build_dir` declared in `wfpath.yaml`
+  (`panels/{{panel_id}}/dist`).
+
+Point the sandbox at your dev server for hot reload:
+
+```bash
+wayfinder path preview --panel {{panel_id}} --dev-server http://localhost:5173
+
+# Real read-only data via your own API key (never enters the frame):
+wayfinder path preview --panel {{panel_id}} --live
+```
+
+Use the typed helper in `src/bridge.ts`:
+
+```ts
+import { connect } from "./bridge";
+const wf = connect();
+wf.onContext((ctx) => { /* ctx.market, ctx.theme, ctx.wallet */ });
+const markets = await wf.fetch("market.read", "/blockchain/hyperliquid/markets/");
+```
+
+## Data access & capabilities
+
+Panels fetch the user's data **through the host** — the host attaches the
+user's credentials and enforces an allowlist, so no token ever enters the
+panel frame. Two things must line up:
+
+1. Declare the capability in `wfpath.yaml`: the path's top-level
+   `capabilities` list, then the panel's own `capabilities` (a subset).
+2. The user grants those scopes when they add the panel.
+
+For public third-party data, fetch directly from an origin you declare in the
+panel's `permissions.external_origins`.
+
+## Publish
+
+```bash
+wayfinder path doctor --path .   # validates panels, entry, sizes, capabilities
+wayfinder path publish --path .
+```
