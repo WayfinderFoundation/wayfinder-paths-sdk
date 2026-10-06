@@ -700,3 +700,86 @@ def test_paired_folds_report_the_candidates_last_entry(monkeypatch) -> None:
     assert pd.Timestamp(
         report["candidate_last_entry_at"]
     ) == audit_start + pd.Timedelta(minutes=50)
+
+
+def test_audit_slice_can_be_scored_with_its_own_weights(monkeypatch) -> None:
+    import types
+
+    import pandas as pd
+
+    from wayfinder_paths.jobs import economics
+    from wayfinder_paths.jobs.execution.primitives import (
+        CompletedBarsView,
+        ExecutionSpec,
+    )
+    from wayfinder_paths.jobs.execution.simulator import PreparedExecutionDataset
+
+    stamps = pd.date_range("2026-01-01", periods=6_000, freq="5min", tz="UTC")
+    rows = [
+        {
+            "timestamp": stamp.isoformat(),
+            "symbol": "SNX",
+            "open": 10.0,
+            "high": 10.1,
+            "low": 9.9,
+            "close": 10.0,
+            "volume": 1.0,
+        }
+        for stamp in stamps
+    ]
+    dataset = PreparedExecutionDataset(CompletedBarsView.from_rows(rows), {}, [])
+
+    def candidate(params):
+        return types.SimpleNamespace(decide=lambda ctx: [], warmup_bars=60)
+
+    def baseline(params):
+        return types.SimpleNamespace(decide=lambda ctx: [], warmup_bars=60)
+
+    def window(script, dataset, spec, params, timestamps, start, end, warmup):
+        equity = [
+            {"timestamp": str(timestamps[index]), "equity": 100.0}
+            for index in range(start, end, 288)
+        ]
+        # Flat equity, one losing close: growth 0, tail 0.02 for the candidate.
+        trades = (
+            [
+                {
+                    "timestamp": str(timestamps[start + 10]),
+                    "pnl": -2.0,
+                    "reduce_only": True,
+                }
+            ]
+            if script is candidate
+            else []
+        )
+        return equity, trades
+
+    monkeypatch.setattr(economics, "_oos_window", window)
+
+    def audit_delta(objective):
+        return economics.paired_fold_evaluation(
+            baseline_script=baseline,
+            candidate_script=candidate,
+            dataset=dataset,
+            spec=ExecutionSpec.from_dict(
+                {"data_contract": {"bar_interval": "5m", "symbols": ["SNX"]}}
+            ),
+            baseline_params={"warmup_bars": 60},
+            candidate_params={"warmup_bars": 60},
+            constitution={
+                "evaluation": {
+                    "folds": 4,
+                    "audit_days": 1,
+                    "block_days": 1,
+                    "bootstrap_iterations": 50,
+                    "confidence": 0.9,
+                },
+                "objective": objective,
+            },
+        )["audit_slice"]["delta_utility"]
+
+    weights = {"downside": 0.5, "tail": 1.0, "turnover": 0.25}
+    assert audit_delta({"weights": weights}) == pytest.approx(-0.02)
+    assert audit_delta(
+        {"weights": weights, "audit_weights": {**weights, "tail": 0.0}}
+    ) == pytest.approx(0.0)

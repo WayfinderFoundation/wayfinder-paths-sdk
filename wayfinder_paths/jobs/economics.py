@@ -291,6 +291,12 @@ def paired_fold_evaluation(
     slice; return the paired evidence the economic gate decides on."""
     evaluation = constitution["evaluation"]
     weights = constitution["objective"]["weights"]
+    # Optional weights for the one-week audit slice. The tail term (worst five
+    # trades) does not shrink with the window, so over a week it can outweigh a
+    # many-trade book's whole return: a bench book that made +1.4% in its audit
+    # week scored -0.014 against the -0.005 floor. Absent, the slice uses the
+    # objective's weights.
+    audit_weights = constitution["objective"].get("audit_weights") or weights
     target_regimes = declared_regimes(candidate_params)
     # Each fold opens with at least the history live hands either side (its
     # declared window), or the gate scores indicators live never computes.
@@ -477,8 +483,8 @@ def paired_fold_evaluation(
                 for key, value in conditioned.items()
                 if not key.endswith("_daily")
             }
-    audit_delta = utility(audit_rows["candidate"], weights) - utility(
-        audit_rows["baseline"], weights
+    audit_delta = utility(audit_rows["candidate"], audit_weights) - utility(
+        audit_rows["baseline"], audit_weights
     )
 
     report = {
