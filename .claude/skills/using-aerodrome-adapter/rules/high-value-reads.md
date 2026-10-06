@@ -12,6 +12,10 @@
 - Shared helpers: `wayfinder_paths/adapters/aerodrome_common.py`
 - README: `wayfinder_paths/adapters/aerodrome_adapter/README.md`
 - Chain: Base only (`CHAIN_ID_BASE = 8453`)
+- Current Sugar reads: LP Sugar for pool rows, Rewards Sugar for epoch rows.
+- Current Sugar pool rows can include launcher, cap, NFPM, ALM, and root-pool
+  metadata. Do not assume every row is a classic V2 pool; check `pool.is_v2`
+  before using classic LP helpers.
 
 ## High-value reads
 
@@ -26,7 +30,10 @@ Use this for the adapter-facing market list, not `list_pools()`. It enumerates `
 
 ### Sugar pool and epoch analytics
 
-- `await adapter.sugar_all(limit=500, offset=0)` returns raw `SugarPool` rows.
+- `await adapter.sugar_all(limit=500, offset=0, pool_filter=0)` returns raw
+  `SugarPool` rows. The filter follows the deployed LP Sugar categories: `0`
+  all, `1` listed, `2` unlisted, `3` emerging, `4` listed or emerging, `5`
+  neither listed nor emerging.
 - `await adapter.list_pools(page_size=500, max_pools=None)` is the easiest broad pool scan.
 - `await adapter.pools_by_lp()` maps LP token address to `SugarPool`.
 - `await adapter.sugar_epochs_latest(limit=...)` returns recent `SugarEpoch` rows.
@@ -38,6 +45,8 @@ Use this for the adapter-facing market list, not `list_pools()`. It enumerates `
 - `await adapter.rank_v2_pools_by_emissions_apr(top_n=..., candidate_count=...)` ranks classic pools by emissions APR.
 
 Use these when you need broader pool analytics, including pools that are easier to reason about through Sugar than through the voter-driven `get_all_markets()` surface.
+Filter or branch on `pool.is_v2` before using classic TVL or emissions helpers;
+concentrated-liquidity rows belong in the Slipstream adapter.
 
 ### Route quotes and single-pool resolution
 

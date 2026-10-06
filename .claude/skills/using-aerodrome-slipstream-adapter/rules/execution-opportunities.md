@@ -12,6 +12,11 @@
 - `await adapter.mint_position(token0=..., token1=..., tick_spacing=..., tick_lower=..., tick_upper=..., amount0_desired=..., amount1_desired=..., deployment_variant=None, position_manager=None, amount0_min=None, amount1_min=None, slippage_bps=50, recipient=None, deadline=None, sqrt_price_x96=0)`
 - Use this to create a new concentrated-liquidity NFT position.
 - Inputs include tick range, desired token amounts, deployment selection, and optional slippage bounds.
+- New writes default to the `gauges_v3` deployment. Pass
+  `deployment_variant` or `position_manager` when interacting with older
+  deployments or when the target pool exists in multiple deployments.
+- Tick bounds must align with the pool tick spacing. Deadlines and slippage
+  mins are enforced on the NFPM call.
 
 ### Increase liquidity
 
@@ -42,6 +47,9 @@
 Treat staking and reward claiming as separate steps from fee collection:
 - fees come from `collect_fees(...)`
 - gauge emissions for a staked token id come from `claim_position_rewards(...)`
+- Gauges V3 can apply minimum stake time and early-unstake/getReward penalty
+  behavior. Read the pool and gauge state before claiming or withdrawing soon
+  after staking.
 
 ## Shared veAERO and reward actions
 

@@ -12,6 +12,9 @@
 - Shared helpers: `wayfinder_paths/adapters/aerodrome_common.py`
 - Manifest: `wayfinder_paths/adapters/aerodrome_slipstream_adapter/manifest.yaml`
 - Chain: Base only (`CHAIN_ID_BASE = 8453`)
+- Deployments scanned by default: `initial`, `gauge_caps`, and `gauges_v3`.
+  Gauges V3 is the current latest deployment for new pools/gauges, while
+  older deployments can still hold live pools and positions.
 
 ## High-value reads
 
@@ -30,6 +33,8 @@ Use this as the repo-convention market list for Slipstream.
 - `await adapter.slipstream_best_pool_for_pair(tokenA=..., tokenB=..., deployments=...)`
 
 Use these when you know the pair and need to resolve the pool set, a single pool, a gauge, or the deepest-liquidity pool across deployments.
+Pass `deployment_variant` when a pair/tick spacing exists in more than one
+deployment and you need a deterministic pool or position-manager target.
 
 ### Pool and range analytics
 
@@ -41,6 +46,7 @@ Use these when you know the pair and need to resolve the pool set, a single pool
 - `ok, data = await adapter.slipstream_prob_in_range_week(pool=..., tick_lower=..., tick_upper=..., sigma_annual=...)`
 
 These are analytics helpers implemented in the adapter itself. They rely on on-chain pool state, swap logs, and token metadata from the shared helpers.
+They are not swap execution helpers.
 
 ### Position and wallet reads
 

@@ -14,6 +14,9 @@ Use quote surfaces before building a transaction:
 - `quote_remove_liquidity(...)` for LP removals
 
 These help you inspect route choice, expected token amounts, and slippage bounds before broadcast. The classic adapter does **not** implement swap execution; route helpers are quoting-only.
+For actual swaps, use an adapter/tool that explicitly exposes a swap execution
+capability and approval preview. Do not treat a route quote from this adapter as
+a transaction plan.
 
 ## Liquidity management
 
@@ -22,6 +25,8 @@ These help you inspect route choice, expected token amounts, and slippage bounds
 - `await adapter.add_liquidity(...)`
 - Supports classic ERC20-ERC20 and ERC20-native pool adds on Base.
 - Use `quote_add_liquidity(...)` first to inspect expected minting and minimum amounts.
+- This is for classic stable/volatile pools only. If the pool has a tick
+  spacing or NFPM position manager, use the Slipstream adapter instead.
 
 ### Remove liquidity
 
