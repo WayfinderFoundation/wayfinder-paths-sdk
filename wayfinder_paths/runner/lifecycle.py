@@ -120,6 +120,8 @@ def ensure_daemon_started(
     banner: str = "[runnerctl]",
     env: dict[str, str] | None = None,
 ) -> tuple[bool, dict[str, Any]]:
+    if os.environ.get("WAYFINDER_RECOVERY_HOLD") == "1":
+        return False, {"error": "recovery_hold"}
     client = RunnerControlClient(sock_path=paths.sock_path)
     started, status, err_obj = try_status(client)
     if started and status is not None:

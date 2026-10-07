@@ -150,6 +150,8 @@ class RunnerDaemon:
         default_timeout_seconds: int = 20 * 60,
         log_level: str = "INFO",
     ) -> None:
+        if os.environ.get("WAYFINDER_RECOVERY_HOLD") == "1":
+            raise RuntimeError("Runner execution is disabled during recovery")
         self._paths = paths
         self._tick_seconds = float(tick_seconds)
         self._max_workers = int(max_workers)
