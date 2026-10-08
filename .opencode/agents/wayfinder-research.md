@@ -3,7 +3,6 @@ description: Hidden research worker for crypto, web, social, DeFiLlama, Goldsky,
 mode: subagent
 hidden: true
 steps: 64
-temperature: 0.1
 permission:
   task:
     "*": deny

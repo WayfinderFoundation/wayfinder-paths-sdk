@@ -1,7 +1,6 @@
 ---
 description: EVAL JUDGE — grounded scorer for market/sports A/B evals. Researches the relevant live surfaces first (Polymarket, Hyperliquid, sports snapshot, bounded web/research), then scores two anonymous answers against the rubric AND observed ground truth. Do not use outside evals.
 mode: primary
-temperature: 0.1
 permission:
   task:
     "*": deny
