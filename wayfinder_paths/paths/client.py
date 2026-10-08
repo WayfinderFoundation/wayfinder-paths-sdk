@@ -561,21 +561,6 @@ class PathsApiClient:
         version: str,
         out_path: Path,
     ) -> Path:
-        try:
-            detail = self.get_path_version(slug=slug, version=version)
-        except (httpx.RequestError, ValueError) as exc:
-            raise PathsApiError(
-                f"Cannot verify Path approval: {slug}@{version}"
-            ) from exc
-        approved = detail.get("version") if isinstance(detail, dict) else None
-        if (
-            not isinstance(approved, dict)
-            or approved.get("status") != "public"
-            or approved.get("version") != version
-        ):
-            raise PathsApiError(
-                f"Path version is not approved for download: {slug}@{version}"
-            )
         url = f"{self.base_url}/api/v1/paths/{slug}/versions/{version}/bundle.zip"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with self._client.stream(

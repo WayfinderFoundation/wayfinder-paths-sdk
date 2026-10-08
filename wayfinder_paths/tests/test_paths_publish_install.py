@@ -1404,7 +1404,7 @@ def _invoke_path(*args: str) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("transitive", [False, True])
-def test_registry_dependency_download_requires_approval(
+def test_dependency_download_rejection_stops_install(
     dependency_registry: _DependencyRegistry,
     monkeypatch: pytest.MonkeyPatch,
     transitive: bool,
@@ -1415,20 +1415,13 @@ def test_registry_dependency_download_requires_approval(
     registry.publish("parent", dependencies=["middle" if transitive else "blocked"])
 
     def api(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/bundle.zip")
         slug = request.url.path.split("/")[4]
-        if request.url.path.endswith("/bundle.zip"):
-            registry.downloads.append((slug, "0.1.0"))
-            return httpx.Response(
-                200, content=registry.bundles[slug]["0.1.0"].bundle_path.read_bytes()
-            )
+        if slug == "blocked":
+            return httpx.Response(404, json={"detail": "Not found."})
+        registry.downloads.append((slug, "0.1.0"))
         return httpx.Response(
-            200,
-            json={
-                "version": {
-                    "version": "0.1.0",
-                    "status": "rejected" if slug == "blocked" else "public",
-                }
-            },
+            200, content=registry.bundles[slug]["0.1.0"].bundle_path.read_bytes()
         )
 
     client = PathsApiClient(
@@ -1450,7 +1443,7 @@ def test_registry_dependency_download_requires_approval(
         ],
     )
     assert result.exit_code != 0
-    assert "not approved for download" in result.output
+    assert "Download bundle failed (404)" in result.output
     assert ("parent", "0.1.0") in registry.downloads
     assert ("blocked", "0.1.0") not in registry.downloads
     assert not Path(".wayfinder/paths/blocked/0.1.0/bundle.zip").exists()
