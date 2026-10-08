@@ -474,7 +474,10 @@ def test_paths_api_client_list_paths_defaults_to_bonded_only():
     assert [path["slug"] for path in all_paths] == ["bonded-path", "unbonded-path"]
 
 
-def test_path_install_requests_intent_and_submits_receipt(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("registry_slug", ["install-demo", "forked-demo"])
+def test_path_install_requests_intent_and_submits_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, registry_slug: str
+) -> None:
     path_dir = tmp_path / "install-demo"
     init_path(
         path_dir=path_dir,
@@ -547,7 +550,7 @@ def test_path_install_requests_intent_and_submits_receipt(tmp_path: Path, monkey
         [
             "install",
             "--slug",
-            "install-demo",
+            registry_slug,
             "--version",
             "0.1.0",
             "--dir",
@@ -573,12 +576,26 @@ def test_path_install_requests_intent_and_submits_receipt(tmp_path: Path, monkey
     assert receipt["runtime"] == "sdk-cli"
     assert receipt["venue"] == "sdk-cli"
     assert receipt["extracted_files"] > 0
-    assert receipt["install_path"].endswith("install-demo/0.1.0")
+    assert receipt["slug"] == registry_slug
+    assert receipt["install_path"].endswith(f"{registry_slug}/0.1.0")
 
     lock = json.loads((tmp_path / ".wayfinder" / "paths.lock.json").read_text())
-    assert lock["paths"]["install-demo"]["installation_id"] == "install-123"
-    assert lock["paths"]["install-demo"]["heartbeat_token"] == "heartbeat-secret"
-    assert lock["paths"]["install-demo"]["venue"] == "sdk-cli"
+    assert lock["paths"][registry_slug]["installation_id"] == "install-123"
+    assert lock["paths"][registry_slug]["heartbeat_token"] == "heartbeat-secret"
+    assert lock["paths"][registry_slug]["venue"] == "sdk-cli"
+    # Forks retain reviewed bytes and manifest identity, while receipts belong to the fork.
+    installed = install_root / registry_slug / "0.1.0"
+    assert (installed / "bundle.zip").read_bytes() == built.bundle_path.read_bytes()
+    from wayfinder_paths.paths.cli import _activate_export
+
+    activated = _activate_export(
+        path_dir=installed,
+        host="opencode",
+        scope="project",
+        destination_root=tmp_path / "workspace",
+    )
+    assert activated["host"] == "opencode"
+    assert activated["applied"]
 
 
 def test_path_install_migrates_legacy_lockfile_and_directory(
@@ -3081,6 +3098,7 @@ def test_path_update_warns_and_falls_back_when_recorded_root_is_missing(
 
 
 def test_path_update_allows_explicit_version_override(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     built = _build_path_bundle(tmp_path, slug="override-demo", version="1.0.1")
     _write_paths_lockfile(
         tmp_path,
