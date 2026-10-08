@@ -51,47 +51,6 @@ _INSTALL_DIRNAME = "paths"
 _LEGACY_INSTALL_DIRNAME = "packs"
 _LOCKFILE_NAME = "paths.lock.json"
 _LEGACY_LOCKFILE_NAME = "packs.lock.json"
-# Only skills shipped/reviewed with the SDK may bypass the Paths registry.
-_BUNDLED_SKILLS = frozenset(
-    {
-        "backtest-strategy",
-        "contract-development",
-        "crypto-research",
-        "developing-wayfinder-paths",
-        "developing-wayfinder-strategies",
-        "pattern-match",
-        "promote-wayfinder-script",
-        "setup",
-        "simulation-dry-run",
-        "using-aave-v3-adapter",
-        "using-aerodrome-adapter",
-        "using-aerodrome-slipstream-adapter",
-        "using-alpha-lab",
-        "using-avantis-adapter",
-        "using-boros-adapter",
-        "using-brap-adapter",
-        "using-ccxt-adapter",
-        "using-delta-lab",
-        "using-eigencloud-adapter",
-        "using-ethena-vault-adapter",
-        "using-etherfi-adapter",
-        "using-euler-v2-adapter",
-        "using-hyperlend-adapter",
-        "using-hyperliquid-adapter",
-        "using-moonwell-adapter",
-        "using-morpho-adapter",
-        "using-notification-send",
-        "using-pendle-adapter",
-        "using-polymarket-adapter",
-        "using-pool-token-balance-data",
-        "using-projectx-adapter",
-        "using-sparklend-adapter",
-        "using-sports-data",
-        "using-uniswap-adapter",
-        "using-visual-chart-annotations",
-        "writing-wayfinder-scripts",
-    }
-)
 _OPENCODE_TOOL_RESULT_HELPER = "\n".join(
     [
         "function jsonOutput(payload) {",
@@ -181,12 +140,12 @@ def _sdk_root() -> Path | None:
 
 def _sdk_skill_source_dir(skill_name: str, *, host: str) -> Path | None:
     normalized = str(skill_name or "").strip()
-    if normalized not in _BUNDLED_SKILLS:
+    if not normalized:
         return None
 
     sdk_root = _sdk_root()
     if sdk_root is None:
-        raise click.ClickException(f"SDK-bundled skill is unavailable: {normalized}")
+        return None
 
     if host == "openclaw":
         override_dir = sdk_root / "openclaw" / "skills" / normalized
@@ -201,7 +160,7 @@ def _sdk_skill_source_dir(skill_name: str, *, host: str) -> Path | None:
     if (override_dir / "SKILL.md").is_file():
         return override_dir
 
-    raise click.ClickException(f"SDK-bundled skill is unavailable: {normalized}")
+    return None
 
 
 def _canonical_install_root(install_dir: str | Path) -> Path:
@@ -462,6 +421,8 @@ def _install_required_dependencies_for_path(
     visited: set[str],
 ) -> list[dict[str, Any]]:
     manifest = _load_path_manifest(path_dir)
+    install_root = _canonical_install_root(install_dir)
+    lock, _lock_path = _load_install_lock(_state_dir_for_install_root(install_root))
     dependency_results: list[dict[str, Any]] = []
     for dependency in _manifest_skill_dependencies(manifest, host=host):
         if not dependency["required"]:
@@ -470,16 +431,29 @@ def _install_required_dependencies_for_path(
         dependency_skill_name = str(
             dependency.get("skill_name") or dependency.get("name") or dependency_slug
         ).strip()
-        bundled_skill_dir = _sdk_skill_source_dir(dependency_slug, host=host)
-        if bundled_skill_dir is not None:
-            destination_root = _host_skill_directory(host, scope, cwd=Path.cwd())
-            destination = destination_root / dependency_skill_name
-            _copy_export_tree(bundled_skill_dir, destination)
+        destination = (
+            _host_skill_directory(host, scope, cwd=Path.cwd()) / dependency_skill_name
+        )
+        local_skill_dir = None
+        # User-provided skills need no registry approval. Known registry installs
+        # still go through the version gate, even when their exports already exist.
+        if (
+            _lock_path_entry(lock, dependency_slug) is None
+            and not (install_root / dependency_slug).exists()
+        ):
+            local_skill_dir = (
+                destination
+                if (destination / "SKILL.md").is_file()
+                else _sdk_skill_source_dir(dependency_slug, host=host)
+            )
+        if local_skill_dir is not None:
+            if local_skill_dir.resolve() != destination.resolve():
+                _copy_export_tree(local_skill_dir, destination)
             dependency_results.append(
                 {
                     "slug": dependency_slug,
                     "skill_name": dependency_skill_name,
-                    "source": "sdk-bundled",
+                    "source": "local",
                     "dest": str(destination),
                     "applied": [str(destination)],
                     "activated": True,
@@ -504,48 +478,6 @@ def _install_required_dependencies_for_path(
             )
         )
     return dependency_results
-
-
-def _validate_installed_references(
-    *, path_dir: Path, host: str, api_url: str | None
-) -> None:
-    resolved = _resolve_installed_lock_entry(path_dir)
-    if resolved is None:
-        # Explicit local authoring is not a registry installation.
-        return
-    lock, _lock_path, root_slug, root_entry = resolved
-    client = PathsApiClient(api_base_url=api_url)
-    checked: set[str] = set()
-
-    def check(slug: str, entry: dict[str, Any]) -> None:
-        if slug in checked:
-            return
-        checked.add(slug)
-        version = str(entry.get("version") or "")
-        approved = _resolve_path_version_payload(
-            client, slug=slug, desired_version=version
-        )
-        if not entry.get("bundle_sha256") or entry["bundle_sha256"] != approved.get(
-            "bundle_sha256"
-        ):
-            raise click.ClickException(
-                f"Installed Path no longer matches its approval: {slug}@{version}"
-            )
-        manifest = _load_path_manifest(Path(str(entry.get("path") or "")))
-        for dependency in _manifest_skill_dependencies(manifest, host=host):
-            if not dependency["required"]:
-                continue
-            dep_slug = dependency["path_slug"]
-            if _sdk_skill_source_dir(dep_slug, host=host) is not None:
-                continue
-            dep_entry = _lock_path_entry(lock, dep_slug)
-            if dep_entry is None:
-                raise click.ClickException(
-                    f"Required Path dependency is not installed: {dep_slug}"
-                )
-            check(dep_slug, dep_entry)
-
-    check(root_slug, root_entry)
 
 
 def _resolve_component_execution_target(
@@ -1762,8 +1694,6 @@ def activate_cmd(
             activate=True,
             visited={slug} if slug else set(),
         )
-    if source_path is not None:
-        _validate_installed_references(path_dir=source_path, host=host, api_url=api_url)
     result = _activate_export(
         host=host,
         scope=scope,
@@ -2481,9 +2411,6 @@ def _install_path_with_options(
         response["dependencies"] = dependency_results
 
     if activate and normalized_host and normalized_scope:
-        _validate_installed_references(
-            path_dir=installed_path, host=normalized_host, api_url=api_url
-        )
         activation_result = _activate_export(
             host=normalized_host,
             scope=normalized_scope,
@@ -2914,9 +2841,6 @@ def update_cmd(
             activate=False,
             visited={slug},
         )
-    _validate_installed_references(
-        path_dir=installed_path, host=activation_target.host, api_url=api_url
-    )
     activation_result = _activate_export(
         host=activation_target.host,
         scope=activation_target.scope,

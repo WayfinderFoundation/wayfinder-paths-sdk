@@ -101,3 +101,12 @@ poetry run wayfinder path activate --host opencode --scope project --path .
 ```
 
 When an export includes install targets, `activate` applies those install operations instead of doing a raw directory copy.
+
+Local activation does not require registry approval or connectivity. User-added skills in
+the target host scope or SDK skill directories can satisfy dependencies without publication;
+existing local skill files are preserved. There is no fixed skill-name allowlist.
+
+Registry installs, updates, and `--include-dependencies` resolution still check the exact
+downloaded/reused Path version for public approval and verify dependency bundle hashes.
+Registry-installed dependencies are not reclassified as local skills just because their
+exports exist. Plain reactivation does not recheck revocations online.
