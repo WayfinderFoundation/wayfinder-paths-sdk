@@ -415,14 +415,13 @@ def _install_required_dependencies_for_path(
     scope: str,
     install_dir: str,
     force: bool,
+    no_verify: bool,
     api_url: str | None,
     model: str | None,
     activate: bool,
     visited: set[str],
 ) -> list[dict[str, Any]]:
     manifest = _load_path_manifest(path_dir)
-    install_root = _canonical_install_root(install_dir)
-    lock, _lock_path = _load_install_lock(_state_dir_for_install_root(install_root))
     dependency_results: list[dict[str, Any]] = []
     for dependency in _manifest_skill_dependencies(manifest, host=host):
         if not dependency["required"]:
@@ -431,29 +430,16 @@ def _install_required_dependencies_for_path(
         dependency_skill_name = str(
             dependency.get("skill_name") or dependency.get("name") or dependency_slug
         ).strip()
-        destination = (
-            _host_skill_directory(host, scope, cwd=Path.cwd()) / dependency_skill_name
-        )
-        local_skill_dir = None
-        # User-provided skills need no registry approval. Known registry installs
-        # still go through the version gate, even when their exports already exist.
-        if (
-            _lock_path_entry(lock, dependency_slug) is None
-            and not (install_root / dependency_slug).exists()
-        ):
-            local_skill_dir = (
-                destination
-                if (destination / "SKILL.md").is_file()
-                else _sdk_skill_source_dir(dependency_slug, host=host)
-            )
-        if local_skill_dir is not None:
-            if local_skill_dir.resolve() != destination.resolve():
-                _copy_export_tree(local_skill_dir, destination)
+        bundled_skill_dir = _sdk_skill_source_dir(dependency_slug, host=host)
+        if bundled_skill_dir is not None:
+            destination_root = _host_skill_directory(host, scope, cwd=Path.cwd())
+            destination = destination_root / dependency_skill_name
+            _copy_export_tree(bundled_skill_dir, destination)
             dependency_results.append(
                 {
                     "slug": dependency_slug,
                     "skill_name": dependency_skill_name,
-                    "source": "local",
+                    "source": "sdk-bundled",
                     "dest": str(destination),
                     "applied": [str(destination)],
                     "activated": True,
@@ -466,7 +452,7 @@ def _install_required_dependencies_for_path(
                 path_version=None,
                 install_dir=install_dir,
                 force=force,
-                no_verify=False,
+                no_verify=no_verify,
                 api_url=api_url,
                 host=host,
                 scope=scope,
@@ -1111,13 +1097,6 @@ def _installed_path_dir(
 
 def _find_state_dir_for_installed_path(path_dir: Path) -> Path | None:
     resolved = path_dir.expanduser().resolve()
-    # Installs are always <root>/<slug>/<version>. Never trust a lockfile
-    # shipped inside the bundle itself when locating a custom install root.
-    state_dir = _state_dir_for_install_root(resolved.parent.parent)
-    if any(
-        (state_dir / name).is_file() for name in (_LOCKFILE_NAME, _LEGACY_LOCKFILE_NAME)
-    ):
-        return state_dir
     for candidate in (resolved, *resolved.parents):
         if candidate.name in {_INSTALL_DIRNAME, _LEGACY_INSTALL_DIRNAME}:
             return _state_dir_for_install_root(candidate)
@@ -1689,6 +1668,7 @@ def activate_cmd(
             scope=scope,
             install_dir=install_dir,
             force=False,
+            no_verify=False,
             api_url=api_url,
             model=model,
             activate=True,
@@ -2101,16 +2081,22 @@ def _resolve_path_version_payload(
     client: PathsApiClient,
     *,
     slug: str,
+    versions: list[dict[str, Any]],
     desired_version: str,
 ) -> dict[str, Any]:
-    # Always use the current version gate, including for cached dependencies.
-    try:
-        version_detail = client.get_path_version(slug=slug, version=desired_version)
-    except PathsApiError as exc:
-        raise click.ClickException(str(exc)) from exc
-    version_obj = (
-        version_detail.get("version") if isinstance(version_detail, dict) else None
+    version_obj = next(
+        (v for v in versions if str(v.get("version") or "").strip() == desired_version),
+        None,
     )
+    if not isinstance(version_obj, dict):
+        try:
+            version_detail = client.get_path_version(slug=slug, version=desired_version)
+        except PathsApiError as exc:
+            raise click.ClickException(str(exc)) from exc
+        version_obj = (
+            version_detail.get("version") if isinstance(version_detail, dict) else None
+        )
+
     if not isinstance(version_obj, dict):
         raise click.ClickException(f"Version not found: {desired_version}")
     return version_obj
@@ -2373,6 +2359,7 @@ def _install_path_with_options(
     version_obj = _resolve_path_version_payload(
         client,
         slug=slug,
+        versions=versions,
         desired_version=desired_version,
     )
     result = _install_path_version(
@@ -2402,6 +2389,7 @@ def _install_path_with_options(
             scope=normalized_scope,
             install_dir=install_dir,
             force=force,
+            no_verify=no_verify,
             api_url=api_url,
             model=model,
             activate=activate,
@@ -2776,6 +2764,7 @@ def update_cmd(
         version_obj = _resolve_path_version_payload(
             client,
             slug=slug,
+            versions=versions,
             desired_version=target_version,
         )
         install_result = _install_path_version(
@@ -2836,6 +2825,7 @@ def update_cmd(
             scope=activation_target.scope,
             install_dir=install_dir,
             force=force,
+            no_verify=no_verify,
             api_url=api_url,
             model=activation_model,
             activate=False,

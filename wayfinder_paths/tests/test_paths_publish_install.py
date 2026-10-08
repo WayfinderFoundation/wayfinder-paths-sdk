@@ -16,7 +16,7 @@ from click.testing import CliRunner
 
 from wayfinder_paths.paths.builder import BuiltPath, PathBuilder
 from wayfinder_paths.paths.cli import _apply_install_targets, path_cli
-from wayfinder_paths.paths.client import PathsApiClient, PathsApiError
+from wayfinder_paths.paths.client import PathsApiClient
 from wayfinder_paths.paths.doctor import DoctorIssue, PathDoctorReport
 from wayfinder_paths.paths.formatter import format_path
 from wayfinder_paths.paths.manifest import PathManifest, PathManifestError
@@ -1342,8 +1342,6 @@ class _DependencyRegistry:
         self.downloads: list[tuple[str, str]] = []
         self.intents: list[str] = []
         self.receipts: list[str] = []
-        self.blocked: set[str] = set()
-        self.approval_checks: list[tuple[str, str]] = []
 
     def publish(
         self,
@@ -1369,18 +1367,6 @@ class _DependencyRegistry:
     def create_install_intent(self, **kwargs: Any) -> dict[str, Any]:
         self.intents.append(kwargs["slug"])
         return {"intent": {"intent_id": str(len(self.intents))}, "signature": "test"}
-
-    def get_path_version(self, *, slug: str, version: str) -> dict[str, Any]:
-        self.approval_checks.append((slug, version))
-        if slug in self.blocked:
-            raise PathsApiError("Path version is not approved for installation")
-        return {
-            "version": {
-                "version": version,
-                "status": "public",
-                "bundle_sha256": self.bundles[slug][version].bundle_sha256,
-            }
-        }
 
     def download_bundle(self, *, slug: str, version: str, out_path: Path) -> Path:
         self.downloads.append((slug, version))
@@ -1417,146 +1403,39 @@ def _invoke_path(*args: str) -> dict[str, Any]:
     return json.loads(result.output)["result"]
 
 
-@pytest.mark.parametrize("cached", [False, True])
 @pytest.mark.parametrize("transitive", [False, True])
-def test_unapproved_dependency_blocks_download_and_parent_activation(
-    dependency_registry: _DependencyRegistry, cached: bool, transitive: bool
+def test_registry_dependency_download_requires_approval(
+    dependency_registry: _DependencyRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+    transitive: bool,
 ) -> None:
     registry = dependency_registry
     registry.publish("blocked")
     registry.publish("middle", dependencies=["blocked"])
     registry.publish("parent", dependencies=["middle" if transitive else "blocked"])
-    if cached:
-        _invoke_path("install", "--slug", "blocked")
-    registry.blocked.add("blocked")
-    prior_downloads = list(registry.downloads)
-    result = CliRunner().invoke(
-        path_cli,
-        [
-            "install",
-            "--slug",
-            "parent",
-            "--host",
-            "opencode",
-            "--scope",
-            "project",
-            "--force",
-            "--no-verify",
-        ],
+
+    def api(request: httpx.Request) -> httpx.Response:
+        slug = request.url.path.split("/")[4]
+        if request.url.path.endswith("/bundle.zip"):
+            registry.downloads.append((slug, "0.1.0"))
+            return httpx.Response(
+                200, content=registry.bundles[slug]["0.1.0"].bundle_path.read_bytes()
+            )
+        return httpx.Response(
+            200,
+            json={
+                "version": {
+                    "version": "0.1.0",
+                    "status": "rejected" if slug == "blocked" else "public",
+                }
+            },
+        )
+
+    client = PathsApiClient(
+        api_base_url="https://api.test",
+        client=httpx.Client(transport=httpx.MockTransport(api)),
     )
-    assert result.exit_code != 0
-    assert "not approved" in result.output
-    assert registry.downloads.count(("blocked", "0.1.0")) == prior_downloads.count(
-        ("blocked", "0.1.0")
-    )
-    assert not Path(".opencode/skills/parent/SKILL.md").exists()
-    assert not Path(".opencode/skills/blocked/SKILL.md").exists()
-
-
-@pytest.mark.parametrize("include", [False, True])
-@pytest.mark.parametrize("install_dir", [".wayfinder/paths", "custom-install"])
-def test_only_dependency_resolution_rechecks_registry_approval(
-    dependency_registry: _DependencyRegistry,
-    include: bool,
-    install_dir: str,
-) -> None:
-    registry = dependency_registry
-    registry.publish("leaf")
-    registry.publish("middle", dependencies=["leaf"])
-    registry.publish("parent", dependencies=["middle"])
-    _invoke_path(
-        "install",
-        "--slug",
-        "parent",
-        "--host",
-        "opencode",
-        "--scope",
-        "project",
-        "--dir",
-        install_dir,
-    )
-    registry.blocked.add("leaf")
-    registry.approval_checks.clear()
-    # A known registry dependency's existing export is not a user-provided skill.
-    shutil.rmtree(Path(".opencode/skills/parent"))
-    result = CliRunner().invoke(
-        path_cli,
-        [
-            "activate",
-            "--slug",
-            "parent",
-            "--host",
-            "opencode",
-            "--scope",
-            "project",
-            "--dir",
-            install_dir,
-            "--include-dependencies" if include else "--no-include-dependencies",
-        ],
-    )
-    if include:
-        assert result.exit_code != 0
-        assert "not approved" in result.output
-        assert not Path(".opencode/skills/parent/SKILL.md").exists()
-        assert ("leaf", "0.1.0") in registry.approval_checks
-    else:
-        assert result.exit_code == 0, result.output
-        assert Path(".opencode/skills/parent/SKILL.md").exists()
-        assert registry.approval_checks == []
-    assert Path(".opencode/skills/leaf/SKILL.md").exists()
-
-
-def test_cached_activation_preserves_custom_skills_offline(
-    dependency_registry: _DependencyRegistry, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    registry = dependency_registry
-    registry.publish("parent")
-    _invoke_path(
-        "install", "--slug", "parent", "--host", "opencode", "--scope", "project"
-    )
-    custom_skill = Path(".opencode/skills/my-custom-skill/SKILL.md")
-    custom_skill.parent.mkdir(parents=True)
-    custom_skill.write_text("User-created skill", encoding="utf-8")
-    instructions = Path(".wayfinder/paths/parent/0.1.0/skill/instructions.md")
-    instructions.write_text("My local edits", encoding="utf-8")
-
-    def no_registry(**kwargs: Any) -> None:
-        pytest.fail("Local activation must not contact the registry")
-
-    monkeypatch.setattr("wayfinder_paths.paths.cli.PathsApiClient", no_registry)
-    result = CliRunner().invoke(
-        path_cli,
-        [
-            "activate",
-            "--slug",
-            "parent",
-            "--host",
-            "opencode",
-            "--scope",
-            "project",
-            "--no-include-dependencies",
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert custom_skill.read_text() == "User-created skill"
-    assert "My local edits" in Path(".opencode/skills/parent/SKILL.md").read_text()
-
-
-def test_no_verify_on_parent_does_not_skip_dependency_hash_check(
-    dependency_registry: _DependencyRegistry, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    registry = dependency_registry
-    registry.publish("leaf")
-    registry.publish("parent", dependencies=["leaf"])
-    download = registry.download_bundle
-
-    def tampered_download(*, slug: str, version: str, out_path: Path) -> Path:
-        if slug == "leaf":
-            out_path.write_bytes(b"synthetic-mismatched-bundle")
-            return out_path
-        return download(slug=slug, version=version, out_path=out_path)
-
-    monkeypatch.setattr(registry, "download_bundle", tampered_download)
+    monkeypatch.setattr(registry, "download_bundle", client.download_bundle)
     result = CliRunner().invoke(
         path_cli,
         [
@@ -1571,82 +1450,11 @@ def test_no_verify_on_parent_does_not_skip_dependency_hash_check(
         ],
     )
     assert result.exit_code != 0
-    assert "Bundle SHA-256 mismatch" in result.output
+    assert "not approved for download" in result.output
+    assert ("parent", "0.1.0") in registry.downloads
+    assert ("blocked", "0.1.0") not in registry.downloads
+    assert not Path(".wayfinder/paths/blocked/0.1.0/bundle.zip").exists()
     assert not Path(".opencode/skills/parent/SKILL.md").exists()
-    assert not Path(".opencode/skills/leaf/SKILL.md").exists()
-
-
-@pytest.mark.parametrize("approved", [False, True])
-def test_missing_local_skill_uses_registry_approval(
-    dependency_registry: _DependencyRegistry,
-    monkeypatch: pytest.MonkeyPatch,
-    approved: bool,
-) -> None:
-    registry = dependency_registry
-    registry.publish("using-hyperliquid-adapter")
-    registry.publish("parent", dependencies=["using-hyperliquid-adapter"])
-    if not approved:
-        registry.blocked.add("using-hyperliquid-adapter")
-    monkeypatch.setenv("WAYFINDER_SDK_ROOT", str(registry.root))
-    result = CliRunner().invoke(
-        path_cli,
-        [
-            "install",
-            "--slug",
-            "parent",
-            "--host",
-            "opencode",
-            "--scope",
-            "project",
-        ],
-    )
-    if approved:
-        assert result.exit_code == 0, result.output
-        assert ("using-hyperliquid-adapter", "0.1.0") in registry.downloads
-    else:
-        assert result.exit_code != 0
-        assert "not approved" in result.output
-        assert ("using-hyperliquid-adapter", "0.1.0") not in registry.downloads
-
-
-@pytest.mark.parametrize("source", ["sdk", "host", "same-directory"])
-def test_user_added_skill_dependency_needs_no_registry_approval(
-    dependency_registry: _DependencyRegistry,
-    monkeypatch: pytest.MonkeyPatch,
-    source: str,
-) -> None:
-    registry = dependency_registry
-    registry.publish("parent", dependencies=["my-custom-skill"])
-    host = "claude" if source == "same-directory" else "opencode"
-    sdk_root = Path.cwd() if source == "same-directory" else registry.root
-    skill = (
-        Path(".opencode/skills/my-custom-skill/SKILL.md")
-        if source == "host"
-        else sdk_root / ".claude/skills/my-custom-skill/SKILL.md"
-    )
-    skill.parent.mkdir(parents=True)
-    skill.write_text("User-created skill", encoding="utf-8")
-    monkeypatch.setenv("WAYFINDER_SDK_ROOT", str(sdk_root))
-    result = CliRunner().invoke(
-        path_cli,
-        [
-            "install",
-            "--slug",
-            "parent",
-            "--host",
-            host,
-            "--scope",
-            "project",
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert (
-        Path(f".{host}/skills/my-custom-skill/SKILL.md").read_text()
-        == "User-created skill"
-    )
-    assert skill.read_text() == "User-created skill"
-    assert registry.approval_checks == [("parent", "0.1.0")]
-    assert registry.downloads == [("parent", "0.1.0")]
 
 
 @pytest.mark.parametrize(
@@ -2276,7 +2084,7 @@ def test_path_install_opencode_uses_bundled_sdk_skill_dependencies(
     payload = json.loads(result.output)
     dependency_result = payload["result"]["dependencies"][0]
     assert dependency_result["slug"] == "using-hyperliquid-adapter"
-    assert dependency_result["source"] == "local"
+    assert dependency_result["source"] == "sdk-bundled"
     assert Path(dependency_result["dest"]).joinpath("SKILL.md").exists()
     assert activation_calls == [
         {
@@ -2315,15 +2123,12 @@ def test_path_update_ignores_newer_latest_when_active_bonded_matches_install(
     tmp_path: Path, monkeypatch
 ):
     installed_path = tmp_path / ".wayfinder" / "paths" / "bonded-demo" / "1.0.0"
-    init_path(
-        path_dir=installed_path, slug="bonded-demo", with_applet=False, with_skill=True
-    )
+    installed_path.mkdir(parents=True, exist_ok=True)
     _write_paths_lockfile(
         tmp_path,
         {
             "bonded-demo": {
                 "version": "1.0.0",
-                "bundle_sha256": "aa" * 32,
                 "path": str(installed_path),
                 "activation": {"host": "claude", "scope": "project"},
             }
@@ -2364,15 +2169,6 @@ def test_path_update_ignores_newer_latest_when_active_bonded_matches_install(
 
         def __init__(self, *, api_base_url=None):
             self.api_base_url = api_base_url
-
-        def get_path_version(self, *, slug: str, version: str):
-            return {
-                "version": {
-                    "version": version,
-                    "status": "public",
-                    "bundle_sha256": "aa" * 32,
-                }
-            }
 
         def get_path(self, *, slug: str):
             self.__class__.get_path_calls.append(slug)
