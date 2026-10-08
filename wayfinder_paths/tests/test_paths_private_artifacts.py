@@ -9,20 +9,24 @@ from wayfinder_paths.paths.client import PathsApiClient, PathsApiError
 @pytest.mark.parametrize(
     "state", [None, "review", "processing", "approved", "hidden", "rejected"]
 )
-def test_version_lookup_requires_explicit_public_approval(state: str | None) -> None:
-    api = httpx.Client(
-        transport=httpx.MockTransport(
-            lambda request: httpx.Response(
-                200, json={"version": {"version": "1.0.0", "status": state}}
-            )
+def test_download_requires_public_approval_before_fetching(
+    tmp_path: Path, state: str | None
+) -> None:
+    def approval_only(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v1/paths/dependency/versions/1.0.0"
+        return httpx.Response(
+            200, json={"version": {"version": "1.0.0", "status": state}}
         )
-    )
+
+    api = httpx.Client(transport=httpx.MockTransport(approval_only))
     client = PathsApiClient(api_base_url="https://api.test", client=api)
+    target = tmp_path / "bundle.zip"
     with pytest.raises(PathsApiError, match="approved"):
-        client.get_path_version(slug="dependency", version="1.0.0")
+        client.download_bundle(slug="dependency", version="1.0.0", out_path=target)
+    assert not target.exists()
 
 
-def test_version_lookup_cannot_substitute_an_approved_version() -> None:
+def test_download_cannot_substitute_an_approved_version(tmp_path: Path) -> None:
     api = httpx.Client(
         transport=httpx.MockTransport(
             lambda request: httpx.Response(
@@ -32,11 +36,13 @@ def test_version_lookup_cannot_substitute_an_approved_version() -> None:
     )
     client = PathsApiClient(api_base_url="https://api.test", client=api)
     with pytest.raises(PathsApiError, match="approved"):
-        client.get_path_version(slug="dependency", version="1.0.0")
+        client.download_bundle(
+            slug="dependency", version="1.0.0", out_path=tmp_path / "bundle.zip"
+        )
 
 
 @pytest.mark.parametrize("status", [401, 403, 404, 429, 503])
-def test_version_lookup_fails_closed_on_registry_error(status: int) -> None:
+def test_download_fails_closed_on_registry_error(tmp_path: Path, status: int) -> None:
     api = httpx.Client(
         transport=httpx.MockTransport(
             lambda request: httpx.Response(status, json={"error": "unavailable"})
@@ -44,10 +50,12 @@ def test_version_lookup_fails_closed_on_registry_error(status: int) -> None:
     )
     client = PathsApiClient(api_base_url="https://api.test", client=api)
     with pytest.raises(PathsApiError):
-        client.get_path_version(slug="dependency", version="1.0.0")
+        client.download_bundle(
+            slug="dependency", version="1.0.0", out_path=tmp_path / "bundle.zip"
+        )
 
 
-def test_version_lookup_fails_closed_on_timeout() -> None:
+def test_download_fails_closed_on_timeout(tmp_path: Path) -> None:
     def timeout(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("registry unavailable", request=request)
 
@@ -56,17 +64,23 @@ def test_version_lookup_fails_closed_on_timeout() -> None:
         client=httpx.Client(transport=httpx.MockTransport(timeout)),
     )
     with pytest.raises(PathsApiError, match="Cannot verify"):
-        client.get_path_version(slug="dependency", version="1.0.0")
+        client.download_bundle(
+            slug="dependency", version="1.0.0", out_path=tmp_path / "bundle.zip"
+        )
 
 
 @pytest.mark.parametrize("body", [b"not-json", b"[]", b"{}", b'{"version": null}'])
-def test_version_lookup_fails_closed_on_malformed_response(body: bytes) -> None:
+def test_download_fails_closed_on_malformed_response(
+    tmp_path: Path, body: bytes
+) -> None:
     api = httpx.Client(
         transport=httpx.MockTransport(lambda request: httpx.Response(200, content=body))
     )
     client = PathsApiClient(api_base_url="https://api.test", client=api)
     with pytest.raises(PathsApiError):
-        client.get_path_version(slug="dependency", version="1.0.0")
+        client.download_bundle(
+            slug="dependency", version="1.0.0", out_path=tmp_path / "bundle.zip"
+        )
 
 
 def test_download_descriptor_uses_a_fresh_uncredentialed_client(
@@ -84,6 +98,10 @@ def test_download_descriptor_uses_a_fresh_uncredentialed_client(
 
     def api(request: httpx.Request) -> httpx.Response:
         assert request.headers["x-api-key"] == "wk_test_only"
+        if request.url.path.endswith("/versions/1.0.0"):
+            return httpx.Response(
+                200, json={"version": {"version": "1.0.0", "status": "public"}}
+            )
         assert request.url.params["download_url"] == "1"
         return httpx.Response(
             200,
@@ -123,6 +141,10 @@ def test_storage_destination_is_constrained(tmp_path: Path, url: str) -> None:
     api = httpx.Client(
         transport=httpx.MockTransport(
             lambda request: httpx.Response(200, json={"downloadUrl": url})
+            if request.url.path.endswith("/bundle.zip")
+            else httpx.Response(
+                200, json={"version": {"version": "1.0.0", "status": "public"}}
+            )
         )
     )
     client = PathsApiClient(api_base_url="https://api.test", client=api)
@@ -137,6 +159,10 @@ def test_download_supports_old_backend_during_sdk_first_rollout(tmp_path: Path) 
         transport=httpx.MockTransport(
             lambda request: httpx.Response(
                 200, content=b"old-bundle", headers={"content-type": "application/zip"}
+            )
+            if request.url.path.endswith("/bundle.zip")
+            else httpx.Response(
+                200, json={"version": {"version": "1.0.0", "status": "public"}}
             )
         )
     )
