@@ -547,12 +547,30 @@ class PathsApiClient:
 
     def get_path_version(self, *, slug: str, version: str) -> dict[str, Any]:
         url = f"{self.base_url}/api/v1/paths/{slug}/versions/{version}"
-        resp = self._client.get(url, headers=self._headers())
+        try:
+            resp = self._client.get(url, headers=self._headers())
+        except httpx.RequestError as exc:
+            raise PathsApiError(
+                f"Cannot verify Path approval: {slug}@{version}"
+            ) from exc
         if resp.status_code >= 400:
             raise PathsApiError(
                 f"Get path version failed ({resp.status_code}): {resp.text}"
             )
-        return resp.json()
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise PathsApiError("Invalid Path approval response") from exc
+        resolved = data.get("version") if isinstance(data, dict) else None
+        if (
+            not isinstance(resolved, dict)
+            or resolved.get("status") != "public"
+            or resolved.get("version") != version
+        ):
+            raise PathsApiError(
+                f"Path version is not approved for installation: {slug}@{version}"
+            )
+        return data
 
     def download_bundle(
         self,
