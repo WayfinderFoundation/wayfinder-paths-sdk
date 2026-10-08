@@ -19,6 +19,7 @@ from wayfinder_paths.paths.cli import _apply_install_targets, path_cli
 from wayfinder_paths.paths.client import PathsApiClient
 from wayfinder_paths.paths.doctor import DoctorIssue, PathDoctorReport
 from wayfinder_paths.paths.formatter import format_path
+from wayfinder_paths.paths.manifest import PathManifest, PathManifestError
 from wayfinder_paths.paths.scaffold import init_path
 
 pytestmark = pytest.mark.usefixtures("published_installed_runtime")
@@ -474,7 +475,10 @@ def test_paths_api_client_list_paths_defaults_to_bonded_only():
     assert [path["slug"] for path in all_paths] == ["bonded-path", "unbonded-path"]
 
 
-def test_path_install_requests_intent_and_submits_receipt(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("registry_slug", ["install-demo", "forked-demo"])
+def test_path_install_requests_intent_and_submits_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, registry_slug: str
+) -> None:
     path_dir = tmp_path / "install-demo"
     init_path(
         path_dir=path_dir,
@@ -547,7 +551,7 @@ def test_path_install_requests_intent_and_submits_receipt(tmp_path: Path, monkey
         [
             "install",
             "--slug",
-            "install-demo",
+            registry_slug,
             "--version",
             "0.1.0",
             "--dir",
@@ -573,12 +577,26 @@ def test_path_install_requests_intent_and_submits_receipt(tmp_path: Path, monkey
     assert receipt["runtime"] == "sdk-cli"
     assert receipt["venue"] == "sdk-cli"
     assert receipt["extracted_files"] > 0
-    assert receipt["install_path"].endswith("install-demo/0.1.0")
+    assert receipt["slug"] == registry_slug
+    assert receipt["install_path"].endswith(f"{registry_slug}/0.1.0")
 
     lock = json.loads((tmp_path / ".wayfinder" / "paths.lock.json").read_text())
-    assert lock["paths"]["install-demo"]["installation_id"] == "install-123"
-    assert lock["paths"]["install-demo"]["heartbeat_token"] == "heartbeat-secret"
-    assert lock["paths"]["install-demo"]["venue"] == "sdk-cli"
+    assert lock["paths"][registry_slug]["installation_id"] == "install-123"
+    assert lock["paths"][registry_slug]["heartbeat_token"] == "heartbeat-secret"
+    assert lock["paths"][registry_slug]["venue"] == "sdk-cli"
+    # Forks retain reviewed bytes and manifest identity, while receipts belong to the fork.
+    installed = install_root / registry_slug / "0.1.0"
+    assert (installed / "bundle.zip").read_bytes() == built.bundle_path.read_bytes()
+    from wayfinder_paths.paths.cli import _activate_export
+
+    activated = _activate_export(
+        path_dir=installed,
+        host="opencode",
+        scope="project",
+        destination_root=tmp_path / "workspace",
+    )
+    assert activated["host"] == "opencode"
+    assert activated["applied"]
 
 
 def test_path_install_migrates_legacy_lockfile_and_directory(
@@ -1383,6 +1401,72 @@ def _invoke_path(*args: str) -> dict[str, Any]:
     result = CliRunner().invoke(path_cli, list(args))
     assert result.exit_code == 0, result.output
     return json.loads(result.output)["result"]
+
+
+@pytest.mark.parametrize("transitive", [False, True])
+def test_dependency_download_rejection_stops_install(
+    dependency_registry: _DependencyRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+    transitive: bool,
+) -> None:
+    registry = dependency_registry
+    registry.publish("blocked")
+    registry.publish("middle", dependencies=["blocked"])
+    registry.publish("parent", dependencies=["middle" if transitive else "blocked"])
+
+    def api(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/bundle.zip")
+        slug = request.url.path.split("/")[4]
+        if slug == "blocked":
+            return httpx.Response(404, json={"detail": "Not found."})
+        registry.downloads.append((slug, "0.1.0"))
+        return httpx.Response(
+            200, content=registry.bundles[slug]["0.1.0"].bundle_path.read_bytes()
+        )
+
+    client = PathsApiClient(
+        api_base_url="https://api.test",
+        client=httpx.Client(transport=httpx.MockTransport(api)),
+    )
+    monkeypatch.setattr(registry, "download_bundle", client.download_bundle)
+    result = CliRunner().invoke(
+        path_cli,
+        [
+            "install",
+            "--slug",
+            "parent",
+            "--host",
+            "opencode",
+            "--scope",
+            "project",
+            "--no-verify",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "Download bundle failed (404)" in result.output
+    assert ("parent", "0.1.0") in registry.downloads
+    assert ("blocked", "0.1.0") not in registry.downloads
+    assert not Path(".wayfinder/paths/blocked/0.1.0/bundle.zip").exists()
+    assert not Path(".opencode/skills/parent/SKILL.md").exists()
+
+
+@pytest.mark.parametrize(
+    "alias", ["../escaped", "/tmp/escaped", "nested/escaped", ".."]
+)
+def test_dependency_host_alias_must_be_a_skill_name(tmp_path: Path, alias: str) -> None:
+    path_dir = tmp_path / "alias-test"
+    init_path(path_dir=path_dir, slug="alias-test", with_skill=True, with_applet=False)
+    manifest_file = path_dir / "wfpath.yaml"
+    manifest = yaml.safe_load(manifest_file.read_text())
+    manifest["skill"]["dependencies"] = [
+        {
+            "name": "using-hyperliquid-adapter",
+            "host_names": {"opencode": alias},
+        }
+    ]
+    manifest_file.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    with pytest.raises(PathManifestError, match="host_names"):
+        PathManifest.load(manifest_file)
 
 
 def test_path_activation_reuses_dependency_and_restores_export(
@@ -3081,6 +3165,7 @@ def test_path_update_warns_and_falls_back_when_recorded_root_is_missing(
 
 
 def test_path_update_allows_explicit_version_override(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     built = _build_path_bundle(tmp_path, slug="override-demo", version="1.0.1")
     _write_paths_lockfile(
         tmp_path,

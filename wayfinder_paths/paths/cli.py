@@ -1891,6 +1891,11 @@ def publish_cmd(
         raise click.ClickException(str(exc)) from exc
 
     _echo_json({"ok": True, "result": resp})
+    if resp.get("uploadId") and resp.get("status") != "published":
+        click.echo(
+            f"\nUpload queued for isolated review. Check: wayfinder path upload-status {resp['uploadId']}",
+            err=True,
+        )
     if resp.get("ownerLinkRequired"):
         manage_url = resp.get("manageUrl", "")
         click.echo(f"\nLink owner wallet and bond at: {manage_url}", err=True)
@@ -1922,6 +1927,17 @@ def publish_cmd(
         click.echo(
             "Slug reservation is temporary until approval/publication.", err=True
         )
+
+
+@path_cli.command(
+    name="upload-status", help="Check publication/review status for your upload."
+)
+@click.argument("upload_id")
+def upload_status_cmd(upload_id: str) -> None:
+    try:
+        _echo_json(PathsApiClient().get_upload_status(upload_id))
+    except (PathsApiError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @path_cli.command(name="search", help="Search paths in the registry.")

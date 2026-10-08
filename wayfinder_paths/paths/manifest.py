@@ -526,6 +526,13 @@ def _parse_skill_dependencies(
             for key, value in host_names_raw.items()
             if str(key).strip() and str(value).strip()
         }
+        if any(
+            len(value) > _SKILL_MAX_NAME_LENGTH or not _SKILL_NAME_RE.fullmatch(value)
+            for value in host_names.values()
+        ):
+            raise PathManifestError(
+                "wfpath.yaml skill.dependencies[].host_names must contain skill names, not paths"
+            )
         required = _parse_bool(
             dep_obj.get("required"),
             name=f"wfpath.yaml skill.dependencies[{idx}].required",
