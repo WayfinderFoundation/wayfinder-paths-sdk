@@ -6,6 +6,69 @@ import pytest
 from wayfinder_paths.paths.client import PathsApiClient, PathsApiError
 
 
+@pytest.mark.parametrize(
+    "state", [None, "review", "processing", "approved", "hidden", "rejected"]
+)
+def test_version_lookup_requires_explicit_public_approval(state: str | None) -> None:
+    api = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, json={"version": {"version": "1.0.0", "status": state}}
+            )
+        )
+    )
+    client = PathsApiClient(api_base_url="https://api.test", client=api)
+    with pytest.raises(PathsApiError, match="approved"):
+        client.get_path_version(slug="dependency", version="1.0.0")
+
+
+def test_version_lookup_cannot_substitute_an_approved_version() -> None:
+    api = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, json={"version": {"version": "2.0.0", "status": "public"}}
+            )
+        )
+    )
+    client = PathsApiClient(api_base_url="https://api.test", client=api)
+    with pytest.raises(PathsApiError, match="approved"):
+        client.get_path_version(slug="dependency", version="1.0.0")
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 429, 503])
+def test_version_lookup_fails_closed_on_registry_error(status: int) -> None:
+    api = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(status, json={"error": "unavailable"})
+        )
+    )
+    client = PathsApiClient(api_base_url="https://api.test", client=api)
+    with pytest.raises(PathsApiError):
+        client.get_path_version(slug="dependency", version="1.0.0")
+
+
+def test_version_lookup_fails_closed_on_timeout() -> None:
+    def timeout(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("registry unavailable", request=request)
+
+    client = PathsApiClient(
+        api_base_url="https://api.test",
+        client=httpx.Client(transport=httpx.MockTransport(timeout)),
+    )
+    with pytest.raises(PathsApiError, match="Cannot verify"):
+        client.get_path_version(slug="dependency", version="1.0.0")
+
+
+@pytest.mark.parametrize("body", [b"not-json", b"[]", b"{}", b'{"version": null}'])
+def test_version_lookup_fails_closed_on_malformed_response(body: bytes) -> None:
+    api = httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=body))
+    )
+    client = PathsApiClient(api_base_url="https://api.test", client=api)
+    with pytest.raises(PathsApiError):
+        client.get_path_version(slug="dependency", version="1.0.0")
+
+
 def test_download_descriptor_uses_a_fresh_uncredentialed_client(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -51,6 +51,47 @@ _INSTALL_DIRNAME = "paths"
 _LEGACY_INSTALL_DIRNAME = "packs"
 _LOCKFILE_NAME = "paths.lock.json"
 _LEGACY_LOCKFILE_NAME = "packs.lock.json"
+# Only skills shipped/reviewed with the SDK may bypass the Paths registry.
+_BUNDLED_SKILLS = frozenset(
+    {
+        "backtest-strategy",
+        "contract-development",
+        "crypto-research",
+        "developing-wayfinder-paths",
+        "developing-wayfinder-strategies",
+        "pattern-match",
+        "promote-wayfinder-script",
+        "setup",
+        "simulation-dry-run",
+        "using-aave-v3-adapter",
+        "using-aerodrome-adapter",
+        "using-aerodrome-slipstream-adapter",
+        "using-alpha-lab",
+        "using-avantis-adapter",
+        "using-boros-adapter",
+        "using-brap-adapter",
+        "using-ccxt-adapter",
+        "using-delta-lab",
+        "using-eigencloud-adapter",
+        "using-ethena-vault-adapter",
+        "using-etherfi-adapter",
+        "using-euler-v2-adapter",
+        "using-hyperlend-adapter",
+        "using-hyperliquid-adapter",
+        "using-moonwell-adapter",
+        "using-morpho-adapter",
+        "using-notification-send",
+        "using-pendle-adapter",
+        "using-polymarket-adapter",
+        "using-pool-token-balance-data",
+        "using-projectx-adapter",
+        "using-sparklend-adapter",
+        "using-sports-data",
+        "using-uniswap-adapter",
+        "using-visual-chart-annotations",
+        "writing-wayfinder-scripts",
+    }
+)
 _OPENCODE_TOOL_RESULT_HELPER = "\n".join(
     [
         "function jsonOutput(payload) {",
@@ -140,12 +181,12 @@ def _sdk_root() -> Path | None:
 
 def _sdk_skill_source_dir(skill_name: str, *, host: str) -> Path | None:
     normalized = str(skill_name or "").strip()
-    if not normalized:
+    if normalized not in _BUNDLED_SKILLS:
         return None
 
     sdk_root = _sdk_root()
     if sdk_root is None:
-        return None
+        raise click.ClickException(f"SDK-bundled skill is unavailable: {normalized}")
 
     if host == "openclaw":
         override_dir = sdk_root / "openclaw" / "skills" / normalized
@@ -160,7 +201,7 @@ def _sdk_skill_source_dir(skill_name: str, *, host: str) -> Path | None:
     if (override_dir / "SKILL.md").is_file():
         return override_dir
 
-    return None
+    raise click.ClickException(f"SDK-bundled skill is unavailable: {normalized}")
 
 
 def _canonical_install_root(install_dir: str | Path) -> Path:
@@ -415,7 +456,6 @@ def _install_required_dependencies_for_path(
     scope: str,
     install_dir: str,
     force: bool,
-    no_verify: bool,
     api_url: str | None,
     model: str | None,
     activate: bool,
@@ -452,7 +492,7 @@ def _install_required_dependencies_for_path(
                 path_version=None,
                 install_dir=install_dir,
                 force=force,
-                no_verify=no_verify,
+                no_verify=False,
                 api_url=api_url,
                 host=host,
                 scope=scope,
@@ -464,6 +504,48 @@ def _install_required_dependencies_for_path(
             )
         )
     return dependency_results
+
+
+def _validate_installed_references(
+    *, path_dir: Path, host: str, api_url: str | None
+) -> None:
+    resolved = _resolve_installed_lock_entry(path_dir)
+    if resolved is None:
+        # Explicit local authoring is not a registry installation.
+        return
+    lock, _lock_path, root_slug, root_entry = resolved
+    client = PathsApiClient(api_base_url=api_url)
+    checked: set[str] = set()
+
+    def check(slug: str, entry: dict[str, Any]) -> None:
+        if slug in checked:
+            return
+        checked.add(slug)
+        version = str(entry.get("version") or "")
+        approved = _resolve_path_version_payload(
+            client, slug=slug, desired_version=version
+        )
+        if not entry.get("bundle_sha256") or entry["bundle_sha256"] != approved.get(
+            "bundle_sha256"
+        ):
+            raise click.ClickException(
+                f"Installed Path no longer matches its approval: {slug}@{version}"
+            )
+        manifest = _load_path_manifest(Path(str(entry.get("path") or "")))
+        for dependency in _manifest_skill_dependencies(manifest, host=host):
+            if not dependency["required"]:
+                continue
+            dep_slug = dependency["path_slug"]
+            if _sdk_skill_source_dir(dep_slug, host=host) is not None:
+                continue
+            dep_entry = _lock_path_entry(lock, dep_slug)
+            if dep_entry is None:
+                raise click.ClickException(
+                    f"Required Path dependency is not installed: {dep_slug}"
+                )
+            check(dep_slug, dep_entry)
+
+    check(root_slug, root_entry)
 
 
 def _resolve_component_execution_target(
@@ -1097,6 +1179,13 @@ def _installed_path_dir(
 
 def _find_state_dir_for_installed_path(path_dir: Path) -> Path | None:
     resolved = path_dir.expanduser().resolve()
+    # Installs are always <root>/<slug>/<version>. Never trust a lockfile
+    # shipped inside the bundle itself when locating a custom install root.
+    state_dir = _state_dir_for_install_root(resolved.parent.parent)
+    if any(
+        (state_dir / name).is_file() for name in (_LOCKFILE_NAME, _LEGACY_LOCKFILE_NAME)
+    ):
+        return state_dir
     for candidate in (resolved, *resolved.parents):
         if candidate.name in {_INSTALL_DIRNAME, _LEGACY_INSTALL_DIRNAME}:
             return _state_dir_for_install_root(candidate)
@@ -1668,12 +1757,13 @@ def activate_cmd(
             scope=scope,
             install_dir=install_dir,
             force=False,
-            no_verify=False,
             api_url=api_url,
             model=model,
             activate=True,
             visited={slug} if slug else set(),
         )
+    if source_path is not None:
+        _validate_installed_references(path_dir=source_path, host=host, api_url=api_url)
     result = _activate_export(
         host=host,
         scope=scope,
@@ -2081,22 +2171,16 @@ def _resolve_path_version_payload(
     client: PathsApiClient,
     *,
     slug: str,
-    versions: list[dict[str, Any]],
     desired_version: str,
 ) -> dict[str, Any]:
-    version_obj = next(
-        (v for v in versions if str(v.get("version") or "").strip() == desired_version),
-        None,
+    # Always use the current version gate, including for cached dependencies.
+    try:
+        version_detail = client.get_path_version(slug=slug, version=desired_version)
+    except PathsApiError as exc:
+        raise click.ClickException(str(exc)) from exc
+    version_obj = (
+        version_detail.get("version") if isinstance(version_detail, dict) else None
     )
-    if not isinstance(version_obj, dict):
-        try:
-            version_detail = client.get_path_version(slug=slug, version=desired_version)
-        except PathsApiError as exc:
-            raise click.ClickException(str(exc)) from exc
-        version_obj = (
-            version_detail.get("version") if isinstance(version_detail, dict) else None
-        )
-
     if not isinstance(version_obj, dict):
         raise click.ClickException(f"Version not found: {desired_version}")
     return version_obj
@@ -2359,7 +2443,6 @@ def _install_path_with_options(
     version_obj = _resolve_path_version_payload(
         client,
         slug=slug,
-        versions=versions,
         desired_version=desired_version,
     )
     result = _install_path_version(
@@ -2389,7 +2472,6 @@ def _install_path_with_options(
             scope=normalized_scope,
             install_dir=install_dir,
             force=force,
-            no_verify=no_verify,
             api_url=api_url,
             model=model,
             activate=activate,
@@ -2399,6 +2481,9 @@ def _install_path_with_options(
         response["dependencies"] = dependency_results
 
     if activate and normalized_host and normalized_scope:
+        _validate_installed_references(
+            path_dir=installed_path, host=normalized_host, api_url=api_url
+        )
         activation_result = _activate_export(
             host=normalized_host,
             scope=normalized_scope,
@@ -2764,7 +2849,6 @@ def update_cmd(
         version_obj = _resolve_path_version_payload(
             client,
             slug=slug,
-            versions=versions,
             desired_version=target_version,
         )
         install_result = _install_path_version(
@@ -2825,12 +2909,14 @@ def update_cmd(
             scope=activation_target.scope,
             install_dir=install_dir,
             force=force,
-            no_verify=no_verify,
             api_url=api_url,
             model=activation_model,
             activate=False,
             visited={slug},
         )
+    _validate_installed_references(
+        path_dir=installed_path, host=activation_target.host, api_url=api_url
+    )
     activation_result = _activate_export(
         host=activation_target.host,
         scope=activation_target.scope,
