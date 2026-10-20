@@ -8,7 +8,7 @@ no copy-paste, no re-implementation, no drift.
 
 - Hyperliquid perp strategies that trade on a per-bar trigger (mean-reversion, momentum
   with stops, signal-driven entry/exit, etc.).
-- HIP-3 dex strategies (xyz, flx, vntl, hyna, km).
+- HIP-3 dex strategies (xyz, flx, vntl, hyna, km, abcd, cash, para, mkts, io).
 - Anything where execution decisions per bar are non-trivial (slippage-aware orders,
   partial fills, reduce-only flips, multi-venue allocation).
 

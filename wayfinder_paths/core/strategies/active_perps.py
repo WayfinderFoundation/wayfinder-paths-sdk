@@ -43,7 +43,18 @@ from wayfinder_paths.core.strategies.Strategy import (
     Strategy,
 )
 
-KNOWN_HIP3_DEXES: Final[set[str]] = {"xyz", "flx", "vntl", "hyna", "km"}
+KNOWN_HIP3_DEXES: Final[set[str]] = {
+    "xyz",
+    "flx",
+    "vntl",
+    "hyna",
+    "km",
+    "abcd",
+    "cash",
+    "para",
+    "mkts",
+    "io",
+}
 
 LOCKED_METHODS: Final[tuple[str, ...]] = ("update", "_run_trigger")
 
