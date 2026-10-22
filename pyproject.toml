@@ -15,6 +15,9 @@ include = [
 python = "^3.12"
 loguru = "^0.7.3"
 httpx = "^0.28.1"
+# 2026.10.19 drops the roots behind the compromised eMudhra intermediates
+# (https://emudhra.we-have-a-problem.com/).
+certifi = ">=2026.10.19"
 pyyaml = "^6.0.1"
 pydantic = "^2.11.9"
 web3 = "^7.13.0"

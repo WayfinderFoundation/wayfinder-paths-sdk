@@ -130,6 +130,12 @@ def test_backtest_reproduces_ref():
         )
     )
     cutoff = ref_end - pd.Timedelta(days=60)
+    # candleSnapshot serves only the latest 5000 candles (~208d of 1h), so the
+    # frozen window ages out; a truncated window yields a different Sharpe.
+    if prices.empty or prices.index.min() > cutoff + pd.Timedelta(hours=1):
+        pytest.skip(
+            f"Hyperliquid no longer serves the full ref window from {cutoff:%Y-%m-%d}"
+        )
     sub = prices[prices.index >= cutoff]
     sf = compute_signal(sub, None, ApexGmxVelocityStrategy.DEFAULT_PARAMS)
     cfg = BacktestConfig(
