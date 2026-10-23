@@ -27,7 +27,12 @@ from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET, Abstraction, BuilderIn
 from loguru import logger
 
 from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info, get_perp_dexes
-from wayfinder_paths.adapters.hyperliquid_adapter.utils import spot_index_from_asset_id
+from wayfinder_paths.adapters.hyperliquid_adapter.utils import (
+    round_order_price,
+    spot_asset_ids,
+    spot_index_from_asset_id,
+    spot_info_coin,
+)
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.HyperliquidInfoClient import HYPERLIQUID_INFO_CLIENT
 from wayfinder_paths.core.clients.HyperliquidQuicknodeInfoClient import (
@@ -57,13 +62,6 @@ MAINNET = "Mainnet"
 # but multi-outcome contracts may reorder, so always read sideSpecs[side].name
 # instead of hardcoding a YES/NO convention.
 # Collateral: outcomes settle in USDC.
-
-
-def _spot_token_by_index(tokens: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
-    # Spot universe pairs reference tokens by their `index` field, which stops
-    # matching array position once tokens are delisted and gaps appear. Indexing
-    # positionally silently drops every high-index token, so map by `index`.
-    return {t["index"]: t for t in tokens if "index" in t}
 
 
 def outcome_encoding(outcome_id: int, side: int) -> int:
@@ -421,27 +419,7 @@ class HyperliquidAdapter(BaseAdapter):
             if not success:
                 return False, {}
 
-            response = {}
-            tokens = spot_meta.get("tokens", [])
-            universe = spot_meta.get("universe", [])
-            token_by_index = _spot_token_by_index(tokens)
-
-            for pair in universe:
-                pair_tokens = pair.get("tokens", [])
-                if len(pair_tokens) < 2:
-                    continue
-
-                base_idx, quote_idx = pair_tokens[0], pair_tokens[1]
-
-                base_info = token_by_index.get(base_idx, {})
-                quote_info = token_by_index.get(quote_idx, {})
-
-                base_name = base_info.get("name", f"TOKEN{base_idx}")
-                quote_name = quote_info.get("name", f"TOKEN{quote_idx}")
-
-                name = f"{base_name}/{quote_name}"
-                spot_asset_id = pair.get("index", 0) + 10000
-                response[name] = spot_asset_id
+            response = spot_asset_ids(spot_meta)
 
             await self._cache.set(cache_key, response, ttl=300)
             return True, response
@@ -664,8 +642,7 @@ class HyperliquidAdapter(BaseAdapter):
             spot_index = (
                 spot_asset_id - 10000 if spot_asset_id >= 10000 else spot_asset_id
             )
-            # Index 0 (PURR) uses pair name; others use @{index}
-            coin = "PURR/USDC" if spot_index == 0 else f"@{spot_index}"
+            coin = spot_info_coin(spot_index)
             data = get_info().l2_snapshot(coin)
             return True, data
         except Exception as exc:
@@ -801,23 +778,10 @@ class HyperliquidAdapter(BaseAdapter):
         significant figures AND ≤ `get_price_decimals(asset_id)` decimal
         places. Both caps are applied as ROUND_DOWN.
         """
-        if price <= 0:
-            return 0.0
-        if float(price).is_integer():
-            return float(int(price))
-
-        decimals = self.get_price_decimals(asset_id)
-        decimal_step = Decimal(10) ** (-decimals)
-        p = (Decimal(str(price)) / decimal_step).to_integral_value(
-            rounding=ROUND_DOWN
-        ) * decimal_step
-
-        if p > 0:
-            sig_step = Decimal(10) ** (p.adjusted() - 4)
-            if sig_step > decimal_step:
-                p = (p / sig_step).to_integral_value(rounding=ROUND_DOWN) * sig_step
-
-        return float(p)
+        if price <= 0 or float(price).is_integer():
+            # Preserve the metadata-free path for zero/integer prices.
+            return round_order_price(price, 0)
+        return round_order_price(price, self.get_price_decimals(asset_id))
 
     def _mandatory_builder_fee(self, builder: dict[str, Any] | None) -> dict[str, Any]:
         expected_builder = HYPE_FEE_WALLET.lower()

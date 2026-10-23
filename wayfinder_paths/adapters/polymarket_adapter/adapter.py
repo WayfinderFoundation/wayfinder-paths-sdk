@@ -764,8 +764,46 @@ class PolymarketAdapter(BaseAdapter):
         end_ts: int | None = None,
         fidelity: int | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
+        # CLOB rejects long explicit windows even for coarse fidelity. Page by
+        # week so research and backtests share the same bounded history reader.
+        if start_ts is not None and end_ts is not None:
+            span = end_ts - start_ts
+            if not 0 < span <= 366 * 86400:
+                return False, "History window must be positive and at most 366 days"
+            if span > 7 * 86400:
+                semaphore = asyncio.Semaphore(4)
+
+                async def window(start: int):
+                    async with semaphore:
+                        return await self.get_prices_history(
+                            token_id=token_id,
+                            interval=None,
+                            start_ts=start,
+                            end_ts=min(start + 7 * 86400, end_ts),
+                            fidelity=fidelity,
+                        )
+
+                pages = await asyncio.gather(
+                    *(window(start) for start in range(start_ts, end_ts, 7 * 86400))
+                )
+                history = {}
+                for success, page in pages:
+                    if not success:
+                        return False, page
+                    if not isinstance(page, dict) or not isinstance(
+                        page.get("history"), list
+                    ):
+                        return False, "Malformed prediction history page"
+                    try:
+                        for row in page["history"]:
+                            stamp = int(row["t"])
+                            if start_ts <= stamp < end_ts:
+                                history[stamp] = row
+                    except (KeyError, TypeError, ValueError):
+                        return False, "Malformed prediction history observation"
+                return True, {"history": [history[t] for t in sorted(history)]}
         params: dict[str, Any] = {"market": token_id}
-        if interval:
+        if interval and start_ts is None and end_ts is None:
             params["interval"] = interval
         if start_ts is not None:
             params["startTs"] = start_ts

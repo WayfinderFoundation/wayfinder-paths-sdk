@@ -577,10 +577,15 @@ async def polymarket_read(
         synonyms (BTC↔Bitcoin), duration intent ("5 min" → 5-minute markets), ranking by
         relevance + activity + freshness. `sort`: trending|volume24h|liquidity|fresh.
         `status`: active|closed|all.
+        Relevance confidence measures text alignment, not economic suitability.
+        Low-confidence candidates remain available, including backend synonym matches;
+        they are not proof that no relevant market exists.
       - `trending`: list markets sorted by 24h volume (`limit`, `offset`).
       - `get_market` / `get_event`: fetch by `market_slug` / `event_slug`.
-        These discovery actions return compact candidates by default; pass
-        `summary=False` only when debugging raw Gamma/backend payloads.
+        Detail reads preserve full description, rules and resolution source while
+        candidate lists stay compact. Read each selected market's own terms;
+        event-level rules and outcome labels need not define every market's payoff.
+        `summary=False` exposes other raw Gamma/backend metadata for debugging.
       - `quote`: market-order quote. BUY needs `buy_amount_pusd`; SELL needs
         `sell_amount_shares`. Results include a normalized execution summary.
         Provide `market_slug`+`outcome` OR `token_id`.
@@ -588,7 +593,8 @@ async def polymarket_read(
         `market_slug`+`outcome` is also resolved for read-only lookups.
       - `order_book`: compact book summary. Prefer `token_id`; exact
         `market_slug`+`outcome` is also resolved. Pass `summary=False`
-        for the raw full book.
+        for the raw full book. `topAskNotional` sums the three nearest ask
+        levels at their respective prices, not just the best ask level.
       - `price_history`: time series. `interval` ("1h"/"6h"/"1d"/"1w"/"max"), `start_ts`/`end_ts`
         (unix sec), `fidelity` (denser sampling for tight buckets). Prefer
         `token_id`; exact `market_slug`+`outcome` is also resolved.

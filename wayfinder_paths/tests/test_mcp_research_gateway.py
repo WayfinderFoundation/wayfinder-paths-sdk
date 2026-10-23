@@ -1,10 +1,75 @@
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
+from wayfinder_paths.core.clients.ResearchClient import ResearchClient
 from wayfinder_paths.mcp.tools import research_gateway
+
+
+@pytest.fixture(autouse=True)
+def disable_tool_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "wayfinder_paths.mcp.utils._report_tool_metric", lambda *a, **k: None
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("success", [True, False])
+async def test_research_tool_keeps_busy_retries_inside_one_call(
+    monkeypatch: pytest.MonkeyPatch, success: bool
+) -> None:
+    client = ResearchClient()
+    request = httpx.Request("POST", "https://example.com/research/websearch/")
+    response = httpx.Response(
+        429,
+        request=request,
+        json={
+            "error": {
+                "code": "research_busy",
+                "type": "rate_limit",
+                "message": "Wait for the current research",
+                "details": {"retryAfterSeconds": 2},
+            }
+        },
+    )
+    busy = httpx.HTTPStatusError("busy", request=request, response=response)
+    transport = AsyncMock(
+        side_effect=(
+            [busy, httpx.Response(200, json={"results": []}, request=request)]
+            if success
+            else [busy] * 5
+        )
+    )
+    monkeypatch.setattr(client, "_authed_request", transport)
+    monkeypatch.setattr(research_gateway, "RESEARCH_CLIENT", client)
+    sleep = AsyncMock()
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+
+    result = await research_gateway.core_web_search(
+        query="category mechanism", sessionID="same-native-child"
+    )
+
+    if success:
+        assert result == {"ok": True, "result": {"results": []}}
+        sleep.assert_awaited_once_with(2)
+    else:
+        assert result == {
+            "ok": False,
+            "error": {
+                "code": "research_busy",
+                "message": "Wait for the current research",
+                "details": {"retryAfterSeconds": 2},
+            },
+        }
+        assert sleep.await_count == 4
+    assert transport.await_count == (2 if success else 5)
+    assert all(
+        call == transport.await_args_list[0] for call in transport.await_args_list
+    )
 
 
 @pytest.mark.asyncio
@@ -217,6 +282,93 @@ async def test_core_web_fetch_accepts_list_urls_and_int_options(
     assert kwargs["max_age_hours"] == 24
     assert kwargs["subpages"] == 2
     assert kwargs["context_max_characters"] == 2000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("urls", "expected"),
+    [
+        (
+            "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=hyperliquid,jupiter-exchange-solana,gmx",
+            [
+                "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=hyperliquid,jupiter-exchange-solana,gmx"
+            ],
+        ),
+        ("https://example.com/a,b", ["https://example.com/a,b"]),
+        (
+            " https://example.com/?ids=a,b, https://example.org/?ids=c,d ",
+            ["https://example.com/?ids=a,b", "https://example.org/?ids=c,d"],
+        ),
+        (
+            "https://example.com/a,b\r\n\nhttps://example.org/c,d",
+            ["https://example.com/a,b", "https://example.org/c,d"],
+        ),
+        (
+            [
+                "https://example.com/?redirect=a,https://example.org/b",
+                "https://example.net/c,d",
+            ],
+            [
+                "https://example.com/?redirect=a,https://example.org/b",
+                "https://example.net/c,d",
+            ],
+        ),
+        (
+            "https://example.com/a,HTTPS://example.org/b,http://example.net/c",
+            ["https://example.com/a", "HTTPS://example.org/b", "http://example.net/c"],
+        ),
+        (
+            "https://example.com/a,http://127.0.0.1/private,file:///not-public",
+            ["https://example.com/a", "http://127.0.0.1/private", "file:///not-public"],
+        ),
+    ],
+)
+async def test_core_web_fetch_preserves_url_commas_and_list_boundaries(
+    monkeypatch: pytest.MonkeyPatch, urls: str | list[str], expected: list[str]
+) -> None:
+    fetch = AsyncMock(return_value={"results": []})
+    monkeypatch.setattr(research_gateway.RESEARCH_CLIENT, "fetch", fetch)
+
+    response = await research_gateway.core_web_fetch(urls=urls)
+
+    assert response["ok"]
+    assert fetch.await_count == 1
+    assert fetch.await_args is not None
+    # Parsing does not silently discard entries that the gateway must reject.
+    assert fetch.await_args.kwargs["urls"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("urls", ["", "_", "none", "null", [], "\n\r\n"])
+async def test_core_web_fetch_still_requires_urls(
+    monkeypatch: pytest.MonkeyPatch, urls: str | list[str]
+) -> None:
+    fetch = AsyncMock()
+    monkeypatch.setattr(research_gateway.RESEARCH_CLIENT, "fetch", fetch)
+
+    response = await research_gateway.core_web_fetch(urls=urls)
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "invalid_argument"
+    assert response["error"]["details"]["field"] == "urls"
+    fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_core_web_fetch_still_caps_url_lists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetch = AsyncMock()
+    monkeypatch.setattr(research_gateway.RESEARCH_CLIENT, "fetch", fetch)
+
+    response = await research_gateway.core_web_fetch(
+        urls=",".join(f"https://example.com/{i}?ids=a,b" for i in range(26))
+    )
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "invalid_argument"
+    assert "25 values or fewer" in response["error"]["message"]
+    fetch.assert_not_awaited()
 
 
 @pytest.mark.asyncio
