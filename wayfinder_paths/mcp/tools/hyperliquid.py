@@ -6,7 +6,9 @@ import difflib
 import math
 import re
 import time
+from collections.abc import Callable
 from decimal import Decimal
+from functools import lru_cache
 from typing import Any, Literal
 
 from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
@@ -14,7 +16,14 @@ from wayfinder_paths.adapters.hyperliquid_adapter.adapter import (
     decode_outcome_encoding,
     outcome_asset_id,
 )
+from wayfinder_paths.adapters.hyperliquid_adapter.utils import (
+    normalize_l2_book,
+    spot_index_from_asset_id,
+    spot_info_coin,
+    usd_depth_in_band,
+)
 from wayfinder_paths.core.clients.HyperliquidDataClient import HYPERLIQUID_DATA_CLIENT
+from wayfinder_paths.core.clients.HyperliquidInfoClient import HYPERLIQUID_INFO_CLIENT
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.constants.hyperliquid import (
     ARBITRUM_USDC_ADDRESS,
@@ -2110,11 +2119,14 @@ async def hyperliquid_get_candles(
     limit: int = 500,
 ) -> dict[str, Any]:
     """
-    Fetch historical Hyperliquid perp candles from the backend time-series service.
+    Fetch historical Hyperliquid perp or spot candles.
 
     asset_name: Hyperliquid coin or canonical market name. Core perps may be
         passed as "HYPE" or "HYPE-USDC"; HIP-3/dex perps require the dex prefix
-        such as "xyz:SPCX".
+        such as "xyz:SPCX". Spot requires the exact pair from market search,
+        e.g. "HYPE/USDC" or "PURR/USDC"; spot uses public candleSnapshot,
+        returns completed candles only, and prices are in the pair's quote currency.
+        Only the latest 5000 spot candles are available; missing bars stay missing.
     interval: Candle interval, e.g. "1m", "5m", "15m", "1h", "4h", "1d".
     lookback_hours: Used when start_ms/end_ms are omitted.
     start_ms/end_ms: Optional exact UTC millisecond range; provide both or neither.
@@ -2181,6 +2193,7 @@ async def hyperliquid_get_funding_history(
 @catch_errors
 async def hyperliquid_search_mid_prices(
     asset_names: list[str] | None = None,
+    include_depth: bool = False,
 ) -> dict[str, Any]:
     """
     Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets for current mid prices.
@@ -2190,12 +2203,24 @@ async def hyperliquid_search_mid_prices(
 
     asset_names: Canonical market paths to filter mid prices (e.g. "BTC-USDC", "xyz:NVDA",
         "KNTQ/USDH", "#40"), get these from hyperliquid_search_market(). If omitted, returns every market's mid price. Prefer non empty asset_names for efficiency.
+    include_depth: For 1-8 exact assets, also fetch timestamped public bid/ask
+        notional within 50 bps of book mid. Spot must be USDC-quoted. No wallet
+        required. Levels are aggregated when needed to cover the band; the USD
+        amounts are approximate visible depth, NOT daily volume,
+        account buying power, or a future fill guarantee. Re-quote before execution.
     """
+    if include_depth and (not asset_names or len(asset_names) > 8):
+        return err("invalid_args", "include_depth requires 1-8 exact asset names")
+    if include_depth and any(
+        "/" in name and not name.endswith("/USDC") for name in asset_names or []
+    ):
+        return err("invalid_args", "USD depth requires USDC-quoted spot pairs")
     adapter = HyperliquidAdapter()
     success, prices = await adapter.get_all_mid_prices()
     if asset_names:
         filtered: dict[str, str] = {}
         unmatched: list[str] = []
+        depth: dict[str, Any] = {}
         for name in asset_names:
             asset_id = await adapter.get_asset_id(name)
             if asset_id is None:
@@ -2207,7 +2232,50 @@ async def hyperliquid_search_mid_prices(
                     break
             else:
                 unmatched.append(name)
+            if include_depth:
+                coin = (
+                    spot_info_coin(spot_index_from_asset_id(asset_id))
+                    if "/" in name
+                    else adapter.get_mid_price_key(name, asset_id)[0]
+                )
+                # Raw L2 is capped at 20 levels, often only a few bps. Widen the
+                # bins, never add overlapping snapshots or extrapolate depth.
+                mid = None
+                for precision in (None, 4, 3):
+                    request: dict[str, Any] = {"type": "l2Book", "coin": coin}
+                    if precision is not None:
+                        request["nSigFigs"] = precision
+                    raw = await HYPERLIQUID_INFO_CLIENT.post(request)
+                    book = normalize_l2_book(raw)
+                    if mid is None:
+                        mid = book["midPx"]
+                    # Aggregation rounds prices; retain the unaggregated mid.
+                    book["midPx"] = mid
+                    band_complete = all(
+                        len(book[side]) < 20
+                        or (
+                            book[side][-1][0] <= mid * 0.995
+                            if side == "bids"
+                            else book[side][-1][0] >= mid * 1.005
+                        )
+                        for side in ("bids", "asks")
+                    )
+                    if not mid or band_complete:
+                        break
+                bid, mid = usd_depth_in_band(book, 50, "sell")
+                ask, _ = usd_depth_in_band(book, 50, "buy")
+                depth[name] = {
+                    "observed_at_ms": raw["time"],
+                    "mid_px": mid,
+                    "bid_notional_usd_50bps": bid,
+                    "ask_notional_usd_50bps": ask,
+                    "aggregation_sig_figs": precision,
+                    "band_complete": band_complete,
+                    "source": "Hyperliquid public l2Book; approximate visible depth, not a fill guarantee; USDC valued at $1",
+                }
         result: dict[str, Any] = {"prices": filtered}
+        if include_depth:
+            result["depth"] = depth
         if unmatched:
             # Silently-empty responses sent agents chasing ghosts (2026-07-06
             # kBONK incident) — name the misses and how to fix them.
@@ -2231,6 +2299,15 @@ async def hyperliquid_search_mid_prices(
     return ok({"success": success, "prices": canonical})
 
 
+@lru_cache(maxsize=1)
+def _market_search_resources(
+    loop: asyncio.AbstractEventLoop,
+) -> tuple[HyperliquidAdapter, asyncio.Lock]:
+    # Reuse the adapter's existing public metadata TTLs. Scope the lock/cache
+    # to the MCP event loop; repeated asyncio.run() callers must not share it.
+    return HyperliquidAdapter(), asyncio.Lock()
+
+
 @catch_errors
 async def hyperliquid_search_market(
     query: str,
@@ -2239,30 +2316,52 @@ async def hyperliquid_search_market(
 ) -> dict[str, Any]:
     """
     Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets by a simple query string. An empty
-    query returns the first `limit` items from each bucket unfiltered.
+    query returns the first `limit` items from each selected bucket.
 
     query: A simple string containing asset names, for example: btc, eth, oil. Prefer non empty queries for efficiency.
     limit: Max number of results to return per category.
     market_type: optional filter — "perp", "hip3", "spot", or "hip4". Buckets the caller filters out come back empty.
 
-    Returns a list of asset names to be used when executing Hyperliquid orders.
+    Returns canonical asset names. Perp results also include public market
+    metadata, funding, 24h notional volume, margin modes and impact prices when
+    available (perp metadata cached up to 60s, spot mappings up to 300s).
+    Impact prices/volume are NOT executable quotes or orderbook depth.
+    Missing-provider warnings mean discovery is incomplete, not that a market is absent.
     """
-    adapter = HyperliquidAdapter()
-    (
-        (perp_ok, perp_data),
-        (spot_ok, spot_data),
-        (outcome_ok, outcome_data),
-    ) = await asyncio.gather(
-        adapter.get_meta_and_asset_ctxs(),
-        adapter.get_spot_assets(),
-        adapter.get_outcome_markets(),
-    )
-    if not perp_ok:
-        perp_data = [{"universe": []}, []]
-    if not spot_ok:
-        spot_data = {}
-    if not outcome_ok:
-        outcome_data = []
+    adapter, discovery_lock = _market_search_resources(asyncio.get_running_loop())
+    # Only query requested surfaces. An unavailable outcome provider must not
+    # discard usable spot/perp discovery (or be called for a spot-only lookup).
+    readers = {
+        "perp": adapter.get_meta_and_asset_ctxs,
+        "spot": adapter.get_spot_assets,
+        "outcome": adapter.get_outcome_markets,
+    }
+    selected = {
+        name: read
+        for name, read in readers.items()
+        if market_type is None
+        or name == {"hip3": "perp", "hip4": "outcome"}.get(market_type, market_type)
+    }
+    # Native researchers share one MCP process. Serialize cache misses so a
+    # parallel search burst does not rebuild the same perp universe N times.
+    async with discovery_lock:
+        responses = await asyncio.gather(
+            *(read() for read in selected.values()), return_exceptions=True
+        )
+    data: dict[str, Any] = {}
+    warnings: list[str] = []
+    for name, response in zip(selected, responses, strict=True):
+        if isinstance(response, BaseException):
+            if not isinstance(response, Exception):
+                raise response
+            warnings.append(f"{name} metadata unavailable; discovery is incomplete")
+        elif response[0]:
+            data[name] = response[1]
+        else:
+            warnings.append(f"{name} metadata unavailable; discovery is incomplete")
+    perp_data = data.get("perp", [{"universe": []}, []])
+    spot_data = data.get("spot", {})
+    outcome_data = data.get("outcome", [])
 
     # HIP-3 builder dexes carry a `<dex>:<base>` prefix; core perps don't have
     # a quote suffix, so tack on `-USDC` to render the canonical coin path.
@@ -2278,18 +2377,53 @@ async def hyperliquid_search_market(
     spots = list(spot_data) if isinstance(spot_data, dict) else []
     outcome_data = outcome_data if isinstance(outcome_data, list) else []
 
+    # Filter the universe before ranking/limiting so another market type cannot
+    # displace a valid result, including when browsing with an empty query.
+    match market_type:
+        case "perp":
+            perps = [name for name in perps if ":" not in name]
+            spots, outcome_data = [], []
+        case "hip3":
+            perps = [name for name in perps if ":" in name]
+            spots, outcome_data = [], []
+        case "spot":
+            perps, outcome_data = [], []
+        case "hip4":
+            perps, spots = [], []
+
+    perp_hits: list[dict[str, Any]]
     if not query.strip():
         perp_hits = [{"name": p} for p in perps[:limit]]
         spot_hits = [{"name": s} for s in spots[:limit]]
         outcome_hits = outcome_data[:limit]
     else:
+
+        def underlying(name: str) -> str:
+            return name.rsplit(":", 1)[-1].split("/", 1)[0].removesuffix("-usdc")
+
         terms = {
             a
             for token in query.lower().split()
             for a in MARKET_SEARCH_ALIASES.get(token, {token})
         }
+        query_underlyings = {underlying(token) for token in query.lower().split()}
+        market_terms = {
+            alias
+            for token in query_underlyings
+            for alias in MARKET_SEARCH_ALIASES.get(token, {token})
+        }
 
-        def score(text: str) -> float:
+        def score(text: str, *, market_name: bool) -> float:
+            if market_name:
+                # Canonical identity > underlying identity > alias > fuzzy match.
+                # Quote currencies and dex names are not underlying matches.
+                if text.lower() == query.strip().lower():
+                    return 2.0
+                text = underlying(text.lower())
+                if text in query_underlyings:
+                    return 1.75
+                if text in market_terms:
+                    return 1.5
             # matches / min(len_a, len_b) — rewards covering the shorter string
             # fully. HL token symbols are short and often vowel-stripped (KNTQ
             # for kinetiq, kBONK for bonk), so subsequence-style matching is the
@@ -2298,7 +2432,7 @@ async def hyperliquid_search_market(
             # candidates can be ranked-out downstream.
             candidate_tokens = [c for c in re.split(r"[^a-z0-9]+", text.lower()) if c]
             best = 0.0
-            for term in terms:
+            for term in market_terms if market_name else terms:
                 for ct in candidate_tokens:
                     sm = difflib.SequenceMatcher(None, term, ct)
                     matches = sum(b.size for b in sm.get_matching_blocks())
@@ -2307,8 +2441,12 @@ async def hyperliquid_search_market(
                         best = max(best, matches / denom)
             return best
 
-        def top(items, text_of):
-            scored = ((item, score(text_of(item))) for item in items)
+        def top[T](
+            items: list[T], text_of: Callable[[T], str], *, market_name: bool = False
+        ) -> list[T]:
+            scored = (
+                (item, score(text_of(item), market_name=market_name)) for item in items
+            )
             kept = sorted(
                 ((it, s) for it, s in scored if s >= MARKET_SEARCH_MIN_MATCH_SCORE),
                 key=lambda r: r[1],
@@ -2338,27 +2476,41 @@ async def hyperliquid_search_market(
                 .replace("<", " below ")
             )
 
-        perp_hits = [{"name": p} for p in top(perps, lambda p: p)][:limit]
-        spot_hits = [{"name": s} for s in top(spots, lambda s: s)][:limit]
-        outcome_hits = top(outcome_data, outcome_text)[:limit]
+        perp_hits = [{"name": p} for p in top(perps, lambda p: p, market_name=True)]
+        spot_hits = [{"name": s} for s in top(spots, lambda s: s, market_name=True)]
+        outcome_hits = top(outcome_data, outcome_text)
 
-    match market_type:
-        case "perp":
-            perp_hits = [h for h in perp_hits if ":" not in h["name"]]
-            spot_hits, outcome_hits = [], []
-        case "hip3":
-            perp_hits = [h for h in perp_hits if ":" in h["name"]]
-            spot_hits, outcome_hits = [], []
-        case "spot":
-            perp_hits, outcome_hits = [], []
-        case "hip4":
-            perp_hits, spot_hits = [], []
+    # Reuse the public data already fetched above; no wallet access or extra requests.
+    contexts = (
+        perp_data[1]
+        if isinstance(perp_data, (list, tuple)) and len(perp_data) > 1
+        else []
+    )
+    markets = {
+        adapter.canonical_asset_name(entry["name"], {}): _summarize_market_context(
+            entry, contexts[index] if index < len(contexts) else None
+        )
+        for index, entry in enumerate(perp_universe)
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+    }
+    for hit in perp_hits:
+        hit["market"] = {
+            key: value
+            for key, value in markets[hit["name"]].items()
+            if value is not None and key not in {"raw_metadata", "raw_context"}
+        }
+        hit["market"]["min_order_notional_usd"] = MIN_ORDER_USD_NOTIONAL
+        if (open_interest := hit["market"].pop("open_interest", None)) is not None:
+            hit["market"]["open_interest_base"] = open_interest
+            if (mid := hit["market"].get("mid_px")) is not None:
+                hit["market"]["open_interest_usd_at_mid"] = open_interest * mid
 
     return ok(
         {
             "perps": perp_hits,
             "spots": spot_hits,
             "outcomes": outcome_hits,
+            "warnings": warnings,
         }
     )
 

@@ -23,15 +23,22 @@ from wayfinder_paths.mcp.tools.tokens import (
 
 
 @pytest.mark.asyncio
-async def test_resolve_token_happy_path():
+@pytest.mark.parametrize("market_data", [False, True])
+async def test_resolve_token_happy_path(market_data: bool) -> None:
     fake_client = AsyncMock()
     fake_client.get_token_details = AsyncMock(return_value={"symbol": "USDC"})
 
-    with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
-        out = await onchain_resolve_token("usd-coin-arbitrum")
+    with (
+        patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client),
+        patch("wayfinder_paths.mcp.utils._report_tool_metric"),
+    ):
+        out = await onchain_resolve_token("usd-coin-arbitrum", market_data=market_data)
 
     assert out["ok"] is True
     assert out["result"]["symbol"] == "USDC"
+    fake_client.get_token_details.assert_awaited_once_with(
+        "usd-coin-arbitrum", market_data=market_data
+    )
 
 
 @pytest.mark.asyncio
@@ -239,6 +246,29 @@ def test_fuzzy_xml_backfills_match_score_from_legacy_confidence():
     )
 
     assert response["tokens"][0]["match_score"] == 72
+    assert "token_id" not in response["tokens"][0]
+
+
+@pytest.mark.parametrize(
+    "token_id",
+    [
+        "ethereum_0x5a98fcbea516cf06857215779fd812ca3bef1b32",
+        "solana_EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "ethereum-ethereum",
+    ],
+)
+def test_fuzzy_xml_preserves_lookup_id_without_certifying_identity(
+    token_id: str,
+) -> None:
+    response = TokenClient()._parse_fuzzy_xml(
+        f"<tokens><token><token_id>{token_id}</token_id>"
+        "<is_canonical>false</is_canonical><verification>unverified</verification>"
+        "</token></tokens>"
+    )
+
+    assert response["tokens"] == [
+        {"token_id": token_id, "is_canonical": False, "verification": "unverified"}
+    ]
 
 
 @pytest.mark.asyncio
@@ -263,7 +293,7 @@ async def test_get_settlement_assets_happy_path():
 
 
 @pytest.mark.asyncio
-async def test_list_tokens_happy_path():
+async def test_list_tokens_happy_path() -> None:
     fake_client = AsyncMock()
     fake_client.discover_tokens = AsyncMock(
         return_value={
@@ -279,7 +309,10 @@ async def test_list_tokens_happy_path():
 
     assert out["ok"] is True
     assert out["result"]["tokens"][0]["symbol"] == "CASHCAT"
-    fake_client.discover_tokens.assert_awaited_once_with("robinhood", "trending", 25)
+    fake_client.discover_tokens.assert_awaited_once_with(
+        "robinhood", "trending", 25, query=None
+    )
+    assert out["result"]["retrieved_at_ms"] > 0
 
 
 @pytest.mark.asyncio
@@ -294,14 +327,48 @@ async def test_list_tokens_rejects_bad_dimension():
 
 
 @pytest.mark.asyncio
-async def test_list_tokens_passes_volume_dimension_and_limit():
+async def test_list_tokens_passes_volume_dimension_and_limit() -> None:
     fake_client = AsyncMock()
     fake_client.discover_tokens = AsyncMock(return_value={"tokens": []})
     with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
         out = await onchain_list_tokens("base", "volume", 10)
 
     assert out["ok"] is True
-    fake_client.discover_tokens.assert_awaited_once_with("base", "volume", 10)
+    fake_client.discover_tokens.assert_awaited_once_with(
+        "base", "volume", 10, query=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_tokens_can_lookup_pool_stats_by_exact_address() -> None:
+    client = AsyncMock()
+    client.discover_tokens.return_value = {"tokens": []}
+    with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", client):
+        out = await onchain_list_tokens("base", query=ARC_USDC_ADDRESS)
+    assert out["ok"]
+    client.discover_tokens.assert_awaited_once_with(
+        "base", "trending", 25, query=ARC_USDC_ADDRESS
+    )
+
+
+@pytest.mark.asyncio
+async def test_discovery_client_passes_optional_query() -> None:
+    client = TokenClient()
+    response = httpx.Response(
+        200, json={"tokens": []}, request=httpx.Request("GET", "https://example.test")
+    )
+    try:
+        with patch.object(
+            client, "_authed_request", AsyncMock(return_value=response)
+        ) as request:
+            await client.discover_tokens("base", query=ARC_USDC_ADDRESS)
+            assert request.await_args is not None
+            assert request.await_args.kwargs["params"]["query"] == ARC_USDC_ADDRESS
+            await client.discover_tokens("base")
+            assert request.await_args is not None
+            assert "query" not in request.await_args.kwargs["params"]
+    finally:
+        await client.client.aclose()
 
 
 @pytest.mark.asyncio

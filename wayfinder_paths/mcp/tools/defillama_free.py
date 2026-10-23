@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from wayfinder_paths.core.clients.direct.DefiLlamaFreeClient import (
     DEFILLAMA_FREE_CLIENT,
@@ -32,10 +32,11 @@ async def research_defillama_free(
     chain: str = "_",
     coins: str = "_",
     query: str = "_",
-    dataType: str = "dailyFees",
+    dataType: Literal["dailyFees", "dailyRevenue", "dailyHoldersRevenue"] = "dailyFees",
     days: str | int = "30",
     limit: str | int = "25",
     cursor: str = "_",
+    includeChainBreakdown: bool = False,
 ) -> dict[str, Any]:
     """Call DeFiLlama free APIs directly from the OpenCode runtime.
 
@@ -43,14 +44,25 @@ async def research_defillama_free(
         dataset: protocols, protocol_search, protocol, tvl, protocol_fees,
             protocol_tvl_history, chains, stablecoins, yields_pools,
             current_prices, dex_overview, fees_overview, or open_interest_overview.
+            protocol returns metadata/current chain TVL, not bulk historical
+            arrays. Use protocol_tvl_history with days for bounded TVL history.
         protocolSlug: Required for protocol/tvl/protocol_fees/protocol_tvl_history.
         chain: Optional for dex_overview and fees_overview.
         coins: Required for current_prices, e.g. ethereum:0xa0b8...
         query: Required for protocol_search.
-        dataType: For protocol_fees: dailyFees or dailyRevenue.
+        dataType: For protocol_fees: dailyFees, dailyRevenue or dailyHoldersRevenue.
+            Holder revenue can include buybacks/burns or distributions to eligible
+            stakers; it is not necessarily cash income to every spot holder.
+            Missing data is unavailable, not zero holder value. Read the returned
+            provider methodology before interpreting a metric as business revenue.
+            Totals are provider-reported periods, not annualized projections.
         days: Lookback days for protocol_fees/protocol_tvl_history.
         limit: Result cap for page-able collection datasets.
         cursor: Page cursor returned by a prior response, or "_".
+        includeChainBreakdown: For protocol_fees, include the large per-chain
+            daily breakdown. Defaults to false; aggregate daily rows, reported
+            totals and methodology remain available. Use a short days window
+            when a chain-by-chain comparison is needed.
     """
     normalized = normalize_enum(
         dataset,
@@ -74,7 +86,26 @@ async def research_defillama_free(
     if normalized == "protocol":
         if protocolSlug == "_":
             raise ValueError("protocolSlug is required for dataset=protocol")
-        return ok(await DEFILLAMA_FREE_CLIENT.protocol(protocolSlug))
+        response = await DEFILLAMA_FREE_CLIENT.protocol(protocolSlug)
+        metadata = response["result"]
+        if not isinstance(metadata, dict):
+            raise ValueError("DeFiLlama protocol response is not an object")
+        history_fields = ("tvl", "chainTvls", "tokens", "tokensInUsd")
+        return ok(
+            {
+                **response,
+                "result": {
+                    **{
+                        key: value
+                        for key, value in metadata.items()
+                        if key not in history_fields
+                    },
+                    "historicalFieldsOmitted": [
+                        key for key in history_fields if key in metadata
+                    ],
+                },
+            }
+        )
     if normalized == "tvl":
         if protocolSlug == "_":
             raise ValueError("protocolSlug is required for dataset=tvl")
@@ -82,13 +113,15 @@ async def research_defillama_free(
     if normalized == "protocol_fees":
         if protocolSlug == "_":
             raise ValueError("protocolSlug is required for dataset=protocol_fees")
-        return ok(
-            await DEFILLAMA_FREE_CLIENT.protocol_fees(
-                protocolSlug,
-                data_type=dataType,
-                days=normalize_int(days, field_name="days", min_value=1),
-            )
+        response = await DEFILLAMA_FREE_CLIENT.protocol_fees(
+            protocolSlug,
+            data_type=dataType,
+            days=normalize_int(days, field_name="days", min_value=1),
         )
+        if not includeChainBreakdown:
+            response["result"].pop("chainDailyRows", None)
+            response["result"]["chainDailyRowsOmitted"] = True
+        return ok(response)
     if normalized == "protocol_tvl_history":
         if protocolSlug == "_":
             raise ValueError(
