@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable
 from typing import Any
 
 from eth_utils import to_checksum_address
@@ -34,7 +35,10 @@ from wayfinder_paths.core.utils.tokens import (
     get_token_balance,
     is_native_token,
 )
-from wayfinder_paths.core.utils.transaction import send_transaction
+from wayfinder_paths.core.utils.transaction import (
+    TransactionConfirmationError,
+    send_transaction,
+)
 from wayfinder_paths.core.utils.units import from_erc20_raw
 from wayfinder_paths.core.utils.wallets import (
     SessionExpiredError,
@@ -126,8 +130,22 @@ def _compact_quote(
     return result
 
 
+def _unconfirmed_transaction(exc: TransactionConfirmationError) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "status": "submitted",
+        "txn_hash": exc.txn_hash,
+        "chain_id": exc.chain_id,
+        "confirmed": False,
+        "error": str(exc),
+    }
+    explorer_link = get_etherscan_transaction_link(exc.chain_id, exc.txn_hash)
+    if explorer_link:
+        result["explorer_url"] = explorer_link
+    return result
+
+
 async def _broadcast(
-    sign_callback,
+    sign_callback: Callable[..., Any],
     tx: dict[str, Any],
     *,
     chain_id: int,
@@ -151,6 +169,10 @@ async def _broadcast(
         if explorer_link:
             result["explorer_url"] = explorer_link
         return True, result
+    except TransactionConfirmationError as exc:
+        # False stops dependent writes, while the explicit submitted status
+        # distinguishes an unknown outcome from a failed submission.
+        return False, _unconfirmed_transaction(exc)
     except SessionExpiredError:
         # Let the expired-session signal bubble to @catch_errors instead of
         # collapsing into a generic failed-broadcast tuple.
@@ -198,7 +220,9 @@ async def _broadcast_svm(
         return False, {"error": sanitize_for_json(str(e)), "chain_id": chain_id}
 
 
-def _tx_status(sent_ok: bool, waited: bool) -> str:
+def _tx_status(sent_ok: bool, waited: bool, sent: dict[str, Any]) -> str:
+    if sent.get("status") == "submitted":
+        return "submitted"
     if not sent_ok:
         return "failed"
     return "confirmed" if waited else "submitted"
@@ -235,22 +259,25 @@ def _resolved_token_decimals(
 
 async def _ensure_allowance(
     *,
-    sign_callback,
+    sign_callback: Callable[..., Any],
     chain_id: int,
     token_address: str,
     owner: str,
     spender: str,
     amount: int,
 ) -> tuple[bool, dict[str, Any] | None]:
-    sent_ok, txn_hash = await ensure_allowance(
-        token_address=token_address,
-        owner=owner,
-        spender=spender,
-        amount=amount,
-        chain_id=chain_id,
-        signing_callback=sign_callback,
-        confirmations=0,
-    )
+    try:
+        sent_ok, txn_hash = await ensure_allowance(
+            token_address=token_address,
+            owner=owner,
+            spender=spender,
+            amount=amount,
+            chain_id=chain_id,
+            signing_callback=sign_callback,
+            confirmations=0,
+        )
+    except TransactionConfirmationError as exc:
+        return False, _unconfirmed_transaction(exc)
     if not txn_hash:
         return sent_ok, None
     result: dict[str, Any] = {"txn_hash": txn_hash, "chain_id": chain_id}
@@ -305,6 +332,9 @@ async def onchain_swap(
     BRAP wait-bridge-execution endpoint). Pass `wait_for_receipt=False` for
     fire-and-forget broadcast (skips both waits for the swap). Route prerequisites
     always wait for successful receipts before the swap is submitted.
+    If confirmation is unavailable after broadcast, returns `status="submitted"`
+    with the affected transaction hash and stops dependent steps. Check that hash
+    before retrying; the transaction may already have executed.
 
     Args:
         wallet_label: Wallet label.
@@ -478,7 +508,7 @@ async def onchain_swap(
             wait_for_confirmation=wait_for_receipt,
         )
         response["effects"]["swap"] = sent
-        status = _tx_status(sent_ok, wait_for_receipt)
+        status = _tx_status(sent_ok, wait_for_receipt, sent)
 
         bridge_tracking = best_quote.get("bridge_tracking")
         if sent_ok and wait_for_receipt and bridge_tracking:
@@ -532,7 +562,7 @@ async def onchain_swap(
         )
         response["effects"].setdefault("prerequisites", []).append(approval)
         if not approved:
-            response["status"] = "failed"
+            response["status"] = _tx_status(approved, True, approval)
             response["raw"] = compact_quote
             return ok(response)
 
@@ -570,7 +600,7 @@ async def onchain_swap(
         if approval_tx:
             response["effects"]["approval"] = approval_tx
         if not ok_allow:
-            response["status"] = "failed"
+            response["status"] = _tx_status(ok_allow, True, approval_tx or {})
             response["raw"] = _compact_quote(quote_data, None)
             return ok(response)
 
@@ -583,7 +613,7 @@ async def onchain_swap(
     )
     response["effects"]["swap"] = sent
 
-    status = _tx_status(sent_ok, wait_for_receipt)
+    status = _tx_status(sent_ok, wait_for_receipt, sent)
 
     bridge_tracking = best_quote.get("bridge_tracking")
     if sent_ok and wait_for_receipt and bridge_tracking:
@@ -639,6 +669,8 @@ async def onchain_send(
     Waits for the receipt by default and returns `status="confirmed"`; pass
     `wait_for_receipt=False` for fire-and-forget broadcast on slow chains where the MCP
     client may time out.
+    A post-broadcast confirmation outage also returns `status="submitted"`, with
+    the hash and a warning to check its outcome before retrying the send.
 
     Args:
         wallet_label: Wallet label.
@@ -752,7 +784,7 @@ async def onchain_send(
             wait_for_confirmation=wait_for_receipt,
         )
         response["effects"][label] = sent
-        status = _tx_status(sent_ok, wait_for_receipt)
+        status = _tx_status(sent_ok, wait_for_receipt, sent)
         response["status"] = status
         response["raw"] = {"transaction": envelope, "token": token_meta}
         _annotate_profile(
@@ -784,7 +816,7 @@ async def onchain_send(
     )
     response["effects"][label] = sent
 
-    status = _tx_status(sent_ok, wait_for_receipt)
+    status = _tx_status(sent_ok, wait_for_receipt, sent)
     response["status"] = status
     response["raw"] = {"transaction": transaction, "token": token_meta}
 
