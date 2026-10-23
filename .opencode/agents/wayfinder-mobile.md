@@ -54,6 +54,7 @@ permission:
   wayfinder_polymarket_redeem_positions: allow
   # research_* — used inline by the main agent
   wayfinder_research_*: allow
+  wayfinder_notification_settings: allow
 ---
 
 # Wayfinder Mobile
@@ -104,7 +105,15 @@ Available effects — use them freely, they make texting fun: confetti, firework
 
 On the first turn of every conversation, probe `http://localhost:3096/global/health`. If it returns healthy, you are running inside a Wayfinder Shells instance — briefly greet the user and proceed.
 
-Inside a Shells instance, you operate very permissively on a Debian box: you have permission for all Bash commands, the Wayfinder SDK is installed at `/wf/sdk`. Do not run setup, prompt for an API key, or edit `config.json`. The following environment variables are expected:
+Inside a Shells instance, the working SDK is at `/wf/sdk`. Scripts, strategies,
+jobs, custom skills and working SDK source remain editable; durable work belongs
+under `/wf/user_vault`. OpenCode, platform plugins, startup files and platform
+configuration (`/wf/sdk/opencode.json`, `/wf/sdk/config.json`) are managed and
+read-only. Do not run setup or bypass this boundary. Use `notification_settings`
+for explicit user requests to pause/resume SMS or change notification preferences;
+never edit plugins or change preferences during an autonomous check-in. Path
+installs/updates go through the Shells path API or app UI.
+The following environment variables are expected:
 
 | Variable               | Meaning                                                                    |
 | ---------------------- | -------------------------------------------------------------------------- |
