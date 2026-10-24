@@ -8,6 +8,7 @@ from wayfinder_paths.core.constants.contracts import BASE_WETH
 
 AERODROME_SLIPSTREAM_DEPLOYMENT_INITIAL = "initial"
 AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGE_CAPS = "gauge_caps"
+AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGES_V3 = "gauges_v3"
 
 AERODROME_SLIPSTREAM_BY_CHAIN: dict[int, dict[str, object]] = {
     CHAIN_ID_BASE: {
@@ -56,7 +57,7 @@ AERODROME_SLIPSTREAM_BY_CHAIN: dict[int, dict[str, object]] = {
                     "0x0AD09A66af0154a84e86F761313d02d0abB6edd5"
                 ),
                 "dynamic_swap_fee_module": to_checksum_address(
-                    "0xDB45818A6db280ecfeB33cbeBd445423d0216b5D"
+                    "0x090b2A6bb475c00e2256e2095A60887cD710803b"
                 ),
             },
             "gauge_caps": {
@@ -94,10 +95,54 @@ AERODROME_SLIPSTREAM_BY_CHAIN: dict[int, dict[str, object]] = {
                     "0xCCC21f4750E8B3E9C095BCB5d2fF59247A2CCD35"
                 ),
                 "dynamic_swap_fee_module": to_checksum_address(
-                    "0x00cB12a1c84dfC1b9c70734C0385E769Bc86e9Ef"
+                    "0xF4Ecd78EBEB6d36CF7f80B5B6B41453515fe2785"
                 ),
                 "redistributor": to_checksum_address(
                     "0x11a53f31Bf406de59fCf9613E1922bd3E283A4B4"
+                ),
+            },
+            "gauges_v3": {
+                "dynamic_swap_fee_module": to_checksum_address(
+                    "0x87D8f999BBa9343E8099552426775B51C338E8CB"
+                ),
+                "gauge_factory": to_checksum_address(
+                    "0x385293CaE378C813F16f0C1334d774AdDDf56AbB"
+                ),
+                "gauge_implementation": to_checksum_address(
+                    "0x434BCcaB043311a20b16021C137EA81702790f7B"
+                ),
+                "mixed_quoter": to_checksum_address(
+                    "0x9951FF0b830E46ef0e7Ce34d9117e3214B1F0b5a"
+                ),
+                "mixed_quoter_v2": to_checksum_address(
+                    "0xb4A9E5Fc0727BEF09D819fcfc5ece8CA9bCf09EB"
+                ),
+                "mixed_quoter_v3": to_checksum_address(
+                    "0xCd2A7D98e82D6107eac1828ce8DeAA6acB65b555"
+                ),
+                "nonfungible_position_manager": to_checksum_address(
+                    "0xe1f8cd9AC4e4A65F54f38a5CdAfCA44f6dD68b53"
+                ),
+                "nonfungible_token_position_descriptor": to_checksum_address(
+                    "0xc85C126442bb5B654792A70135805a9778C8e3fE"
+                ),
+                "pool_factory": to_checksum_address(
+                    "0xf8f2eB4940CFE7d13603DDDD87f123820Fc061Ef"
+                ),
+                "pool_implementation": to_checksum_address(
+                    "0xc770898522D2A9c8Da7A10D63989b6b58305B665"
+                ),
+                "quoter": to_checksum_address(
+                    "0x514c8B5f54112481E28028F1166Bd78501089259"
+                ),
+                "redistributor": to_checksum_address(
+                    "0xEe5b3C7b333e2870B746b3B2b168EF0958e55e15"
+                ),
+                "swap_router": to_checksum_address(
+                    "0x698Cb2b6dd822994581fEa6eA4Fc755d1363A92F"
+                ),
+                "unstaked_fee_module": to_checksum_address(
+                    "0xc2cc3256434AfbC36Bb5e815e1Bb2151310a1a0b"
                 ),
             },
         },
