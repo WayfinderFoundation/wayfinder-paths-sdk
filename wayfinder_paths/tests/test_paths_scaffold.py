@@ -836,3 +836,9 @@ def test_compatible_runtime_version_applies_the_floor(pinned: str, resolved: str
 
     assert compatible_runtime_version("wayfinder-paths", pinned) == resolved
     assert compatible_runtime_version("other-runtime", "0.1.0") == "0.1.0"
+
+
+def test_compatible_runtime_version_accepts_a_missing_pin():
+    from wayfinder_paths.paths.runtime_registry import compatible_runtime_version
+
+    assert compatible_runtime_version("wayfinder-paths", None) == ""

@@ -69,7 +69,8 @@ def installed_runtime_package_version(package: str = "wayfinder-paths") -> str:
     return installed_package_version(package) or "0.0.0"
 
 
-def compatible_runtime_version(package: str, version: str) -> str:
+def compatible_runtime_version(package: str, version: str | None) -> str:
+    version = version or ""
     floor = RUNTIME_FLOORS.get(package)
     release, floor_release = _release(version), floor and _release(floor)
     if release and floor_release and release < floor_release:
