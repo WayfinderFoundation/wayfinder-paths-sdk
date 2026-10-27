@@ -16,6 +16,8 @@ from pathlib import Path
 
 import certifi
 
+from wayfinder_paths.core.utils.tls import verified_ssl_context
+
 IMPACTED_ROOTS = {
     "7DD78D5F4F13459A83DFF9ABBBA62EDBAF6F2D102BF257FD712F4D9F2746ED8D": "emSign Root TLS CA - G3",
     "F2EDAAFF3D9B701FB4D14C9F285F8C0BAD90FC3BCC1FA07D47F4718EDABA34A5": "emSign Root CS CA - G3",
@@ -57,3 +59,14 @@ def test_certifi_bundle_excludes_compromised_emudhra_cas():
     impacted = {**IMPACTED_ROOTS, **IMPACTED_INTERMEDIATES}
     trusted = sorted(impacted[fp] for fp in fingerprints & impacted.keys())
     assert not trusted, f"certifi {certifi.__version__} still trusts: {trusted}"
+
+
+def test_async_transport_context_trusts_only_the_certifi_bundle():
+    context = verified_ssl_context()
+    actual = {
+        hashlib.sha256(cert).hexdigest().upper()
+        for cert in context.get_ca_certs(binary_form=True)
+    }
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname
+    assert actual == bundle_fingerprints()

@@ -9,6 +9,7 @@ from aiocache import Cache
 from loguru import logger
 
 from wayfinder_paths.core.constants.base import DEFAULT_HTTP_HEADERS
+from wayfinder_paths.core.utils.tls import verified_ssl_context
 
 # Default Boros API endpoints
 # Open API endpoints (public, no auth required)
@@ -109,6 +110,7 @@ class BorosClient:
                 params=params,
                 json=json_body,
                 timeout=aiohttp.ClientTimeout(total=timeout_val),
+                ssl=verified_ssl_context(),
             ) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
