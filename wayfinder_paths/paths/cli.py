@@ -428,6 +428,7 @@ def _install_required_dependencies_for_path(
     activate: bool,
     visited: set[str],
 ) -> list[dict[str, Any]]:
+    _verify_registered_install(path_dir)
     manifest = _load_path_manifest(path_dir)
     dependency_results: list[dict[str, Any]] = []
     for dependency in _manifest_skill_dependencies(manifest, host=host):
@@ -1107,6 +1108,10 @@ def _find_state_dir_for_installed_path(path_dir: Path) -> Path | None:
     for candidate in (resolved, *resolved.parents):
         if candidate.name in {_INSTALL_DIRNAME, _LEGACY_INSTALL_DIRNAME}:
             return _state_dir_for_install_root(candidate)
+        if (candidate / _LOCKFILE_NAME).is_file() or (
+            candidate / _LEGACY_LOCKFILE_NAME
+        ).is_file():
+            return candidate
     return None
 
 
@@ -1165,6 +1170,27 @@ def _record_activation_for_entry(
     return updated_entry
 
 
+def _verify_installed_path(path_dir: Path, entry: dict[str, Any]) -> None:
+    try:
+        verify_installed_tree(
+            install_dir=path_dir,
+            expected_sha256=str(entry.get("bundle_sha256") or ""),
+        )
+    except (PathInstallError, BadZipFile, OSError) as exc:
+        raise click.ClickException(
+            f"Refusing to activate {path_dir.name}: {exc}"
+        ) from exc
+
+
+def _verify_registered_install(
+    path_dir: Path,
+) -> tuple[dict[str, Any], Path, str, dict[str, Any]] | None:
+    installed_entry = _resolve_installed_lock_entry(path_dir)
+    if installed_entry is not None:
+        _verify_installed_path(path_dir, installed_entry[3])
+    return installed_entry
+
+
 def _activate_export(
     *,
     host: str,
@@ -1182,7 +1208,7 @@ def _activate_export(
     source_dir: Path
 
     if path_dir is not None:
-        installed_entry = _resolve_installed_lock_entry(path_dir)
+        installed_entry = _verify_registered_install(path_dir)
         # Installed bundles are already published artifacts; avoid re-running
         # doctor because newer SDK validators can reject older live bundles.
         if installed_entry is not None:
@@ -1662,18 +1688,9 @@ def activate_cmd(
             .expanduser()
             .resolve()
         )
-        # Installed bundles are re-checked before every activation, including
-        # the boot-time restore on Shells boxes: nothing changed since install.
-        try:
-            integrity_warnings = verify_installed_tree(
-                install_dir=source_path,
-                expected_sha256=str(entry.get("bundle_sha256") or ""),
-            )
-        except (PathInstallError, BadZipFile) as exc:
-            raise click.ClickException(f"Refusing to activate {slug}: {exc}") from exc
+        _verify_installed_path(source_path, entry)
     else:
         source_path = Path(path_dir).expanduser().resolve() if path_dir else None
-        integrity_warnings = []
     rendered_export_path = (
         Path(export_path).expanduser().resolve() if export_path else None
     )
@@ -1700,8 +1717,6 @@ def activate_cmd(
     )
     if dependency_results:
         result["dependencies"] = dependency_results
-    if integrity_warnings:
-        result["integrity_warnings"] = integrity_warnings
 
     activation_recorded = False
     if source_path is not None:
@@ -2188,6 +2203,7 @@ def _install_path_version(
         ):
             raise collision
 
+        _verify_installed_path(dest, entry)
         manifest = _load_path_manifest(dest)
         if manifest.slug != slug or manifest.version != desired_version:
             raise collision

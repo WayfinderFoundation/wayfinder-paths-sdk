@@ -101,6 +101,7 @@ def _copy_optional_dirs(path_dir: Path, export_dir: Path) -> list[str]:
             continue
         _ensure_safe_copy_source(src)
         for dirpath, dirnames, filenames in os.walk(src):
+            dirnames[:] = [name for name in dirnames if name != "__pycache__"]
             for dirname in dirnames:
                 _ensure_safe_copy_source(Path(dirpath) / dirname)
             for filename in filenames:
@@ -108,7 +109,7 @@ def _copy_optional_dirs(path_dir: Path, export_dir: Path) -> list[str]:
         dest = export_dir / name
         if dest.exists():
             shutil.rmtree(dest)
-        shutil.copytree(src, dest)
+        shutil.copytree(src, dest, ignore=shutil.ignore_patterns("__pycache__"))
         for path in sorted(dest.rglob("*")):
             if path.is_file():
                 written.append(path.relative_to(export_dir).as_posix())
