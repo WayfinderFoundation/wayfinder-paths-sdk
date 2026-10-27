@@ -43,7 +43,6 @@ from wayfinder_paths.core.utils.uniswap_v3_math import (
     slippage_min,
     sqrt_price_x96_from_tick,
     sqrt_price_x96_to_price,
-    tick_to_price_decimal,
 )
 from wayfinder_paths.core.utils.uniswap_v3_math import (
     deadline as default_deadline,
@@ -1685,8 +1684,13 @@ class AerodromeSlipstreamAdapter(
                 self._token_decimals(state["token1"]),
             )
             price_now = state["price_token1_per_token0"]
-            price_low = tick_to_price_decimal(tick_lower, decimals0, decimals1)
-            price_high = tick_to_price_decimal(tick_upper, decimals0, decimals1)
+            # Same units as price_now (human token1 per token0).
+            price_low = sqrt_price_x96_to_price(
+                sqrt_price_x96_from_tick(tick_lower), decimals0, decimals1
+            )
+            price_high = sqrt_price_x96_to_price(
+                sqrt_price_x96_from_tick(tick_upper), decimals0, decimals1
+            )
             if price_now <= 0 or price_low <= 0 or price_high <= 0:
                 return True, {
                     "pool": state["pool"],
