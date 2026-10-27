@@ -527,7 +527,15 @@ def test_path_install_requests_intent_and_submits_receipt(
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path
@@ -654,11 +662,22 @@ def test_path_install_migrates_legacy_lockfile_and_directory(
                     "intent_id": "intent-456",
                     "path_slug": kwargs["slug"],
                     "version": kwargs["version"],
+                    "bundle_sha256": self.get_path_version(
+                        slug=kwargs["slug"], version=kwargs["version"]
+                    )["version"]["bundle_sha256"],
                 },
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path
@@ -826,6 +845,26 @@ def _build_path_bundle(
     )
 
 
+def _seal_installed_path(installed_path: Path) -> str:
+    """Zip an installed path's files into its bundle.zip, as install leaves it,
+    and return the sha256 activation will check."""
+    import zipfile
+
+    from wayfinder_paths.paths.install_safety import RUNTIME_ENTRIES
+
+    files = sorted(
+        p
+        for p in installed_path.rglob("*")
+        if p.is_file()
+        and p.relative_to(installed_path).parts[0] not in RUNTIME_ENTRIES
+        and "__pycache__" not in p.parts
+    )
+    with zipfile.ZipFile(installed_path / "bundle.zip", "w") as zf:
+        for file in files:
+            zf.write(file, file.relative_to(installed_path).as_posix())
+    return hashlib.sha256((installed_path / "bundle.zip").read_bytes()).hexdigest()
+
+
 def _write_paths_lockfile(tmp_path: Path, paths: dict[str, object]) -> Path:
     lock_dir = tmp_path / ".wayfinder"
     lock_dir.mkdir(parents=True, exist_ok=True)
@@ -922,12 +961,13 @@ def test_path_activate_supports_slug_for_installed_path(tmp_path: Path, monkeypa
         with_applet=False,
         with_skill=True,
     )
+    sealed_sha = _seal_installed_path(installed_path)
     _write_paths_lockfile(
         tmp_path,
         {
             "activate-demo": {
                 "version": "0.1.0",
-                "bundle_sha256": "abc123",
+                "bundle_sha256": sealed_sha,
                 "path": str(installed_path),
             }
         },
@@ -1001,12 +1041,13 @@ def test_path_activate_can_install_required_dependencies(tmp_path: Path, monkeyp
         with_applet=False,
         with_skill=True,
     )
+    sealed_sha = _seal_installed_path(installed_path)
     _write_paths_lockfile(
         tmp_path,
         {
             "activate-demo": {
                 "version": "0.1.0",
-                "bundle_sha256": "abc123",
+                "bundle_sha256": sealed_sha,
                 "path": str(installed_path),
             }
         },
@@ -1262,7 +1303,9 @@ def test_path_install_opencode_activates_and_installs_required_dependencies(
                     "intent_id": f"intent-{kwargs['slug']}",
                     "path_slug": kwargs["slug"],
                     "version": kwargs["version"],
-                    "bundle_sha256": "aa" * 32,
+                    "bundle_sha256": self.get_path_version(
+                        slug=kwargs["slug"], version=kwargs["version"]
+                    )["version"]["bundle_sha256"],
                     "issued_at": datetime.now(UTC).isoformat(),
                     "expires_at": expires_at,
                     "runtime": kwargs["runtime"],
@@ -1270,7 +1313,15 @@ def test_path_install_opencode_activates_and_installs_required_dependencies(
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             bundle = (
                 main_build.bundle_path
                 if slug == "install-opencode-demo"
@@ -1366,9 +1417,21 @@ class _DependencyRegistry:
 
     def create_install_intent(self, **kwargs: Any) -> dict[str, Any]:
         self.intents.append(kwargs["slug"])
-        return {"intent": {"intent_id": str(len(self.intents))}, "signature": "test"}
+        return {
+            "intent": {
+                "intent_id": str(len(self.intents)),
+                "path_slug": kwargs["slug"],
+                "version": kwargs["version"],
+                "bundle_sha256": self.bundles[kwargs["slug"]][
+                    kwargs["version"]
+                ].bundle_sha256,
+            },
+            "signature": "test",
+        }
 
-    def download_bundle(self, *, slug: str, version: str, out_path: Path) -> Path:
+    def download_bundle(
+        self, *, slug: str, version: str, out_path: Path, intent=None, signature=None
+    ) -> Path:
         self.downloads.append((slug, version))
         out_path.write_bytes(self.bundles[slug][version].bundle_path.read_bytes())
         return out_path
@@ -1415,18 +1478,31 @@ def test_dependency_download_rejection_stops_install(
     registry.publish("parent", dependencies=["middle" if transitive else "blocked"])
 
     def api(request: httpx.Request) -> httpx.Response:
-        assert request.url.path.endswith("/bundle.zip")
+        assert request.method == "POST"
+        assert request.url.path.endswith("/versions/0.1.0/download/")
         slug = request.url.path.split("/")[4]
         if slug == "blocked":
             return httpx.Response(404, json={"detail": "Not found."})
         registry.downloads.append((slug, "0.1.0"))
         return httpx.Response(
+            200,
+            json={"downloadUrl": f"https://storage.googleapis.com/artifacts/{slug}"},
+        )
+
+    def storage(request: httpx.Request) -> httpx.Response:
+        slug = request.url.path.rsplit("/", 1)[-1]
+        return httpx.Response(
             200, content=registry.bundles[slug]["0.1.0"].bundle_path.read_bytes()
         )
 
+    client_type = httpx.Client
     client = PathsApiClient(
         api_base_url="https://api.test",
-        client=httpx.Client(transport=httpx.MockTransport(api)),
+        client=client_type(transport=httpx.MockTransport(api)),
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.client.httpx.Client",
+        lambda **kw: client_type(transport=httpx.MockTransport(storage), **kw),
     )
     monkeypatch.setattr(registry, "download_bundle", client.download_bundle)
     result = CliRunner().invoke(
@@ -1848,7 +1924,9 @@ def test_path_install_claude_activates_and_installs_required_dependencies(
                     "intent_id": f"intent-{kwargs['slug']}",
                     "path_slug": kwargs["slug"],
                     "version": kwargs["version"],
-                    "bundle_sha256": "aa" * 32,
+                    "bundle_sha256": self.get_path_version(
+                        slug=kwargs["slug"], version=kwargs["version"]
+                    )["version"]["bundle_sha256"],
                     "issued_at": datetime.now(UTC).isoformat(),
                     "expires_at": expires_at,
                     "runtime": kwargs["runtime"],
@@ -1856,7 +1934,15 @@ def test_path_install_claude_activates_and_installs_required_dependencies(
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             bundle = (
                 main_build.bundle_path
                 if slug == "install-claude-demo"
@@ -2022,7 +2108,9 @@ def test_path_install_opencode_uses_bundled_sdk_skill_dependencies(
                     "intent_id": f"intent-{kwargs['slug']}",
                     "path_slug": kwargs["slug"],
                     "version": kwargs["version"],
-                    "bundle_sha256": "aa" * 32,
+                    "bundle_sha256": self.get_path_version(
+                        slug=kwargs["slug"], version=kwargs["version"]
+                    )["version"]["bundle_sha256"],
                     "issued_at": datetime.now(UTC).isoformat(),
                     "expires_at": expires_at,
                     "runtime": kwargs["runtime"],
@@ -2030,7 +2118,15 @@ def test_path_install_opencode_uses_bundled_sdk_skill_dependencies(
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             if slug != "install-opencode-bundled-demo":
                 raise AssertionError(f"unexpected bundle download for {slug}")
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2318,7 +2414,15 @@ def test_path_update_reuses_lockfile_activation_for_live_bonded_upgrade(
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path
@@ -2456,11 +2560,24 @@ def test_path_update_uses_default_activation_when_workspace_has_single_marker(
 
         def create_install_intent(self, **kwargs):
             return {
-                "intent": {"intent_id": "intent-default", "version": kwargs["version"]},
+                "intent": {
+                    "intent_id": "intent-default",
+                    "path_slug": kwargs["slug"],
+                    "version": kwargs["version"],
+                    "bundle_sha256": built.bundle_sha256,
+                },
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path
@@ -2558,7 +2675,15 @@ def test_path_remove_opencode_deactivates_and_cleans_lockfile(
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path
@@ -2688,11 +2813,26 @@ def test_path_update_falls_back_to_pull_without_activation_target(
 
         def create_install_intent(self, **kwargs):
             return {
-                "intent": {"intent_id": "intent-manual", "version": kwargs["version"]},
+                "intent": {
+                    "intent_id": "intent-manual",
+                    "path_slug": kwargs["slug"],
+                    "version": kwargs["version"],
+                    "bundle_sha256": self.get_path_version(
+                        slug=kwargs["slug"], version=kwargs["version"]
+                    )["version"]["bundle_sha256"],
+                },
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path
@@ -2807,11 +2947,26 @@ def test_path_update_reuses_lockfile_activation_root_for_codex_repo(
 
         def create_install_intent(self, **kwargs):
             return {
-                "intent": {"intent_id": "intent-codex", "version": kwargs["version"]},
+                "intent": {
+                    "intent_id": "intent-codex",
+                    "path_slug": kwargs["slug"],
+                    "version": kwargs["version"],
+                    "bundle_sha256": self.get_path_version(
+                        slug=kwargs["slug"], version=kwargs["version"]
+                    )["version"]["bundle_sha256"],
+                },
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path
@@ -2967,11 +3122,23 @@ def test_path_update_reuses_lockfile_activation_root_for_other_supported_hosts(
                 "intent": {
                     "intent_id": f"intent-{slug}",
                     "version": kwargs["version"],
+                    "path_slug": kwargs["slug"],
+                    "bundle_sha256": self.get_path_version(
+                        slug=kwargs["slug"], version=kwargs["version"]
+                    )["version"]["bundle_sha256"],
                 },
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path
@@ -3108,11 +3275,23 @@ def test_path_update_warns_and_falls_back_when_recorded_root_is_missing(
                 "intent": {
                     "intent_id": "intent-missing-root",
                     "version": kwargs["version"],
+                    "path_slug": kwargs["slug"],
+                    "bundle_sha256": self.get_path_version(
+                        slug=kwargs["slug"], version=kwargs["version"]
+                    )["version"]["bundle_sha256"],
                 },
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path
@@ -3206,11 +3385,23 @@ def test_path_update_allows_explicit_version_override(tmp_path: Path, monkeypatc
                 "intent": {
                     "intent_id": "intent-override",
                     "version": kwargs["version"],
+                    "path_slug": kwargs["slug"],
+                    "bundle_sha256": self.get_path_version(
+                        slug=kwargs["slug"], version=kwargs["version"]
+                    )["version"]["bundle_sha256"],
                 },
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path

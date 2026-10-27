@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+Security
+
+1. **Path installs need a signed intent and download from the private bucket**: `wayfinder path install` creates the install intent first and refuses if it doesn't name exactly the registry's slug, version and bundle sha256. The bundle URL comes from `POST /api/v1/paths/{slug}/versions/{version}/download/` with that intent, and the bytes are fetched from `storage.googleapis.com` with a fresh client: no API key, cookies or proxy settings, no redirects, TLS verified, 50 MiB cap. A backend that streams bundle bytes or redirects is refused.
+2. **Bundles are always verified**: the sha256 check can no longer be skipped (`--no-verify` is accepted but ignored with a warning), and runs before anything is extracted.
+3. **Safe, atomic extraction** (`paths/install_safety.py`): download, verification and extraction happen in a staging directory that replaces the install only when all of it passed. Symlinks, special files, setuid/setgid, traversal, absolute or Windows paths, case-colliding duplicates, reserved runtime names, more than 2000 entries, more than 200 MiB, or compression above 100x refuse the whole bundle instead of being skipped. Files are written 0644. Slugs and versions must be safe single path components.
+4. **Activation re-verifies installed paths**: `wayfinder path activate --slug` (including the Shells boot-time restore) checks `bundle.zip` against the lockfile sha256 and every bundle file on disk against the bundle, and refuses a modified, missing, symlinked or newly executable file. Files the bundle didn't contain are reported as `integrity_warnings`.
+5. **Upload status** (`wayfinder path upload-status <id>`) for publishes queued for isolated review.
+
 ## [0.11.1] - 2026-09-09
 
 Published to PyPI on 2026-09-09 (tag `v0.11.1`). The version string has read 0.11.1 on main since 2026-06-23 and no 0.11.1 wheel shipped before this date, so this entry covers everything merged from #445 through #782.
