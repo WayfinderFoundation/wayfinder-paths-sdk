@@ -9,7 +9,19 @@ from urllib import error, parse, request
 
 _PYPI_PROJECT_URL = "https://pypi.org/pypi/{package}/json"
 _PYPI_TIMEOUT_SECONDS = 2.0
-LEGACY_RUNTIME_MINIMUMS = {("wayfinder-paths", "0.11.0"): "0.11.1"}
+# Oldest release that can run a path from a plain PyPI install. Earlier
+# releases either lack `wayfinder path` (<=0.10.0 on PyPI; the repo version ran
+# ahead of what was published) or don't declare their `mcp` dependency
+# (0.11.0), so a path pinned to one would bootstrap a runtime that can't start.
+# Pins below the floor are raised to it.
+RUNTIME_FLOORS = {"wayfinder-paths": "0.11.1"}
+
+
+def _release(version: str) -> tuple[int, ...] | None:
+    try:
+        return tuple(int(part) for part in version.split("."))
+    except ValueError:
+        return None
 
 
 @dataclass(frozen=True)
@@ -57,8 +69,13 @@ def installed_runtime_package_version(package: str = "wayfinder-paths") -> str:
     return installed_package_version(package) or "0.0.0"
 
 
-def compatible_runtime_version(package: str, version: str) -> str:
-    return LEGACY_RUNTIME_MINIMUMS.get((package, version), version)
+def compatible_runtime_version(package: str, version: str | None) -> str:
+    version = version or ""
+    floor = RUNTIME_FLOORS.get(package)
+    release, floor_release = _release(version), floor and _release(floor)
+    if release and floor_release and release < floor_release:
+        return floor
+    return version
 
 
 def scaffold_runtime_package_version(package: str = "wayfinder-paths") -> str:

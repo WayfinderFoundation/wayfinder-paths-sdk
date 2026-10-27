@@ -178,3 +178,30 @@ def test_component_failure_is_not_retried(
 
     assert bootstrap["run"](None, []) == 7
     assert calls == [method]
+
+
+@pytest.mark.parametrize("pinned", ["0.7.0", "0.8.0", "0.9.0", "0.10.0", "0.11.0"])
+def test_pins_below_the_floor_use_the_installed_runtime(
+    bootstrap: dict[str, Any], monkeypatch: pytest.MonkeyPatch, pinned: str
+) -> None:
+    # Paths pinned before 0.11.1 used to skip the installed SDK and pip-install
+    # their pin, which can't run a path (no `wayfinder path`, or no `mcp`).
+    runtime_globals = bootstrap["run"].__globals__
+    monkeypatch.setattr(sys, "version_info", (3, 12, 4))
+    monkeypatch.setattr(
+        runtime_globals["importlib_metadata"], "version", lambda _: "0.11.1"
+    )
+    manifest = {"package": "wayfinder-paths", "version": pinned, "python": ">=3.12"}
+    assert bootstrap["_runtime_requirement"](manifest) == ("wayfinder-paths", "0.11.1")
+    assert bootstrap["_runtime_package_spec"](manifest) == "wayfinder-paths~=0.11.1"
+    assert bootstrap["_current_runtime_is_compatible"](manifest) is True
+
+
+@pytest.mark.parametrize("pinned", ["0.11.1", "0.11.4", "0.12.0", "1.0", "dev"])
+def test_pins_at_or_above_the_floor_are_unchanged(
+    bootstrap: dict[str, Any], pinned: str
+) -> None:
+    manifest = {"package": "wayfinder-paths", "version": pinned}
+    assert bootstrap["_runtime_requirement"](manifest) == ("wayfinder-paths", pinned)
+    other = {"package": "other-runtime", "version": "0.1.0"}
+    assert bootstrap["_runtime_requirement"](other) == ("other-runtime", "0.1.0")
