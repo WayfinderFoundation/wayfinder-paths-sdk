@@ -221,7 +221,7 @@ Hyperliquid minimums:
 - **Minimum deposit: $5 USD** (deposits below this are **lost**)
 - **Minimum order: $10 USD notional** (applies to both perp and spot)
 
-HIP-3 dex abstraction (xyz/flx/vntl/hyna/km perps), HIP-4 outcome markets (binary daily prediction contracts, **collateralized in USDC**), and Hyperliquid deposits/withdrawals: all handled in the Hyperliquid adapter/tooling — load `/using-hyperliquid-adapter` when scripting.
+HIP-3 dex abstraction (xyz/flx/vntl/hyna/km/abcd/cash/para/mkts/io perps), HIP-4 outcome markets (binary daily prediction contracts, **collateralized in USDC**), and Hyperliquid deposits/withdrawals: all handled in the Hyperliquid adapter/tooling — load `/using-hyperliquid-adapter` when scripting.
 
 Polymarket quick flows:
 

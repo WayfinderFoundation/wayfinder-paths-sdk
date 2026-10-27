@@ -184,7 +184,7 @@ Supported chain identifiers (not exhaustive; check `onchain_get_gas_token` befor
 
 ### Hyperliquid
 
-Hyperliquid is a CLOB for: perpetuals (synthetic assets with leverage), spot tokens, HIP-3 builder deployed perp dexes (`xyz`, `para`, `flx`, `vntl`, `km`, `cash`, `hyna`) (custom exchanges offering perpetuals) and HIP-4 outcome markets (prediction market).
+Hyperliquid is a CLOB for: perpetuals (synthetic assets with leverage), spot tokens, HIP-3 builder deployed perp dexes (`xyz`, `para`, `io`, `mkts`, `flx`, `vntl`, `km`, `cash`, `hyna`, `abcd`) (custom exchanges offering perpetuals) and HIP-4 outcome markets (prediction market).
 
 #### Minimums
 
@@ -205,7 +205,7 @@ Hyperliquid balances are separate from a user's EVM balances. To place transacti
 | Market type | Format        | Example     | Notes                                                                           |
 | ----------- | ------------- | ----------- | ------------------------------------------------------------------------------- |
 | Perp        | `BASE-QUOTE`  | `HYPE-USDC` |                                                                                 |
-| HIP-3       | `dex:BASE`    | `xyz:SP500` | Builder-deployed; one of `xyz`, `para`, `flx`, `vntl`, `km`, `cash`, `hyna`.    |
+| HIP-3       | `dex:BASE`    | `xyz:SP500` | Builder-deployed; one of `xyz`, `para`, `io`, `mkts`, `flx`, `vntl`, `km`, `cash`, `hyna`, `abcd`. |
 | Spot        | `BASE/QUOTE`  | `HYPE/USDC` | Prefer Unit wrapper variants ([unit.xyz](https://unit.xyz)) (e.g. `UETH/USDC`). |
 | HIP-4       | `#<encoding>` | `#200`      | `#{100_000_000 + 10*outcome_id + side}`                                         |
 
