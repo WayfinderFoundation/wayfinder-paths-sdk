@@ -15,11 +15,13 @@ from wayfinder_paths.core.utils.transaction import (
     SponsorshipUnavailableError,
     TransactionRevertedError,
     _get_transaction_from_address,
+    broadcast_transaction,
     gas_limit_transaction,
     gas_price_transaction,
     nonce_transaction,
     send_sponsored_transaction,
     send_transaction,
+    wait_for_transaction_receipt,
 )
 from wayfinder_paths.core.utils.web3 import get_transaction_chain_id
 
@@ -597,3 +599,159 @@ async def test_sign_and_send_transaction_signs_with_private_key_and_delegates():
     assert mock_send.call_args.kwargs == {"wait_for_receipt": False, "confirmations": 0}
     raw = await sign_callback(tx)
     assert isinstance(raw, bytes) and len(raw) > 60
+
+
+def _rpc(name: str, **eth) -> MagicMock:
+    """A fake web3 whose eth methods are the given AsyncMocks/values."""
+    web3 = MagicMock()
+    web3.provider.endpoint_uri = name
+    web3.provider.disconnect = AsyncMock()
+    for attr, value in eth.items():
+        setattr(web3.eth, attr, value)
+    return web3
+
+
+def _dead(status: int = 404) -> AsyncMock:
+    request = httpx.Request("POST", "https://rpc.test/")
+    return AsyncMock(
+        side_effect=httpx.HTTPStatusError(
+            f"{status}", request=request, response=httpx.Response(status)
+        )
+    )
+
+
+@pytest.mark.asyncio
+class TestDeadUpstreamTolerance:
+    """One dead RPC in a chain's pool must not abort a send; all dead must."""
+
+    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    async def test_nonce_uses_the_live_rpcs(self, ctx):
+        ctx.return_value.__aenter__.return_value = [
+            _rpc("a", get_transaction_count=AsyncMock(return_value=5)),
+            _rpc("b", get_transaction_count=_dead()),
+            _rpc("c", get_transaction_count=AsyncMock(return_value=7)),
+        ]
+        result = await nonce_transaction({"from": RANDOM_USER_0, "chainId": 999})
+        assert result["nonce"] == 7
+
+    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    async def test_nonce_raises_when_every_rpc_fails(self, ctx):
+        ctx.return_value.__aenter__.return_value = [
+            _rpc("a", get_transaction_count=_dead(502)),
+            _rpc("b", get_transaction_count=_dead(404)),
+        ]
+        with pytest.raises(httpx.HTTPStatusError, match="502"):
+            await nonce_transaction({"from": RANDOM_USER_0, "chainId": 999})
+
+    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    async def test_eip1559_fees_use_the_live_rpcs(self, ctx):
+        live = _rpc(
+            "a",
+            get_block=AsyncMock(return_value={"baseFeePerGas": 10}),
+            fee_history=AsyncMock(return_value={"reward": [[4]] * 10}),
+        )
+        dead = _rpc("b", get_block=_dead(), fee_history=_dead())
+        ctx.return_value.__aenter__.return_value = [dead, live]
+        result = await gas_price_transaction({"chainId": 999})
+        priority = int(max(4 * SUGGESTED_PRIORITY_FEE_MULTIPLIER, 0))
+        assert result["maxPriorityFeePerGas"] == priority
+        assert result["maxFeePerGas"] > priority
+
+    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    async def test_legacy_gas_price_uses_the_live_rpcs(self, ctx):
+        chain_id = next(iter(PRE_EIP_1559_CHAIN_IDS))
+        ctx.return_value.__aenter__.return_value = [
+            _rpc("a", gas_price=_dead()()),
+            _rpc("b", gas_price=asyncio.sleep(0, result=100)),
+        ]
+        result = await gas_price_transaction({"chainId": chain_id})
+        assert result["gasPrice"] == int(100 * SUGGESTED_GAS_PRICE_MULTIPLIER)
+
+    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    async def test_broadcast_falls_through_a_dead_rpc(self, ctx):
+        dead = _rpc("a", send_raw_transaction=_dead())
+        live = _rpc(
+            "b", send_raw_transaction=AsyncMock(return_value=bytes.fromhex("ab" * 32))
+        )
+        ctx.return_value.__aenter__.return_value = [dead, live]
+        assert await broadcast_transaction(999, b"\x02signed") == "ab" * 32
+        dead.eth.send_raw_transaction.assert_awaited_once()
+
+    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    async def test_broadcast_already_known_after_a_failure_is_success(self, ctx):
+        signed = b"\x02signed"
+        ctx.return_value.__aenter__.return_value = [
+            _rpc("a", send_raw_transaction=_dead(502)),
+            _rpc(
+                "b",
+                send_raw_transaction=AsyncMock(side_effect=ValueError("already known")),
+            ),
+        ]
+        assert (
+            await broadcast_transaction(999, signed) == AsyncWeb3.keccak(signed).hex()
+        )
+
+    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    async def test_broadcast_raises_the_first_error_when_every_rpc_fails(self, ctx):
+        ctx.return_value.__aenter__.return_value = [
+            _rpc("a", send_raw_transaction=AsyncMock(side_effect=ValueError("nonce"))),
+            _rpc("b", send_raw_transaction=_dead()),
+        ]
+        with pytest.raises(ValueError, match="nonce"):
+            await broadcast_transaction(999, b"\x02signed")
+
+    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    async def test_receipt_wait_ignores_a_dead_rpc(self, ctx):
+        receipt = {"status": 1, "blockNumber": 10}
+
+        async def slow_receipt(*_args, **_kwargs):
+            await asyncio.sleep(0.01)
+            return receipt
+
+        dead = _rpc("a", wait_for_transaction_receipt=_dead())
+        type(dead.eth).block_number = property(lambda _self: _dead()())
+        live = _rpc(
+            "b", wait_for_transaction_receipt=AsyncMock(side_effect=slow_receipt)
+        )
+        type(live.eth).block_number = property(
+            lambda _self: asyncio.sleep(0, result=12)
+        )
+        ctx.return_value.__aenter__.return_value = [dead, live]
+        result = await wait_for_transaction_receipt(999, "0xab", confirmations=3)
+        assert result == receipt
+
+    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    async def test_receipt_wait_raises_when_every_rpc_fails(self, ctx):
+        ctx.return_value.__aenter__.return_value = [
+            _rpc("a", wait_for_transaction_receipt=_dead(502)),
+            _rpc("b", wait_for_transaction_receipt=_dead(404)),
+        ]
+        with pytest.raises(httpx.HTTPStatusError):
+            await wait_for_transaction_receipt(999, "0xab")
+
+    @patch("wayfinder_paths.core.utils.transaction.logger")
+    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    async def test_failure_logs_never_include_the_rpc_key(self, ctx, log):
+        keyed = "https://eth.example/v2/k3y-abcdef0123456789?token=t0k-0123456789"
+        request = httpx.Request("POST", keyed)
+        error = httpx.HTTPStatusError(
+            f"404 Not Found for url '{keyed}'",
+            request=request,
+            response=httpx.Response(404),
+        )
+        dead = _rpc(
+            keyed,
+            get_transaction_count=AsyncMock(side_effect=error),
+            send_raw_transaction=AsyncMock(side_effect=error),
+        )
+        live = _rpc(
+            "b",
+            get_transaction_count=AsyncMock(return_value=1),
+            send_raw_transaction=AsyncMock(return_value=b"\xab"),
+        )
+        ctx.return_value.__aenter__.return_value = [dead, live]
+        await nonce_transaction({"from": RANDOM_USER_0, "chainId": 1})
+        await broadcast_transaction(1, b"\x02signed")
+        logged = " ".join(str(c) for c in log.warning.call_args_list)
+        assert "eth.example" in logged and "404" in logged
+        assert "k3y-" not in logged and "t0k-" not in logged
