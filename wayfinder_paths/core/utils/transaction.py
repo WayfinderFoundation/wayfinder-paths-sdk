@@ -1,8 +1,10 @@
 import asyncio
 import math
+import re
 import time
 from collections.abc import Callable
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 import httpx
 from eth_account import Account
@@ -97,6 +99,47 @@ def _raise_revert_error(
     raise error
 
 
+_URL = re.compile(r"[a-z][a-z0-9+.-]*://[^\s'\"]+", re.IGNORECASE)
+
+
+def _rpc_label(web3: AsyncWeb3) -> str:
+    # Provider URLs often carry the API key in the path or query; log the host.
+    return urlsplit(str(web3.provider.endpoint_uri)).hostname or "RPC"
+
+
+def _redacted(error: BaseException) -> str:
+    # HTTP errors embed the full request URL in their message.
+    return f"{type(error).__name__}: {_URL.sub('<url>', str(error))}"
+
+
+async def _from_each_rpc(what: str, web3s: list[AsyncWeb3], call: Callable) -> list:
+    """Run `call(web3)` on every RPC and keep the answers that came back.
+
+    The fan-out exists to see past divergent upstream views, not to require
+    every upstream to be up: one dead or partial provider (e.g. 404ing a
+    method) must not abort the send. Failures are logged and dropped; this
+    raises only when every RPC failed.
+    """
+    results = await asyncio.gather(
+        *[call(web3) for web3 in web3s], return_exceptions=True
+    )
+    answers, errors = [], []
+    for web3, result in zip(web3s, results, strict=True):
+        if not isinstance(result, BaseException):
+            answers.append(result)
+        elif isinstance(result, Exception):
+            errors.append(result)
+            logger.warning(
+                f"{what} failed on {_rpc_label(web3)}, "
+                f"using the other RPCs: {_redacted(result)}"
+            )
+        else:
+            raise result
+    if not answers:
+        raise errors[0]
+    return answers
+
+
 def _get_transaction_from_address(transaction: dict) -> str:
     if "from" not in transaction:
         raise ValueError("Transaction does not contain from address")
@@ -114,8 +157,8 @@ async def nonce_transaction(transaction: dict):
         )
 
     async with web3s_from_chain_id(get_transaction_chain_id(transaction)) as web3s:
-        nonces = await asyncio.gather(
-            *[_get_nonce(web3, from_address) for web3 in web3s]
+        nonces = await _from_each_rpc(
+            "Nonce lookup", web3s, lambda web3: _get_nonce(web3, from_address)
         )
         transaction["nonce"] = max(nonces)
 
@@ -149,7 +192,7 @@ async def gas_price_transaction(transaction: dict):
             transaction.pop("maxFeePerGas", None)
             transaction.pop("maxPriorityFeePerGas", None)
 
-            gas_prices = await asyncio.gather(*[_get_gas_price(web3) for web3 in web3s])
+            gas_prices = await _from_each_rpc("Gas price", web3s, _get_gas_price)
             gas_price = max(gas_prices)
 
             transaction["gasPrice"] = int(gas_price * SUGGESTED_GAS_PRICE_MULTIPLIER)
@@ -158,9 +201,9 @@ async def gas_price_transaction(transaction: dict):
             # dynamic-fee (EIP-1559) transaction.
             transaction.pop("gasPrice", None)
 
-            base_fees = await asyncio.gather(*[_get_base_fee(web3) for web3 in web3s])
-            priority_fees = await asyncio.gather(
-                *[_get_priority_fee(web3) for web3 in web3s]
+            base_fees = await _from_each_rpc("Base fee", web3s, _get_base_fee)
+            priority_fees = await _from_each_rpc(
+                "Priority fee", web3s, _get_priority_fee
             )
 
             base_fee = max(base_fees)
@@ -253,10 +296,33 @@ async def gas_limit_transaction(transaction: dict):
     return transaction
 
 
+def _already_known(error: Exception) -> bool:
+    message = str(error).lower()
+    return "already known" in message or "known transaction" in message
+
+
 async def broadcast_transaction(chain_id, signed_transaction: bytes) -> str:
-    async with web3_from_chain_id(chain_id) as web3:
-        tx_hash = await web3.eth.send_raw_transaction(signed_transaction)
-        return tx_hash.hex()
+    """Send to the first RPC that accepts, falling through dead ones in order.
+
+    Resending the same signed bytes is safe: it can only land once. An RPC that
+    already has it (an earlier one may have accepted before failing) counts as
+    a success.
+    """
+    errors: list[Exception] = []
+    async with web3s_from_chain_id(chain_id) as web3s:
+        for web3 in web3s:
+            try:
+                tx_hash = await web3.eth.send_raw_transaction(signed_transaction)
+                return tx_hash.hex()
+            except Exception as e:
+                if errors and _already_known(e):
+                    return AsyncWeb3.keccak(signed_transaction).hex()
+                errors.append(e)
+                logger.warning(
+                    f"Broadcast failed on {_rpc_label(web3)}, "
+                    f"trying the next RPC: {_redacted(e)}"
+                )
+    raise errors[0]
 
 
 async def sponsorship_enabled() -> bool:
@@ -355,20 +421,32 @@ async def wait_for_transaction_receipt(
         return await web3.eth.block_number
 
     async with web3s_from_chain_id(chain_id) as web3s:
+        # First RPC to return a receipt wins; one that errors (rather than
+        # just not having it yet) drops out instead of failing the wait.
         tasks = [
             asyncio.create_task(_wait_for_receipt(web3, txn_hash)) for web3 in web3s
         ]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-        receipt = done.pop().result()
+        receipt, error = None, None
+        try:
+            for next_done in asyncio.as_completed(tasks):
+                try:
+                    receipt = await next_done
+                    break
+                except Exception as e:
+                    error = error or e
+                    logger.warning(f"Receipt lookup failed on one RPC: {_redacted(e)}")
+        finally:
+            for task in tasks:
+                task.cancel()
+        if receipt is None:
+            raise error
 
         if receipt.get("status") == 0:
             raise TransactionRevertedError(txn_hash, receipt)
 
         target_block = receipt["blockNumber"] + confirmations - 1
         while (
-            max(await asyncio.gather(*[_get_block_number(w) for w in web3s]))
+            max(await _from_each_rpc("Block number", web3s, _get_block_number))
             < target_block
         ):
             await asyncio.sleep(poll_interval)
