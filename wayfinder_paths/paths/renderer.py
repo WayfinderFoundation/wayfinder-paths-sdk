@@ -18,7 +18,7 @@ from wayfinder_paths.paths.manifest import (
     resolve_skill_runtime,
 )
 from wayfinder_paths.paths.path_safety import unsafe_bundle_path_reason
-from wayfinder_paths.paths.runtime_registry import LEGACY_RUNTIME_MINIMUMS
+from wayfinder_paths.paths.runtime_registry import RUNTIME_FLOORS
 
 
 class PathSkillRenderError(Exception):
@@ -895,7 +895,7 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "SKILL_ROOT = Path(__file__).resolve().parents[1]",
             "RUNTIME_MANIFEST_PATH = SKILL_ROOT / 'runtime' / 'manifest.json'",
             "DEFAULT_RUNTIME_CONFIG_PATH = SKILL_ROOT / '.runtime' / 'config.json'",
-            f"LEGACY_RUNTIME_MINIMUMS = {LEGACY_RUNTIME_MINIMUMS!r}",
+            f"RUNTIME_FLOORS = {RUNTIME_FLOORS!r}",
             "",
             "",
             "def _load_manifest() -> dict[str, object]:",
@@ -1029,7 +1029,15 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "def _runtime_requirement(manifest: dict[str, object]) -> tuple[str, str]:",
             "    package = str(manifest.get('package') or 'wayfinder-paths')",
             "    version = str(manifest.get('version') or '').strip()",
-            "    return package, LEGACY_RUNTIME_MINIMUMS.get((package, version), version)",
+            "    floor = RUNTIME_FLOORS.get(package)",
+            "    try:",
+            "        below_floor = bool(floor) and tuple(int(p) for p in version.split('.')) < tuple(",
+            "            int(p) for p in floor.split('.')",
+            "        )",
+            "    except ValueError:",
+            "        below_floor = False",
+            "    # Pins older than the floor can't bootstrap a working runtime from PyPI.",
+            "    return package, floor if below_floor else version",
             "",
             "",
             "def _runtime_package_spec(manifest: dict[str, object]) -> str:",

@@ -1,5 +1,6 @@
 # Core dependencies
 aiohttp>=3.13.0
+certifi>=2026.10.19
 python-dotenv>=1.1.1
 loguru>=0.7.3
 PyYAML>=6.0.1

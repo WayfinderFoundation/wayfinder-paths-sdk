@@ -817,3 +817,28 @@ def yaml_safe_load(path: Path) -> dict[str, object]:
     parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert isinstance(parsed, dict)
     return parsed
+
+
+@pytest.mark.parametrize(
+    ("pinned", "resolved"),
+    [
+        ("0.7.0", "0.11.1"),
+        ("0.10.0", "0.11.1"),
+        ("0.11.0", "0.11.1"),
+        ("0.11.1", "0.11.1"),
+        ("0.12.0", "0.12.0"),
+        ("", ""),
+        ("dev", "dev"),
+    ],
+)
+def test_compatible_runtime_version_applies_the_floor(pinned: str, resolved: str):
+    from wayfinder_paths.paths.runtime_registry import compatible_runtime_version
+
+    assert compatible_runtime_version("wayfinder-paths", pinned) == resolved
+    assert compatible_runtime_version("other-runtime", "0.1.0") == "0.1.0"
+
+
+def test_compatible_runtime_version_accepts_a_missing_pin():
+    from wayfinder_paths.paths.runtime_registry import compatible_runtime_version
+
+    assert compatible_runtime_version("wayfinder-paths", None) == ""
