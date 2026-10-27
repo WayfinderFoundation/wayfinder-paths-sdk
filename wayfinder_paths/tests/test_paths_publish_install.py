@@ -1156,7 +1156,7 @@ def test_path_activate_skips_doctor_for_installed_paths(
         {
             "activate-demo": {
                 "version": "0.1.0",
-                "bundle_sha256": "abc123",
+                "bundle_sha256": _seal_installed_path(installed_path),
                 "path": str(installed_path),
             }
         },
@@ -1466,6 +1466,62 @@ def _invoke_path(*args: str) -> dict[str, Any]:
     return json.loads(result.output)["result"]
 
 
+@pytest.mark.parametrize("route", ["slug", "path", "update"])
+@pytest.mark.parametrize("custom_root", [False, True])
+def test_every_installed_activation_route_rejects_modified_files(
+    dependency_registry: _DependencyRegistry, route: str, custom_root: bool
+) -> None:
+    dependency_registry.publish("integrity-demo")
+    root = str(Path.cwd() / ("custom-installs" if custom_root else ".wayfinder/paths"))
+    result = _invoke_path(
+        "install",
+        "--slug",
+        "integrity-demo",
+        "--dir",
+        root,
+        "--no-activate",
+        "--no-include-dependencies",
+    )
+    installed = Path(result["dest"])
+    manifest = installed / "wfpath.yaml"
+    manifest.write_text(manifest.read_text() + "\nsummary: modified after install\n")
+    if route == "update":
+        args = ["update", "integrity-demo", "--version", "0.1.0", "--dir", root]
+    else:
+        args = (
+            ["activate", "--path", str(installed)]
+            if route == "path"
+            else ["activate", "--slug", "integrity-demo", "--dir", root]
+        )
+    response = CliRunner().invoke(
+        path_cli, [*args, "--host", "codex", "--scope", "repo"]
+    )
+    assert response.exit_code != 0
+    assert "Installed file was modified" in response.output
+    assert not Path(".agents/skills/integrity-demo").exists()
+
+
+def test_activation_does_not_copy_runtime_python_caches(
+    dependency_registry: _DependencyRegistry,
+) -> None:
+    dependency_registry.publish("cache-demo")
+    result = _invoke_path(
+        "install", "--slug", "cache-demo", "--no-activate", "--no-include-dependencies"
+    )
+    installed = Path(result["dest"])
+    cache = installed / "skill" / "scripts" / "__pycache__"
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / "json.cpython-312.pyc").write_bytes(b"untrusted runtime cache")
+
+    _invoke_path(
+        "activate", "--slug", "cache-demo", "--host", "codex", "--scope", "repo"
+    )
+
+    export = Path(".agents/skills/cache-demo")
+    assert export.is_dir()
+    assert not list(export.rglob("*.pyc"))
+
+
 @pytest.mark.parametrize("transitive", [False, True])
 def test_dependency_download_rejection_stops_install(
     dependency_registry: _DependencyRegistry,
@@ -1690,6 +1746,8 @@ def test_reused_dependency_still_fetches_missing_transitive_dependency(
         "manifest_slug",
         "manifest_version",
         "invalid_manifest",
+        "modified_component",
+        "extra_module",
     ],
 )
 def test_dependency_reuse_rejects_incomplete_or_conflicting_install(
@@ -1724,6 +1782,12 @@ def test_dependency_reuse_rejects_incomplete_or_conflicting_install(
         manifest_path.unlink()
     elif damage == "invalid_manifest":
         manifest_path.write_text("skill: [")
+    elif damage == "modified_component":
+        manifest_path.write_text(manifest_path.read_text() + "\nsummary: tampered\n")
+    elif damage == "extra_module":
+        extra = dest / "skill" / "scripts" / "json.py"
+        extra.parent.mkdir(parents=True, exist_ok=True)
+        extra.write_text("# Unreviewed module\n")
     else:
         manifest = yaml.safe_load(manifest_path.read_text())
         manifest["slug" if damage == "manifest_slug" else "version"] = (

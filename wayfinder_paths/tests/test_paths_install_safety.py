@@ -62,6 +62,8 @@ def test_clean_bundle_extracts_without_exec_bits(tmp_path: Path) -> None:
         [("bundle.zip", b"x", 0)],
         [(".wf-state/x", b"x", 0)],
         [("install-intent.json", b"{}", 0)],
+        [("scripts/__pycache__/run.cpython-312.pyc", b"bytecode", 0)],
+        [("scripts/run.pyc", b"bytecode", 0)],
         [("Readme.md", b"a", 0), ("README.md", b"b", 0)],
         [("a", b"file", 0), ("a/b", b"nested", 0)],
     ],
@@ -78,6 +80,8 @@ def test_clean_bundle_extracts_without_exec_bits(tmp_path: Path) -> None:
         "reserved-bundle",
         "reserved-state",
         "reserved-intent",
+        "python-cache",
+        "sourceless-bytecode",
         "case-duplicate",
         "file-and-dir",
     ],
@@ -142,12 +146,16 @@ def test_verify_accepts_an_untouched_install_and_runtime_files(tmp_path: Path) -
     assert verify_installed_tree(install_dir=install_dir, expected_sha256=sha) == []
 
 
-def test_verify_warns_about_files_not_in_the_bundle(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "extra", ["skill/extra.md", "skill/scripts/json.py", "sitecustomize.py"]
+)
+def test_verify_rejects_files_not_in_the_bundle(tmp_path: Path, extra: str) -> None:
     install_dir, sha = _installed(tmp_path)
-    (install_dir / "skill" / "extra.md").write_text("added later")
-    assert verify_installed_tree(install_dir=install_dir, expected_sha256=sha) == [
-        "File not in the reviewed bundle: skill/extra.md"
-    ]
+    target = install_dir / extra
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("added later")
+    with pytest.raises(PathInstallError, match="File not in the reviewed bundle"):
+        verify_installed_tree(install_dir=install_dir, expected_sha256=sha)
 
 
 @pytest.mark.parametrize(

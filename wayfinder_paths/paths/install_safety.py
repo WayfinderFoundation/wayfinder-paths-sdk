@@ -83,6 +83,8 @@ def _member_path(info: ZipInfo) -> PurePosixPath | None:
         raise PathInstallError(f"Bundle contains an unsafe path: {name!r}")
     if rel.parts[0] in RUNTIME_ENTRIES:
         raise PathInstallError(f"Bundle contains a reserved path: {name!r}")
+    if "__pycache__" in rel.parts or rel.suffix.lower() in {".pyc", ".pyo"}:
+        raise PathInstallError(f"Bundle contains Python bytecode: {name!r}")
     # Unix mode bits, when the archiver recorded them. Many writers (Python's
     # zipfile, the backend rebuild) store permissions without a file type, so
     # only a type other than a regular file is refused.
@@ -170,8 +172,8 @@ def safe_extract_zip(zip_path: Path, *, dest_dir: Path) -> list[str]:
 def verify_installed_tree(*, install_dir: Path, expected_sha256: str) -> list[str]:
     """Check an installed path before activation: ``bundle.zip`` still has the
     sha256 recorded at install, and every bundle file on disk is byte-identical
-    to the bundle. Raises on any difference; returns warnings for extra files
-    the bundle didn't contain (outside the runtime directories)."""
+    to the bundle. Raises on differences and extra files outside runtime/cache
+    directories. Runtime/cache directories must never enter runnable exports."""
     bundle = install_dir / "bundle.zip"
     expected = str(expected_sha256 or "").strip().lower()
     if not expected:
@@ -202,7 +204,6 @@ def verify_installed_tree(*, install_dir: Path, expected_sha256: str) -> list[st
                     digest.update(chunk)
             if sha256_file(on_disk) != digest.hexdigest():
                 raise PathInstallError(f"Installed file was modified: {rel}")
-    warnings = []
     for current, dirnames, filenames in os.walk(root, followlinks=False):
         here = Path(current)
         dirnames[:] = [
@@ -216,5 +217,7 @@ def verify_installed_tree(*, install_dir: Path, expected_sha256: str) -> list[st
             if rel.parts[0] in RUNTIME_ENTRIES:
                 continue
             if rel.as_posix() not in members:
-                warnings.append(f"File not in the reviewed bundle: {rel.as_posix()}")
-    return sorted(warnings)
+                raise PathInstallError(
+                    f"File not in the reviewed bundle: {rel.as_posix()}"
+                )
+    return []
