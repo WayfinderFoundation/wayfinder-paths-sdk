@@ -859,6 +859,57 @@ async def test_slipstream_prob_in_range_week_matches_gaussian_estimate():
 
 
 @pytest.mark.asyncio
+async def test_slipstream_prob_in_range_week_mixed_decimals():
+    # WETH (18 decimals) / USDC (6 decimals): pool state reports the human
+    # price (~2,022 USDC per WETH), so the range bounds must be in the same
+    # units for the log-ratio to be meaningful.
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
+    sigma_annual = 0.8
+    current_tick = -200_200
+    tick_lower = current_tick - 600
+    tick_upper = current_tick + 600
+    price_now = 1.0001**current_tick * 10 ** (18 - 6)
+
+    with (
+        patch.object(
+            adapter,
+            "slipstream_pool_state",
+            new=AsyncMock(
+                return_value=(
+                    True,
+                    {
+                        "pool": FAKE_POOL,
+                        "token0": "0x0000000000000000000000000000000000000011",
+                        "token1": "0x0000000000000000000000000000000000000012",
+                        "price_token1_per_token0": price_now,
+                    },
+                )
+            ),
+        ),
+        patch.object(
+            adapter,
+            "_token_decimals",
+            new=AsyncMock(side_effect=[18, 6]),
+        ),
+    ):
+        ok, data = await adapter.slipstream_prob_in_range_week(
+            pool=FAKE_POOL,
+            tick_lower=tick_lower,
+            tick_upper=tick_upper,
+            sigma_annual=sigma_annual,
+        )
+
+    denom = sigma_annual * math.sqrt(7.0 / 365.0)
+    half_width = 600 * math.log(1.0001)
+    expected = AerodromeSlipstreamAdapter._phi(
+        half_width / denom
+    ) - AerodromeSlipstreamAdapter._phi(-half_width / denom)
+
+    assert ok is True
+    assert data["prob_in_range_week"] == pytest.approx(expected, rel=1e-6)
+
+
+@pytest.mark.asyncio
 async def test_stake_position_dead_gauge_returns_clean_error(adapter_with_signer):
     voter = MagicMock()
     voter.functions.isAlive = MagicMock(return_value=_mock_call(False))
