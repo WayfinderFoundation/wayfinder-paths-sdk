@@ -1,8 +1,10 @@
 import asyncio
 import math
+import re
 import time
 from collections.abc import Callable
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 import httpx
 from eth_account import Account
@@ -97,6 +99,19 @@ def _raise_revert_error(
     raise error
 
 
+_URL = re.compile(r"[a-z][a-z0-9+.-]*://[^\s'\"]+", re.IGNORECASE)
+
+
+def _rpc_label(web3: AsyncWeb3) -> str:
+    # Provider URLs often carry the API key in the path or query; log the host.
+    return urlsplit(str(web3.provider.endpoint_uri)).hostname or "RPC"
+
+
+def _redacted(error: BaseException) -> str:
+    # HTTP errors embed the full request URL in their message.
+    return f"{type(error).__name__}: {_URL.sub('<url>', str(error))}"
+
+
 async def _from_each_rpc(what: str, web3s: list[AsyncWeb3], call: Callable) -> list:
     """Run `call(web3)` on every RPC and keep the answers that came back.
 
@@ -115,8 +130,8 @@ async def _from_each_rpc(what: str, web3s: list[AsyncWeb3], call: Callable) -> l
         elif isinstance(result, Exception):
             errors.append(result)
             logger.warning(
-                f"{what} failed on {web3.provider.endpoint_uri}, "
-                f"using the other RPCs: {result}"
+                f"{what} failed on {_rpc_label(web3)}, "
+                f"using the other RPCs: {_redacted(result)}"
             )
         else:
             raise result
@@ -304,8 +319,8 @@ async def broadcast_transaction(chain_id, signed_transaction: bytes) -> str:
                     return AsyncWeb3.keccak(signed_transaction).hex()
                 errors.append(e)
                 logger.warning(
-                    f"Broadcast failed on {web3.provider.endpoint_uri}, "
-                    f"trying the next RPC: {e}"
+                    f"Broadcast failed on {_rpc_label(web3)}, "
+                    f"trying the next RPC: {_redacted(e)}"
                 )
     raise errors[0]
 
@@ -419,7 +434,7 @@ async def wait_for_transaction_receipt(
                     break
                 except Exception as e:
                     error = error or e
-                    logger.warning(f"Receipt lookup failed on one RPC: {e}")
+                    logger.warning(f"Receipt lookup failed on one RPC: {_redacted(e)}")
         finally:
             for task in tasks:
                 task.cancel()

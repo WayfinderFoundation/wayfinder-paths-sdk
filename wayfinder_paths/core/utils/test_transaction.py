@@ -728,3 +728,30 @@ class TestDeadUpstreamTolerance:
         ]
         with pytest.raises(httpx.HTTPStatusError):
             await wait_for_transaction_receipt(999, "0xab")
+
+    @patch("wayfinder_paths.core.utils.transaction.logger")
+    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    async def test_failure_logs_never_include_the_rpc_key(self, ctx, log):
+        keyed = "https://eth.example/v2/k3y-abcdef0123456789?token=t0k-0123456789"
+        request = httpx.Request("POST", keyed)
+        error = httpx.HTTPStatusError(
+            f"404 Not Found for url '{keyed}'",
+            request=request,
+            response=httpx.Response(404),
+        )
+        dead = _rpc(
+            keyed,
+            get_transaction_count=AsyncMock(side_effect=error),
+            send_raw_transaction=AsyncMock(side_effect=error),
+        )
+        live = _rpc(
+            "b",
+            get_transaction_count=AsyncMock(return_value=1),
+            send_raw_transaction=AsyncMock(return_value=b"\xab"),
+        )
+        ctx.return_value.__aenter__.return_value = [dead, live]
+        await nonce_transaction({"from": RANDOM_USER_0, "chainId": 1})
+        await broadcast_transaction(1, b"\x02signed")
+        logged = " ".join(str(c) for c in log.warning.call_args_list)
+        assert "eth.example" in logged and "404" in logged
+        assert "k3y-" not in logged and "t0k-" not in logged
