@@ -628,3 +628,114 @@ def test_claude_export_preserves_existing_agent_contract(tmp_path: Path):
     assert "wayfinder_artifact_gate" not in claude_agent_text
     assert claude_rules.exists()
     assert claude_settings.exists()
+
+
+def _write_opencode_patch(tmp_path: Path, patch: dict) -> Path:
+    source_dir = tmp_path / "export"
+    (source_dir / "install").mkdir(parents=True)
+    (source_dir / "runtime").mkdir()
+    (source_dir / "install" / "opencode.json").write_text(
+        json.dumps(patch), encoding="utf-8"
+    )
+    (source_dir / "runtime" / "export.json").write_text(
+        json.dumps(
+            {
+                "install_targets": [
+                    {
+                        "op": "merge_json",
+                        "source": "install/opencode.json",
+                        "destination": "opencode.json",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return source_dir
+
+
+def _project(tmp_path: Path, config: dict) -> Path:
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "opencode.json").write_text(json.dumps(config), encoding="utf-8")
+    return root
+
+
+def _installed(root: Path) -> dict:
+    return json.loads((root / "opencode.json").read_text(encoding="utf-8"))
+
+
+def test_opencode_export_raises_subagent_depth_only_for_paths_with_workers(
+    tmp_path: Path,
+):
+    # OpenCode 1.19+ allows one subagent level by default; a pipeline runs its
+    # orchestrator as a subagent and fans out to workers beneath it.
+    pipeline = render_skill_exports(
+        path_dir=_make_pipeline_path(tmp_path), hosts=["opencode"]
+    )
+    config = json.loads(
+        _read_text(pipeline.exports["opencode"].export_dir / "install/opencode.json")
+    )
+    assert config["subagent_depth"] == 2
+
+    skill_only = tmp_path / "skill-only"
+    init_path(path_dir=skill_only, slug="skill-only", with_skill=True)
+    report = render_skill_exports(path_dir=skill_only, hosts=["opencode"])
+    config = json.loads(
+        _read_text(report.exports["opencode"].export_dir / "install/opencode.json")
+    )
+    assert "subagent_depth" not in config
+
+
+@pytest.mark.parametrize(
+    ("existing", "patch_depth", "expected"),
+    [
+        (None, 2, 2),  # unset (OpenCode default 1) -> raised
+        (1, 2, 2),  # explicitly 1 -> raised
+        (3, 2, 3),  # deeper setting is never lowered
+        (None, 50, 2),  # an export can't ask for more than pipelines need
+        (None, 0, None),  # nonsense values are ignored
+        (None, True, None),
+        (None, "2", None),
+    ],
+)
+def test_opencode_activation_only_raises_subagent_depth(
+    tmp_path: Path, existing, patch_depth, expected
+):
+    base = {"model": "wayfinder/deepseek-v4-pro", "instructions": ["BASE.md"]}
+    if existing is not None:
+        base["subagent_depth"] = existing
+    root = _project(tmp_path, base)
+    source = _write_opencode_patch(
+        tmp_path,
+        {
+            "instructions": ["AGENTS.md"],
+            "agent": {"x-orchestrator": {"permission": {"task": {"*": "deny"}}}},
+            "subagent_depth": patch_depth,
+        },
+    )
+
+    _apply_install_targets(source, root)
+
+    installed = _installed(root)
+    assert installed.get("subagent_depth") == expected
+    assert installed["model"] == base["model"]
+
+
+def test_removing_a_path_keeps_the_shared_subagent_depth(tmp_path: Path):
+    root = _project(tmp_path, {"instructions": ["BASE.md"]})
+    source = _write_opencode_patch(
+        tmp_path,
+        {
+            "instructions": ["AGENTS.md"],
+            "agent": {"x-orchestrator": {"permission": {}}},
+            "subagent_depth": 2,
+        },
+    )
+    _apply_install_targets(source, root)
+    _remove_install_targets(source, root)
+
+    removed = _installed(root)
+    assert "agent" not in removed
+    # Another installed pipeline may still rely on it.
+    assert removed["subagent_depth"] == 2

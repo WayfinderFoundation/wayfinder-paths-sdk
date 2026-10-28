@@ -801,8 +801,14 @@ def _render_opencode_artifact_gate_tool(manifest: PathManifest) -> str:
     )
 
 
+# The orchestrator runs as a subagent (its command sets `subtask: true`, or the
+# primary agent hands off to it), and its workers are subagents of that, so a
+# path with workers needs two levels. OpenCode 1.19+ allows one by default.
+OPENCODE_PIPELINE_SUBAGENT_DEPTH = 2
+
+
 def _render_opencode_config(manifest: PathManifest, skill: PathSkillConfig) -> str:
-    payload = {
+    payload: dict[str, Any] = {
         "$schema": "https://opencode.ai/config.json",
         "instructions": ["AGENTS.md"],
         "agent": {
@@ -811,6 +817,8 @@ def _render_opencode_config(manifest: PathManifest, skill: PathSkillConfig) -> s
             }
         },
     }
+    if manifest.agents:
+        payload["subagent_depth"] = OPENCODE_PIPELINE_SUBAGENT_DEPTH
     return json.dumps(payload, indent=2) + "\n"
 
 

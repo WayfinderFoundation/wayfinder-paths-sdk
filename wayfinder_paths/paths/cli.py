@@ -36,6 +36,7 @@ from wayfinder_paths.paths.preview import (
     preview_path,
 )
 from wayfinder_paths.paths.renderer import (
+    OPENCODE_PIPELINE_SUBAGENT_DEPTH,
     PathSkillRenderError,
     PathSkillRenderReport,
     render_skill_exports,
@@ -661,6 +662,9 @@ def _merge_json_file(dest_path: Path, patch_path: Path) -> None:
 
 
 _OPENCODE_CONFIG_INSTALL_KEYS = {"agent", "instructions"}
+# Shared by every installed path, so it only ever goes up on install and is
+# left in place on removal (another path may still need the depth).
+_OPENCODE_SUBAGENT_DEPTH_KEY = "subagent_depth"
 
 
 def _is_opencode_config_path(path: Path) -> bool:
@@ -688,8 +692,32 @@ def _merge_opencode_config_patch(dest_path: Path, patch_path: Path) -> None:
     if not isinstance(patch_payload, dict):
         raise click.ClickException(f"Install patch must be a JSON object: {patch_path}")
     merged = _deep_merge(current, _opencode_config_install_patch(patch_payload))
+    depth = _raised_subagent_depth(
+        current.get(_OPENCODE_SUBAGENT_DEPTH_KEY),
+        patch_payload.get(_OPENCODE_SUBAGENT_DEPTH_KEY),
+    )
+    if depth is not None:
+        merged[_OPENCODE_SUBAGENT_DEPTH_KEY] = depth
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     dest_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+
+
+def _raised_subagent_depth(current: Any, required: Any) -> int | None:
+    """The depth to write, or None to leave the key as it is.
+
+    A patch can come from a pre-rendered export, so it may only ask for up to
+    the depth the renderer itself emits; it never lowers a deeper setting.
+    """
+    if not isinstance(required, int) or isinstance(required, bool) or required < 1:
+        return None
+    required = min(required, OPENCODE_PIPELINE_SUBAGENT_DEPTH)
+    if (
+        isinstance(current, int)
+        and not isinstance(current, bool)
+        and current >= required
+    ):
+        return None
+    return required
 
 
 def _merge_markdown_file(dest_path: Path, patch_path: Path, *, section_id: str) -> None:
