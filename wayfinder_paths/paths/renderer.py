@@ -268,6 +268,16 @@ def _opencode_orchestrator_mode(manifest: PathManifest) -> str:
     return "all"
 
 
+def _opencode_has_workers(manifest: PathManifest) -> bool:
+    """Only a path that declares worker agents gets an orchestrator.
+
+    A skill-only path is just a skill: its command and AGENTS.md run it on the
+    current agent. An orchestrator told to fan out to workers, with none it may
+    call, can only stop with a diagnostic.
+    """
+    return bool(manifest.agents)
+
+
 def _opencode_command_subtask(manifest: PathManifest) -> bool:
     host = manifest.host.opencode if manifest.host else None
     if host and host.command_subtask is not None:
@@ -499,22 +509,36 @@ def _render_opencode_agents_md(manifest: PathManifest, skill: PathSkillConfig) -
         else skill.name
     )
     dependencies = _opencode_required_skill_names(manifest)
-    lines = [
-        f"## Wayfinder path: {manifest.slug}",
-        "",
-        f"When the user asks to run or install `{manifest.slug}`, prefer `/{command_name}`.",
-        "If handling natural language directly, invoke the Wayfinder orchestrator instead of `general` or `explore`.",
-        "",
-        "Rules:",
-        f"- Prefer `/{command_name}`.",
-        f"- Invoke `{skill.name}-orchestrator` for direct agent execution.",
-        "- Never invoke `general` or `explore` for this workflow.",
-        f"- The orchestrator must load `{skill.name}`.",
-    ]
-    for dependency_name in dependencies:
-        lines.append(
-            f"- The orchestrator must load `{dependency_name}` before analysis."
-        )
+    if _opencode_has_workers(manifest):
+        lines = [
+            f"## Wayfinder path: {manifest.slug}",
+            "",
+            f"When the user asks to run or install `{manifest.slug}`, prefer `/{command_name}`.",
+            "If handling natural language directly, invoke the Wayfinder orchestrator instead of `general` or `explore`.",
+            "",
+            "Rules:",
+            f"- Prefer `/{command_name}`.",
+            f"- Invoke `{skill.name}-orchestrator` for direct agent execution.",
+            "- Never invoke `general` or `explore` for this workflow.",
+            f"- The orchestrator must load `{skill.name}`.",
+        ]
+        for dependency_name in dependencies:
+            lines.append(
+                f"- The orchestrator must load `{dependency_name}` before analysis."
+            )
+    else:
+        lines = [
+            f"## Wayfinder path: {manifest.slug}",
+            "",
+            f"When the user asks to run or install `{manifest.slug}`, prefer `/{command_name}`.",
+            f"If handling natural language directly, load the `{skill.name}` skill and follow it in the current session.",
+            "",
+            "Rules:",
+            f"- Prefer `/{command_name}`.",
+            f"- Load `{skill.name}` before doing the work, and do the work yourself.",
+        ]
+        for dependency_name in dependencies:
+            lines.append(f"- Load `{dependency_name}` before analysis.")
     if manifest.pipeline:
         lines.extend(
             [
@@ -523,8 +547,9 @@ def _render_opencode_agents_md(manifest: PathManifest, skill: PathSkillConfig) -
                 "- Cite artifact file paths in the final answer.",
             ]
         )
+    worker = "worker, " if _opencode_has_workers(manifest) else ""
     lines.append(
-        "- If a required model, skill, worker, tool, data source, or artifact is missing, stop with a diagnostic."
+        f"- If a required model, skill, {worker}tool, data source, or artifact is missing, stop with a diagnostic."
     )
     return "\n".join(lines) + "\n"
 
@@ -624,12 +649,20 @@ def _render_opencode_command(
     *,
     model_override: str | None = None,
 ) -> str:
-    agent_name = f"{skill.name}-orchestrator"
+    has_workers = _opencode_has_workers(manifest)
+    routing = (
+        [
+            f"agent: {skill.name}-orchestrator",
+            f"subtask: {str(_opencode_command_subtask(manifest)).lower()}",
+        ]
+        # No orchestrator: run on the current agent, in the current session.
+        if has_workers
+        else ["subtask: false"]
+    )
     lines = [
         "---",
         f"description: Run the {skill.name} workflow",
-        f"agent: {agent_name}",
-        f"subtask: {str(_opencode_command_subtask(manifest)).lower()}",
+        *routing,
         *_opencode_model_lines(manifest, override=model_override),
         "---",
         "",
@@ -646,6 +679,12 @@ def _render_opencode_command(
         [
             "- Invoke only the declared Wayfinder worker subagents.",
             "- Do not invoke `general` or `explore`.",
+        ]
+        if has_workers
+        else ["- Follow the skill's workflow yourself; this path has no worker agents."]
+    )
+    lines.extend(
+        [
             "- Create a run id and write all phase artifacts under `.wf-artifacts/<run_id>/`.",
             "- Execute path code through the installed skill's `scripts/wf_run.py` wrapper, not direct files under `path/`.",
         ]
@@ -654,9 +693,10 @@ def _render_opencode_command(
         lines.append(
             "- Do not produce ARMED, DRAFT, or NULL unless the artifact gate passes."
         )
+    missing = "skill, worker, tool" if has_workers else "skill, tool"
     lines.extend(
         [
-            "- If a skill, worker, tool, model, or data source is unavailable, stop with a diagnostic.",
+            f"- If a {missing}, model, or data source is unavailable, stop with a diagnostic.",
             "",
         ]
     )
@@ -802,15 +842,16 @@ def _render_opencode_artifact_gate_tool(manifest: PathManifest) -> str:
 
 
 def _render_opencode_config(manifest: PathManifest, skill: PathSkillConfig) -> str:
-    payload = {
+    payload: dict[str, Any] = {
         "$schema": "https://opencode.ai/config.json",
         "instructions": ["AGENTS.md"],
-        "agent": {
+    }
+    if _opencode_has_workers(manifest):
+        payload["agent"] = {
             f"{skill.name}-orchestrator": {
                 "permission": _opencode_orchestrator_permission_payload(manifest, skill)
             }
-        },
-    }
+        }
     return json.dumps(payload, indent=2) + "\n"
 
 
@@ -1561,26 +1602,27 @@ def _write_host_install_assets(
                 "destination": skill_rel,
             }
         )
-        orchestrator_rel = f".opencode/agents/{skill.name}-orchestrator.md"
-        written.append(
-            _write_install_text(
-                export_dir,
-                orchestrator_rel,
-                _render_opencode_orchestrator(
-                    manifest,
-                    skill,
-                    model_override=opencode_model_override,
-                ),
-                output_root,
+        if _opencode_has_workers(manifest):
+            orchestrator_rel = f".opencode/agents/{skill.name}-orchestrator.md"
+            written.append(
+                _write_install_text(
+                    export_dir,
+                    orchestrator_rel,
+                    _render_opencode_orchestrator(
+                        manifest,
+                        skill,
+                        model_override=opencode_model_override,
+                    ),
+                    output_root,
+                )
             )
-        )
-        install_targets.append(
-            {
-                "op": "copy_file",
-                "source": f"install/{orchestrator_rel}",
-                "destination": orchestrator_rel,
-            }
-        )
+            install_targets.append(
+                {
+                    "op": "copy_file",
+                    "source": f"install/{orchestrator_rel}",
+                    "destination": orchestrator_rel,
+                }
+            )
         for agent in manifest.agents:
             rel_path = f".opencode/agents/{_opencode_agent_name(skill.name, agent.agent_id)}.md"
             written.append(

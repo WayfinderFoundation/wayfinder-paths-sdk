@@ -628,3 +628,141 @@ def test_claude_export_preserves_existing_agent_contract(tmp_path: Path):
     assert "wayfinder_artifact_gate" not in claude_agent_text
     assert claude_rules.exists()
     assert claude_settings.exists()
+
+
+def _make_skill_only_path(tmp_path: Path) -> Path:
+    path_dir = tmp_path / "skill-only"
+    init_path(path_dir=path_dir, slug="skill-only", with_skill=True)
+    return path_dir
+
+
+def test_skill_only_path_runs_on_the_current_agent_without_an_orchestrator(
+    tmp_path: Path,
+):
+    # An orchestrator told to fan out to workers, with none it may call, can
+    # only stop with a diagnostic; a path without workers is just a skill.
+    path_dir = _make_skill_only_path(tmp_path)
+    report = render_skill_exports(path_dir=path_dir, hosts=["opencode"])
+    install = report.exports["opencode"].export_dir / "install"
+
+    assert not (install / ".opencode/agents/skill-only-orchestrator.md").exists()
+    command = install / ".opencode/commands/skill-only.md"
+    frontmatter = _load_frontmatter(command)
+    assert "agent" not in frontmatter
+    assert frontmatter["subtask"] is False
+    command_text = _read_text(command)
+    assert "worker" not in command_text.split("---", 2)[2].replace(
+        "this path has no worker agents", ""
+    )
+    assert "Load the OpenCode skill named `skill-only`" in command_text
+
+    agents_md = _read_text(install / "AGENTS.md")
+    assert "orchestrator" not in agents_md
+    assert "worker" not in agents_md
+    assert "load the `skill-only` skill" in agents_md
+
+    config = json.loads(_read_text(install / "opencode.json"))
+    assert "agent" not in config
+    assert run_doctor(path_dir=path_dir).ok
+
+
+def test_paths_with_workers_keep_their_orchestrator(tmp_path: Path):
+    report = render_skill_exports(
+        path_dir=_make_pipeline_path(tmp_path), hosts=["opencode"]
+    )
+    install = report.exports["opencode"].export_dir / "install"
+    orchestrator = install / ".opencode/agents/multi-asset-hedge-finder-orchestrator.md"
+    assert orchestrator.exists()
+    command = _load_frontmatter(install / ".opencode/commands/hedge-finder.md")
+    assert command["agent"] == "multi-asset-hedge-finder-orchestrator"
+    assert command["subtask"] is True
+    config = json.loads(_read_text(install / "opencode.json"))
+    assert "multi-asset-hedge-finder-orchestrator" in config["agent"]
+
+
+def test_doctor_rejects_instructions_naming_agents_the_export_lacks(tmp_path: Path):
+    from wayfinder_paths.paths.doctor import _check_opencode_references
+    from wayfinder_paths.paths.manifest import PathManifest
+
+    path_dir = _make_skill_only_path(tmp_path)
+    skill = PathManifest.load(path_dir / "wfpath.yaml").skill
+    install = tmp_path / "install"
+    (install / ".opencode/agents").mkdir(parents=True)
+    (install / ".opencode/commands").mkdir(parents=True)
+    (install / ".opencode/commands/skill-only.md").write_text(
+        "---\nagent: skill-only-orchestrator\nsubtask: true\n---\nGo.\n",
+        encoding="utf-8",
+    )
+    (install / "AGENTS.md").write_text(
+        "- Invoke `skill-only-orchestrator` for direct agent execution.\n",
+        encoding="utf-8",
+    )
+    # An agent told to use workers while allowed to call none.
+    (install / ".opencode/agents/skill-only-helper.md").write_text(
+        '---\nmode: all\npermission:\n  task:\n    "*": deny\n---\n'
+        "Invoke only the declared Wayfinder worker subagents.\n",
+        encoding="utf-8",
+    )
+
+    errors: list = []
+    _check_opencode_references(install, skill, errors)
+    messages = [issue.message for issue in errors]
+    assert any("routes to agent 'skill-only-orchestrator'" in m for m in messages)
+    assert any("names agent 'skill-only-orchestrator'" in m for m in messages)
+    assert any("may not call any" in m for m in messages)
+
+
+def test_doctor_accepts_rendered_exports_for_both_kinds_of_path(tmp_path: Path):
+    from wayfinder_paths.paths.doctor import _check_opencode_references
+    from wayfinder_paths.paths.manifest import PathManifest
+
+    for path_dir in (
+        _make_skill_only_path(tmp_path / "a"),
+        _make_pipeline_path(tmp_path / "b"),
+    ):
+        skill = PathManifest.load(path_dir / "wfpath.yaml").skill
+        report = render_skill_exports(path_dir=path_dir, hosts=["opencode"])
+        errors: list = []
+        _check_opencode_references(
+            report.exports["opencode"].export_dir / "install", skill, errors
+        )
+        assert errors == []
+
+
+def test_reactivating_a_skill_only_path_prunes_its_old_orchestrator(tmp_path: Path):
+    from wayfinder_paths.paths.cli import _prune_stale_opencode_orchestrator
+
+    root = tmp_path / "project"
+    (root / ".opencode/agents").mkdir(parents=True)
+    stale = root / ".opencode/agents/quant-desk-orchestrator.md"
+    stale.write_text("---\nmode: all\n---\nold\n", encoding="utf-8")
+    other = root / ".opencode/agents/other-orchestrator.md"
+    other.write_text("---\nmode: all\n---\nkeep\n", encoding="utf-8")
+    (root / "opencode.json").write_text(
+        json.dumps(
+            {
+                "model": "wayfinder/deepseek-v4-flash",
+                "agent": {"quant-desk-orchestrator": {}, "other-orchestrator": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _prune_stale_opencode_orchestrator(root, "quant-desk", install_targets=[])
+
+    assert not stale.exists()
+    assert other.exists()
+    config = json.loads((root / "opencode.json").read_text(encoding="utf-8"))
+    assert config["agent"] == {"other-orchestrator": {}}
+    assert config["model"] == "wayfinder/deepseek-v4-flash"
+
+    # A path whose export still installs the orchestrator keeps it.
+    stale.write_text("---\nmode: all\n---\nnew\n", encoding="utf-8")
+    _prune_stale_opencode_orchestrator(
+        root,
+        "quant-desk",
+        install_targets=[
+            {"destination": ".opencode/agents/quant-desk-orchestrator.md"}
+        ],
+    )
+    assert stale.exists()
