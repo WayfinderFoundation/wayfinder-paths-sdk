@@ -250,6 +250,7 @@ def test_notify_session_skips_routine_success(tmp_path: Path, monkeypatch) -> No
             timeout_seconds=None,
             popen=object(),  # type: ignore[arg-type]
             log_path=log,
+            notify_session_id=job.payload.get("notify_session_id"),
         ),
         status=RunStatus.OK,
         error_text=None,
@@ -295,6 +296,7 @@ def test_notify_session_posts_failures(tmp_path: Path, monkeypatch) -> None:
             timeout_seconds=None,
             popen=object(),  # type: ignore[arg-type]
             log_path=log,
+            notify_session_id=job.payload.get("notify_session_id"),
         ),
         status=RunStatus.FAILED,
         error_text="failed",
@@ -352,6 +354,7 @@ def test_notify_session_posts_success_with_job_result_marker(
             timeout_seconds=None,
             popen=object(),  # type: ignore[arg-type]
             log_path=log,
+            notify_session_id=job.payload.get("notify_session_id"),
         ),
         status=RunStatus.OK,
         error_text=None,

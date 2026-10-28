@@ -21,6 +21,7 @@ from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
+from wayfinder_paths.core.utils.tls import verified_ssl_context
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.units import from_erc20_raw
@@ -196,7 +197,7 @@ class AvantisAdapter(BaseAdapter):
 
     async def _http_get_json(self, url: str) -> dict[str, Any]:
         async with aiohttp.ClientSession(headers=DEFAULT_HTTP_HEADERS) as session:
-            async with session.get(url, timeout=10) as resp:
+            async with session.get(url, timeout=10, ssl=verified_ssl_context()) as resp:
                 resp.raise_for_status()
                 return await resp.json()
 
