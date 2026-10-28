@@ -692,6 +692,38 @@ def _merge_opencode_config_patch(dest_path: Path, patch_path: Path) -> None:
     dest_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
 
 
+def _prune_stale_opencode_orchestrator(
+    destination_root: Path, skill_name: str, install_targets: list[Any]
+) -> None:
+    """Drop an orchestrator an earlier SDK rendered for this path.
+
+    Paths without workers no longer get `<skill>-orchestrator`; re-activating
+    one must not leave the old agent (and its config entry) behind, or the
+    instructions that pointed at it keep winning.
+    """
+    name = f"{skill_name}-orchestrator"
+    rel = f".opencode/agents/{name}.md"
+    if any(
+        isinstance(target, dict) and target.get("destination") == rel
+        for target in install_targets
+    ):
+        return
+    agent_file = destination_root / rel
+    if agent_file.is_file():
+        agent_file.unlink()
+    config_path = destination_root / "opencode.json"
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    agents = config.get("agent") if isinstance(config, dict) else None
+    if isinstance(agents, dict) and name in agents:
+        agents.pop(name)
+        if not agents:
+            config.pop("agent")
+        config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+
+
 def _merge_markdown_file(dest_path: Path, patch_path: Path, *, section_id: str) -> None:
     begin = f"<!-- {section_id}:start -->"
     end = f"<!-- {section_id}:end -->"
@@ -1205,6 +1237,10 @@ def _activate_export(
             normalized_host, normalized_scope, cwd=Path.cwd()
         )
         applied = _apply_install_targets(source_dir, destination_root_path)
+        if normalized_host == "opencode":
+            _prune_stale_opencode_orchestrator(
+                destination_root_path, skill_name, install_targets
+            )
         dest = destination_root_path
         mode = "install"
     else:

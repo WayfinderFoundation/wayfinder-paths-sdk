@@ -1674,7 +1674,8 @@ def test_path_activate_opencode_preserves_existing_provider_config(tmp_path: Pat
     assert opencode_config["model"] == "wayfinder/kimi-k2.5"
     assert opencode_config["provider"] == base_opencode_config["provider"]
     assert opencode_config["instructions"] == ["BASE.md", "AGENTS.md"]
-    assert "provider-demo-orchestrator" in opencode_config["agent"]
+    # A skill-only path runs on the current agent: no orchestrator is registered.
+    assert "provider-demo-orchestrator" not in opencode_config.get("agent", {})
 
 
 def test_path_install_claude_activates_and_installs_required_dependencies(
@@ -2514,7 +2515,8 @@ def test_path_remove_opencode_deactivates_and_cleans_lockfile(
 
         skill_root = Path(".opencode") / "skills" / "remove-demo"
         assert skill_root.joinpath("SKILL.md").exists()
-        assert (
+        # Skill-only path: runs on the current agent, so no orchestrator.
+        assert not (
             Path(".opencode").joinpath("agents", "remove-demo-orchestrator.md").exists()
         )
         assert Path("AGENTS.md").exists()

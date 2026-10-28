@@ -894,14 +894,24 @@ def _validate_opencode_export(
         export_dir / "install" / ".opencode" / "tools" / "validate_order.ts"
     )
 
-    for required_path, label in (
-        (orchestrator_path, "OpenCode orchestrator"),
+    has_workers = bool(manifest.agents)
+    required_paths = [
         (command_path, "OpenCode command"),
         (opencode_config_path, "opencode.json"),
         (agents_md_path, "AGENTS.md"),
         (compile_job_path, "OpenCode compile_job tool"),
         (validate_order_path, "OpenCode validate_order tool"),
-    ):
+    ]
+    if has_workers:
+        required_paths.insert(0, (orchestrator_path, "OpenCode orchestrator"))
+    elif orchestrator_path.exists():
+        _record_issue(
+            errors,
+            level="error",
+            message="OpenCode export for a path without workers must not render an orchestrator",
+            path=orchestrator_path,
+        )
+    for required_path, label in required_paths:
         if not required_path.exists():
             _record_issue(
                 errors,
@@ -962,18 +972,26 @@ def _validate_opencode_export(
 
     if command_path.exists():
         frontmatter = _parse_markdown_frontmatter(command_path)
-        if str(frontmatter.get("agent") or "").strip() != f"{skill.name}-orchestrator":
+        routed_agent = str(frontmatter.get("agent") or "").strip()
+        if has_workers and routed_agent != f"{skill.name}-orchestrator":
             _record_issue(
                 errors,
                 level="error",
                 message="OpenCode command must route to the orchestrator agent",
                 path=command_path,
             )
-        if frontmatter.get("subtask") is not True:
+        if has_workers and frontmatter.get("subtask") is not True:
             _record_issue(
                 errors,
                 level="error",
                 message="OpenCode command must set subtask: true",
+                path=command_path,
+            )
+        if not has_workers and (routed_agent or frontmatter.get("subtask") is True):
+            _record_issue(
+                errors,
+                level="error",
+                message="OpenCode command for a path without workers must run on the current agent (no agent, subtask false)",
                 path=command_path,
             )
         command_text = command_path.read_text(encoding="utf-8", errors="ignore")
@@ -1037,6 +1055,8 @@ def _validate_opencode_export(
                 path=worker_path,
             )
 
+    _check_opencode_references(export_dir / "install", skill, errors)
+
     if opencode_config_path.exists():
         try:
             config = json.loads(opencode_config_path.read_text(encoding="utf-8"))
@@ -1096,11 +1116,14 @@ def _validate_opencode_activation_root(
     )
     required_paths = [
         activated_root / ".opencode" / "skills" / skill.name / "SKILL.md",
-        activated_root / ".opencode" / "agents" / f"{skill.name}-orchestrator.md",
         activated_root / ".opencode" / "commands" / f"{command_name}.md",
         activated_root / "AGENTS.md",
         activated_root / "opencode.json",
     ]
+    if manifest.agents:
+        required_paths.insert(
+            1, activated_root / ".opencode" / "agents" / f"{skill.name}-orchestrator.md"
+        )
     if manifest.pipeline:
         required_paths.append(
             activated_root / ".opencode" / "tools" / "wayfinder_artifact_gate.ts"
@@ -1268,3 +1291,72 @@ def run_doctor(
         warnings=warnings,
         created_files=created_files,
     )
+
+
+_OPENCODE_BUILTIN_AGENTS = frozenset({"build", "plan", "general", "explore"})
+
+
+def _check_opencode_references(
+    install_dir: Path, skill: PathSkillConfig, errors: list[DoctorIssue]
+) -> None:
+    """Generated instructions may only name agents the export provides, and an
+    agent told to use worker subagents must be allowed to call at least one."""
+    agents_dir = install_dir / ".opencode" / "agents"
+    agent_files = sorted(agents_dir.glob("*.md")) if agents_dir.is_dir() else []
+    defined = {path.stem for path in agent_files}
+    config_path = install_dir / "opencode.json"
+    if config_path.exists():
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            config = {}
+        if isinstance(config, dict) and isinstance(config.get("agent"), dict):
+            defined |= set(config["agent"])
+    commands_dir = install_dir / ".opencode" / "commands"
+    command_files = sorted(commands_dir.glob("*.md")) if commands_dir.is_dir() else []
+
+    for command_path in command_files:
+        routed = str(_parse_markdown_frontmatter(command_path).get("agent") or "")
+        routed = routed.strip()
+        if routed and routed not in defined | _OPENCODE_BUILTIN_AGENTS:
+            _record_issue(
+                errors,
+                level="error",
+                message=f"OpenCode command routes to agent {routed!r}, which the export does not provide",
+                path=command_path,
+            )
+
+    # Path-owned agent names are `<skill>-<id>`; any such name in generated
+    # text must exist, or the agent following it hits "unknown agent type".
+    name_pattern = re.compile(rf"`({re.escape(skill.name)}-[a-z0-9][a-z0-9-]*)`")
+    agents_md = install_dir / "AGENTS.md"
+    for text_path in [*command_files, *agent_files, agents_md]:
+        if not text_path.exists():
+            continue
+        text = text_path.read_text(encoding="utf-8", errors="ignore")
+        for name in sorted(set(name_pattern.findall(text)) - defined):
+            _record_issue(
+                errors,
+                level="error",
+                message=f"Generated OpenCode text names agent {name!r}, which the export does not provide",
+                path=text_path,
+            )
+
+    for agent_path in agent_files:
+        text = agent_path.read_text(encoding="utf-8", errors="ignore")
+        if "worker subagents" not in text:
+            continue
+        permission = _parse_markdown_frontmatter(agent_path).get("permission") or {}
+        task = permission.get("task") if isinstance(permission, dict) else None
+        allowed = [
+            name
+            for name, action in (task.items() if isinstance(task, dict) else [])
+            if name != "*" and action == "allow"
+        ]
+        if not allowed:
+            _record_issue(
+                errors,
+                level="error",
+                message="OpenCode agent is told to use worker subagents but may not call any",
+                path=agent_path,
+            )
