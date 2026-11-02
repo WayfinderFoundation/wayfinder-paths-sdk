@@ -46,7 +46,7 @@ Helpers exported from `wayfinder_paths.adapters.hyperliquid_adapter.adapter`:
 - `perp_positions` — open perp/HIP-3 positions.
 - `spot_positions` — non-zero, non-USDC spot balances (`HYPE`, `USDH`, …). `+N` outcome entries are filtered out into `outcome_positions`.
 - `outcome_positions` — outcome positions only (parsed `outcome_id` / `side`, plus `total` / `hold` / `entryNtl`).
-- `open_orders` — all open orders (resting limits + untriggered TP/SL trigger orders) from `frontendOpenOrders`.
+- `open_orders` — all open orders (resting limits + untriggered TP/SL trigger orders + trailing stops) from `frontendOpenOrders`.
 
 Other reads:
 

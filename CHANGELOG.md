@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+Added
+
+1. **Hyperliquid trailing stops** (#854): `HyperliquidAdapter.place_trailing_stop` and the `hyperliquid_place_trailing_stop` MCP tool place HL's native trailing stop (retracement as a percent or price distance, optional activation price; perp only, reduce-only by default, no builder fee).
+
 Fixed
 
 1. **Paths pinned to SDK 0.7.0–0.10.0 run again**: the runtime floor from #774 now covers every pin below 0.11.1, not just 0.11.0. Such pins resolve to 0.11.1, so the installed SDK is used (or `~=0.11.1` is bootstrapped) instead of a PyPI release that can't run a path (no `wayfinder path` before 0.11.0; no `mcp` dependency in 0.11.0). An editable checkout still reporting 0.10.0 no longer counts as a compatible runtime for those paths.

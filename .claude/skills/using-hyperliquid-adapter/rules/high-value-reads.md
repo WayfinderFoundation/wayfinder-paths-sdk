@@ -79,6 +79,7 @@ Symbol rules:
 - `spot_positions` — non-zero, non-USDC spot balances (HYPE / USDH / …). The USDC row lives in `summary`.
 - `outcome_positions` — HIP-4 outcome positions (`+N` entries with non-zero total), parsed `outcome_id` / `side`. See `rules/outcomes.md`.
 - `open_orders` — every open order across all dexes, from `frontendOpenOrders`: resting limit orders AND untriggered trigger orders (`isTrigger`, `triggerPx`, `orderType`, `isPositionTpsl`, `reduceOnly`). No separate call needed to see stop losses / take profits.
+  - Trailing stops show as `orderType: "Trailing Stop Market"`. Their settings are in `triggerCondition` (e.g. `"Activation above 86066, retracement 2507, best waiting"` or `"Activation immediate, retracement 5%, best 83561"`); `triggerPx` is `"0.0"` until the trail activates, then the current stop price. `limitPx` is only HL's slippage bound. They can't be modified — cancel and re-place.
 
 Positions, open orders, and outcome positions each carry a canonical **`asset_name`** (`kBONK-USDC`, `xyz:NVDA`, `PURR/USDC`, `#40`) next to the raw HL `coin`. Feed `asset_name` straight into `hyperliquid_search_mid_prices` / `hyperliquid_get_trade_asset` / the order tools — it is the same format every HL tool speaks, so never re-derive the `-USDC` suffix from `coin` yourself.
 
