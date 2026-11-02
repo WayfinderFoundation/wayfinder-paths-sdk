@@ -1,8 +1,0 @@
-{
-  "filename": "skill-claude-thin.zip",
-  "host": "claude",
-  "mode": "thin",
-  "skill_name": "override-demo",
-  "slug": "override-demo",
-  "version": "1.0.1"
-}
