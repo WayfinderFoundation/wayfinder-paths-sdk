@@ -24,6 +24,7 @@ Orders:
   - `is_market=False`: fires a limit order at `limit_price` when triggered (requires `limit_price`)
   - `reduce_only=True` (default): closes an existing position, never opens one. Set `False` for opening/scaling triggers (e.g. a stop-entry that adds exposure on touch)
 - `place_stop_loss(asset_id, is_buy, trigger_price, size, address)` — convenience wrapper for `place_trigger_order(..., tpsl="sl", is_market=True)`
+- `place_trailing_stop(asset_id, is_buy, size, address, *, retracement_pct=None, retracement_px=None, activation_price=None, reduce_only=True)` — native trailing stop; exactly one of `retracement_pct` / `retracement_px`. Carries no builder fee (the HL action has no builder field). Cancel by oid like any order.
 - `cancel_order(asset_id, order_id, address)`
 - `cancel_order_by_cloid(asset_id, cloid, address)`
 
@@ -59,6 +60,7 @@ For interactive use in Claude Code, this repo exposes a small MCP surface:
   - `mcp__wayfinder__hyperliquid_place_market_order` — IOC market order, perp / spot / HIP-4 (`#<encoding>`)
   - `mcp__wayfinder__hyperliquid_place_limit_order` — GTC limit order, perp / spot / HIP-4 (`#<encoding>`)
   - `mcp__wayfinder__hyperliquid_place_trigger_order` — stop-loss / take-profit, perp only (see below)
+  - `mcp__wayfinder__hyperliquid_place_trailing_stop` — native trailing stop, perp only (see below)
   - `mcp__wayfinder__hyperliquid_cancel_order`
   - `mcp__wayfinder__hyperliquid_update_leverage`
   - `mcp__wayfinder__hyperliquid_deposit_usdc`
@@ -112,6 +114,37 @@ hyperliquid_place_trigger_order(
     size=0.5,
     is_market_trigger=False,
     price=2790.0,
+)
+```
+
+### `hyperliquid_place_trailing_stop` via MCP
+
+A trailing stop follows the best price since it activated and closes at market once price pulls back by the retracement. Use it to lock in profit on a move without picking a fixed stop price.
+
+- `is_buy` — the **closing** side (long → `False`, short → `True`)
+- `size` — asset units to close (rounded down to lot size)
+- `retracement_pct` **or** `retracement_px` (exactly one) — the pullback that fires it: percent of price (`2.5` = 2.5%, up to 3 decimals) or an absolute price distance
+- `activation_price` (optional) — trailing starts only once this price trades (e.g. only trail after the trade is in profit); omit to trail immediately
+- `reduce_only` (default `True`)
+
+```python
+# Trail a long ETH position 3% below its high, starting now
+hyperliquid_place_trailing_stop(
+    wallet_label="main",
+    asset_name="ETH-USDC",
+    is_buy=False,
+    size=0.5,
+    retracement_pct=3.0,
+)
+
+# Trail a short BTC $1,500 above its low, only once BTC trades at 90,000
+hyperliquid_place_trailing_stop(
+    wallet_label="main",
+    asset_name="BTC-USDC",
+    is_buy=True,
+    size=0.01,
+    retracement_px=1500.0,
+    activation_price=90000.0,
 )
 ```
 
@@ -173,7 +206,7 @@ hyperliquid_place_limit_order(
 ## Claude Code "execution mode" (one-off scripts)
 
 If the user wants **immediate execution** (not a reusable strategy), prefer the MCP tools:
-- `mcp__wayfinder__hyperliquid_place_market_order` / `_place_limit_order` / `_place_trigger_order` / `_cancel_order` / `_update_leverage` / `_deposit` / `_withdraw`
+- `mcp__wayfinder__hyperliquid_place_market_order` / `_place_limit_order` / `_place_trigger_order` / `_place_trailing_stop` / `_cancel_order` / `_update_leverage` / `_deposit` / `_withdraw`
 - `mcp__wayfinder__onchain_swap` / `mcp__wayfinder__onchain_send` for on-chain swaps and transfers
 
 ### `mcp__wayfinder__onchain_*` examples

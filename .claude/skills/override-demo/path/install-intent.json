@@ -1,0 +1,7 @@
+{
+  "intent": {
+    "intent_id": "intent-override",
+    "version": "1.0.1"
+  },
+  "signature": "signed-intent"
+}

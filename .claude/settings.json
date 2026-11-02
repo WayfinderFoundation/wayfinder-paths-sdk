@@ -50,6 +50,7 @@
       "mcp__wayfinder__hyperliquid_place_market_order",
       "mcp__wayfinder__hyperliquid_place_limit_order",
       "mcp__wayfinder__hyperliquid_place_trigger_order",
+      "mcp__wayfinder__hyperliquid_place_trailing_stop",
       "mcp__wayfinder__hyperliquid_cancel_order",
       "mcp__wayfinder__hyperliquid_update_leverage",
       "mcp__wayfinder__hyperliquid_deposit_usdc",
@@ -107,7 +108,7 @@
         ]
       },
       {
-        "matcher": "mcp__wayfinder__hyperliquid_(place_market_order|place_limit_order|place_trigger_order|cancel_order|update_leverage|deposit|withdraw)",
+        "matcher": "mcp__wayfinder__hyperliquid_(place_market_order|place_limit_order|place_trigger_order|place_trailing_stop|cancel_order|update_leverage|deposit|withdraw)",
         "hooks": [
           {
             "type": "command",
@@ -161,6 +162,30 @@
             "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_session_end.py\""
           }
         ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "async": true,
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/skills/override-demo/scripts/validate_hook.py\"",
+            "timeout": 120,
+            "type": "command"
+          }
+        ],
+        "matcher": "Write|Edit"
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "command": "true",
+            "type": "command"
+          }
+        ],
+        "matcher": "override-demo"
       }
     ]
   }

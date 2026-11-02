@@ -1,0 +1,9 @@
+from __future__ import annotations
+
+
+def main() -> None:
+    print("TODO: implement path script logic")
+
+
+if __name__ == "__main__":
+    main()
