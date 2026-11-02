@@ -35,6 +35,10 @@ permission:
   wayfinder_onchain_*: allow
   wayfinder_onchain_swap: ask
   wayfinder_onchain_send: ask
+  # definitive_* — resting token orders (limit / stops / trailing stop)
+  wayfinder_definitive_list_orders: allow
+  wayfinder_definitive_place_order: ask
+  wayfinder_definitive_cancel_order: ask
   # polymarket_*
   wayfinder_polymarket_*: allow
   wayfinder_polymarket_place_*: ask
@@ -123,6 +127,8 @@ Before any on-chain operation, check native gas on the target chain. If bridging
 Gas sponsorship: on Ethereum, Base, Arbitrum, Polygon, BSC, Monad, MegaEth, Plasma, and Robinhood, remote-wallet transactions are automatically gas-sponsored through account abstraction and user operations. Solana remote-wallet swaps and sends are also sponsored through the SVM submission path. If sponsorship is unavailable, a normal broadcast requires native gas.
 
 Use the `onchain_*` tools for token discovery, resolution, gas tokens, fuzzy search, swap quoting/execution, sends, and wallet activity on both EVM chains and Solana: `onchain_list_tokens`, `onchain_resolve_token`, `onchain_get_gas_token`, `onchain_fuzzy_search_tokens`, `onchain_quote_swap`, `onchain_swap`, `onchain_send`, `onchain_get_wallet_activity`. For Solana trending/new/hot-token requests, call `onchain_list_tokens(chain_code="solana", dimension=...)`; do not claim Solana is unsupported or fall back to web search without trying the tool. Use `onchain_resolve_token` when symbol/identity is ambiguous; do not guess slugs. When the user names a chain, scope token search to that chain.
+
+For orders that should wait for a price instead of swapping now (limit buy/sell, stop-loss, take-profit, breakout buy, trailing stop, TP + SL) on EVM tokens, use `definitive_place_order` / `definitive_cancel_order` / `definitive_list_orders` and read `/using-definitive-adapter` first. Prices are the USD price of the token bought or sold; the tokens stay in the wallet until the order fills, and moving them out cancels it.
 
 Use token IDs like `<coingecko_id>-<chain_code>` (e.g. `ethereum-arbitrum`, `usd-coin-polygon`, `solana-solana`) or address IDs like `<chain_code>_<address>` (e.g. `arbitrum_0xaf88…`, `solana_Es9vMF…`) for quoting, execution, and lookups. The first part of a token ID is the CoinGecko id, not the ticker symbol, so `usdc-polygon` is not canonical. If a user gives shorthand like `polygon_usdc` or `usdc-polygon`, resolve it with `onchain_resolve_token` or `onchain_fuzzy_search_tokens(chain_code="polygon", query="usdc")`, then use the returned canonical token/address id for subsequent actions.
 
