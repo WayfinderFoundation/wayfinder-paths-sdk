@@ -49,6 +49,11 @@ from wayfinder_paths.mcp.tools.contracts import (
     contracts_list,
 )
 from wayfinder_paths.mcp.tools.defillama_free import research_defillama_free
+from wayfinder_paths.mcp.tools.definitive import (
+    definitive_cancel_order,
+    definitive_list_orders,
+    definitive_place_order,
+)
 from wayfinder_paths.mcp.tools.delta_lab import (
     research_get_asset_basis_info,
     research_get_basis_apy_sources,
@@ -218,6 +223,9 @@ def build_mcp(
     mcp.tool()(onchain_quote_swap)
     mcp.tool()(onchain_swap)
     mcp.tool()(onchain_send)
+    mcp.tool()(definitive_place_order)
+    mcp.tool()(definitive_cancel_order)
+    mcp.tool()(definitive_list_orders)
 
     # ─── polymarket_* ──────────────────────────────────────────────────
     mcp.tool()(polymarket_read)
