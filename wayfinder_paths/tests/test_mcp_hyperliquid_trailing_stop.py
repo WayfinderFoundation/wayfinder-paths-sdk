@@ -118,3 +118,17 @@ async def test_preview_spells_out_the_trailing_stop():
     summary = preview["summary"]
     assert "TRAILING STOP (2.5% pullback)" in summary
     assert "none (trails now)" in summary
+
+
+@pytest.mark.asyncio
+async def test_action_level_rejection_is_reported_not_raised():
+    adapter = _adapter()
+    adapter.place_trailing_stop = AsyncMock(
+        return_value=(
+            False,
+            {"status": "err", "response": "Trailing stop retracement is invalid."},
+        )
+    )
+    result = _payload(await _call(adapter, is_buy=False, size=1, retracement_pct=1))
+    assert result["status"] == "failed"
+    assert result["trailing_stop"]["oid"] is None

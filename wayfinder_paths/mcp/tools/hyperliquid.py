@@ -13,6 +13,7 @@ from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
 from wayfinder_paths.adapters.hyperliquid_adapter.adapter import (
     decode_outcome_encoding,
     outcome_asset_id,
+    trailing_stop_oid,
 )
 from wayfinder_paths.core.clients.HyperliquidDataClient import HYPERLIQUID_DATA_CLIENT
 from wayfinder_paths.core.config import CONFIG
@@ -1735,9 +1736,7 @@ async def hyperliquid_place_trailing_stop(
                 "size_requested": float(sz),
                 "size_valid": float(sz_valid),
                 "reduce_only": bool(reduce_only),
-                "oid": ((res.get("response") or {}).get("data") or {}).get("oid")
-                if isinstance(res, dict)
-                else None,
+                "oid": trailing_stop_oid(res),
             },
             "effects": effects,
         }

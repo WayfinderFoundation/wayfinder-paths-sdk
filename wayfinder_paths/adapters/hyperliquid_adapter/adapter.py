@@ -1411,14 +1411,7 @@ class HyperliquidAdapter(BaseAdapter):
             activation_px=activation_wire,
         )
         result = await self._sign_and_broadcast_hypecore(action, address)
-        data = (result.get("response") or {}).get("data") or {}
-        success = (
-            result.get("status") == "ok"
-            and isinstance(data, dict)
-            and "oid" in data
-            and "error" not in data
-        )
-        return success, result
+        return trailing_stop_oid(result) is not None, result
 
     async def get_user_fills(
         self, address: str
@@ -2092,6 +2085,19 @@ def trailing_stop_pct_wire(pct: float) -> str:
         raise ValueError("retracement_pct must be between 0 and 100")
     text = format(value.normalize(), "f")
     return f"{text}%"
+
+
+def trailing_stop_oid(result: Any) -> int | None:
+    """The placed order's id, or None for any rejection. HL answers
+    `{"status": "ok", "response": {"data": {"oid": N}}}` on success, a
+    `data.error` for order-level rejections, and `{"status": "err",
+    "response": "<message>"}` (a string) for invalid actions."""
+    if not isinstance(result, dict) or result.get("status") != "ok":
+        return None
+    response = result.get("response")
+    data = response.get("data") if isinstance(response, dict) else None
+    oid = data.get("oid") if isinstance(data, dict) else None
+    return oid if isinstance(oid, int) else None
 
 
 def trailing_stop_action(

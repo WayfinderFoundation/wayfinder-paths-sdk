@@ -7,6 +7,7 @@ from hyperliquid.utils.signing import sign_l1_action
 from wayfinder_paths.adapters.hyperliquid_adapter.adapter import (
     HyperliquidAdapter,
     trailing_stop_action,
+    trailing_stop_oid,
     trailing_stop_pct_wire,
 )
 
@@ -139,3 +140,35 @@ async def test_place_trailing_stop_rejects_bad_input_before_signing(kwargs):
     with pytest.raises(ValueError):
         await adapter.place_trailing_stop(0, True, 1.0, "0xabc", **kwargs)
     adapter._sign_and_broadcast_hypecore.assert_not_awaited()
+
+
+# Response shapes captured from HL mainnet (HyPaper's trailing-stop captures).
+@pytest.mark.parametrize(
+    ("result", "oid"),
+    [
+        ({"status": "ok", "response": {"type": "trailingStop", "data": {"oid": 7}}}, 7),
+        ({"status": "err", "response": "Trailing stop retracement is invalid."}, None),
+        ({"status": "err", "response": "Error converting float to price"}, None),
+        (
+            {"status": "ok", "response": {"data": {"error": "Insufficient margin"}}},
+            None,
+        ),
+        ({"status": "ok", "response": {"data": {"oid": "7"}}}, None),
+        ({"status": "ok"}, None),
+        ("declined", None),
+    ],
+)
+def test_trailing_stop_oid_never_raises(result, oid):
+    assert trailing_stop_oid(result) == oid
+
+
+@pytest.mark.asyncio
+async def test_place_trailing_stop_handles_an_action_level_rejection():
+    adapter = _adapter(
+        {"status": "err", "response": "Trailing stop retracement is invalid."}
+    )
+    ok, res = await adapter.place_trailing_stop(
+        0, True, 1.0, "0xabc", retracement_pct=1.0
+    )
+    assert ok is False
+    assert res["status"] == "err"
