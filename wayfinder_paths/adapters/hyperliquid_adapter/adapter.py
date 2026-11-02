@@ -1359,6 +1359,60 @@ class HyperliquidAdapter(BaseAdapter):
             is_market=True,
         )
 
+    async def place_trailing_stop(
+        self,
+        asset_id: int,
+        is_buy: bool,
+        size: float,
+        address: str,
+        *,
+        retracement_pct: float | None = None,
+        retracement_px: float | None = None,
+        activation_price: float | None = None,
+        reduce_only: bool = True,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Native Hyperliquid trailing stop (the `trailingStop` L1 action).
+
+        The stop follows the best price since activation and fires once price
+        retraces by `retracement_pct` (percent of price) or `retracement_px`
+        (absolute distance) — pass exactly one. `activation_price` defers
+        trailing until that price trades; None trails from now. `is_buy` is
+        the closing side (long -> False). Unlike orders, the action carries no
+        builder field, so no builder fee applies. Cancel with the normal
+        cancel-by-oid.
+        """
+        size = self.get_valid_order_size(asset_id, size)
+        if size <= 0:
+            raise ValueError("size rounds down to 0 for this asset's lot size")
+        retracement: dict[str, str]
+        if (retracement_pct is None) == (retracement_px is None):
+            raise ValueError("pass exactly one of retracement_pct or retracement_px")
+        if retracement_pct is not None:
+            retracement = {"pct": trailing_stop_pct_wire(retracement_pct)}
+        else:
+            px = self.get_valid_order_price(asset_id, float(retracement_px or 0))
+            if px <= 0:
+                raise ValueError("retracement_px must be positive")
+            retracement = {"px": float_to_wire(px)}
+        activation_wire: str | None = None
+        if activation_price is not None:
+            activation = self.get_valid_order_price(asset_id, activation_price)
+            if activation <= 0:
+                raise ValueError("activation_price must be positive")
+            activation_wire = float_to_wire(activation)
+
+        await self.ensure_unified_account(address)
+        action = trailing_stop_action(
+            asset_id=asset_id,
+            is_buy=is_buy,
+            size_wire=float_to_wire(size),
+            reduce_only=reduce_only,
+            retracement=retracement,
+            activation_px=activation_wire,
+        )
+        result = await self._sign_and_broadcast_hypecore(action, address)
+        return trailing_stop_oid(result) is not None, result
+
     async def get_user_fills(
         self, address: str
     ) -> tuple[bool, list[dict[str, Any]]] | tuple[Literal[False], str]:
@@ -2022,3 +2076,47 @@ class HyperliquidAdapter(BaseAdapter):
             return True, result
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
+
+
+def trailing_stop_pct_wire(pct: float) -> str:
+    """`1.5` -> `"1.5%"`: HL's percent string, at most 3 decimals."""
+    value = Decimal(str(pct)).quantize(Decimal("0.001"), rounding=ROUND_DOWN)
+    if value <= 0 or value >= 100:
+        raise ValueError("retracement_pct must be between 0 and 100")
+    text = format(value.normalize(), "f")
+    return f"{text}%"
+
+
+def trailing_stop_oid(result: Any) -> int | None:
+    """The placed order's id, or None for any rejection. HL answers
+    `{"status": "ok", "response": {"data": {"oid": N}}}` on success, a
+    `data.error` for order-level rejections, and `{"status": "err",
+    "response": "<message>"}` (a string) for invalid actions."""
+    if not isinstance(result, dict) or result.get("status") != "ok":
+        return None
+    response = result.get("response")
+    data = response.get("data") if isinstance(response, dict) else None
+    oid = data.get("oid") if isinstance(data, dict) else None
+    return oid if isinstance(oid, int) else None
+
+
+def trailing_stop_action(
+    *,
+    asset_id: int,
+    is_buy: bool,
+    size_wire: str,
+    reduce_only: bool,
+    retracement: dict[str, str],
+    activation_px: str | None,
+) -> dict[str, Any]:
+    """The `trailingStop` action exactly as HL hashes it: this key order, and
+    `activationPx` kept as null (not dropped) when unset."""
+    return {
+        "type": "trailingStop",
+        "asset": asset_id,
+        "isBuy": is_buy,
+        "sz": size_wire,
+        "reduceOnly": reduce_only,
+        "retracement": retracement,
+        "activationPx": activation_px,
+    }

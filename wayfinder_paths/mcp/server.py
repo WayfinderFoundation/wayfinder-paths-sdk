@@ -83,6 +83,7 @@ from wayfinder_paths.mcp.tools.hyperliquid import (
     hyperliquid_get_trade_asset,
     hyperliquid_place_limit_order,
     hyperliquid_place_market_order,
+    hyperliquid_place_trailing_stop,
     hyperliquid_place_trigger_order,
     hyperliquid_search_hip4,
     hyperliquid_search_market,
@@ -201,6 +202,7 @@ def build_mcp(
     mcp.tool()(hyperliquid_place_market_order)
     mcp.tool()(hyperliquid_place_limit_order)
     mcp.tool()(hyperliquid_place_trigger_order)
+    mcp.tool()(hyperliquid_place_trailing_stop)
     mcp.tool()(hyperliquid_cancel_order)
     mcp.tool()(hyperliquid_update_leverage)
     mcp.tool()(hyperliquid_deposit_usdc)

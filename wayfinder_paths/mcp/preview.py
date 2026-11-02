@@ -161,6 +161,30 @@ async def build_hyperliquid_place_limit_order_preview(
     return {"summary": header + base + details}
 
 
+async def build_hyperliquid_place_trailing_stop_preview(
+    tool_input: dict[str, Any],
+) -> dict[str, Any]:
+    header, base = await _hl_preview_base(
+        tool_input, "HYPERLIQUID_PLACE_TRAILING_STOP\n"
+    )
+    pct = tool_input.get("retracement_pct")
+    distance = tool_input.get("retracement_px")
+    retracement = (
+        f"{pct}% pullback" if pct is not None else f"{distance} price pullback"
+    )
+    activation = tool_input.get("activation_price")
+    details = (
+        f"\n\nTRAILING STOP ({retracement})\n"
+        f"is_buy: {tool_input.get('is_buy')}\n"
+        f"size: {tool_input.get('size')}\n"
+        f"retracement_pct: {pct}\n"
+        f"retracement_px: {distance}\n"
+        f"activation_price: {activation if activation is not None else 'none (trails now)'}\n"
+        f"reduce_only: {tool_input.get('reduce_only', True)}"
+    )
+    return {"summary": header + base + details}
+
+
 async def build_hyperliquid_place_trigger_order_preview(
     tool_input: dict[str, Any],
 ) -> dict[str, Any]:

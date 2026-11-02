@@ -13,6 +13,7 @@ from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
 from wayfinder_paths.adapters.hyperliquid_adapter.adapter import (
     decode_outcome_encoding,
     outcome_asset_id,
+    trailing_stop_oid,
 )
 from wayfinder_paths.core.clients.HyperliquidDataClient import HYPERLIQUID_DATA_CLIENT
 from wayfinder_paths.core.config import CONFIG
@@ -1599,6 +1600,143 @@ async def hyperliquid_place_trigger_order(
                 "size_valid": float(sz_valid),
                 "reduce_only": bool(reduce_only),
                 "builder": DEFAULT_HYPERLIQUID_BUILDER_FEE,
+            },
+            "effects": effects,
+        }
+    )
+
+
+@catch_errors
+async def hyperliquid_place_trailing_stop(
+    *,
+    wallet_label: str,
+    asset_name: str,
+    is_buy: bool,
+    size: float,
+    retracement_pct: float | None = None,
+    retracement_px: float | None = None,
+    activation_price: float | None = None,
+    reduce_only: bool = True,
+) -> dict[str, Any]:
+    """Place a native perp trailing stop.
+
+    The stop tracks the best price since it activated and closes at market once
+    price pulls back by the retracement. Pass exactly one of `retracement_pct`
+    (percent of price, e.g. 1.5 for 1.5%) or `retracement_px` (absolute USD
+    distance). Set `is_buy` to the side that **closes** your position
+    (long → False, short → True). Perp-only. Cancel it like any order, by oid.
+
+    Args:
+        wallet_label: Wallet owning the position.
+        asset_name: Perp identifier (`BTC-USDC`, `xyz:SP500`). Spot and HIP-4
+            outcomes are rejected.
+        is_buy: Direction of the close — opposite of the open position's side.
+        size: Asset units to close. Rounded down to the lot size; rejects if it
+            rounds to zero.
+        retracement_pct: Pullback that fires the stop, as a percent (0–100,
+            up to 3 decimals).
+        retracement_px: Pullback that fires the stop, as a price distance.
+        activation_price: Optional price that must trade before trailing starts
+            (e.g. only trail once in profit). Omit to start trailing now.
+        reduce_only: Default True — can only close, never open/flip a position.
+    """
+    wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
+    asset_name = throw_if_empty_str("asset_name is required", asset_name)
+    sz = throw_if_not_number("size must be a number", size)
+    if sz <= 0:
+        raise ValueError("size must be positive")
+    if (retracement_pct is None) == (retracement_px is None):
+        raise ValueError("pass exactly one of retracement_pct or retracement_px")
+    pct: float | None = None
+    distance: float | None = None
+    if retracement_pct is not None:
+        pct = throw_if_not_number("retracement_pct must be a number", retracement_pct)
+        if not 0 < pct < 100:
+            raise ValueError("retracement_pct must be between 0 and 100")
+    else:
+        distance = throw_if_not_number(
+            "retracement_px must be a number", retracement_px
+        )
+        if distance <= 0:
+            raise ValueError("retracement_px must be positive")
+    activation: float | None = None
+    if activation_price is not None:
+        activation = throw_if_not_number(
+            "activation_price must be a number", activation_price
+        )
+        if activation <= 0:
+            raise ValueError("activation_price must be positive")
+
+    try:
+        adapter, sender = await _make_hl_adapter(wallet_label)
+        resolved_asset_id, market_type = await _resolve_asset(adapter, asset_name)
+    except ValueError as exc:
+        return err("invalid_coin", str(exc))
+
+    if market_type in (MARKET_TYPE_SPOT, MARKET_TYPE_HIP4):
+        return err(
+            "invalid_market",
+            f"Trailing stops are perp-only; {asset_name!r} is a {market_type} "
+            "market. They close an existing perp position, which spot and HIP-4 "
+            "outcome markets don't have.",
+        )
+
+    sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
+    if sz_valid <= 0:
+        sz_decimals = adapter.get_sz_decimals(resolved_asset_id)
+        min_tick = float(Decimal(10) ** (-sz_decimals))
+        raise ValueError(
+            f"size {sz} rounds down to 0 — asset has szDecimals={sz_decimals} "
+            f"(lot size = {min_tick}). Try size={min_tick}."
+        )
+    if activation is not None:
+        _validate_price(adapter=adapter, asset_id=resolved_asset_id, price=activation)
+
+    ok_order, res = await adapter.place_trailing_stop(
+        resolved_asset_id,
+        bool(is_buy),
+        float(sz_valid),
+        sender,
+        retracement_pct=pct,
+        retracement_px=distance,
+        activation_price=activation,
+        reduce_only=bool(reduce_only),
+    )
+    effects: list[dict[str, Any]] = [
+        {"type": "hl", "label": "place_trailing_stop", "ok": ok_order, "result": res}
+    ]
+    status = "confirmed" if ok_order else "failed"
+    _annotate_hl_profile(
+        address=sender,
+        label=wallet_label,
+        action="place_trailing_stop",
+        status=status,
+        details={
+            "asset_id": resolved_asset_id,
+            "asset_name": asset_name,
+            "is_buy": bool(is_buy),
+            "retracement_pct": pct,
+            "retracement_px": distance,
+            "activation_price": activation,
+            "size": float(sz_valid),
+        },
+    )
+    return ok(
+        {
+            "status": status,
+            "wallet_label": wallet_label,
+            "address": sender,
+            "asset_id": resolved_asset_id,
+            "asset_name": asset_name,
+            "trailing_stop": {
+                "is_buy": bool(is_buy),
+                "retracement_pct": pct,
+                "retracement_px": distance,
+                "activation_price": activation,
+                "size_requested": float(sz),
+                "size_valid": float(sz_valid),
+                "reduce_only": bool(reduce_only),
+                "oid": trailing_stop_oid(res),
             },
             "effects": effects,
         }
