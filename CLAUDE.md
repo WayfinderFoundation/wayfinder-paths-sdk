@@ -92,6 +92,7 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | ProjectX (V3 fork)    | `/using-projectx-adapter`        |
 | Alpha Lab             | `/using-alpha-lab`               |
 | Delta Lab             | `/using-delta-lab`               |
+| Trader Lab            | `/using-trader-lab`              |
 | Pools/Tokens/Balances | `/using-pool-token-balance-data` |
 | Simulation / Dry-run  | `/simulation-dry-run`            |
 | Backtesting           | `/backtest-strategy`             |
@@ -118,6 +119,12 @@ When answering questions about **rates/APYs/funding**:
 Alpha Lab is a **scored alpha insight feed** that surfaces actionable DeFi signals (tweets, chain flows, APY highlights, delta-neutral pairs). Read-only — discovery only, no execution.
 
 MCP tools: `research_get_alpha_types()`, `research_search_alpha(query, scan_type, ...)`. Python client: `ALPHA_LAB_CLIENT.search(...)`. Load `/using-alpha-lab` for full method signatures, scan types, and ranking semantics.
+
+## Trader Lab (what consistent Hyperliquid traders do)
+
+Daily (T+1) research data on Hyperliquid's consistently profitable wallets: screened by mark-to-market Sharpe, grouped into style buckets, with round trips, entry conditions, cohort flows, copyability and point-in-time cohorts. **Research material, not signals** — never tell a user to copy a wallet. Check `persistence` first, and backtest the user's own rule at ≥11 bp round trip.
+
+MCP tools: `research_trader_lab_meta`, `research_trader_lab_leaderboard`, `research_trader_lab_wallet`, `research_trader_lab_cohort`, `research_trader_lab_query`, `research_trader_lab_query_status`. Python: `TRADER_LAB_CLIENT`; bulk/local DuckDB in `wayfinder_paths.core.trader_lab` (extra `trader-lab`). Load `/using-trader-lab` first.
 
 ## Delta Lab (yield discovery)
 

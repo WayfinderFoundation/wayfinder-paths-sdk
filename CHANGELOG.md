@@ -4,7 +4,8 @@
 
 Added
 
-1. **Hyperliquid trailing stops** (#854): `HyperliquidAdapter.place_trailing_stop` and the `hyperliquid_place_trailing_stop` MCP tool place HL's native trailing stop (retracement as a percent or price distance, optional activation price; perp only, reduce-only by default, no builder fee).
+1. **Trader Lab**: research data on what consistently profitable Hyperliquid traders do (daily, T+1). `TRADER_LAB_CLIENT` (leaderboard, wallet cards, trips, cohort views, dataset downloads, server-side SQL and recipes), MCP tools `research_trader_lab_{meta,leaderboard,wallet,cohort,query,query_status}`, the optional `trader-lab` extra (`wayfinder_paths.core.trader_lab`: cached release downloads, local DuckDB with the server's views, entry features, point-in-time cohorts and backtest weights), the `using-trader-lab` skill and `examples/trader_lab_dip_buyer.py`.
+2. **Hyperliquid trailing stops** (#854): `HyperliquidAdapter.place_trailing_stop` and the `hyperliquid_place_trailing_stop` MCP tool place HL's native trailing stop (retracement as a percent or price distance, optional activation price; perp only, reduce-only by default, no builder fee).
 
 Fixed
 
