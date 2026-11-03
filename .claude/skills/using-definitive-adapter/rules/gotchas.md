@@ -27,7 +27,8 @@
 - **What the adapter checks before signing:** the order Definitive returns
   must be a Flash order on this chain, spending at most `amount` of
   `from_token` from this wallet and paying `to_token` back to this wallet;
-  the approval must be bounded and for Flash or Permit2. On Solana, the
+  the approval must be for Flash and at most `amount`. A quote that asks for
+  a Permit2 permit is refused before any approval is sent. On Solana, the
   setup instructions are checked and rebuilt (token accounts, SOL wrap,
   delegate to Flash's `flash_orders` PDA, bounded), and the order message's
   hash is recomputed from the wallet's own token accounts. Anything else is
