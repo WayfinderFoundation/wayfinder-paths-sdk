@@ -25,14 +25,27 @@ from eth_account.messages import (
     encode_typed_data,
 )
 from eth_utils import keccak, to_checksum_address
+from solders.message import MessageV0
+from solders.pubkey import Pubkey
+from solders.signature import Signature
+from solders.transaction import VersionedTransaction
 
+from wayfinder_paths.adapters.definitive_adapter import solana as svm
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.DefinitiveClient import (
     DEFINITIVE_CLIENT,
     OPEN_ORDER_STATUSES,
     DefinitiveError,
 )
+from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
 from wayfinder_paths.core.constants.eip712_domain_abi import EIP712_DOMAIN_ABI
+from wayfinder_paths.core.utils.svm import solana_client_from_chain_id
+from wayfinder_paths.core.utils.svm_tokens import (
+    _resolve_token_program_id,
+    get_associated_token_address,
+    get_spl_token_balance,
+)
+from wayfinder_paths.core.utils.svm_transaction import send_svm_versioned_transaction
 from wayfinder_paths.core.utils.transaction import send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
@@ -43,6 +56,7 @@ _DECIMAL = re.compile(r"^\d+(\.\d+)?$")
 
 # EVM chains the Wayfinder relay accepts (Flash ∩ BRAP; mirrors the backend).
 DEFINITIVE_CHAINS: dict[int, str] = {
+    900: "solana",
     1: "ethereum",
     56: "bsc",
     137: "polygon",
@@ -115,21 +129,33 @@ def build_flash_request(
     chain = DEFINITIVE_CHAINS.get(int(chain_id))
     if not chain:
         raise ValueError(f"Token orders aren't supported on chain {chain_id}")
-    if from_token.lower() in _NATIVE:
-        raise ValueError(
-            "Orders can't spend the native gas token; use its wrapped token"
-        )
+    native_sol = False
+    if chain == "solana":
+        # SOL trades as the wSOL mint: spent with svmUseNativeSOL, and bought
+        # SOL arrives as wSOL (Flash doesn't pay out native SOL).
+        native_sol = from_token in (svm.NATIVE_SOL, "native")
+        from_token = svm.WSOL_MINT if native_sol else from_token
+        to_token = svm.WSOL_MINT if to_token in (svm.NATIVE_SOL, "native") else to_token
+        normalize = str
+    else:
+        if from_token.lower() in _NATIVE:
+            raise ValueError(
+                "Orders can't spend the native gas token; use its wrapped token"
+            )
+        normalize = to_checksum_address
     side, flash_type = ORDER_TYPES[order_type]
     target, contra = (to_token, from_token) if side == "buy" else (from_token, to_token)
     request: dict[str, Any] = {
         "targetChain": chain,
         "contraChain": chain,
-        "targetAsset": to_checksum_address(target),
-        "contraAsset": to_checksum_address(contra),
+        "targetAsset": normalize(target),
+        "contraAsset": normalize(contra),
         "side": side,
         "qty": _price(amount, "amount"),
         "orderType": flash_type,
     }
+    if native_sol:
+        request["svmUseNativeSOL"] = True
     if flash_type == "limit":
         request["limitNotionalPrice"] = _price(limit_price, "limit_price")
     elif order_type == "breakout_buy":
@@ -318,13 +344,20 @@ class DefinitiveAdapter(BaseAdapter):
         *,
         sign_callback=None,
         sign_hash_callback=None,
+        svm_message_callback=None,
         wallet_address: str | None = None,
     ):
+        """EVM wallets pass `sign_callback` (txs) + `sign_hash_callback`;
+        a Solana leg passes `sign_callback` (Solana txs) +
+        `svm_message_callback` (Ed25519 message -> base58 signature)."""
         super().__init__("definitive_adapter", config)
         self.sign_callback = sign_callback
         self.sign_hash_callback = sign_hash_callback
+        self.svm_message_callback = svm_message_callback
         self.wallet_address = (
-            to_checksum_address(wallet_address) if wallet_address else None
+            wallet_address
+            if svm_message_callback is not None or not wallet_address
+            else to_checksum_address(wallet_address)
         )
 
     def _wallet(self) -> str:
@@ -371,6 +404,8 @@ class DefinitiveAdapter(BaseAdapter):
     ) -> tuple[bool, dict[str, Any]]:
         """Quote, send Flash's approval (at most the order amount) if it asks,
         check, sign, submit. Returns (ok, {order_id, approval_tx_hash})."""
+        if int(chain_id) == CHAIN_ID_SOLANA:
+            return await self._place_solana_order(request, spent_amount_raw)
         wallet = self._wallet()
         body = {**request, "funderAddress": wallet}
         spent = body["contraAsset"] if body["side"] == "buy" else body["targetAsset"]
@@ -411,6 +446,112 @@ class DefinitiveAdapter(BaseAdapter):
             return False, {"error": str(exc), "approval_tx_hash": approval_hash}
         return True, {"order_id": order_id, "approval_tx_hash": approval_hash}
 
+    async def _place_solana_order(
+        self, request: dict[str, Any], spent_amount_raw: int
+    ) -> tuple[bool, dict[str, Any]]:
+        """Quote; run the checked + rebuilt setup (token accounts, SOL wrap,
+        delegate) if needed; re-quote; check the order message against the
+        wallet's own token accounts; sign it with the Solana leg; submit."""
+        funder = self._wallet()
+        body = {**request, "funderAddress": funder}
+        spent, received = (
+            (body["contraAsset"], body["targetAsset"])
+            if body["side"] == "buy"
+            else (body["targetAsset"], body["contraAsset"])
+        )
+        setup_signature = None
+        try:
+            if self.svm_message_callback is None or self.sign_callback is None:
+                raise ValueError("Solana orders need the wallet's Solana leg")
+            group = (await DEFINITIVE_CLIENT.config()).get("solana_group") or ""
+            if not group:
+                raise ValueError("Solana token orders aren't available yet")
+            async with solana_client_from_chain_id(CHAIN_ID_SOLANA) as client:
+                programs = {
+                    mint: await _resolve_token_program_id(
+                        client, Pubkey.from_string(mint)
+                    )
+                    for mint in (spent, received)
+                }
+            native = body.get("svmUseNativeSOL") is True
+            held = await get_spl_token_balance(funder, spent) + (
+                spent_amount_raw if native else 0
+            )
+            quote = await DEFINITIVE_CLIENT.quote(body)
+            setup = svm.check_flash_svm_setup(
+                quote.get("svm") or {},
+                (quote.get("wrap") or {}).get("svmInstructions"),
+                funder=funder,
+                programs=programs,
+                spent_mint=spent,
+                max_delegate=max(held, spent_amount_raw),
+                max_wrap_lamports=spent_amount_raw if native else 0,
+            )
+            if setup:
+                setup_signature = await self._send_solana_setup(funder, setup)
+                quote = await DEFINITIVE_CLIENT.quote(body)
+                pending = quote.get("svm") or {}
+                if (
+                    pending.get("ataSetupIxs")
+                    or pending.get("delegateIx")
+                    or (quote.get("wrap") or {}).get("svmInstructions")
+                ):
+                    raise ValueError("Token setup didn't land yet; try again shortly")
+            svm_block = quote.get("svm") or {}
+            nonce, deadline = svm_block.get("nonce"), svm_block.get("deadline")
+            if not nonce or not deadline:
+                raise svm._refuse("no Solana order")
+            owner = Pubkey.from_string(funder)
+            message = svm.check_flash_svm_message(
+                svm_block.get("orderMessage"),
+                spent_mint=spent,
+                max_total=spent_amount_raw,
+                expected_hash=svm.flash_svm_order_hash(
+                    output_account=get_associated_token_address(
+                        owner, Pubkey.from_string(received), programs[received]
+                    ),
+                    nonce=int(nonce),
+                    deadline=int(deadline),
+                    input_account=get_associated_token_address(
+                        owner, Pubkey.from_string(spent), programs[spent]
+                    ),
+                    group=group,
+                ),
+            )
+            signature = await self.svm_message_callback(message)
+            order_id = await DEFINITIVE_CLIENT.submit(
+                {
+                    **body,
+                    "quoteId": quote["quoteId"],
+                    "userSignature": signature,
+                    "svmOrderMessage": message,
+                    "svmNonce": nonce,
+                    "svmDeadline": deadline,
+                }
+            )
+        except (DefinitiveError, ValueError) as exc:
+            return False, {"error": str(exc), "setup_tx_signature": setup_signature}
+        return True, {"order_id": order_id, "setup_tx_signature": setup_signature}
+
+    async def _send_solana_setup(self, funder: str, instructions: list) -> str:
+        async with solana_client_from_chain_id(CHAIN_ID_SOLANA) as client:
+            blockhash = (await client.get_latest_blockhash()).value.blockhash
+        message = MessageV0.try_compile(
+            payer=Pubkey.from_string(funder),
+            instructions=instructions,
+            address_lookup_table_accounts=[],
+            recent_blockhash=blockhash,
+        )
+        tx = VersionedTransaction.populate(
+            message,
+            [
+                Signature.default()
+                for _ in range(message.header.num_required_signatures)
+            ],
+        )
+        details = await send_svm_versioned_transaction(tx, self.sign_callback)
+        return str(details["signature"])
+
     async def list_orders(
         self, *, include_closed: bool = False
     ) -> tuple[bool, list[dict[str, Any]] | str]:
@@ -442,10 +583,15 @@ class DefinitiveAdapter(BaseAdapter):
             )
             if chain_id is None:
                 raise ValueError("Unsupported chain for this order")
-            digest = _hash_eip191_message(
-                encode_defunct(text=flash_cancel_message(oid))
-            )
-            signature = await self._sign_digest(chain_id, digest)
+            if chain_id == CHAIN_ID_SOLANA:
+                if self.svm_message_callback is None:
+                    raise ValueError("This order belongs to the wallet's Solana leg")
+                signature = await self.svm_message_callback(flash_cancel_message(oid))
+            else:
+                digest = _hash_eip191_message(
+                    encode_defunct(text=flash_cancel_message(oid))
+                )
+                signature = await self._sign_digest(chain_id, digest)
             try:
                 await DEFINITIVE_CLIENT.cancel(self._wallet(), oid, signature)
             except DefinitiveError as exc:
