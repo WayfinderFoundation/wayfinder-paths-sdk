@@ -4,7 +4,7 @@
 
 Added
 
-1. **Onchain token orders via Definitive Flash**: `DefinitiveAdapter` and the `onchain_place_order` / `onchain_cancel_order` / `onchain_list_orders` MCP tools rest limit, stop-loss, take-profit, breakout-buy, trailing-stop and TP + SL orders on EVM and Solana tokens through the Wayfinder relay (native SOL spent via wSOL). Tokens stay in the wallet until fill; the adapter checks Definitive's EIP-712 order and approval before signing, and EIP-7702 Kernel wallets sign through their EIP-1271 wrapping.
+1. **Onchain token orders via Definitive Flash**: `DefinitiveAdapter` and the `onchain_place_order` / `onchain_cancel_order` / `onchain_list_orders` MCP tools rest limit, stop-loss, take-profit, breakout-buy, trailing-stop and TP + SL orders on EVM tokens through the Wayfinder relay. Tokens stay in the wallet until fill; the adapter checks Definitive's EIP-712 order and approval before signing, and EIP-7702 Kernel wallets sign through their EIP-1271 wrapping.
 2. **Hyperliquid trailing stops** (#854): `HyperliquidAdapter.place_trailing_stop` and the `hyperliquid_place_trailing_stop` MCP tool place HL's native trailing stop (retracement as a percent or price distance, optional activation price; perp only, reduce-only by default, no builder fee).
 
 Fixed

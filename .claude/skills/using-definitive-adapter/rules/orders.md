@@ -26,10 +26,8 @@ a pair rate.
 | `trailing_stop` | sell | `trail_percent` (0.5–50), optional `activation_price` | price pulls back `trail_percent` from its high |
 | `bracket` | sell | `take_profit_price` + `stop_loss_price` | whichever comes first; the other is cancelled |
 
-Same chain only: Ethereum, Arbitrum, Base, Polygon, BSC, Avalanche, Monad,
-HyperEVM, Robinhood, Plasma, Arc, and Solana (needs Solana enabled on the
-account). On Solana, native SOL can be the token sold (it's wrapped to wSOL
-for you); buying SOL delivers wSOL. Read the current price first (e.g.
+Same chain only (Ethereum, Arbitrum, Base, Polygon, BSC, Avalanche, Monad,
+HyperEVM, Robinhood, Plasma, Arc). Not Solana. Read the current price first (e.g.
 `research_search_price`) and set triggers on the correct side of it.
 
 ## Reading orders

@@ -19,7 +19,7 @@ from wayfinder_paths.core.config import (
     load_wallet_mnemonic,
     write_wallet_mnemonic,
 )
-from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA, SVM_CHAIN_IDS
+from wayfinder_paths.core.constants.chains import SVM_CHAIN_IDS
 from wayfinder_paths.core.utils.signing_errors import (
     SESSION_EXPIRED_MESSAGE,
     SessionExpiredError,
@@ -400,21 +400,6 @@ async def get_wallet_sign_typed_data_callback(label: str):
     if not wallet:
         raise ValueError(f"Wallet '{label}' not found.")
     return _build_typed_data_callback(wallet, label)
-
-
-async def get_wallet_svm_message_callback(label: str):
-    """Async — the wallet ring's Solana leg. Returns (sign_message_callback,
-    svm_address); the callback takes a UTF-8 message and returns a base58
-    Ed25519 signature. Solana legs are always Privy-managed (remote)."""
-    wallet = await find_wallet_leg_for_chain(label, CHAIN_ID_SOLANA)
-    if not wallet or wallet_chain_type(wallet) != CHAIN_TYPE_SOLANA:
-        raise ValueError(f"Wallet '{label}' has no Solana leg.")
-    address = _require_wallet_address(wallet, label)
-
-    async def sign_message(message: str) -> str:
-        return await WALLET_CLIENT.sign_svm_message(address, message)
-
-    return sign_message, address
 
 
 async def get_wallet_sign_hash_callback(label: str):
