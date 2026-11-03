@@ -19,6 +19,7 @@
 - **What the adapter checks before signing:** the order Definitive returns
   must be a Flash order on this chain, spending at most `amount` of
   `from_token` from this wallet and paying `to_token` back to this wallet;
-  the approval must be bounded and for Flash or Permit2. Anything else is
+  the approval must be for Flash and at most `amount`. A quote that asks for
+  a Permit2 permit is refused before any approval is sent. Anything else is
   refused and nothing is signed. Agent wallets with EIP-7702 delegation
   (Kernel) sign through the account's EIP-1271 wrapping automatically.

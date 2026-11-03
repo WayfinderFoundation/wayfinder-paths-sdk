@@ -33,12 +33,10 @@ from wayfinder_paths.core.clients.DefinitiveClient import (
     DefinitiveError,
 )
 from wayfinder_paths.core.constants.eip712_domain_abi import EIP712_DOMAIN_ABI
-from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.utils.transaction import send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 FLASH_CONTRACT = "0x5d00000873b6BF41539e6f5365B0Ff7d3c368f78"
-PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3"
 _NATIVE = {"0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "0x" + "0" * 40}
 _MAX_UINT48 = 2**48 - 1
 _DECIMAL = re.compile(r"^\d+(\.\d+)?$")
@@ -256,11 +254,12 @@ def flash_order_digest(typed: dict[str, Any]) -> bytes:
 
 
 def check_flash_approval(
-    approve_tx: dict[str, Any] | None, spent_token: str, max_amount: int
+    approve_tx: dict[str, Any] | None, spent_token: str, order_amount: int
 ) -> dict[str, Any] | None:
-    """Flash's approval must be `approve(Flash|Permit2, amount)` on the spent
-    token, for no more than the wallet holds (we always ask for minimal
-    allowances)."""
+    """Flash's approval must be `approve(Flash, amount)` on the spent token,
+    for no more than the order spends (we always ask for minimal allowances).
+    Permit2 is refused: we never sign permits, so a Permit2 allowance would be
+    left behind unused."""
     if not approve_tx:
         return None
     if to_checksum_address(approve_tx["to"]) != to_checksum_address(spent_token):
@@ -272,10 +271,10 @@ def check_flash_approval(
         spender, amount = abi_decode(["address", "uint256"], data[4:])
     except Exception:  # noqa: BLE001
         raise _refuse("the approval is malformed") from None
-    if to_checksum_address(spender) not in (FLASH_CONTRACT, PERMIT2):
+    if to_checksum_address(spender) != FLASH_CONTRACT:
         raise _refuse("the approval is for an unknown spender")
-    if amount > max_amount:
-        raise _refuse("the approval is larger than the wallet's balance")
+    if amount > order_amount:
+        raise _refuse("the approval is larger than the order")
     return {"to": to_checksum_address(approve_tx["to"]), "data": approve_tx["data"]}
 
 
@@ -357,45 +356,45 @@ class DefinitiveAdapter(BaseAdapter):
         signature = await self.sign_hash_callback("0x" + wrapped.hex())
         return "0x00" + signature.removeprefix("0x")
 
+    @staticmethod
+    async def _quote(body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        """A quote, refused before any approval if it asks for a Permit2
+        permit, so a refused order never leaves an allowance behind."""
+        quote = await DEFINITIVE_CLIENT.quote(body)
+        evm = quote.get("evm") or {}
+        if evm.get("permitTypedData"):
+            raise _refuse("unexpected Permit2 request")
+        return quote, evm
+
     async def place_order(
         self, chain_id: int, request: dict[str, Any], spent_amount_raw: int
     ) -> tuple[bool, dict[str, Any]]:
-        """Quote, send Flash's bounded approval if it asks, check, sign,
-        submit. Returns (ok, {order_id, approval_tx_hash})."""
+        """Quote, send Flash's approval (at most the order amount) if it asks,
+        check, sign, submit. Returns (ok, {order_id, approval_tx_hash})."""
         wallet = self._wallet()
         body = {**request, "funderAddress": wallet}
         spent = body["contraAsset"] if body["side"] == "buy" else body["targetAsset"]
         approval_hash = None
         try:
-            quote = await DEFINITIVE_CLIENT.quote(body)
-            evm = quote.get("evm") or {}
-            if evm.get("approveTx"):
-                async with web3_from_chain_id(int(chain_id)) as w3:
-                    token = w3.eth.contract(
-                        address=to_checksum_address(spent), abi=ERC20_ABI
-                    )
-                    balance = await token.functions.balanceOf(wallet).call()
-                approval = check_flash_approval(
-                    evm["approveTx"], spent, max(balance, spent_amount_raw)
+            quote, evm = await self._quote(body)
+            approval = check_flash_approval(
+                evm.get("approveTx"), spent, spent_amount_raw
+            )
+            if approval:
+                if self.sign_callback is None:
+                    raise ValueError("sign_callback is required to approve")
+                approval_hash = await send_transaction(
+                    {
+                        "chainId": int(chain_id),
+                        "from": wallet,
+                        "to": approval["to"],
+                        "data": approval["data"],
+                        "value": 0,
+                    },
+                    self.sign_callback,
+                    wait_for_receipt=True,
                 )
-                if approval:
-                    if self.sign_callback is None:
-                        raise ValueError("sign_callback is required to approve")
-                    approval_hash = await send_transaction(
-                        {
-                            "chainId": int(chain_id),
-                            "from": wallet,
-                            "to": approval["to"],
-                            "data": approval["data"],
-                            "value": 0,
-                        },
-                        self.sign_callback,
-                        wait_for_receipt=True,
-                    )
-                    quote = await DEFINITIVE_CLIENT.quote(body)
-                    evm = quote.get("evm") or {}
-            if evm.get("permitTypedData"):
-                raise _refuse("unexpected Permit2 request")
+                quote, evm = await self._quote(body)
             typed = parse_flash_order_typed_data(
                 evm.get("orderTypedData"), body, chain_id, spent_amount_raw
             )

@@ -25,6 +25,7 @@ USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 WETH = "0x4200000000000000000000000000000000000006"
 ORDER_ID = "5b0e6f7a-3c1d-4e2f-9a8b-7c6d5e4f3a2b"
 SIG = "0x" + "ab" * 65
+PERMIT2 = "0x000000000022D473030F116dDEE9F6B43aC78BA3"
 
 REQUEST = {
     **build_flash_request(
@@ -188,7 +189,9 @@ def test_approval_checks():
     assert check_flash_approval(approve(FLASH_CONTRACT, 5_000_000), USDC, 5_000_000)
     for tx, token in [
         (approve(OTHER, 1), USDC),
+        (approve(PERMIT2, 1), USDC),
         (approve(FLASH_CONTRACT, 2**256 - 1), USDC),
+        (approve(FLASH_CONTRACT, 5_000_001), USDC),
         (approve(FLASH_CONTRACT, 1, token=WETH), USDC),
     ]:
         with pytest.raises(ValueError, match="Refusing to sign"):
@@ -311,6 +314,36 @@ async def test_place_order_approves_then_prefixes_for_a_kernel_wallet():
     assert res["approval_tx_hash"] == "0xapprove"
     assert send.await_args.args[0]["to"] == USDC
     assert client.submit.await_args.args[0]["userSignature"] == "0x00" + SIG[2:]
+
+
+@pytest.mark.parametrize(
+    ("evm", "reason"),
+    [
+        (
+            {"approveTx": approve(PERMIT2, 5_000_000), "permitTypedData": "{}"},
+            "unexpected Permit2 request",
+        ),
+        ({"approveTx": approve(PERMIT2, 5_000_000)}, "unknown spender"),
+        ({"approveTx": approve(FLASH_CONTRACT, 5_000_001)}, "larger than the order"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_refused_approvals_are_never_sent(evm, reason):
+    q = quote()
+    q["evm"].update(evm)
+    client = MagicMock(quote=AsyncMock(return_value=q), submit=AsyncMock())
+    with (
+        patch(f"{MODULE}.DEFINITIVE_CLIENT", client),
+        patch(f"{MODULE}.send_transaction", AsyncMock()) as send,
+    ):
+        ok, res = await adapter().place_order(
+            8453, {k: v for k, v in REQUEST.items() if k != "funderAddress"}, 5_000_000
+        )
+    assert not ok
+    assert reason in res["error"]
+    assert res["approval_tx_hash"] is None
+    send.assert_not_awaited()
+    client.submit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
