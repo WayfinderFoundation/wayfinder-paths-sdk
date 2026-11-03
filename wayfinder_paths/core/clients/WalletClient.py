@@ -78,6 +78,13 @@ class WalletClient(WayfinderClient):
             logger.error(f"sign_svm_transaction failed for {wallet_address}: {exc}")
             raise
 
+    async def sign_svm_message(self, wallet_address: str, message: str) -> str:
+        """Ed25519-sign a Definitive Flash order/cancel message with a Solana
+        wallet (the backend signs nothing else). Returns base58."""
+        url = f"{get_api_base_url()}/wallets/{wallet_address}/sign-svm-message/"
+        resp = await self._authed_request("POST", url, json={"message": message})
+        return resp.json()["signature"]
+
     async def send_privy_transaction_sponsored(
         self, wallet_address: str, transaction: dict
     ) -> dict[str, Any]:

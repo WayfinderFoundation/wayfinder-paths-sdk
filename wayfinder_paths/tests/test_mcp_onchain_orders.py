@@ -143,7 +143,7 @@ async def test_failed_placement_is_reported():
 @pytest.mark.asyncio
 async def test_cancel_and_list():
     adapter = _adapter(list=(True, [{"orderId": "oid"}]))
-    with patch(f"{TOOLS}._adapter", AsyncMock(return_value=(adapter, ME))):
+    with patch(f"{TOOLS}._legs", AsyncMock(return_value=[(adapter, ME)])):
         cancelled = _payload(
             await onchain_cancel_order(wallet_label="main", order_id="oid")
         )
@@ -174,3 +174,63 @@ async def test_preview_spells_out_the_order():
     assert "take_profit_price: 3500" in summary
     assert "stop_loss_price: 2800" in summary
     assert "output goes to: sender" in summary
+
+
+SOL_USDC = {
+    "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "chain_id": 900,
+    "decimals": 6,
+}
+SOL = {"address": "11111111111111111111111111111111", "chain_id": 900, "decimals": 9}
+
+
+@pytest.mark.asyncio
+async def test_solana_order_uses_the_solana_leg_and_spends_sol_as_wsol():
+    adapter = _adapter()
+    with patch(f"{TOOLS}.is_solana_enabled", AsyncMock(return_value=True)):
+        result = _payload(
+            await _place(
+                adapter,
+                tokens=(SOL, SOL_USDC),
+                order_type="stop_loss",
+                amount="2.0",
+                stop_loss_price=120,
+            )
+        )
+    assert result["status"] == "placed"
+    chain_id, request, spent_raw = adapter.place_order.await_args.args
+    assert chain_id == 900 and spent_raw == 2_000_000_000
+    assert request["targetAsset"] == "So11111111111111111111111111111111111111112"
+    assert request["svmUseNativeSOL"] is True
+
+
+@pytest.mark.asyncio
+async def test_solana_orders_need_solana_enabled():
+    adapter = _adapter()
+    with patch(f"{TOOLS}.is_solana_enabled", AsyncMock(return_value=False)):
+        result = await _place(
+            adapter,
+            tokens=(SOL, SOL_USDC),
+            order_type="limit_sell",
+            amount="1.0",
+            limit_price=200,
+        )
+    assert "solana_disabled" in str(result)
+    adapter.place_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancel_tries_each_leg_and_lists_both():
+    evm = _adapter(
+        cancel=(False, {"error": "Order not found"}), list=(True, [{"orderId": "a"}])
+    )
+    sol = _adapter(list=(True, [{"orderId": "b"}]))
+    legs = AsyncMock(return_value=[(evm, ME), (sol, "SoLaddr")])
+    with patch(f"{TOOLS}._legs", legs):
+        cancelled = _payload(
+            await onchain_cancel_order(wallet_label="main", order_id="oid")
+        )
+        listed = _payload(await onchain_list_orders(wallet_label="main"))
+    assert cancelled["status"] == "cancelled" and cancelled["address"] == "SoLaddr"
+    assert [o["orderId"] for o in listed["orders"]] == ["a", "b"]
+    assert listed["addresses"] == [ME, "SoLaddr"]
