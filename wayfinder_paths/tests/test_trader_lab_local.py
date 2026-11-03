@@ -15,7 +15,9 @@ from wayfinder_paths.core.trader_lab import bulk, local, signals  # noqa: E402
 
 # The server's views.sql, verbatim (services/vault-backend/.../sql/views.sql):
 # the local connection must accept exactly what the release publishes.
-VIEWS_SQL = (Path(__file__).parent / "fixtures" / "trader_lab_views.sql").read_text()
+FIXTURES = Path(__file__).parent / "fixtures"
+VIEWS_SQL = (FIXTURES / "trader_lab_views.sql").read_text()
+FEATURES_SQL = (FIXTURES / "trader_lab_features.sql").read_text()
 
 
 def _write(con, sql: str, path: Path) -> None:
@@ -48,6 +50,7 @@ def release_dir(tmp_path) -> Path:
                 "release": "2026-10-30",
                 "views_sql": VIEWS_SQL,
                 "features_sql": "SELECT 1",
+                "datasets": ["cohort_membership", "round_trips", "fills", "universe"],
             }
         )
     )
@@ -171,3 +174,96 @@ def test_features_apply_runs_release_sql_on_points(release_dir):
     )
     out = features.apply(con, points, release_dir).set_index("coin")["n"].to_dict()
     assert out == {"ETH": 1, "BTC": 1}  # points are de-duplicated
+
+
+# ---------------------------------------------------------------- untrusted input
+
+
+def _listing(path: str, release: str = "2026-10-30") -> dict:
+    return {
+        "release": release,
+        "data": {
+            "datasets": [
+                {
+                    "name": path.split("/")[0] or "x",
+                    "files": [{"path": path, "bytes": 1}],
+                }
+            ]
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "round_trips/../../../etc/x.parquet",
+        "../outside/part.parquet",
+        "/abs/part.parquet",
+        "round_trips/sub/part.parquet",
+        "round_trips/part.sh",
+    ],
+)
+def test_plan_rejects_paths_outside_the_cache(tmp_path, path):
+    with pytest.raises(ValueError):
+        bulk.plan(_listing(path), None, tmp_path)
+
+
+@pytest.mark.parametrize("release", ["../x", "2026-10-30/../../x", "", None])
+async def test_download_rejects_bad_release_ids(tmp_path, release):
+    client = FakeClient({"round_trips/part.parquet": b"a"})
+    listing = await client.datasets()
+    listing["release"] = release
+
+    async def datasets():
+        return listing
+
+    client.datasets = datasets
+    with pytest.raises(ValueError):
+        await bulk.download_release(dest=tmp_path, client=client)
+    assert client.downloads == []
+
+
+def test_manifest_sql_is_not_executed(release_dir):
+    meta = json.loads((release_dir / "manifest.json").read_text())
+    meta["views_sql"] = (
+        "CREATE OR REPLACE VIEW x AS SELECT * FROM read_parquet('a'); "
+        "COPY (SELECT 1) TO '/tmp/pwned.csv';"
+    )
+    meta["datasets"] = ["round_trips", "x'; DROP", "../etc"]
+    (release_dir / "manifest.json").write_text(json.dumps(meta))
+    assert local.available_views(release_dir) == ["round_trips"]
+    local.connect(release_dir).sql("SELECT count(*) FROM round_trips").fetchone()
+
+
+def test_paths_with_quotes_are_escaped(tmp_path, release_dir):
+    odd = tmp_path / "it's here"
+    release_dir.rename(odd)
+    assert local.connect(odd).sql("SELECT count(*) FROM round_trips").fetchone()[0] == 1
+
+
+def test_real_features_sql_passes_the_check():
+    from wayfinder_paths.core.trader_lab._safety import check_select
+
+    assert check_select(FEATURES_SQL)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM read_csv('/etc/passwd')",
+        "COPY (SELECT 1) TO '/tmp/x'",
+        "SELECT 1; SELECT 2",
+        "SELECT * FROM secrets",
+        "SELECT getenv('HOME')",
+        "INSTALL httpfs",
+        "SELECT * FROM glob('/*')",
+    ],
+)
+def test_untrusted_features_sql_is_refused(release_dir, sql):
+    from wayfinder_paths.core.trader_lab import features
+
+    meta = json.loads((release_dir / "manifest.json").read_text())
+    meta["features_sql"] = sql
+    (release_dir / "manifest.json").write_text(json.dumps(meta))
+    with pytest.raises(ValueError):
+        features.features_sql(release_dir)

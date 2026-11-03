@@ -14,13 +14,16 @@ import json
 from pathlib import Path
 from typing import Any
 
+from wayfinder_paths.core.trader_lab._safety import check_select
+
 
 def features_sql(release_dir: Path) -> str:
     meta = json.loads((Path(release_dir) / "manifest.json").read_text())
     sql = meta.get("features_sql")
     if not sql:
         raise ValueError("This release manifest has no features_sql")
-    return sql
+    # Untrusted input: only a single SELECT over points / bars_1m / funding.
+    return check_select(sql)
 
 
 def apply(con: Any, points: Any, release_dir: Path) -> Any:

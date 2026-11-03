@@ -14,6 +14,13 @@ from wayfinder_paths.core.clients.TraderLabClient import (
     TRADER_LAB_CLIENT,
     TraderLabClient,
 )
+from wayfinder_paths.core.trader_lab._safety import (
+    DATASET,
+    UnsafeReleaseData,
+    check_file_path,
+    check_release,
+    inside,
+)
 
 MANIFEST = "manifest.json"
 
@@ -38,10 +45,15 @@ def plan(listing: dict[str, Any], datasets: list[str] | None, dest: Path) -> lis
     wanted = set(datasets) if datasets else None
     todo = []
     for ds in listing["data"]["datasets"]:
+        if not isinstance(ds.get("name"), str) or not DATASET.match(ds["name"]):
+            raise UnsafeReleaseData(f"unexpected dataset name {ds.get('name')!r}")
         if wanted is not None and ds["name"] not in wanted:
             continue
         for f in ds["files"]:
-            local = dest / f["path"]
+            name, _file = check_file_path(f.get("path"))
+            if name != ds["name"]:
+                raise UnsafeReleaseData(f"{f['path']} is not in dataset {ds['name']}")
+            local = inside(dest, dest / f["path"])
             if local.exists() and f.get("sha256") and _sha256(local) == f["sha256"]:
                 continue
             todo.append({"dataset": ds["name"], **f})
@@ -81,7 +93,7 @@ async def download_release(
     """
     client = client or TRADER_LAB_CLIENT
     listing = await client.datasets()
-    release = listing["release"]
+    release = check_release(listing.get("release"))
     directory = (dest or cache_root()) / f"R={release}"
     todo = plan(listing, datasets, directory)
     total = sum(f.get("bytes", 0) for f in todo)
@@ -91,9 +103,12 @@ async def download_release(
             "pass fewer datasets or a higher max_bytes"
         )
     for f in todo:
-        name, file = f["path"].split("/", 1)
+        name, file = check_file_path(f["path"])
         await client.download_dataset_file(
-            name, file, directory / f["path"], sha256=f.get("sha256")
+            name,
+            file,
+            inside(directory, directory / name / file),
+            sha256=f.get("sha256"),
         )
     meta = {
         "release": release,
