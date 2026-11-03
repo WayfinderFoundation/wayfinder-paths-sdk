@@ -110,6 +110,7 @@ Research MCP surface:
 - Delta Lab snapshots: `research_get_top_apy`, `research_get_basis_apy_sources`, `research_get_basis_symbols`, `research_get_asset_basis_info`, `research_search_delta_lab_assets`, `research_search_delta_lab_markets`, `research_search_delta_lab_instruments`, `research_get_delta_lab_pendle_market`, `research_search_price`, `research_search_lending`, `research_search_perp`, `research_search_borrow_routes`.
 - Direct runtime sources: `research_defillama_free`, `research_goldsky_graphql`, `research_goldsky_search`, `research_goldsky_schema`.
 - Alpha Lab: `research_get_alpha_types`, `research_search_alpha`.
+- Trader Lab (what consistently profitable Hyperliquid traders do; daily, T+1): `research_trader_lab_meta` (check persistence first), `research_trader_lab_leaderboard`, `research_trader_lab_wallet`, `research_trader_lab_cohort`, `research_trader_lab_query`, `research_trader_lab_query_status`. Load the `using-trader-lab` skill before building strategies from it; it is research material, not signals.
 - Polymarket read-only: `polymarket_read`.
 - Scripts: `core_run_script` for bounded research scripts.
 

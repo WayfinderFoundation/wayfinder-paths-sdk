@@ -292,6 +292,10 @@ Alpha Lab is a custom Wayfinder service that crawls for actionable insights acro
 
 Delta Lab is a custom Wayfinder service that crawls and ranks actionable positions across many DeFi protocols.
 
+### Trader Lab
+
+Trader Lab is a custom Wayfinder service with what consistently profitable Hyperliquid traders actually do (daily, T+1): screened wallets by trading style, their round trips with entry conditions, cohort flows, and whether copying them late would have worked. It is research material for building the user's own strategies, not signals; check persistence first and load `using-trader-lab` before building on it.
+
 ### Shells Messaging
 
 You may message the Shell's owner to report completed work, surface decisions, or flag unresolved blockers. Backend delivery requires verified contact details and is throttled to 12 notifications per user per day.
