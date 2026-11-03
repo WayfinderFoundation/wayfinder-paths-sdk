@@ -132,6 +132,7 @@ def test_request_builder_maps_sides_and_prices():
     [
         ("market", {}),
         ("limit_buy", {"chain_id": 5000}),
+        ("limit_buy", {"chain_id": 10}),
         ("limit_buy", {"from_token": "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"}),
         ("limit_buy", {"limit_price": 0}),
         ("limit_buy", {"limit_price": "1e3x"}),
@@ -381,3 +382,19 @@ async def test_cancel_refuses_non_uuid_ids_before_any_call():
         ok, res = await adapter().cancel_order("../../orders")
     assert not ok
     client.get_order.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("chain_id", "name"),
+    [(5042, "arc"), (143, "monad"), (9745, "plasma"), (4663, "robinhood")],
+)
+def test_swap_chains_flash_supports_are_accepted(chain_id, name):
+    request = build_flash_request(
+        "limit_buy",
+        chain_id=chain_id,
+        from_token=USDC,
+        to_token=WETH,
+        amount="5",
+        limit_price=1,
+    )
+    assert request["targetChain"] == request["contraChain"] == name

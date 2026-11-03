@@ -43,14 +43,17 @@ _NATIVE = {"0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "0x" + "0" * 40}
 _MAX_UINT48 = 2**48 - 1
 _DECIMAL = re.compile(r"^\d+(\.\d+)?$")
 
-# EVM chains the Wayfinder relay accepts (mirrors the backend).
+# EVM chains the Wayfinder relay accepts (Flash ∩ BRAP; mirrors the backend).
 DEFINITIVE_CHAINS: dict[int, str] = {
     1: "ethereum",
-    10: "optimism",
     56: "bsc",
     137: "polygon",
+    143: "monad",
     999: "hyperevm",
+    4663: "robinhood",
+    5042: "arc",
     8453: "base",
+    9745: "plasma",
     42161: "arbitrum",
     43114: "avalanche",
 }
