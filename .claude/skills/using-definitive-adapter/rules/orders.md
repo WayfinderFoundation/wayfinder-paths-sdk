@@ -2,12 +2,12 @@
 
 ## MCP tools
 
-- `definitive_place_order(wallet_label, order_type, from_token, to_token, amount, ...)`
+- `onchain_place_order(wallet_label, order_type, from_token, to_token, amount, ...)`
   places a resting order (review-gated). `amount` is a decimal string of
   `from_token` (e.g. `"25.0"`), like `onchain_swap`.
-- `definitive_list_orders(wallet_label, include_closed=False)` lists the
+- `onchain_list_orders(wallet_label, include_closed=False)` lists the
   wallet's orders (read-only).
-- `definitive_cancel_order(wallet_label, order_id)` cancels by id
+- `onchain_cancel_order(wallet_label, order_id)` cancels by id
   (review-gated). Nothing moves; the wallet signs the cancel.
 
 ## Order types

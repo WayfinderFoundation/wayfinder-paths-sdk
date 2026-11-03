@@ -73,7 +73,7 @@ async def _legs(wallet_label: str) -> list[tuple[DefinitiveAdapter, str]]:
 
 
 @catch_errors
-async def definitive_place_order(
+async def onchain_place_order(
     *,
     wallet_label: str,
     order_type: str,
@@ -164,7 +164,7 @@ async def definitive_place_order(
         label=wallet_label,
         protocol="definitive",
         action=f"place_{order_type}",
-        tool="definitive_place_order",
+        tool="onchain_place_order",
         status=status,
         chain_id=chain_id,
         details={"order_id": res.get("order_id"), "request": request},
@@ -173,9 +173,7 @@ async def definitive_place_order(
 
 
 @catch_errors
-async def definitive_cancel_order(
-    *, wallet_label: str, order_id: str
-) -> dict[str, Any]:
+async def onchain_cancel_order(*, wallet_label: str, order_id: str) -> dict[str, Any]:
     """Cancel a resting Definitive token order by id (the wallet signs the
     cancel; nothing moves). An order that filled first is reported as filled.
     Cancelling doesn't revoke the token approval or Solana delegate.
@@ -195,7 +193,7 @@ async def definitive_cancel_order(
 
 
 @catch_errors
-async def definitive_list_orders(
+async def onchain_list_orders(
     *, wallet_label: str, include_closed: bool = False
 ) -> dict[str, Any]:
     """List the wallet's Definitive token orders, EVM and Solana (open only

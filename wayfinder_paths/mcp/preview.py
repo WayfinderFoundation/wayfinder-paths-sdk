@@ -78,7 +78,7 @@ _DEFINITIVE_PRICES = (
 )
 
 
-async def build_definitive_place_order_preview(
+async def build_onchain_place_order_preview(
     tool_input: dict[str, Any],
 ) -> dict[str, Any]:
     header, base, _ = await _onchain_preview_base(tool_input, "TOKEN_ORDER\n")
@@ -99,7 +99,7 @@ async def build_definitive_place_order_preview(
     return {"summary": header + base + details, "recipient_mismatch": False}
 
 
-async def build_definitive_cancel_order_preview(
+async def build_onchain_cancel_order_preview(
     tool_input: dict[str, Any],
 ) -> dict[str, Any]:
     header, base, _ = await _onchain_preview_base(tool_input, "CANCEL_TOKEN_ORDER\n")

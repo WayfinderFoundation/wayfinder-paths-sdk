@@ -4,14 +4,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from wayfinder_paths.mcp.preview import build_definitive_place_order_preview
-from wayfinder_paths.mcp.tools.definitive import (
-    definitive_cancel_order,
-    definitive_list_orders,
-    definitive_place_order,
+from wayfinder_paths.mcp.preview import build_onchain_place_order_preview
+from wayfinder_paths.mcp.tools.onchain_orders import (
+    onchain_cancel_order,
+    onchain_list_orders,
+    onchain_place_order,
 )
 
-TOOLS = "wayfinder_paths.mcp.tools.definitive"
+TOOLS = "wayfinder_paths.mcp.tools.onchain_orders"
 USDC = {
     "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
     "chain_id": 8453,
@@ -50,7 +50,7 @@ async def _place(adapter, *, tokens=(USDC, WETH), **kwargs):
         ),
         patch(f"{TOOLS}._annotate_profile"),
     ):
-        return await definitive_place_order(
+        return await onchain_place_order(
             wallet_label="main",
             from_token="usdc-base",
             to_token="weth-base",
@@ -145,9 +145,9 @@ async def test_cancel_and_list():
     adapter = _adapter(list=(True, [{"orderId": "oid"}]))
     with patch(f"{TOOLS}._legs", AsyncMock(return_value=[(adapter, ME)])):
         cancelled = _payload(
-            await definitive_cancel_order(wallet_label="main", order_id="oid")
+            await onchain_cancel_order(wallet_label="main", order_id="oid")
         )
-        listed = _payload(await definitive_list_orders(wallet_label="main"))
+        listed = _payload(await onchain_list_orders(wallet_label="main"))
     assert cancelled["status"] == "cancelled"
     assert listed["orders"] == [{"orderId": "oid"}]
     adapter.list_orders.assert_awaited_once_with(include_closed=False)
@@ -159,7 +159,7 @@ async def test_preview_spells_out_the_order():
         "wayfinder_paths.mcp.preview._onchain_preview_base",
         AsyncMock(return_value=("HEADER\n", "base", ME)),
     ):
-        preview = await build_definitive_place_order_preview(
+        preview = await build_onchain_place_order_preview(
             {
                 "order_type": "bracket",
                 "from_token": "weth-base",
@@ -228,9 +228,9 @@ async def test_cancel_tries_each_leg_and_lists_both():
     legs = AsyncMock(return_value=[(evm, ME), (sol, "SoLaddr")])
     with patch(f"{TOOLS}._legs", legs):
         cancelled = _payload(
-            await definitive_cancel_order(wallet_label="main", order_id="oid")
+            await onchain_cancel_order(wallet_label="main", order_id="oid")
         )
-        listed = _payload(await definitive_list_orders(wallet_label="main"))
+        listed = _payload(await onchain_list_orders(wallet_label="main"))
     assert cancelled["status"] == "cancelled" and cancelled["address"] == "SoLaddr"
     assert [o["orderId"] for o in listed["orders"]] == ["a", "b"]
     assert listed["addresses"] == [ME, "SoLaddr"]
