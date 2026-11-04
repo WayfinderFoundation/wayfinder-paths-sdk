@@ -44,6 +44,13 @@ Delta Lab:
 - `research_search_price`, `research_search_lending`, `research_search_perp`, `research_search_borrow_routes`: materialized-view screeners.
 - `DELTA_LAB_CLIENT` scripts: bulk hydration, time series, DataFrame analysis, graph/entity lookup, and backtest bundles.
 
+Trader Lab (Hyperliquid wallet research; daily, T+1):
+
+- `research_trader_lab_meta`, `research_trader_lab_cohort(view="persistence")`: start here — how often past winners kept winning.
+- `research_trader_lab_leaderboard`, `research_trader_lab_wallet`: screened wallets by style and their profiles.
+- `research_trader_lab_cohort(view="entry_states" | "copyability" | "flows")`, `research_trader_lab_query`: cohort behaviour and server-side SQL/recipes.
+- Load `/using-trader-lab` before building or backtesting anything from it; it is not a signals feed.
+
 ## Delta Lab Instructions
 
 For detailed Delta Lab work, load `/using-delta-lab` and follow its referenced files instead of duplicating method details here:

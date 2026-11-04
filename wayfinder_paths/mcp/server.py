@@ -142,6 +142,14 @@ from wayfinder_paths.mcp.tools.tokens import (
     onchain_list_tokens,
     onchain_resolve_token,
 )
+from wayfinder_paths.mcp.tools.trader_lab import (
+    research_trader_lab_cohort,
+    research_trader_lab_leaderboard,
+    research_trader_lab_meta,
+    research_trader_lab_query,
+    research_trader_lab_query_status,
+    research_trader_lab_wallet,
+)
 from wayfinder_paths.mcp.tools.wallets import (
     core_get_wallets,
     core_wallets,
@@ -240,6 +248,12 @@ def build_mcp(
     mcp.tool()(research_goldsky_schema)
     mcp.tool()(research_get_alpha_types)
     mcp.tool()(research_search_alpha)
+    mcp.tool()(research_trader_lab_meta)
+    mcp.tool()(research_trader_lab_leaderboard)
+    mcp.tool()(research_trader_lab_wallet)
+    mcp.tool()(research_trader_lab_cohort)
+    mcp.tool()(research_trader_lab_query)
+    mcp.tool()(research_trader_lab_query_status)
     mcp.tool()(research_get_basis_symbols)
     mcp.tool()(research_get_basis_apy_sources)
     mcp.tool()(research_get_top_apy)

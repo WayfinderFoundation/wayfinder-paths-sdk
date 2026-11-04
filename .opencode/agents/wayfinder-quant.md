@@ -37,6 +37,7 @@ Use this agent for:
 
 - Backtests and strategy simulations.
 - Delta Lab time series and bulk hydration.
+- Trader Lab bulk work: release downloads, local DuckDB, trips-with-features, point-in-time cohort backtests (load `using-trader-lab`).
 - CCXT/exchange OHLCV analysis.
 - Custom factor, funding, lending, APY, basis, borrow-route, and cross-source analytics.
 - Parameter sweeps, DataFrame-heavy calculations, generated CSV/JSON artifacts, and chart-ready data.

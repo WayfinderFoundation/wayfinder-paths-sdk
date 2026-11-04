@@ -51,6 +51,7 @@ Load these rules in order (most to least specific for your strategy type):
 | Carry trade (borrow/supply spread) | `backtest_carry_trade(symbol, start, end)` |
 | Active perps / HIP-3 (deployable) | `backtest_perps_trigger(signal_fn, decide_fn, symbols, ...)` |
 | Full control | `run_backtest(prices, target_positions, config)` |
+| Rule learned from Trader Lab cohorts | `run_backtest` with targets from your rule (or `core.trader_lab.signals.trips_to_weights` over point-in-time cohorts); see `/using-trader-lab` |
 
 All helpers are in `wayfinder_paths.core.backtesting`.
 

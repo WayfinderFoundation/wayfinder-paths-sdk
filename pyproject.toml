@@ -38,6 +38,13 @@ packaging = "^25.0"
 py-clob-client-v2-felix = "1.0.2"
 croniter = "^6.0.0"
 mcp = "^1.10.1"
+# Trader Lab bulk/local analysis (wayfinder_paths.core.trader_lab); the
+# `trader-lab` extra. Same DuckDB as the server's query sandbox, so SQL ports.
+duckdb = { version = "1.5.5", optional = true }
+pyarrow = { version = ">=18", optional = true }
+
+[tool.poetry.extras]
+trader-lab = ["duckdb", "pyarrow"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.2"
