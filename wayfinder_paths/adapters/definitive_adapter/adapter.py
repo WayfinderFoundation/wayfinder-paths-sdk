@@ -253,11 +253,61 @@ def flash_order_digest(typed: dict[str, Any]) -> bytes:
     return _hash_eip191_message(encode_typed_data(full_message=typed))
 
 
+def _order_chain_id(order: dict[str, Any]) -> int | None:
+    chain = (order.get("targetAsset") or {}).get("chain") or {}
+    return next(
+        (
+            cid
+            for cid, name in DEFINITIVE_CHAINS.items()
+            if str(chain.get("id")) == str(cid)
+            or str(chain.get("name", "")).lower() == name
+        ),
+        None,
+    )
+
+
+def _to_raw(value: Any, decimals: int) -> int:
+    """A decimal string in base units, extra precision dropped; 0 if unreadable."""
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return 0
+    if not amount.is_finite() or amount <= 0:
+        return 0
+    return int(amount.scaleb(decimals).to_integral_value(rounding="ROUND_DOWN"))
+
+
+def open_order_spend_raw(
+    orders: list[dict[str, Any]], chain_id: int, token: str, decimals: int
+) -> int:
+    """What open orders on this chain can still pull of `token`, in base units.
+    `qty` is in the spent token: the contra token on a buy, the target on a
+    sell. Flash's minimal allowance covers this plus the new order."""
+    total = 0
+    for order in orders:
+        buy = order.get("side") == "buy"
+        asset = (order.get("contraAsset") if buy else order.get("targetAsset")) or {}
+        try:
+            same = to_checksum_address(asset.get("address", "")) == (
+                to_checksum_address(token)
+            )
+        except ValueError:
+            same = False
+        if not same or _order_chain_id(order) != int(chain_id):
+            continue
+        filled = (order.get("filled") or {}).get(
+            "contraAmount" if buy else "targetAmount"
+        )
+        total += max(0, _to_raw(order.get("qty"), decimals) - _to_raw(filled, decimals))
+    return total
+
+
 def check_flash_approval(
-    approve_tx: dict[str, Any] | None, spent_token: str, order_amount: int
+    approve_tx: dict[str, Any] | None, spent_token: str, max_amount: int
 ) -> dict[str, Any] | None:
     """Flash's approval must be `approve(Flash, amount)` on the spent token,
-    for no more than the order spends (we always ask for minimal allowances).
+    for no more than `max_amount` (we always ask for minimal allowances, which
+    cover the order plus the wallet's other open orders of the token).
     Permit2 is refused: we never sign permits, so a Permit2 allowance would be
     left behind unused."""
     if not approve_tx:
@@ -273,8 +323,8 @@ def check_flash_approval(
         raise _refuse("the approval is malformed") from None
     if to_checksum_address(spender) != FLASH_CONTRACT:
         raise _refuse("the approval is for an unknown spender")
-    if amount > order_amount:
-        raise _refuse("the approval is larger than the order")
+    if amount > max_amount:
+        raise _refuse("the approval is larger than your open orders need")
     return {"to": to_checksum_address(approve_tx["to"]), "data": approve_tx["data"]}
 
 
@@ -366,19 +416,43 @@ class DefinitiveAdapter(BaseAdapter):
             raise _refuse("unexpected Permit2 request")
         return quote, evm
 
+    async def _open_spend(
+        self, wallet: str, chain_id: int, token: str, decimals: int | None
+    ) -> int:
+        """Open orders' remaining spend of `token`; 0 (only the new order is
+        allowed) when decimals are unknown or the list can't load."""
+        if decimals is None:
+            return 0
+        try:
+            orders = await DEFINITIVE_CLIENT.list_orders(wallet)
+        except Exception:  # noqa: BLE001
+            return 0
+        return open_order_spend_raw(orders, chain_id, token, decimals)
+
     async def place_order(
-        self, chain_id: int, request: dict[str, Any], spent_amount_raw: int
+        self,
+        chain_id: int,
+        request: dict[str, Any],
+        spent_amount_raw: int,
+        *,
+        spent_decimals: int | None = None,
     ) -> tuple[bool, dict[str, Any]]:
-        """Quote, send Flash's approval (at most the order amount) if it asks,
-        check, sign, submit. Returns (ok, {order_id, approval_tx_hash})."""
+        """Quote, send Flash's approval (at most this order plus the wallet's
+        other open orders of the token) if it asks, check, sign, submit.
+        Returns (ok, {order_id, approval_tx_hash})."""
         wallet = self._wallet()
         body = {**request, "funderAddress": wallet}
         spent = body["contraAsset"] if body["side"] == "buy" else body["targetAsset"]
         approval_hash = None
         try:
             quote, evm = await self._quote(body)
+            open_spend = (
+                await self._open_spend(wallet, chain_id, spent, spent_decimals)
+                if evm.get("approveTx")
+                else 0
+            )
             approval = check_flash_approval(
-                evm.get("approveTx"), spent, spent_amount_raw
+                evm.get("approveTx"), spent, spent_amount_raw + open_spend
             )
             if approval:
                 if self.sign_callback is None:
