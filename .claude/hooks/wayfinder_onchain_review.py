@@ -15,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from wayfinder_hook_utils import load_payload, tool_input, tool_name
 
 from wayfinder_paths.mcp.preview import (
+    build_onchain_cancel_order_preview,
+    build_onchain_place_order_preview,
     build_onchain_send_preview,
     build_onchain_swap_preview,
 )
@@ -24,6 +26,8 @@ _PreviewBuilder = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 _BUILDERS: dict[str, _PreviewBuilder] = {
     "onchain_swap": build_onchain_swap_preview,
     "onchain_send": build_onchain_send_preview,
+    "onchain_place_order": build_onchain_place_order_preview,
+    "onchain_cancel_order": build_onchain_cancel_order_preview,
 }
 
 

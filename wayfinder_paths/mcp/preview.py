@@ -68,6 +68,45 @@ async def build_onchain_send_preview(tool_input: dict[str, Any]) -> dict[str, An
     return {"summary": header + base + details, "recipient_mismatch": mismatch}
 
 
+_DEFINITIVE_PRICES = (
+    "limit_price",
+    "trigger_price",
+    "take_profit_price",
+    "stop_loss_price",
+    "trail_percent",
+    "activation_price",
+)
+
+
+async def build_onchain_place_order_preview(
+    tool_input: dict[str, Any],
+) -> dict[str, Any]:
+    header, base, _ = await _onchain_preview_base(tool_input, "TOKEN_ORDER\n")
+    order_type = str(tool_input.get("order_type") or "(missing)")
+    prices = "".join(
+        f"{key}: {tool_input[key]}\n"
+        for key in _DEFINITIVE_PRICES
+        if tool_input.get(key) is not None
+    )
+    details = (
+        f"\n\n{order_type.upper()} (Definitive, rests until it fills)\n"
+        f"from_token: {tool_input.get('from_token')}\n"
+        f"to_token: {tool_input.get('to_token')}\n"
+        f"amount: {tool_input.get('amount')} (stays in the wallet until filled)\n"
+        f"{prices}"
+        "output goes to: sender"
+    )
+    return {"summary": header + base + details, "recipient_mismatch": False}
+
+
+async def build_onchain_cancel_order_preview(
+    tool_input: dict[str, Any],
+) -> dict[str, Any]:
+    header, base, _ = await _onchain_preview_base(tool_input, "CANCEL_TOKEN_ORDER\n")
+    details = f"\n\norder_id: {tool_input.get('order_id') or '(missing)'}"
+    return {"summary": header + base + details, "recipient_mismatch": False}
+
+
 def build_run_script_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
     ti = tool_input if isinstance(tool_input, dict) else {}
     path_raw = ti.get("script_path") or ti.get("path")

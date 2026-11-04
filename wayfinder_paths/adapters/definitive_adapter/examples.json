@@ -1,0 +1,37 @@
+{
+  "place_order": {
+    "description": "Rest a limit buy of WETH with 25 USDC on Base at $2,500",
+    "input": {
+      "chain_id": 8453,
+      "request": {
+        "targetChain": "base",
+        "contraChain": "base",
+        "targetAsset": "0x4200000000000000000000000000000000000006",
+        "contraAsset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "side": "buy",
+        "qty": "25",
+        "orderType": "limit",
+        "limitNotionalPrice": "2500"
+      },
+      "spent_amount_raw": 25000000
+    },
+    "output": {
+      "success": true,
+      "data": {
+        "order_id": "5b0e6f7a-3c1d-4e2f-9a8b-7c6d5e4f3a2b",
+        "approval_tx_hash": null
+      }
+    }
+  },
+  "cancel_order": {
+    "description": "Cancel a resting order",
+    "input": {"order_id": "5b0e6f7a-3c1d-4e2f-9a8b-7c6d5e4f3a2b"},
+    "output": {
+      "success": true,
+      "data": {
+        "order_id": "5b0e6f7a-3c1d-4e2f-9a8b-7c6d5e4f3a2b",
+        "status": "cancelled"
+      }
+    }
+  }
+}

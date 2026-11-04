@@ -1,0 +1,9 @@
+schema_version: "0.1"
+entrypoint: "adapters.definitive_adapter.adapter.DefinitiveAdapter"
+capabilities:
+  - "order.limit"
+  - "order.stop"
+  - "order.trailing_stop"
+  - "order.bracket"
+  - "order.cancel"
+dependencies: []

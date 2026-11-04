@@ -9,6 +9,7 @@
       "mcp__wayfinder__onchain_get_gas_token",
       "mcp__wayfinder__onchain_fuzzy_search_tokens",
       "mcp__wayfinder__onchain_quote_swap",
+      "mcp__wayfinder__onchain_list_orders",
       "mcp__wayfinder__hyperliquid_get_state",
       "mcp__wayfinder__hyperliquid_get_trade_asset",
       "mcp__wayfinder__hyperliquid_search_market",
@@ -46,6 +47,8 @@
     "ask": [
       "mcp__wayfinder__onchain_swap",
       "mcp__wayfinder__onchain_send",
+      "mcp__wayfinder__onchain_place_order",
+      "mcp__wayfinder__onchain_cancel_order",
       "mcp__wayfinder__core_run_script",
       "mcp__wayfinder__hyperliquid_place_market_order",
       "mcp__wayfinder__hyperliquid_place_limit_order",
@@ -90,7 +93,7 @@
         ]
       },
       {
-        "matcher": "mcp__wayfinder__onchain_(swap|send)",
+        "matcher": "mcp__wayfinder__onchain_(swap|send|place_order|cancel_order)",
         "hooks": [
           {
             "type": "command",
