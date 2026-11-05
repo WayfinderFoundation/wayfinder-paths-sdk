@@ -7,7 +7,9 @@ POLYMARKET_GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
 POLYMARKET_CLOB_BASE_URL = "https://clob.polymarket.com"
 # v2 test url before crossover. once crossover is complete, v2 will use the original url
 # POLYMARKET_CLOB_BASE_URL = "https://clob-v2.polymarket.com"
-POLYMARKET_DATA_BASE_URL = "https://data-api.polymarket.com"
+# Data API v2 (v1 routes were retired and return HTTP 410). The version prefix is
+# part of the base URL, so an overriding `data_base_url` must include it too.
+POLYMARKET_DATA_BASE_URL = "https://data-api.polymarket.com/v2"
 POLYMARKET_BRIDGE_BASE_URL = "https://bridge.polymarket.com"
 POLYMARKET_RELAYER_BASE_URL = "https://relayer-v2.polymarket.com"
 

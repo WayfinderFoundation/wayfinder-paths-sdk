@@ -148,6 +148,6 @@ asyncio.run(main())
 | `get_order_book(token_id)` | dict | Book snapshot |
 | `quote_market_order(token_id, side, amount)` | dict | Average execution / depth quote from the live book |
 | `get_prices_history(token_id, ...)` | dict | Historic time series |
-| `get_positions(user)` | list | Exposure snapshot |
-| `get_trades(...)` / `get_activity(...)` | list | “What happened” history |
+| `get_positions(user)` | list | Exposure snapshot (open + redeemable; `status="CLOSED"` for closed) |
+| `get_trades(...)` / `get_activity(...)` | list | “What happened” history (Data API v2, cursor-paged; `limit` = total rows, filter by `start`/`end`/`type`/`market` rather than deep `offset`) |
 | `get_full_user_state(account, ...)` | dict | One-shot status (positions + balances + PnL; open orders if wallet configured) |
