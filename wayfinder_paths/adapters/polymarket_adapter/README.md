@@ -13,7 +13,7 @@ The adapter wraps these public services:
 
 - **Gamma API** (`https://gamma-api.polymarket.com`): markets/events metadata + search
 - **CLOB API** (`https://clob.polymarket.com`): prices, orderbooks, and historic price time series
-- **Data API** (`https://data-api.polymarket.com`): positions, trades, activity (useful for PnL/exposure views)
+- **Data API v2** (`https://data-api.polymarket.com/v2`; v1 routes return HTTP 410): positions, trades, activity (useful for PnL/exposure views). v2 rows are snake_case; the adapter maps them back to the v1 camelCase shape (`asset`, `conditionId`, `size`, `curPrice`, `initialValue`, `cashPnl`, ...) so callers and MCP output are unchanged. A `data_base_url` override must include the `/v2` prefix.
 - **Bridge API** (`https://bridge.polymarket.com`): fallback helper endpoints for asynchronous Polymarket deposit/withdraw flows. On Polygon, the adapter can wrap USDC.e -> pUSD directly, or swap native Polygon USDC -> USDC.e via BRAP and then wrap to pUSD. For other supported assets/chains, it can fall back to Polymarket's deposit/withdraw address flow, which is asynchronous and settles as pUSD on Polygon.
 - **Relayer API** (`https://relayer-v2.polymarket.com`): sponsored on-chain execution for deposit wallet operations — Polymarket pays POL gas for deploy / approval / withdraw / redeem batches authorized by user EIP-712 signatures (the deposit wallet contract verifies the signature on-chain). See `.claude/skills/using-polymarket-adapter/rules/deposit-wallet.md` for the gas-payer matrix and liveness considerations.
 
@@ -366,7 +366,8 @@ Market data (CLOB):
 
 User data (Data API):
 
-- `get_positions`, `get_activity`, `get_trades`
+- `get_positions`, `get_activity`, `get_trades` — `limit` is the total rows returned; pages of up to 1000 are fetched by following v2 `cursor`s (`page_size`, `max_pages` bound the walk). `offset` still works but is emulated by walking cursors and skipping rows (v2 rejects `offset`), so prefer filters (`start`/`end`, `type`, `condition`) over deep offsets. `market=` is sent as v2 `condition=`. `get_positions` returns open + redeemable positions; pass `status="CLOSED"` for closed ones.
+- Position rows: `cashPnl` is total PnL (realized + unrealized); `initialValue` is the fee-exclusive entry cost; v2-only fields come through camelCased (`status`, `unrealizedPnl`, `entryFeesUsdc`, `totalCostUsdc`, `lastEventAt`, ...).
 
 Collateral conversion (Bridge API):
 

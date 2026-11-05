@@ -112,6 +112,56 @@ def compute_ctf_redeem_payout(
     return total
 
 
+# --- Data API v2 ------------------------------------------------------------
+# v2 rows are snake_case and positions are reshaped. Everything downstream
+# (get_full_user_state PnL math, MCP tool output, agent skills) consumes the v1
+# camelCase shape, so rows are mapped back exactly once, at the fetch boundary.
+
+DATA_API_MAX_PAGE_SIZE = 1000  # v2 rejects limit > 1000
+DATA_API_DEFAULT_MAX_PAGES = 20
+DATA_API_RATE_LIMIT_RETRIES = 2  # cursor paging makes more requests; v2 429s
+
+# v2 keys whose v1 name is not just the camelCase form of the v2 name.
+# Every other key is camelCased (proxy_wallet -> proxyWallet, ...).
+_DATA_API_V1_RENAMES: dict[str, dict[str, str]] = {
+    "activity": {"token_id": "asset"},
+    "trades": {"token_id": "asset"},
+    "positions": {
+        "token_id": "asset",
+        "current_size": "size",
+        # v1 initialValue was size * avgPrice: the fee-exclusive entry cost.
+        "entry_cost_usdc": "initialValue",
+        "current_price": "curPrice",
+        "total_size": "totalBought",
+        # v2 total_pnl = realized + unrealized. get_full_user_state derives
+        # totalUnrealizedPnl as cashPnl - realizedPnl, so cashPnl is the total.
+        "total_pnl": "cashPnl",
+        "opposite_token_id": "oppositeAsset",
+    },
+}
+
+# v1 query-param names that v2 renamed.
+_DATA_API_PARAM_RENAMES = {"market": "condition"}
+
+
+def _snake_to_camel(key: str) -> str:
+    head, *rest = key.split("_")
+    return head + "".join(part[:1].upper() + part[1:] for part in rest)
+
+
+def _retry_after_s(res: httpx.Response, default: float = 1.0) -> float:
+    try:
+        return min(max(float(res.headers.get("retry-after", default)), 0.0), 5.0)
+    except ValueError:
+        return default
+
+
+def map_data_api_v2_row(kind: str, row: dict[str, Any]) -> dict[str, Any]:
+    """Map one Data API v2 row (`kind` = positions|activity|trades) to the v1 shape."""
+    renames = _DATA_API_V1_RENAMES[kind]
+    return {renames.get(k) or _snake_to_camel(k): v for k, v in row.items()}
+
+
 class PolymarketAdapter(BaseAdapter):
     adapter_type = "POLYMARKET"
 
@@ -787,29 +837,98 @@ class PolymarketAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    async def _data_api_list(
+        self,
+        kind: Literal["positions", "activity", "trades"],
+        params: dict[str, Any],
+        *,
+        limit: int,
+        offset: int = 0,
+        page_size: int | None = None,
+        max_pages: int = DATA_API_DEFAULT_MAX_PAGES,
+    ) -> tuple[bool, list[dict[str, Any]] | str]:
+        """GET a Data API v2 list route, following `cursor` pagination.
+
+        Returns up to `limit` rows after skipping `offset` rows, mapped to the v1
+        shape. v2 rejects `offset`, so the skip is emulated by walking cursors.
+        Stops when `has_more` is false / `next_cursor` is null, when enough rows
+        are collected, or after `max_pages` requests (whatever was fetched is
+        returned). A cursor the API hands back twice is an error, not a loop.
+        """
+        limit = int(limit)
+        offset = max(0, int(offset))
+        if limit <= 0:
+            return True, []
+        want = offset + limit
+        per_page = max(1, min(int(page_size or want), DATA_API_MAX_PAGE_SIZE))
+        query: dict[str, Any] = {"limit": per_page}
+        for key, value in params.items():
+            if value is not None:
+                query[_DATA_API_PARAM_RENAMES.get(key, key)] = value
+
+        path = f"/{kind}"
+        rows: list[dict[str, Any]] = []
+        seen_cursors: set[str] = set()
+        cursor: str | None = None
+        try:
+            for _ in range(max(1, int(max_pages))):
+                page_params = dict(query)
+                if cursor:
+                    page_params["cursor"] = cursor
+                for attempt in range(DATA_API_RATE_LIMIT_RETRIES + 1):
+                    res = await self._data_http.get(path, params=page_params)
+                    if res.status_code != 429 or attempt == DATA_API_RATE_LIMIT_RETRIES:
+                        break
+                    await asyncio.sleep(_retry_after_s(res))
+                res.raise_for_status()
+                body = res.json()
+                page = body.get("data") if isinstance(body, dict) else None
+                if not isinstance(page, list):
+                    shape = type(page if isinstance(body, dict) else body).__name__
+                    return False, f"Unexpected {path} response: {shape}"
+                rows.extend(
+                    map_data_api_v2_row(kind, row)
+                    for row in page
+                    if isinstance(row, dict)
+                )
+                if len(rows) >= want or not page:
+                    break
+                pagination = body.get("pagination") or {}
+                next_cursor = pagination.get("next_cursor")
+                if not pagination.get("has_more") or not next_cursor:
+                    break
+                if next_cursor in seen_cursors:
+                    return False, f"{path} pagination returned a repeated cursor"
+                seen_cursors.add(next_cursor)
+                cursor = next_cursor
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+        return True, rows[offset:want]
+
     async def get_positions(
         self,
         *,
         user: str,
         limit: int = 500,
         offset: int = 0,
+        page_size: int | None = None,
+        max_pages: int = DATA_API_DEFAULT_MAX_PAGES,
         **filters: Any,
     ) -> tuple[bool, list[dict[str, Any]] | str]:
-        params = {
-            "user": to_checksum_address(user),
-            "limit": limit,
-            "offset": offset,
-            **{k: v for k, v in filters.items() if v is not None},
-        }
-        try:
-            res = await self._data_http.get("/positions", params=params)
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, list):
-                return False, f"Unexpected /positions response: {type(data).__name__}"
-            return True, data
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        """Open (incl. redeemable) positions; pass `status="CLOSED"` for closed ones.
+
+        `limit` is the total number of rows returned (paged in requests of at most
+        1000). `offset` is emulated by following cursors and skipping rows.
+        Rows keep the v1 field names (asset, conditionId, size, curPrice, ...).
+        """
+        return await self._data_api_list(
+            "positions",
+            {"user": to_checksum_address(user), **filters},
+            limit=limit,
+            offset=offset,
+            page_size=page_size,
+            max_pages=max_pages,
+        )
 
     async def get_activity(
         self,
@@ -817,23 +936,19 @@ class PolymarketAdapter(BaseAdapter):
         user: str,
         limit: int = 500,
         offset: int = 0,
+        page_size: int | None = None,
+        max_pages: int = DATA_API_DEFAULT_MAX_PAGES,
         **filters: Any,
     ) -> tuple[bool, list[dict[str, Any]] | str]:
-        params = {
-            "user": to_checksum_address(user),
-            "limit": limit,
-            "offset": offset,
-            **{k: v for k, v in filters.items() if v is not None},
-        }
-        try:
-            res = await self._data_http.get("/activity", params=params)
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, list):
-                return False, f"Unexpected /activity response: {type(data).__name__}"
-            return True, data
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        """User activity (TRADE, REDEEM, ...); paging as in `get_positions`."""
+        return await self._data_api_list(
+            "activity",
+            {"user": to_checksum_address(user), **filters},
+            limit=limit,
+            offset=offset,
+            page_size=page_size,
+            max_pages=max_pages,
+        )
 
     async def get_trades(
         self,
@@ -841,22 +956,21 @@ class PolymarketAdapter(BaseAdapter):
         limit: int = 500,
         offset: int = 0,
         user: str | None = None,
+        page_size: int | None = None,
+        max_pages: int = DATA_API_DEFAULT_MAX_PAGES,
         **filters: Any,
     ) -> tuple[bool, list[dict[str, Any]] | str]:
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
-        if user:
-            params["user"] = to_checksum_address(user)
-        params.update({k: v for k, v in filters.items() if v is not None})
-
-        try:
-            res = await self._data_http.get("/trades", params=params)
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, list):
-                return False, f"Unexpected /trades response: {type(data).__name__}"
-            return True, data
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        """Trades (optionally for one user); paging as in `get_positions`."""
+        params: dict[str, Any] = {"user": to_checksum_address(user) if user else None}
+        params.update(filters)
+        return await self._data_api_list(
+            "trades",
+            params,
+            limit=limit,
+            offset=offset,
+            page_size=page_size,
+            max_pages=max_pages,
+        )
 
     async def bridge_quote(
         self,
@@ -1926,20 +2040,15 @@ class PolymarketAdapter(BaseAdapter):
         ok_any = False
 
         async def _fetch_all_positions() -> tuple[bool, list[dict[str, Any]] | str]:
-            rows: list[dict[str, Any]] = []
-            offset = 0
-            for _ in range(max(1, max_positions_pages)):
-                ok_page, page = await self.get_positions(
-                    user=addr, limit=positions_limit, offset=offset
-                )
-                if not ok_page:
-                    return False, page
-                if not page:
-                    break
-                rows.extend(page)
-                if len(page) < positions_limit:
-                    break
-                offset += positions_limit
+            pages = max(1, max_positions_pages)
+            ok_rows, rows = await self.get_positions(
+                user=addr,
+                limit=positions_limit * pages,
+                page_size=positions_limit,
+                max_pages=pages,
+            )
+            if not ok_rows or isinstance(rows, str):
+                return False, rows
             rows = [
                 p
                 for p in rows
@@ -2009,9 +2118,9 @@ class PolymarketAdapter(BaseAdapter):
         if include_orders:
             coros.append(_fetch_orders())
         if include_activity:
-            coros.append(self.get_activity(user=addr, limit=activity_limit, offset=0))
+            coros.append(self.get_activity(user=addr, limit=activity_limit))
         if include_trades:
-            coros.append(self.get_trades(user=addr, limit=trades_limit, offset=0))
+            coros.append(self.get_trades(user=addr, limit=trades_limit))
 
         # Deposit-wallet cohort status (legacy / beacon / stranded) — the
         # agent-facing state block (only meaningful when this adapter owns the
@@ -2039,7 +2148,7 @@ class PolymarketAdapter(BaseAdapter):
                 ok_any = True
                 out["positions"] = positions
 
-                # Data API returns PnL values as strings or None
+                # Data API PnL values may be numbers, strings or None
                 def _pnl_float(x: Any) -> float:
                     return float(x) if x is not None else 0.0
 

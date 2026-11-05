@@ -9,7 +9,8 @@ Added
 
 Fixed
 
-1. **Paths pinned to SDK 0.7.0–0.10.0 run again**: the runtime floor from #774 now covers every pin below 0.11.1, not just 0.11.0. Such pins resolve to 0.11.1, so the installed SDK is used (or `~=0.11.1` is bootstrapped) instead of a PyPI release that can't run a path (no `wayfinder path` before 0.11.0; no `mcp` dependency in 0.11.0). An editable checkout still reporting 0.10.0 no longer counts as a compatible runtime for those paths.
+1. **Polymarket Data API v2**: v1 was retired (every route returns HTTP 410), which broke `get_positions` / `get_activity` / `get_trades` and the positions, PnL, activity and trades in `polymarket_get_state`. The adapter now calls `/v2`, follows `cursor` pagination (bounded pages, repeated-cursor guard, retry on 429) and maps v2 rows back to the existing field names. `offset` is emulated by walking cursors; `market=` is sent as `condition=`.
+2. **Paths pinned to SDK 0.7.0–0.10.0 run again**: the runtime floor from #774 now covers every pin below 0.11.1, not just 0.11.0. Such pins resolve to 0.11.1, so the installed SDK is used (or `~=0.11.1` is bootstrapped) instead of a PyPI release that can't run a path (no `wayfinder path` before 0.11.0; no `mcp` dependency in 0.11.0). An editable checkout still reporting 0.10.0 no longer counts as a compatible runtime for those paths.
 
 ## [0.11.1] - 2026-09-09
 

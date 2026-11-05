@@ -7,11 +7,15 @@ import pytest
 from eth_utils.address import to_checksum_address
 
 import wayfinder_paths.adapters.polymarket_adapter.adapter as polymarket_adapter_module
-from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
+from wayfinder_paths.adapters.polymarket_adapter.adapter import (
+    PolymarketAdapter,
+    map_data_api_v2_row,
+)
 from wayfinder_paths.core.constants.polymarket import (
     POLYGON_P_USDC_PROXY_ADDRESS,
     POLYGON_USDC_ADDRESS,
     POLYGON_USDC_E_ADDRESS,
+    POLYMARKET_DATA_BASE_URL,
     derive_legacy_deposit_wallet,
 )
 from wayfinder_paths.core.utils import polymarket_wallet
@@ -635,22 +639,333 @@ class TestPolymarketAdapter:
         assert quote["token_id"] == "tok_yes"
         assert quote["shares"] == pytest.approx(20.0)
 
-    @pytest.mark.asyncio
-    async def test_get_positions(self, adapter, monkeypatch):
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status.return_value = None
-        mock_resp.json.return_value = []
+    async def _mock_data_api(self, adapter, pages, seen):
+        """Serve `pages` (keyed by the request's cursor, None for page 1) from
+        the real data base URL; record every request in `seen`."""
 
-        async def mock_get(*_args, **_kwargs):
-            return mock_resp
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            cursor = request.url.params.get("cursor")
+            body = pages[cursor]
+            if isinstance(body, httpx.Response):
+                return body
+            return httpx.Response(200, json=body)
 
-        monkeypatch.setattr(adapter._data_http, "get", mock_get)
-        ok, data = await adapter.get_positions(
-            user="0x" + "11" * 20,
-            limit=1,
+        await adapter._data_http.aclose()
+        adapter._data_http = httpx.AsyncClient(
+            base_url=POLYMARKET_DATA_BASE_URL,
+            transport=httpx.MockTransport(handler),
         )
+
+    @staticmethod
+    def _page(rows, next_cursor=None, has_more=None):
+        return {
+            "data": rows,
+            "pagination": {
+                "limit": len(rows),
+                "offset": 0,
+                "has_more": bool(next_cursor) if has_more is None else has_more,
+                "next_cursor": next_cursor,
+            },
+        }
+
+    def test_map_data_api_v2_position_row(self):
+        row = {
+            "proxy_wallet": "0xabc",
+            "token_id": "111",
+            "condition_id": "0xcond",
+            "current_size": 11.1111,
+            "avg_price": 0.0899,
+            "entry_cost_usdc": 0.9999,
+            "entry_fees_usdc": 0.0455,
+            "total_cost_usdc": 1.0454,
+            "current_price": 0.495,
+            "current_value": 5.5,
+            "total_size": 11.1111,
+            "realized_pnl": 0.0,
+            "unrealized_pnl": 4.5,
+            "total_pnl": 4.5,
+            "percent_pnl": 450.0,
+            "percent_realized_pnl": 450.0,
+            "status": "OPEN",
+            "redeemable": False,
+            "mergeable": False,
+            "negative_risk": True,
+            "event_id": "1138941",
+            "event_slug": "ev",
+            "outcome_index": 0,
+            "opposite_outcome": "No",
+            "opposite_token_id": "222",
+            "end_date": "2026-12-07",
+        }
+        mapped = map_data_api_v2_row("positions", row)
+        assert mapped == {
+            "proxyWallet": "0xabc",
+            "asset": "111",
+            "conditionId": "0xcond",
+            "size": 11.1111,
+            "avgPrice": 0.0899,
+            "initialValue": 0.9999,
+            "entryFeesUsdc": 0.0455,
+            "totalCostUsdc": 1.0454,
+            "curPrice": 0.495,
+            "currentValue": 5.5,
+            "totalBought": 11.1111,
+            "realizedPnl": 0.0,
+            "unrealizedPnl": 4.5,
+            "cashPnl": 4.5,
+            "percentPnl": 450.0,
+            "percentRealizedPnl": 450.0,
+            "status": "OPEN",
+            "redeemable": False,
+            "mergeable": False,
+            "negativeRisk": True,
+            "eventId": "1138941",
+            "eventSlug": "ev",
+            "outcomeIndex": 0,
+            "oppositeOutcome": "No",
+            "oppositeAsset": "222",
+            "endDate": "2026-12-07",
+        }
+
+    def test_map_data_api_v2_activity_and_trade_rows(self):
+        row = {
+            "proxy_wallet": "0xabc",
+            "timestamp": 1793907570,
+            "condition_id": "0xcond",
+            "type": "TRADE",
+            "size": 10.0,
+            "usdc_size": 1.045,
+            "transaction_hash": "0xtx",
+            "price": 0.1,
+            "token_id": "111",
+            "side": "BUY",
+            "outcome_index": 0,
+            "event_slug": "ev",
+            "profile_image": "",
+            "profile_image_optimized": "",
+        }
+        expected = {
+            "proxyWallet": "0xabc",
+            "timestamp": 1793907570,
+            "conditionId": "0xcond",
+            "type": "TRADE",
+            "size": 10.0,
+            "usdcSize": 1.045,
+            "transactionHash": "0xtx",
+            "price": 0.1,
+            "asset": "111",
+            "side": "BUY",
+            "outcomeIndex": 0,
+            "eventSlug": "ev",
+            "profileImage": "",
+            "profileImageOptimized": "",
+        }
+        assert map_data_api_v2_row("activity", row) == expected
+        trade = {k: v for k, v in row.items() if k != "usdc_size"}
+        assert map_data_api_v2_row("trades", trade) == {
+            k: v for k, v in expected.items() if k != "usdcSize"
+        }
+
+    def test_data_base_url_is_v2(self):
+        assert POLYMARKET_DATA_BASE_URL.rstrip("/").endswith("/v2")
+
+    @pytest.mark.asyncio
+    async def test_get_positions_unwraps_v2_envelope(self, adapter):
+        seen: list[httpx.Request] = []
+        rows = [{"token_id": "1", "current_price": 0.5, "negative_risk": False}]
+        await self._mock_data_api(adapter, {None: self._page(rows)}, seen)
+
+        ok, data = await adapter.get_positions(
+            user="0x" + "11" * 20, limit=1, market="0xcond", redeemable=None
+        )
+
         assert ok is True
-        assert data == []
+        assert data == [{"asset": "1", "curPrice": 0.5, "negativeRisk": False}]
+        assert len(seen) == 1
+        assert seen[0].url.path == "/v2/positions"
+        params = dict(seen[0].url.params)
+        assert params == {
+            "limit": "1",
+            "user": to_checksum_address("0x" + "11" * 20),
+            "condition": "0xcond",
+        }
+
+    @pytest.mark.asyncio
+    async def test_get_positions_rejects_non_envelope(self, adapter):
+        await self._mock_data_api(adapter, {None: [{"asset": "1"}]}, [])
+        ok, data = await adapter.get_positions(user="0x" + "11" * 20)
+        assert ok is False
+        assert "Unexpected /positions response" in data
+
+    @pytest.mark.asyncio
+    async def test_data_api_follows_cursor_pages(self, adapter):
+        seen: list[httpx.Request] = []
+        pages = {
+            None: self._page([{"token_id": "1"}, {"token_id": "2"}], "c1"),
+            "c1": self._page([{"token_id": "3"}, {"token_id": "4"}], "c2"),
+            "c2": self._page([{"token_id": "5"}], None, has_more=False),
+        }
+        await self._mock_data_api(adapter, pages, seen)
+
+        ok, data = await adapter.get_activity(
+            user="0x" + "11" * 20, limit=10, page_size=2
+        )
+
+        assert ok is True
+        assert [r["asset"] for r in data] == ["1", "2", "3", "4", "5"]
+        assert [r.url.params.get("cursor") for r in seen] == [None, "c1", "c2"]
+        assert all("offset" not in r.url.params for r in seen)
+        assert all(r.url.params["limit"] == "2" for r in seen)
+
+    @pytest.mark.asyncio
+    async def test_data_api_stops_when_has_more_false(self, adapter):
+        seen: list[httpx.Request] = []
+        pages = {
+            None: self._page([{"token_id": "1"}], "c1", has_more=False),
+        }
+        await self._mock_data_api(adapter, pages, seen)
+
+        ok, data = await adapter.get_trades(limit=10, page_size=1)
+
+        assert ok is True
+        assert [r["asset"] for r in data] == ["1"]
+        assert len(seen) == 1
+        assert "user" not in seen[0].url.params
+
+    @pytest.mark.asyncio
+    async def test_data_api_repeated_cursor_is_an_error(self, adapter):
+        seen: list[httpx.Request] = []
+        pages = {
+            None: self._page([{"token_id": "1"}], "c1"),
+            "c1": self._page([{"token_id": "2"}], "c1"),
+        }
+        await self._mock_data_api(adapter, pages, seen)
+
+        ok, data = await adapter.get_activity(
+            user="0x" + "11" * 20, limit=10, page_size=1
+        )
+
+        assert ok is False
+        assert "repeated cursor" in data
+        assert len(seen) == 2
+
+    @pytest.mark.asyncio
+    async def test_data_api_offset_is_emulated_with_cursors(self, adapter):
+        seen: list[httpx.Request] = []
+        pages = {
+            None: self._page([{"token_id": "1"}, {"token_id": "2"}], "c1"),
+            "c1": self._page([{"token_id": "3"}, {"token_id": "4"}], "c2"),
+            "c2": self._page([{"token_id": "5"}], None),
+        }
+        await self._mock_data_api(adapter, pages, seen)
+
+        ok, data = await adapter.get_activity(
+            user="0x" + "11" * 20, limit=2, offset=1, page_size=2
+        )
+
+        assert ok is True
+        assert [r["asset"] for r in data] == ["2", "3"]
+        # Stops as soon as offset + limit rows are in hand.
+        assert len(seen) == 2
+
+    @pytest.mark.asyncio
+    async def test_data_api_page_cap_and_size_clamp(self, adapter):
+        seen: list[httpx.Request] = []
+        pages = {
+            None: self._page([{"token_id": "1"}], "c1"),
+            "c1": self._page([{"token_id": "2"}], "c2"),
+            "c2": self._page([{"token_id": "3"}], "c3"),
+        }
+        await self._mock_data_api(adapter, pages, seen)
+
+        ok, data = await adapter.get_positions(
+            user="0x" + "11" * 20, limit=5000, max_pages=2
+        )
+
+        assert ok is True
+        assert [r["asset"] for r in data] == ["1", "2"]
+        assert len(seen) == 2
+        assert seen[0].url.params["limit"] == "1000"
+
+    @pytest.mark.asyncio
+    async def test_data_api_retries_rate_limit(self, adapter, monkeypatch):
+        sleeps: list[float] = []
+
+        async def fake_sleep(s):
+            sleeps.append(s)
+
+        monkeypatch.setattr(polymarket_adapter_module.asyncio, "sleep", fake_sleep)
+        responses = [
+            httpx.Response(429, headers={"retry-after": "0.5"}, json={}),
+            httpx.Response(200, json=self._page([{"token_id": "1"}])),
+        ]
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return responses.pop(0)
+
+        await adapter._data_http.aclose()
+        adapter._data_http = httpx.AsyncClient(
+            base_url=POLYMARKET_DATA_BASE_URL, transport=httpx.MockTransport(handler)
+        )
+
+        ok, data = await adapter.get_activity(user="0x" + "11" * 20, limit=1)
+
+        assert ok is True
+        assert [r["asset"] for r in data] == ["1"]
+        assert len(seen) == 2
+        assert sleeps == [0.5]
+
+    @pytest.mark.asyncio
+    async def test_data_api_http_error(self, adapter):
+        err = httpx.Response(410, json={"error": "Data API v1 has been retired"})
+        await self._mock_data_api(adapter, {None: err}, [])
+        ok, data = await adapter.get_positions(user="0x" + "11" * 20)
+        assert ok is False
+        assert "410" in data
+
+    @pytest.mark.asyncio
+    async def test_get_full_user_state_pages_positions_by_cursor(
+        self, adapter, monkeypatch
+    ):
+        seen: list[httpx.Request] = []
+        pages = {
+            None: self._page(
+                [
+                    {"token_id": "1", "redeemable": True, "current_price": 0},
+                    {"token_id": "2", "entry_cost_usdc": 2, "total_pnl": 1},
+                ],
+                "c1",
+            ),
+            "c1": self._page([{"token_id": "3", "entry_cost_usdc": 3}], None),
+        }
+        await self._mock_data_api(adapter, pages, seen)
+
+        @asynccontextmanager
+        async def broken_web3(_chain_id):
+            raise RuntimeError("no rpc in unit tests")
+            yield
+
+        monkeypatch.setattr(
+            polymarket_adapter_module, "web3_from_chain_id", broken_web3
+        )
+
+        ok, state = await adapter.get_full_user_state(
+            account="0x" + "22" * 20,
+            include_orders=False,
+            positions_limit=2,
+            max_positions_pages=5,
+        )
+
+        assert ok is True
+        # Lost redeemable rows (curPrice == 0) are still filtered out.
+        assert [p["asset"] for p in state["positions"]] == ["2", "3"]
+        assert state["pnl"]["totalInitialValue"] == pytest.approx(5.0)
+        assert state["pnl"]["totalCashPnl"] == pytest.approx(1.0)
+        assert [r.url.params.get("cursor") for r in seen] == [None, "c1"]
+        assert all(r.url.params["limit"] == "2" for r in seen)
 
     @pytest.mark.asyncio
     async def test_get_full_user_state_includes_positions_orders_and_pnl(
