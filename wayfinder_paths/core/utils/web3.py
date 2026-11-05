@@ -1,5 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
+from typing import Any
 
 import httpx
 from web3 import AsyncHTTPProvider, AsyncWeb3
@@ -16,6 +17,7 @@ from wayfinder_paths.core.constants.chains import (
     POA_MIDDLEWARE_CHAIN_IDS,
 )
 from wayfinder_paths.core.utils.retry import retry_async
+from wayfinder_paths.core.utils.tls import verified_ssl_context
 
 logger = logging.getLogger(__name__)
 
@@ -120,20 +122,17 @@ def _get_rpcs_for_chain_id(chain_id: int) -> list:
 
 
 def _get_web3(rpc: str, chain_id: int) -> AsyncWeb3:
+    request_kwargs: dict[str, Any] = {"ssl": verified_ssl_context()}
+    if _is_wayfinder_rpc(rpc):
+        request_kwargs["headers"] = _wayfinder_auth_headers()
     if _is_gorlami_fork_rpc(rpc):
         provider = _GorlamiProvider(
             rpc,
-            request_kwargs={"headers": _wayfinder_auth_headers()},
+            request_kwargs=request_kwargs,
         )
         web3 = AsyncWeb3(provider)
-    elif _is_wayfinder_rpc(rpc):
-        web3 = AsyncWeb3(
-            AsyncHTTPProvider(
-                rpc, request_kwargs={"headers": _wayfinder_auth_headers()}
-            )
-        )
     else:
-        web3 = AsyncWeb3(AsyncHTTPProvider(rpc))
+        web3 = AsyncWeb3(AsyncHTTPProvider(rpc, request_kwargs=request_kwargs))
     if chain_id in POA_MIDDLEWARE_CHAIN_IDS:
         web3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
     if chain_id == CHAIN_ID_HYPEREVM:

@@ -137,6 +137,8 @@ class RunningProcess:
     timeout_seconds: int | None
     popen: subprocess.Popen[bytes]
     log_path: Path
+    notify_session_id: str | None = None
+    always_notify_session_on_job_completion: bool = False
 
 
 class RunnerDaemon:
@@ -437,14 +439,14 @@ class RunnerDaemon:
         if not result:
             return
         job, _ = result
-        session_id = job.payload.get("notify_session_id")
+        session_id = running_process.notify_session_id
 
         if not session_id or not OPENCODE_CLIENT.healthy():
             return
         event = _extract_job_result_event(running_process.log_path)
-        should_post_success = job.payload.get(
-            "always_notify_session_on_job_completion"
-        ) is True or (event is not None)
+        should_post_success = (
+            running_process.always_notify_session_on_job_completion or event is not None
+        )
         if status == RunStatus.OK and not should_post_success:
             return
         message = _tail_text(running_process.log_path, max_bytes=4000) or "(no output)"
@@ -624,6 +626,10 @@ class RunnerDaemon:
             timeout_seconds=timeout_seconds,
             popen=popen,
             log_path=log_path,
+            notify_session_id=payload.get("notify_session_id"),
+            always_notify_session_on_job_completion=(
+                payload.get("always_notify_session_on_job_completion") is True
+            ),
         )
         return run_id
 
@@ -955,13 +961,15 @@ class RunnerDaemon:
         job, state = result
         if state.status != JobStatus.ACTIVE:
             return {"ok": False, "error": f"job is not ACTIVE (status={state.status})"}
-        self._bind_notify_session(name, caller_session_id)
-
         job_dict: dict[str, Any] = {
             "id": job.id,
             "name": job.name,
             "type": job.type,
-            "payload": job.payload,
+            "payload": {
+                **job.payload,
+                "notify_session_id": caller_session_id
+                or job.payload.get("notify_session_id"),
+            },
             "interval_seconds": job.interval_seconds,
             "schedule_kind": job.schedule_kind,
             "cron_expr": job.cron_expr,
@@ -976,6 +984,7 @@ class RunnerDaemon:
                 "ok": False,
                 "error": "job could not be started (running or at capacity)",
             }
+        self._bind_notify_session(name, caller_session_id)
         return {"ok": True, "result": {"name": name, "run_id": run_id}}
 
     def ctl_delete_job(self, *, name: str) -> dict[str, Any]:

@@ -12,6 +12,7 @@ from wayfinder_paths.core.constants.base import (
 )
 from wayfinder_paths.core.utils.transaction import (
     PRE_EIP_1559_CHAIN_IDS,
+    RpcRequestError,
     SponsorshipUnavailableError,
     TransactionRevertedError,
     _get_transaction_from_address,
@@ -396,8 +397,9 @@ class TestGasLimitTransaction:
 
         msg = str(excinfo.value)
         assert "Gas estimation failed on all RPCs" in msg
-        assert "https://rpc-a/137/0: insufficient funds" in msg
-        assert "https://rpc-b/137/1: execution reverted" in msg
+        assert "rpc-a: Exception: insufficient funds" in msg
+        assert "rpc-b: Exception: execution reverted" in msg
+        assert "https://" not in msg
 
 
 @pytest.mark.asyncio
@@ -640,7 +642,7 @@ class TestDeadUpstreamTolerance:
             _rpc("a", get_transaction_count=_dead(502)),
             _rpc("b", get_transaction_count=_dead(404)),
         ]
-        with pytest.raises(httpx.HTTPStatusError, match="502"):
+        with pytest.raises(RpcRequestError, match="502"):
             await nonce_transaction({"from": RANDOM_USER_0, "chainId": 999})
 
     @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
@@ -697,7 +699,7 @@ class TestDeadUpstreamTolerance:
             _rpc("a", send_raw_transaction=AsyncMock(side_effect=ValueError("nonce"))),
             _rpc("b", send_raw_transaction=_dead()),
         ]
-        with pytest.raises(ValueError, match="nonce"):
+        with pytest.raises(RpcRequestError, match="nonce"):
             await broadcast_transaction(999, b"\x02signed")
 
     @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
@@ -726,7 +728,7 @@ class TestDeadUpstreamTolerance:
             _rpc("a", wait_for_transaction_receipt=_dead(502)),
             _rpc("b", wait_for_transaction_receipt=_dead(404)),
         ]
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(RpcRequestError):
             await wait_for_transaction_receipt(999, "0xab")
 
     @patch("wayfinder_paths.core.utils.transaction.logger")

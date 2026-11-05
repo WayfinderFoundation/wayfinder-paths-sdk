@@ -202,6 +202,53 @@ def test_scan_miss_keeps_existing_binding(
     assert _bound_session(daemon) == "ses_old"
 
 
+@pytest.mark.parametrize("reason", ["running", "capacity"])
+def test_refused_run_once_preserves_existing_chat_binding(
+    daemon: RunnerDaemon, reason: str
+) -> None:
+    job, _ = daemon._db.get_job(name="funding-watch")
+    if reason == "running":
+        daemon._running_by_job[job.id] = 1
+    else:
+        daemon._max_workers = 0
+
+    response = daemon.ctl_run_once(name="funding-watch", caller_session_id="ses_other")
+
+    assert response["ok"] is False
+    assert _bound_session(daemon) == "ses_old"
+
+
+def test_running_job_keeps_its_chat_after_future_binding_changes(
+    daemon: RunnerDaemon, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    script = tmp_path / ".wayfinder_runs" / "watch.py"
+    script.parent.mkdir()
+    script.write_text("print('original chat output')\n")
+    monkeypatch.setattr(daemon, "_run_side_effect", lambda _label, callback: callback())
+    posts: list[tuple[str, str]] = []
+    monkeypatch.setattr(OPENCODE_CLIENT, "healthy", lambda: True)
+    monkeypatch.setattr(OPENCODE_CLIENT, "is_live_session", lambda _sid: True)
+    monkeypatch.setattr(
+        OPENCODE_CLIENT, "send_message", lambda sid, text: posts.append((sid, text))
+    )
+
+    response = daemon.ctl_run_once(
+        name="funding-watch", caller_session_id="ses_original"
+    )
+    assert response["ok"] is True
+    process = daemon._running[response["result"]["run_id"]]
+    process.popen.wait(timeout=5)
+    daemon.ctl_update_job(
+        name="funding-watch", payload=None, caller_session_id="ses_other"
+    )
+    assert _bound_session(daemon) == "ses_other"
+    daemon._notify_session(process, status=RunStatus.FAILED, error_text="test failure")
+
+    assert len(posts) == 1
+    assert posts[0][0] == "ses_original"
+    assert "original chat output" in posts[0][1]
+
+
 @pytest.mark.parametrize("method", ["add_job", "update_job"])
 @pytest.mark.parametrize("override", ["ses_override", None])
 def test_explicit_payload_binding_overrides_caller(
@@ -313,6 +360,7 @@ def test_notify_skips_archived_or_deleted_session(
             timeout_seconds=None,
             popen=object(),  # type: ignore[arg-type]
             log_path=log,
+            notify_session_id=job.payload.get("notify_session_id"),
         ),
         status=RunStatus.FAILED,
         error_text="boom",

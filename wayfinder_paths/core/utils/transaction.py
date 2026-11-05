@@ -112,6 +112,15 @@ def _redacted(error: BaseException) -> str:
     return f"{type(error).__name__}: {_URL.sub('<url>', str(error))}"
 
 
+class RpcRequestError(RuntimeError):
+    """Every RPC failed; the public error contains no credential-bearing URLs."""
+
+
+def _rpc_failure(what: str, errors: list[Exception]) -> RpcRequestError:
+    detail = _redacted(errors[0]) if errors else "no RPCs configured"
+    return RpcRequestError(f"{what} failed on all RPCs: {detail}")
+
+
 async def _from_each_rpc(what: str, web3s: list[AsyncWeb3], call: Callable) -> list:
     """Run `call(web3)` on every RPC and keep the answers that came back.
 
@@ -136,7 +145,7 @@ async def _from_each_rpc(what: str, web3s: list[AsyncWeb3], call: Callable) -> l
         else:
             raise result
     if not answers:
-        raise errors[0]
+        raise _rpc_failure(what, errors) from None
     return answers
 
 
@@ -251,10 +260,9 @@ async def gas_limit_transaction(transaction: dict):
         try:
             return await web3.eth.estimate_gas(transaction, block_identifier="latest")
         except Exception as e:
-            rpc_errors.append(f"{web3.provider.endpoint_uri}: {e}")
-            logger.info(
-                f"Failed to estimate gas using {web3.provider.endpoint_uri}. Error: {e}"
-            )
+            detail = f"{_rpc_label(web3)}: {_redacted(e)}"
+            rpc_errors.append(detail)
+            logger.info(f"Failed to estimate gas using {detail}")
             return 0
 
     async with web3s_from_chain_id(chain_id) as web3s:
@@ -297,8 +305,18 @@ async def gas_limit_transaction(transaction: dict):
 
 
 def _already_known(error: Exception) -> bool:
-    message = str(error).lower()
-    return "already known" in message or "known transaction" in message
+    response = getattr(error, "rpc_response", None)
+    detail = response.get("error") if isinstance(response, dict) else None
+    if detail is None and error.args and isinstance(error.args[0], dict):
+        detail = error.args[0]
+    message = str(detail.get("message", "") if isinstance(detail, dict) else error)
+    return (
+        re.match(
+            r"^(?:already known\b|known transaction\b|transaction already known\b)",
+            message.strip().lower(),
+        )
+        is not None
+    )
 
 
 async def broadcast_transaction(chain_id, signed_transaction: bytes) -> str:
@@ -322,7 +340,7 @@ async def broadcast_transaction(chain_id, signed_transaction: bytes) -> str:
                     f"Broadcast failed on {_rpc_label(web3)}, "
                     f"trying the next RPC: {_redacted(e)}"
                 )
-    raise errors[0]
+    raise _rpc_failure("Broadcast", errors) from None
 
 
 async def sponsorship_enabled() -> bool:
@@ -439,7 +457,7 @@ async def wait_for_transaction_receipt(
             for task in tasks:
                 task.cancel()
         if receipt is None:
-            raise error
+            raise _rpc_failure("Receipt lookup", [error] if error else []) from None
 
         if receipt.get("status") == 0:
             raise TransactionRevertedError(txn_hash, receipt)
