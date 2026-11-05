@@ -121,7 +121,9 @@ async def onchain_place_order(
     )
 
     adapter, sender = await _adapter(wallet_label, chain_id)
-    placed, res = await adapter.place_order(chain_id, request, spent_raw)
+    placed, res = await adapter.place_order(
+        chain_id, request, spent_raw, spent_decimals=decimals
+    )
     status = "placed" if placed else "failed"
     _annotate_profile(
         address=sender,

@@ -1,6 +1,7 @@
 import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,6 +16,7 @@ from wayfinder_paths.adapters.definitive_adapter.adapter import (
     flash_cancel_message,
     flash_order_digest,
     kernel_wrapped_digest,
+    open_order_spend_raw,
     parse_flash_order_typed_data,
 )
 
@@ -198,6 +200,30 @@ def test_approval_checks():
             check_flash_approval(tx, token, 5_000_000)
 
 
+def _open_buy(qty: str, **over: Any) -> dict[str, Any]:
+    base = {"id": "8453", "name": "base"}
+    return {
+        "side": "buy",
+        "qty": qty,
+        "targetAsset": {"address": WETH, "chain": base},
+        "contraAsset": {"address": USDC, "chain": base},
+        **over,
+    }
+
+
+def test_open_order_spend_counts_remaining_spend_of_the_token():
+    orders = [
+        _open_buy("2"),
+        _open_buy("3.5", filled={"contraAmount": "1"}),
+        # A sell spends its target, so it pulls WETH, not USDC.
+        _open_buy("9", side="sell"),
+        _open_buy("4", filled={"contraAmount": "4"}),
+        _open_buy("1.1234567"),
+    ]
+    assert open_order_spend_raw(orders, 8453, USDC, 6) == 5_623_456
+    assert open_order_spend_raw(orders, 1, USDC, 6) == 0
+
+
 def test_kernel_wrapping_matches_the_delegate_vector():
     # Checked against isValidSignature on the Kernel 0.3.3 delegate via eth_call.
     digest = bytes.fromhex(
@@ -324,7 +350,10 @@ async def test_place_order_approves_then_prefixes_for_a_kernel_wallet():
             "unexpected Permit2 request",
         ),
         ({"approveTx": approve(PERMIT2, 5_000_000)}, "unknown spender"),
-        ({"approveTx": approve(FLASH_CONTRACT, 5_000_001)}, "larger than the order"),
+        (
+            {"approveTx": approve(FLASH_CONTRACT, 5_000_001)},
+            "larger than your open orders need",
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -344,6 +373,32 @@ async def test_refused_approvals_are_never_sent(evm, reason):
     assert res["approval_tx_hash"] is None
     send.assert_not_awaited()
     client.submit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_approval_may_cover_other_open_orders_of_the_token():
+    # Flash's minimal allowance is this 5 USDC order plus an open 2 USDC buy.
+    q = quote()
+    q["evm"]["approveTx"] = approve(FLASH_CONTRACT, 7_000_000)
+    q["evm"]["orderTypedData"] = None
+    client = MagicMock(
+        quote=AsyncMock(return_value=q),
+        submit=AsyncMock(),
+        list_orders=AsyncMock(return_value=[_open_buy("2")]),
+    )
+    with (
+        patch(f"{MODULE}.DEFINITIVE_CLIENT", client),
+        patch(f"{MODULE}.send_transaction", AsyncMock(return_value="0xa")) as send,
+    ):
+        ok, res = await adapter().place_order(
+            8453,
+            {k: v for k, v in REQUEST.items() if k != "funderAddress"},
+            5_000_000,
+            spent_decimals=6,
+        )
+    # The approval went out; the re-quote has no order to sign.
+    send.assert_awaited_once()
+    assert not ok and res["approval_tx_hash"] == "0xa"
 
 
 @pytest.mark.asyncio
