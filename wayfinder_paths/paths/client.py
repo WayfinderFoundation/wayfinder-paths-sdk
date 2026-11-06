@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -562,15 +563,68 @@ class PathsApiClient:
     ) -> Path:
         url = f"{self.base_url}/api/v1/paths/{slug}/versions/{version}/bundle.zip"
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._client.stream("GET", url, headers=self._headers()) as resp:
+        with self._client.stream(
+            "GET",
+            url,
+            params={"download_url": "1"},
+            headers=self._headers(),
+            follow_redirects=False,
+        ) as resp:
             if resp.status_code >= 400:
-                raise PathsApiError(
-                    f"Download bundle failed ({resp.status_code}): {resp.text}"
-                )
-            with out_path.open("wb") as f:
-                for chunk in resp.iter_bytes():
-                    f.write(chunk)
+                raise PathsApiError(f"Download bundle failed ({resp.status_code})")
+            if resp.is_redirect:
+                download_url = resp.headers.get("location", "")
+            elif "application/json" in resp.headers.get("content-type", ""):
+                resp.read()
+                download_url = str(resp.json().get("downloadUrl", ""))
+            else:
+                # Compatibility with the pre-migration backend, while clients roll out first.
+                with out_path.open("wb") as f:
+                    total = 0
+                    for chunk in resp.iter_bytes():
+                        total += len(chunk)
+                        if total > 50 * 1024 * 1024:
+                            raise PathsApiError("Artifact exceeds download size limit")
+                        f.write(chunk)
+                return out_path
+        parsed = urlparse(download_url)
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "storage.googleapis.com"
+            or parsed.username
+            or parsed.password
+            or parsed.port not in (None, 443)
+        ):
+            raise PathsApiError("Invalid artifact download destination")
+        # A fresh client avoids forwarding API keys, Authorization, cookies or proxy auth.
+        with httpx.Client(
+            timeout=60, follow_redirects=False, trust_env=False
+        ) as storage_client:
+            with storage_client.stream("GET", download_url) as resp:
+                if resp.status_code != 200:
+                    raise PathsApiError(
+                        f"Artifact download failed ({resp.status_code})"
+                    )
+                with out_path.open("wb") as f:
+                    total = 0
+                    for chunk in resp.iter_bytes():
+                        total += len(chunk)
+                        if total > 50 * 1024 * 1024:
+                            raise PathsApiError("Artifact exceeds download size limit")
+                        f.write(chunk)
         return out_path
+
+    def get_upload_status(self, upload_id: str) -> dict[str, Any]:
+        from uuid import UUID
+
+        upload_id = str(UUID(upload_id))
+        response = self._client.get(
+            f"{self.base_url}/api/v1/paths/uploads/{upload_id}/",
+            headers=self._headers(),
+        )
+        if response.status_code >= 400:
+            raise PathsApiError(f"Upload status failed ({response.status_code})")
+        return response.json()
 
     @staticmethod
     def sha256_file(path: Path) -> str:
