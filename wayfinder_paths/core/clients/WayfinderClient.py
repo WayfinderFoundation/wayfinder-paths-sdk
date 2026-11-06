@@ -8,7 +8,8 @@ from weakref import WeakSet
 import httpx
 from loguru import logger
 
-from wayfinder_paths.core.config import get_api_key
+from wayfinder_paths.core.api_origin import drop_api_key_off_origin
+from wayfinder_paths.core.config import get_api_base_url, get_api_key
 from wayfinder_paths.core.constants.base import DEFAULT_HTTP_TIMEOUT
 
 
@@ -59,6 +60,10 @@ async def with_async_client_cleanup[ResultT](
         await close_async_clients()
 
 
+async def _keep_api_key_on_api_origin(request: httpx.Request) -> None:
+    drop_api_key_off_origin(request, get_api_base_url())
+
+
 class WayfinderClient(AsyncClientOwner):
     def __init__(self) -> None:
         super().__init__()
@@ -72,6 +77,7 @@ class WayfinderClient(AsyncClientOwner):
             timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT),
             follow_redirects=True,
             headers=self.headers,
+            event_hooks={"request": [_keep_api_key_on_api_origin]},
         )
 
     def _ensure_api_key_header(self) -> None:

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
+
+from wayfinder_paths.paths.manifest import _is_valid_version
 
 APPROVED_RUNTIME_PACKAGE = "wayfinder-paths"
 
@@ -50,3 +53,31 @@ def resolve_contained_path(root: Path, value: str, *, label: str) -> Path:
     except ValueError as exc:
         raise ValueError(f"{label} must stay inside {root_resolved}: {raw}") from exc
     return resolved
+
+
+_PATH_SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*", re.ASCII)
+_PATH_SLUG_MAX_LENGTH = 255
+_PATH_VERSION_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+_!-]*", re.ASCII)
+
+
+def validate_path_slug(slug: object) -> str:
+    """Return *slug* if it is a registry slug safe to put in a URL or a path."""
+    if (
+        not isinstance(slug, str)
+        or len(slug) > _PATH_SLUG_MAX_LENGTH
+        or not _PATH_SLUG_RE.fullmatch(slug)
+    ):
+        raise ValueError(f"Invalid path slug: {slug!r}")
+    return slug
+
+
+def validate_path_version(version: object) -> str:
+    """Return *version* if it is a release version safe to put in a URL or a path."""
+    if (
+        not isinstance(version, str)
+        or not _PATH_VERSION_RE.fullmatch(version)
+        or ".." in version
+        or not _is_valid_version(version)
+    ):
+        raise ValueError(f"Invalid path version: {version!r}")
+    return version

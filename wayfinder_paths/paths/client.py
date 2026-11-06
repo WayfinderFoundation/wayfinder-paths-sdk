@@ -2,17 +2,45 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 import httpx
 
+from wayfinder_paths.core.api_origin import (
+    UntrustedApiOriginError,
+    validate_api_base_url,
+)
 from wayfinder_paths.core.config import get_api_key, get_paths_api_base_url
 from wayfinder_paths.paths.builder import _sha256_file
+from wayfinder_paths.paths.path_safety import validate_path_slug, validate_path_version
+
+_ID_SEGMENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", re.ASCII)
 
 
 class PathsApiError(Exception):
     pass
+
+
+def _slug_segment(slug: str) -> str:
+    try:
+        return validate_path_slug(slug)
+    except ValueError as exc:
+        raise PathsApiError(str(exc)) from exc
+
+
+def _version_segment(version: str) -> str:
+    try:
+        return validate_path_version(version)
+    except ValueError as exc:
+        raise PathsApiError(str(exc)) from exc
+
+
+def _id_segment(value: str, *, label: str) -> str:
+    if not isinstance(value, str) or not _ID_SEGMENT_RE.fullmatch(value):
+        raise PathsApiError(f"Invalid {label}: {value!r}")
+    return value
 
 
 class PathsApiClient:
@@ -22,8 +50,14 @@ class PathsApiClient:
         api_base_url: str | None = None,
         client: httpx.Client | None = None,
     ):
-        base = (api_base_url or get_paths_api_base_url()).rstrip("/")
-        self.base_url = base
+        # Validated before any request: every call carries the API key, so the
+        # base URL must be an allowlisted Wayfinder origin.
+        try:
+            self.base_url = validate_api_base_url(
+                api_base_url or get_paths_api_base_url(), label="Paths API URL"
+            )
+        except UntrustedApiOriginError as exc:
+            raise PathsApiError(str(exc)) from exc
         self._client = client or httpx.Client(timeout=httpx.Timeout(60))
 
     def _headers(self) -> dict[str, str]:
@@ -300,8 +334,11 @@ class PathsApiClient:
         wallet_address: str | None = None,
         install_target: str | None = None,
     ) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/paths/{slug}/install-intent/"
-        body: dict[str, Any] = {"version": version, "runtime": runtime}
+        url = f"{self.base_url}/api/v1/paths/{_slug_segment(slug)}/install-intent/"
+        body: dict[str, Any] = {
+            "version": _version_segment(version),
+            "runtime": runtime,
+        }
         if venue:
             body["venue"] = venue
         if wallet_address:
@@ -328,7 +365,7 @@ class PathsApiClient:
         extracted_files: int | None = None,
         workspace_hash: str | None = None,
     ) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/paths/{slug}/install-receipt/"
+        url = f"{self.base_url}/api/v1/paths/{_slug_segment(slug)}/install-receipt/"
         body: dict[str, Any] = {
             "intent": intent,
             "signature": signature,
@@ -358,7 +395,8 @@ class PathsApiClient:
         status: str | None = None,
         metrics: dict[str, float] | None = None,
     ) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/paths/installations/{installation_id}/heartbeat/"
+        installation = _id_segment(installation_id, label="installation id")
+        url = f"{self.base_url}/api/v1/paths/installations/{installation}/heartbeat/"
         body: dict[str, Any] = {}
         if status:
             body["status"] = status
@@ -388,7 +426,8 @@ class PathsApiClient:
     ) -> dict[str, Any]:
         """Push this Fly machine's installed-paths state to vault-backend.
         Called by path CLI mutations and boot reconciliation."""
-        url = f"{self.base_url}/api/v1/opencode/instances/{app_name}/inventory-sync/"
+        app = _id_segment(app_name, label="instance name")
+        url = f"{self.base_url}/api/v1/opencode/instances/{app}/inventory-sync/"
         body: dict[str, Any] = {
             "lockfile_present": lockfile_present,
             "paths": paths,
@@ -454,7 +493,7 @@ class PathsApiClient:
         metrics: dict[str, float] | None = None,
         visibility: str = "public",
     ) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/paths/{slug}/events/"
+        url = f"{self.base_url}/api/v1/paths/{_slug_segment(slug)}/events/"
         payload: dict[str, Any] = {
             "type": "signal",
             "visibility": visibility,
@@ -483,7 +522,7 @@ class PathsApiClient:
         visibility: str = "public",
         stream_key: str = "public",
     ) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/paths/{slug}/events/"
+        url = f"{self.base_url}/api/v1/paths/{_slug_segment(slug)}/events/"
         body: dict[str, Any] = {
             "type": event_type,
             "visibility": visibility,
@@ -538,14 +577,17 @@ class PathsApiClient:
         return bool(str(path.get("active_bonded_version") or "").strip())
 
     def get_path(self, *, slug: str) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/paths/{slug}/"
+        url = f"{self.base_url}/api/v1/paths/{_slug_segment(slug)}/"
         resp = self._client.get(url, headers=self._headers())
         if resp.status_code >= 400:
             raise PathsApiError(f"Get path failed ({resp.status_code}): {resp.text}")
         return resp.json()
 
     def get_path_version(self, *, slug: str, version: str) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/paths/{slug}/versions/{version}"
+        url = (
+            f"{self.base_url}/api/v1/paths/{_slug_segment(slug)}"
+            f"/versions/{_version_segment(version)}"
+        )
         resp = self._client.get(url, headers=self._headers())
         if resp.status_code >= 400:
             raise PathsApiError(
@@ -560,7 +602,10 @@ class PathsApiClient:
         version: str,
         out_path: Path,
     ) -> Path:
-        url = f"{self.base_url}/api/v1/paths/{slug}/versions/{version}/bundle.zip"
+        url = (
+            f"{self.base_url}/api/v1/paths/{_slug_segment(slug)}"
+            f"/versions/{_version_segment(version)}/bundle.zip"
+        )
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with self._client.stream("GET", url, headers=self._headers()) as resp:
             if resp.status_code >= 400:
@@ -586,12 +631,12 @@ class PathsApiClient:
         summary: str | None = None,
         owner_wallet: str | None = None,
     ) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/paths/{slug}/fork/"
+        url = f"{self.base_url}/api/v1/paths/{_slug_segment(slug)}/fork/"
         body: dict[str, Any] = {}
         if version:
-            body["version"] = version
+            body["version"] = _version_segment(version)
         if new_slug:
-            body["slug"] = new_slug
+            body["slug"] = _slug_segment(new_slug)
         if name:
             body["name"] = name
         if summary:

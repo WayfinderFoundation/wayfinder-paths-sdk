@@ -54,7 +54,7 @@ def test_maybe_heartbeat_installed_paths_sends_and_writes_state(
     tmp_path: Path, monkeypatch
 ) -> None:
     _write_lockfile(tmp_path)
-    monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://paths.example")
+    monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://strategies-dev.wayfinder.ai")
     monkeypatch.setenv("OPENCODE_INSTANCE_ID", "test-instance")
 
     class FakeClient:
@@ -99,7 +99,7 @@ def test_maybe_heartbeat_installed_paths_reads_legacy_lockfile_and_rewrites_stat
     tmp_path: Path, monkeypatch
 ) -> None:
     _write_legacy_lockfile(tmp_path)
-    monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://paths.example")
+    monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://strategies-dev.wayfinder.ai")
     monkeypatch.setenv("OPENCODE_INSTANCE_ID", "test-instance")
 
     class FakeClient:
@@ -140,7 +140,7 @@ def test_maybe_heartbeat_installed_paths_respects_cooldown(
     tmp_path: Path, monkeypatch
 ) -> None:
     _write_lockfile(tmp_path)
-    monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://paths.example")
+    monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://strategies-dev.wayfinder.ai")
     monkeypatch.setenv("OPENCODE_INSTANCE_ID", "test-instance")
     state_path = tmp_path / ".wayfinder" / "paths-heartbeat.json"
     state_path.write_text(
@@ -174,7 +174,7 @@ def test_maybe_heartbeat_installed_paths_reads_legacy_cooldown_state(
     tmp_path: Path, monkeypatch
 ) -> None:
     _write_legacy_lockfile(tmp_path)
-    monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://paths.example")
+    monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://strategies-dev.wayfinder.ai")
     monkeypatch.setenv("OPENCODE_INSTANCE_ID", "test-instance")
     legacy_state_path = tmp_path / ".wayfinder" / "packs-heartbeat.json"
     legacy_state_path.write_text(
@@ -224,7 +224,7 @@ def test_heartbeat_failure_does_not_start_cooldown(
     failure: type[httpx.RequestError] | int | str,
 ) -> None:
     _write_lockfile(tmp_path)
-    monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://paths.example")
+    monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://strategies-dev.wayfinder.ai")
     monkeypatch.setenv("OPENCODE_INSTANCE_ID", "test-instance")
     requests: list[httpx.Request] = []
 
@@ -239,7 +239,9 @@ def test_heartbeat_failure_does_not_start_cooldown(
         return httpx.Response(200, json={"results": [{"status": "recorded"}]})
 
     with httpx.Client(transport=httpx.MockTransport(handle), timeout=60) as http:
-        client = PathsApiClient(api_base_url="https://paths.example", client=http)
+        client = PathsApiClient(
+            api_base_url="https://strategies-dev.wayfinder.ai", client=http
+        )
         result = maybe_heartbeat_installed_paths(
             trigger="mcp-server", cwd=tmp_path, client=client
         )
@@ -267,7 +269,7 @@ def test_heartbeat_state_write_failure_is_nonfatal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
     _write_lockfile(tmp_path)
-    monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://paths.example")
+    monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://strategies-dev.wayfinder.ai")
     monkeypatch.setenv("OPENCODE_INSTANCE_ID", "test-instance")
 
     def handle(request: httpx.Request) -> httpx.Response:
@@ -277,7 +279,9 @@ def test_heartbeat_state_write_failure_is_nonfatal(
         raise OSError(errno.ENOSPC, "No space left on device")
 
     with httpx.Client(transport=httpx.MockTransport(handle)) as http:
-        client = PathsApiClient(api_base_url="https://paths.example", client=http)
+        client = PathsApiClient(
+            api_base_url="https://strategies-dev.wayfinder.ai", client=http
+        )
         with monkeypatch.context() as patch:
             patch.setattr(Path, operation, fail_write)
             result = maybe_heartbeat_installed_paths(
