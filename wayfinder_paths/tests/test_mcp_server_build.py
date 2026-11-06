@@ -11,6 +11,15 @@ import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+# The stub backend listens on loopback, which the SDK refuses inside a Shells
+# instance; allow it only in this test's server process.
+_SERVE_WITH_LOOPBACK_API = (
+    "import runpy\n"
+    "import wayfinder_paths.core.api_origin as api_origin\n"
+    "api_origin._loopback_allowed = lambda: True\n"
+    "runpy.run_module('wayfinder_paths.mcp.server', run_name='__main__')\n"
+)
+
 
 def test_build_mcp_registers_tools() -> None:
     from wayfinder_paths.mcp.server import build_mcp
@@ -83,7 +92,7 @@ async def test_mcp_server_serves_tools_after_startup_heartbeat(
         thread.start()
         params = StdioServerParameters(
             command=sys.executable,
-            args=["-m", "wayfinder_paths.mcp.server"],
+            args=["-c", _SERVE_WITH_LOOPBACK_API],
             cwd=tmp_path,
             env={
                 "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
@@ -112,3 +121,32 @@ async def test_mcp_server_serves_tools_after_startup_heartbeat(
     assert (state_dir / "paths-heartbeat.json").exists() == (
         status == 200 and body is not None and b"recorded" in body
     )
+
+
+@pytest.mark.asyncio
+async def test_mcp_server_starts_when_paths_api_url_is_refused(tmp_path: Path) -> None:
+    state_dir = tmp_path / ".wayfinder"
+    state_dir.mkdir()
+    (state_dir / "paths.lock.json").write_text(
+        json.dumps(
+            {"paths": {"demo": {"installation_id": "test", "heartbeat_token": "test"}}}
+        )
+    )
+    params = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "wayfinder_paths.mcp.server"],
+        cwd=tmp_path,
+        env={
+            "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+            "WAYFINDER_CONFIG_PATH": str(tmp_path / "config.json"),
+            "WAYFINDER_PATHS_API_URL": "https://evil.example",
+            "OPENCODE_INSTANCE_ID": "test-instance",
+            "HOME": str(tmp_path),
+        },
+    )
+    async with asyncio.timeout(30), stdio_client(params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.list_tools()
+    assert "core_get_wallets" in {tool.name for tool in result.tools}
+    assert not (state_dir / "paths-heartbeat.json").exists()

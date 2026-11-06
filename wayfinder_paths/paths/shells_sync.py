@@ -125,8 +125,8 @@ def sync_shells_inventory(
     lockfile_present = state_dir is not None
     paths = _collect(_load_lockfile(state_dir)) if state_dir else []
 
-    sync_client = client or PathsApiClient()
     try:
+        sync_client = client or PathsApiClient()
         response = sync_client.submit_shells_inventory_sync(
             app_name=app_name,
             lockfile_present=lockfile_present,
