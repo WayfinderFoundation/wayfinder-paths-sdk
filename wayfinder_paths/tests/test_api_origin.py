@@ -50,8 +50,15 @@ REFUSED_URLS = [
     "https://wayfinder%2eai",
     "https://wayfinder.ai%2f@evil.example",
     "https://%77ayfinder.ai",
-    "https://WAYFINDER.AI",
     "https://wayfinder.ai.",
+    "https://WAYFINDER.AI:8443",
+    "HTTP://WAYFINDER.AI",
+    "https://wayfinder.ai:0443",
+    "http://wayfinder.ai:443",
+    "https://[::2]",
+    "https://[0:0:0:0:0:0:0:1]",
+    "http://host.docker.internal.evil.example",
+    "http://docker.internal",
     "https://wayfınder.ai",
     "https://xn--wayfnder-xbb.ai",
     "https://wayfinder.ai/api/../../evil",
@@ -118,13 +125,121 @@ def test_other_origins_and_url_tricks_are_refused(url: str) -> None:
         validate_api_base_url(url)
 
 
-def test_loopback_is_allowed_only_off_shells(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert validate_api_base_url("http://localhost:8000") == "http://localhost:8000"
-    assert validate_api_base_url("http://127.0.0.1:8000/") == "http://127.0.0.1:8000"
+LOCAL_DEV_URLS = [
+    ("http://localhost:8000", "http://localhost:8000"),
+    ("http://127.0.0.1:8000/", "http://127.0.0.1:8000"),
+    ("http://[::1]:8000/api/v1", "http://[::1]:8000/api/v1"),
+    ("https://[::1]", "https://[::1]"),
+    ("http://host.docker.internal:8000", "http://host.docker.internal:8000"),
+    ("https://host.docker.internal/api/v1", "https://host.docker.internal/api/v1"),
+    ("http://Host.Docker.Internal:80/api", "http://host.docker.internal/api"),
+    ("HTTP://LOCALHOST:8000", "http://localhost:8000"),
+]
+
+
+@pytest.mark.parametrize(("url", "expected"), LOCAL_DEV_URLS)
+def test_local_dev_hosts_are_allowed_only_off_shells(
+    url: str, expected: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert validate_api_base_url(url) == expected
 
     _on_shells(monkeypatch)
     with pytest.raises(UntrustedApiOriginError):
-        validate_api_base_url("http://localhost:8000")
+        validate_api_base_url(url)
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://WAYFINDER.AI", "https://wayfinder.ai"),
+        (
+            "HTTPS://Strategies.Wayfinder.AI/api/v1/",
+            "https://strategies.wayfinder.ai/api/v1",
+        ),
+        ("https://wayfinder.ai:443/api/v1", "https://wayfinder.ai/api/v1"),
+        ("https://WAYFINDER.ai:443/", "https://wayfinder.ai"),
+        ("  https://wayfinder.ai/api/v1//  ", "https://wayfinder.ai/api/v1"),
+        # Only scheme and host are folded; the path keeps its case.
+        ("https://WAYFINDER.AI/API/V1", "https://wayfinder.ai/API/V1"),
+    ],
+)
+def test_host_case_and_default_port_are_normalised(url: str, expected: str) -> None:
+    assert validate_api_base_url(url) == expected
+
+
+def test_non_ascii_case_folding_does_not_reach_an_allowed_host() -> None:
+    # U+212A KELVIN SIGN lower-cases to ASCII "k".
+    with pytest.raises(UntrustedApiOriginError):
+        validate_api_base_url("http://host.doc\u212aer.internal:8000")
+
+
+def test_is_under_api_base_normalises_both_sides() -> None:
+    assert is_under_api_base(
+        "https://WAYFINDER.AI:443/api/v1/blockchain/rpc/8453",
+        "https://wayfinder.ai/api/v1",
+    )
+    assert is_under_api_base("http://[::1]:8000/api/v1/x", "http://[::1]:8000/api/v1")
+    assert not is_under_api_base("http://[::1]:8001/api/v1/x", "http://[::1]:8000")
+
+
+def test_pinned_shells_url_is_normalised(monkeypatch: pytest.MonkeyPatch) -> None:
+    _on_shells(monkeypatch, pinned="HTTPS://Strategies.Wayfinder.AI:443/api/v1/")
+    assert config.get_api_base_url() == "https://strategies.wayfinder.ai/api/v1"
+    assert validate_api_base_url("https://STRATEGIES.wayfinder.ai")
+
+
+def test_error_names_value_source_allowed_hosts_and_fix(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "bad-config.json"
+    cfg_path.write_text(
+        json.dumps({"system": {"api_base_url": "https://evil.example/api/v1"}})
+    )
+    config.load_config(cfg_path)
+
+    with pytest.raises(UntrustedApiOriginError) as info:
+        config.get_api_base_url()
+
+    message = str(info.value)
+    assert isinstance(info.value, ValueError)
+    assert info.value.value == "https://evil.example/api/v1"
+    assert "'https://evil.example/api/v1'" in message
+    assert f"config.json key system.api_base_url ({cfg_path})" in message
+    for host in (
+        "https://wayfinder.ai",
+        "https://strategies.wayfinder.ai",
+        "https://strategies-dev.wayfinder.ai",
+        "localhost",
+        "127.0.0.1",
+        "[::1]",
+        "host.docker.internal",
+    ):
+        assert host in message
+    assert f"Fix: correct system.api_base_url in {cfg_path}" in message
+
+
+def test_error_for_env_var_and_api_url_flag_name_their_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://evil.example")
+    with pytest.raises(UntrustedApiOriginError) as info:
+        config.get_paths_api_base_url()
+    assert "Environment variable WAYFINDER_PATHS_API_URL" in str(info.value)
+    assert "unset it" in str(info.value)
+
+    with pytest.raises(PathsApiError) as api_info:
+        PathsApiClient(api_base_url="https://evil.example")
+    assert "--api-url" in str(api_info.value)
+    assert "host.docker.internal" in str(api_info.value)
+
+
+def test_error_on_shells_says_local_hosts_are_not_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _on_shells(monkeypatch, pinned="https://strategies.wayfinder.ai/api/v1")
+    with pytest.raises(UntrustedApiOriginError) as info:
+        validate_api_base_url("http://localhost:8000", label="--api-url")
+    message = str(info.value)
+    assert "https://strategies.wayfinder.ai/api/v1" in message
+    assert "local hosts are not accepted inside a Wayfinder Shells instance" in message
 
 
 def test_shells_pin_narrows_allowlist_to_the_instance_host(
@@ -212,6 +327,51 @@ def test_shells_ignores_endpoint_overrides_from_config_file(
     assert config.get_rpc_urls() == {"8453": ["https://fork.example"]}
 
 
+def _capture_warnings() -> tuple[list[str], int]:
+    from loguru import logger
+
+    messages: list[str] = []
+    handler_id = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+    return messages, handler_id
+
+
+def test_shells_logs_one_line_naming_dropped_overrides(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from loguru import logger
+
+    _on_shells(monkeypatch)
+    cfg_path = _write_volume_config(tmp_path)
+    messages, handler_id = _capture_warnings()
+    try:
+        config.load_config(cfg_path)
+    finally:
+        logger.remove(handler_id)
+
+    (line,) = messages
+    assert line.count("\n") == 1
+    assert "system.paths_api_base_url, strategy.rpc_urls" in line
+    assert str(cfg_path) in line
+    assert "not trusted inside a Wayfinder Shells instance" in line
+
+
+def test_no_warning_when_nothing_is_dropped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from loguru import logger
+
+    cfg_path = tmp_path / "plain.json"
+    cfg_path.write_text(json.dumps({"system": {"api_key": API_KEY}}))
+    messages, handler_id = _capture_warnings()
+    try:
+        config.load_config(cfg_path)  # off Shells
+        _on_shells(monkeypatch)
+        config.load_config(cfg_path)  # on Shells, nothing to drop
+    finally:
+        logger.remove(handler_id)
+    assert messages == []
+
+
 def test_off_shells_keeps_endpoint_overrides_from_config_file(tmp_path: Path) -> None:
     config.load_config(_write_volume_config(tmp_path))
 
@@ -297,7 +457,7 @@ def test_redirect_to_another_host_keeps_the_key(
         _with_transport(httpx.Client.__init__, httpx.MockTransport(handler)),
     )
     client = PathsApiClient(api_base_url="https://strategies.wayfinder.ai")
-    with pytest.raises(ValueError):  # the empty 302 body is not JSON
+    with pytest.raises(PathsApiError, match="Unexpected redirect from API host"):
         client.get_path(slug="demo")
     assert [r.url.host for r in sent] == ["strategies.wayfinder.ai"]
 
@@ -361,7 +521,7 @@ def test_paths_client_does_not_follow_redirects_on_a_supplied_client() -> None:
         client = PathsApiClient(
             api_base_url="https://strategies.wayfinder.ai", client=http_client
         )
-        with pytest.raises(ValueError):  # the empty 307 body is not JSON
+        with pytest.raises(PathsApiError, match=r"redirect from API host \(307"):
             client.get_path(slug="demo")
 
     assert [r.url.host for r in sent] == ["strategies.wayfinder.ai"]
@@ -426,7 +586,17 @@ def _with_transport(init, transport):
     return patched
 
 
-VALID_SLUGS = ["demo", "a", "my-path-2", "x" * 255]
+VALID_SLUGS = [
+    "demo",
+    "a",
+    "my-path-2",
+    "x" * 255,
+    "my_path",
+    "my__path",
+    "my_-_path",
+    "a_b-c_d",
+    "path_v2",
+]
 INVALID_SLUGS = [
     "",
     "..",
@@ -441,6 +611,12 @@ INVALID_SLUGS = [
     "-demo",
     "demo-",
     "de--mo",
+    "_demo",
+    "demo_",
+    "de_--_mo",
+    "de.mo",
+    "demo_..",
+    "x" * 254 + "_y",
     "demo?x=1",
     "demo#x",
     "demo ",
@@ -478,7 +654,7 @@ def test_valid_slugs_pass(slug: str) -> None:
 
 @pytest.mark.parametrize("slug", INVALID_SLUGS)
 def test_slug_traversal_and_tricks_are_refused(slug: str) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="lower-case letters, digits, '_' and '-'"):
         validate_path_slug(slug)
 
 
@@ -615,3 +791,115 @@ def test_cli_info_works_against_allowlisted_api_url(
     (request,) = sent_requests
     assert str(request.url) == "https://strategies-dev.wayfinder.ai/api/v1/paths/demo/"
     assert request.headers["X-API-Key"] == API_KEY
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308, 300, 304])
+def test_redirected_bundle_download_errors_without_writing_a_file(
+    status: int, tmp_path: Path
+) -> None:
+    sent: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(status, headers={"Location": "https://cdn.example/b"})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        client = PathsApiClient(
+            api_base_url="https://strategies.wayfinder.ai", client=http_client
+        )
+        out = tmp_path / "bundle.zip"
+        with pytest.raises(PathsApiError, match="Unexpected redirect from API host"):
+            client.download_bundle(slug="demo", version="1.0.0", out_path=out)
+
+    assert not out.exists()
+    assert [r.url.host for r in sent] == ["strategies.wayfinder.ai"]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda c: c.create_install_intent(slug="demo", version="1.0.0"),
+        lambda c: c.emit_event(slug="demo", event_type="signal"),
+        lambda c: c.list_paths(),
+        lambda c: c.submit_batch_install_heartbeats(heartbeats=[], source="t"),
+        lambda c: c.submit_shells_inventory_sync(
+            app_name="app", lockfile_present=True, paths=[]
+        ),
+    ],
+)
+def test_keyed_calls_turn_a_redirect_into_an_explicit_error(call) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"Location": "https://evil.example/x"})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        client = PathsApiClient(
+            api_base_url="https://strategies.wayfinder.ai", client=http_client
+        )
+        with pytest.raises(PathsApiError, match=r"redirect from API host \(302"):
+            call(client)
+
+
+def test_cli_main_prints_a_clear_error_for_a_refused_api_url(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import wayfinder_paths.mcp.cli as mcp_cli
+
+    def boom() -> None:
+        config.set_config({"system": {"api_base_url": "https://evil.example"}})
+        config.get_api_base_url()
+
+    monkeypatch.setattr(mcp_cli, "_run", boom)
+    with pytest.raises(SystemExit) as exit_info:
+        mcp_cli.main()
+
+    assert exit_info.value.code == 2
+    err = capsys.readouterr().err
+    assert err.startswith("Error: config.json key system.api_base_url")
+    assert "'https://evil.example'" in err
+    assert "host.docker.internal" in err
+    assert "Traceback" not in err
+
+
+async def test_mcp_tool_wrapper_returns_invalid_api_url_error() -> None:
+    from wayfinder_paths.mcp.utils import catch_errors
+
+    @catch_errors
+    async def tool() -> dict:
+        config.get_api_base_url()
+        return {"ok": True}
+
+    @catch_errors
+    def sync_tool() -> dict:
+        config.get_api_base_url()
+        return {"ok": True}
+
+    config.set_config({"system": {"api_base_url": "https://evil.example"}})
+    for result in (await tool(), sync_tool()):
+        assert result["ok"] is False
+        assert result["error"]["code"] == "invalid_api_url"
+        assert "'https://evil.example'" in result["error"]["message"]
+        assert "Fix:" in result["error"]["message"]
+
+
+async def test_metrics_report_skips_a_refused_api_url(
+    sent_requests: list[httpx.Request],
+) -> None:
+    from wayfinder_paths.core.clients.MetricsClient import MetricsClient
+
+    config.set_config({"system": {"api_base_url": "https://evil.example"}})
+    await MetricsClient().report_tool(
+        tool="t", success=True, code="ok", duration_ms=1.0
+    )
+    assert sent_requests == []
+
+
+def test_mcp_server_reports_a_refused_api_url_once_at_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from wayfinder_paths.mcp.server import report_refused_api_url
+
+    assert report_refused_api_url() is None
+    monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://evil.example")
+    message = report_refused_api_url()
+    assert message is not None
+    assert "Environment variable WAYFINDER_PATHS_API_URL" in message
