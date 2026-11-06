@@ -17,11 +17,20 @@ This adapter wraps the `hyperliquid` SDK `Info` client for read paths.
 
 ### Perp market metadata + contexts
 
+- For broad MCP discovery, call `hyperliquid_search_market(query="", market_type="hip3", limit=100, include_market_data=False)` and follow `pagination.perps.next_offset`. This lists names compactly without guessing tickers. Use `market_type="perp"` for core markets; query exact finalists with default market data enabled to check funding and delisting. Verify the tracked underlying in venue specifications. Empty fuzzy/name searches do not establish that an economic exposure is unavailable.
+- `specification_sources` supplies known official documentation links for dexes on the returned page. They are navigation aids, not fetched evidence or verified terms. Reuse one relevant document across finalists from that venue; check the actual underlying and quote direction instead of assuming them from ticker names. Missing links mean documentation coverage is unknown, not that the market is unsupported.
+- Non-empty searches label perp/spot rows with `match_type`: `exact` (full name), `symbol` (base ticker), `alias` or `fuzzy`. These are lexical matches, not identity verification; fuzzy results may be unrelated assets. Verify the tracked underlying before treating a hit as an implementation of the researched entity. Empty-query browsing remains names-only when `include_market_data=False`.
 - Call: `HyperliquidAdapter.get_meta_and_asset_ctxs()`
 - Output: `[meta, assetCtxs]` (SDK-native shape)
 - Typical use:
   - enumerate perp markets
   - map `asset_id ↔ coin` and extract risk/margin fields from contexts
+
+Market search/trade-asset summaries retain `funding_apr` as a decimal fraction
+and also return `funding_apr_pct` for display: `0.0876` means `8.76%`, not
+`0.0876%`. These annualize the current hourly rate, not realized annual carry or
+a forecast. Positive funding means longs pay shorts; negative means shorts pay
+longs. Missing data is unavailable, not zero.
 
 ### Candles and funding history (time series)
 
@@ -30,6 +39,7 @@ helpers. Do not use `adapter.info`; adapter instances do not expose a stable pub
 `.info` handle.
 
 Use one of:
+
 - **MCP tools** (preferred in agent runs):
   - `hyperliquid_get_candles(asset_name="HYPE", interval="5m", lookback_hours=24)`
   - `hyperliquid_get_candles(asset_name="xyz:SPCX", interval="15m", lookback_hours=72)`
@@ -44,8 +54,13 @@ when available `v` (volume) and `n` (trade count). Do not expect
 `open`/`high`/`low`/`close` unless you are reading chart-normalized rows.
 
 Symbol rules:
+
 - Core perp candles accept `HYPE` or `HYPE-USDC`; the backend normalizes to `HYPE`.
 - HIP-3 / dex perps require the dex prefix, for example `xyz:SPCX`.
+- Spot accepts exact pairs from market search, e.g. `HYPE/USDC` or `PURR/USDC`.
+  The same candle tool/client resolves spot metadata and reads public candleSnapshot.
+  Spot prices are in the quote currency, not automatically USD. Only completed bars
+  are returned; the latest 5000 candles are available, with no synthetic gap filling.
 - Plain `SPCX` is not enough for candles unless a provider search first maps it
   to the canonical dex coin.
 
@@ -63,6 +78,13 @@ Symbol rules:
 
 ### Order books
 
+- Read-only MCP: `hyperliquid_search_mid_prices(asset_names=["HYPE/USDC", "BTC-USDC"], include_depth=True)`
+  returns timestamped bid/ask notional within 50 bps of mid for up to 8 exact names.
+  Spot requires USDC quotes; USDC is valued at $1. The API caps each side at 20
+  levels, so this read widens aggregation as needed while preserving the raw
+  book mid. Dollar depth is approximate; `band_complete=false` means the visible
+  levels still do not cover the full band. It is not account buying power or a
+  fill guarantee. Daily/candle volume is not depth.
 - Perp/spot by coin string:
   - Call: `HyperliquidAdapter.get_l2_book(coin)`
 - Spot by asset id:

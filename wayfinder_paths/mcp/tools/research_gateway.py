@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from wayfinder_paths.core.clients.ResearchClient import (
@@ -160,7 +161,9 @@ async def core_web_fetch(
     """Fetch/crawl public URLs through the Wayfinder Research Gateway.
 
     Args:
-        urls: One or more public http(s) URLs, comma- or newline-separated.
+        urls: One public http(s) URL or a list of URLs (preferred). Strings can
+            separate URLs with newlines or a comma before the next URL's scheme;
+            other commas belong to the URL. Use a list for ambiguous nested URLs.
         query: Optional highlight/summary query, or "_".
         contentType: Result content mode: text, highlights, or summary.
         livecrawl: Live crawl policy: "fallback" or "preferred".
@@ -172,6 +175,9 @@ async def core_web_fetch(
         sessionID: Optional OpenCode session id. Use "_" to resolve from the
             runtime environment or SDK default.
     """
+    if isinstance(urls, str) and (raw_urls := optional_str(urls, max_length=None)):
+        # Generic CSV splitting corrupts URLs such as ?ids=asset-a,asset-b.
+        urls = re.split(r"[\r\n]+|,(?=\s*[A-Za-z][A-Za-z0-9+.-]*://)", raw_urls)
     parsed_urls = split_values(urls, field_name="urls")
     if not parsed_urls:
         raise MCPArgumentError("urls is required", field="urls", received=urls)

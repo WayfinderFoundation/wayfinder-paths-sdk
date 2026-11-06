@@ -770,8 +770,9 @@ def score_market(market: dict[str, Any], plan: QueryPlan) -> dict[str, Any]:
     text = _market_text(market)
     query_norm = _normalize(plan.search_query)
     signal = [t for t in _effective_signal_terms(plan) if t not in _CONNECTORS]
+    intent = _effective_intent_terms(plan)
     entity_coverage = _coverage(plan.entity_terms, text)
-    intent_coverage = _coverage(_effective_intent_terms(plan), text)
+    intent_coverage = _coverage(intent, text)
     signal_coverage = _coverage(signal, text)
     similarity = SequenceMatcher(None, query_norm, text).ratio() if text else 0.0
     exact_phrase = 1.0 if query_norm and query_norm in text else 0.0
@@ -782,9 +783,10 @@ def score_market(market: dict[str, Any], plan: QueryPlan) -> dict[str, Any]:
     )
     family_adjustment = _market_family_adjustment(text, plan)
 
+    # An absent query dimension supplies no positive matching evidence.
     score = (
-        2.75 * entity_coverage
-        + 2.25 * intent_coverage
+        (2.75 * entity_coverage if plan.entity_terms else 0)
+        + (2.25 * intent_coverage if intent else 0)
         + 1.75 * signal_coverage
         + 0.8 * similarity
         + exact_phrase
@@ -948,7 +950,7 @@ async def relevance_search(
         rows = dedupe_markets([*rows, *extra_rows])
         ranked = rerank_markets(rows, plan)
 
-    if ranked:
+    if ranked and ranked[0]["_relevance"]["signalCoverage"] > 0:
         top = ranked[0].get("_relevance", {})
         top_score = float(top.get("score") or 0)
         metadata["confidence"] = (

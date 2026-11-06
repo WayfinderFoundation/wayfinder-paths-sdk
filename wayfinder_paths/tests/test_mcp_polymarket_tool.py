@@ -28,6 +28,13 @@ _ADDR = "0x000000000000000000000000000000000000dEaD"
 
 
 @pytest.fixture(autouse=True)
+def _disable_tool_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "wayfinder_paths.mcp.utils._report_tool_metric", lambda *a, **k: None
+    )
+
+
+@pytest.fixture(autouse=True)
 def _seed_deposit_wallet_cache():
     """deposit_wallet_address() resolves on-chain since the 2026-06-29 factory
     upgrade; seed the cache so tool tests never hit RPC (this also short-
@@ -69,8 +76,14 @@ async def test_polymarket_get_state_uses_adapter_full_state():
         )
 
 
+@pytest.mark.parametrize(
+    "question,confidence",
+    [("Will BTC rally?", "low"), ("Will Bitcoin rally?", "high")],
+)
 @pytest.mark.asyncio
-async def test_polymarket_search_uses_adapter_search():
+async def test_polymarket_search_uses_adapter_search(
+    question: str, confidence: str
+) -> None:
     with (
         patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
         patch(
@@ -82,7 +95,7 @@ async def test_polymarket_search_uses_adapter_search():
                         {
                             "slug": "m1",
                             "eventSlug": "e1",
-                            "question": "Will BTC rally?",
+                            "question": question,
                             "yesPrice": 0.42,
                             "noPrice": 0.58,
                             "yesTokenId": "tok_yes",
@@ -103,6 +116,8 @@ async def test_polymarket_search_uses_adapter_search():
         assert out["result"]["summaryMode"] is True
         assert "markets" not in out["result"]
         candidate = out["result"]["candidates"][0]
+        # Confidence is lexical; backend synonym matches remain available for review.
+        assert out["result"]["relevance"]["confidence"] == confidence
         assert candidate["slug"] == "m1"
         assert candidate["outcomes"][0] == {
             "label": "Yes",
@@ -111,6 +126,44 @@ async def test_polymarket_search_uses_adapter_search():
         }
         assert candidate["outcomes"][1]["tokenId"] == "tok_no"
         assert out["result"]["truncation"]["rawAvailableWithSummaryFalse"] is True
+
+
+@pytest.mark.parametrize(
+    "query", ["Robinhood Chain", "stock tokenization", "Fed hikes"]
+)
+@pytest.mark.asyncio
+async def test_polymarket_search_unrelated_fallback_is_low_confidence(
+    query: str,
+) -> None:
+    rows = [
+        {
+            "slug": "will-manuel-bompard-win-the-2027-french-presidential-election",
+            "eventSlug": "next-french-presidential-election",
+            "question": "Will Manuel Bompard win the 2027 French presidential election?",
+            "liquidity": 1_000_000,
+            "active": True,
+        }
+    ]
+    hydrate = AsyncMock(return_value=(False, "not found"))
+    with (
+        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
+        patch("wayfinder_paths.mcp.utils._report_tool_metric"),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.search_markets",
+            new=AsyncMock(return_value=(True, rows)),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.get_event_by_slug",
+            new=hydrate,
+        ),
+    ):
+        out = await polymarket_read("search", query=query)
+
+    assert out["ok"] is True
+    # Preserve recall for semantic matches, but do not certify an unrelated fallback.
+    assert len(out["result"]["candidates"]) == 1
+    assert out["result"]["relevance"]["confidence"] == "low"
+    hydrate.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -444,6 +497,8 @@ async def test_polymarket_get_event_summary_returns_compact_candidates():
         "slug": "world-cup-winner",
         "title": "World Cup winner",
         "description": "Pick the tournament winner.",
+        "resolutionSource": None,
+        "rules": None,
         "startDate": None,
         "endDate": None,
         "active": None,
@@ -692,18 +747,32 @@ async def test_polymarket_get_event_summary_false_preserves_raw_event():
 
 
 @pytest.mark.asyncio
-async def test_polymarket_get_market_summary_and_raw_modes():
+@pytest.mark.parametrize(
+    "rules_field", ["rules", "resolutionRules", "resolutionCriteria", None]
+)
+async def test_polymarket_get_market_summary_and_raw_modes(
+    rules_field: str | None,
+) -> None:
+    description = (
+        "Resolution text " * 80
+        + "\nUnscheduled actions before the deadline also count."
+    )
+    rules = "Outcome definition " * 70 + "\nA tie resolves to No, not a refund."
+    source = "https://example.com/rules?document=" + "x" * 550
     market = {
         "slug": "market",
         "question": "Will it happen?",
-        "description": "Resolution text " * 80,
-        "resolutionSource": "https://example.com/rules",
+        "description": description,
+        "resolutionSource": source,
+        "groupItemTitle": "Above threshold",
         "outcomes": ["Yes", "No"],
         "outcomePrices": [0.4, 0.6],
         "clobTokenIds": ["tok_yes", "tok_no"],
         "conditionId": "0xcond",
         "raw": {"nested": True},
     }
+    if rules_field:
+        market[rules_field] = rules
     with (
         patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
         patch(
@@ -717,10 +786,44 @@ async def test_polymarket_get_market_summary_and_raw_modes():
     assert summary["ok"] is True
     assert summary["result"]["summaryMode"] is True
     assert summary["result"]["market"]["outcomes"][0]["tokenId"] == "tok_yes"
-    assert len(summary["result"]["market"]["description"]) < len(market["description"])
+    assert summary["result"]["market"]["description"] == description
+    assert summary["result"]["market"]["resolutionSource"] == source
+    assert summary["result"]["market"]["rules"] == (rules if rules_field else None)
+    assert summary["result"]["market"]["groupItemTitle"] == "Above threshold"
     assert "raw" not in summary["result"]["market"]
     assert raw["ok"] is True
     assert raw["result"]["market"] == market
+
+
+@pytest.mark.asyncio
+async def test_polymarket_event_detail_preserves_complete_settlement_text() -> None:
+    event = {
+        "slug": "calendar-event",
+        "description": "Calendar measurement " * 70
+        + "\nThe window ends at midnight, not the last scheduled meeting.",
+        "resolutionSource": "https://example.com/source",
+        "resolutionRules": "Resolution condition " * 70
+        + "\nCancelled events settle at one half.",
+        "markets": [
+            {"slug": "outcome", "description": "Large per-outcome data " * 100}
+        ],
+        "raw": {"other": True},
+    }
+    with (
+        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.get_event_by_slug",
+            new=AsyncMock(return_value=(True, event)),
+        ) as fetch,
+    ):
+        result = await polymarket_read("get_event", event_slug="calendar-event")
+    fetch.assert_awaited_once_with("calendar-event")
+    detail = result["result"]["event"]
+    assert detail["description"] == event["description"]
+    assert detail["resolutionSource"] == event["resolutionSource"]
+    assert detail["rules"] == event["resolutionRules"]
+    assert "raw" not in detail and "markets" not in detail
+    assert "description" not in result["result"]["candidates"][0]
 
 
 @pytest.mark.asyncio

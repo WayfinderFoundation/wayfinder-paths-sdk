@@ -64,17 +64,39 @@ Rules:
 
 ## DeFiLlama Instructions
 
-For named protocols, resolve the slug before fetching protocol data:
+Resolve slugs with `protocol_search` (query or category) before fetching data.
+For a multi-candidate comparison, use `fees_overview` with `protocolSlugs=[<returned
+slugs>]` and the needed `dataType` (`dailyFees`, `dailyRevenue`,
+`dailyHoldersRevenue`). This returns named protocol metrics in bulk, not just
+macro totals. Do not fetch all three metrics separately for every candidate.
+`unavailableSlugs` means missing provider coverage, not a zero.
 
-1. `research_defillama_free(dataset="protocol_search", query="<protocol>", limit="10")`
-2. `research_defillama_free(dataset="protocol", protocolSlug="<slug>")`
-3. `research_defillama_free(dataset="protocol_tvl_history", protocolSlug="<slug>", days="30")`
-4. `research_defillama_free(dataset="protocol_fees", protocolSlug="<slug>", dataType="dailyFees", days="30")`
-5. `research_defillama_free(dataset="protocol_fees", protocolSlug="<slug>", dataType="dailyRevenue", days="30")`
+Deeply hydrate finalists only: `protocol` for metadata, `protocol_fees` with
+`protocolSlug`/`dataType`/bounded `days` for history and methodology, or
+`protocol_tvl_history` when TVL changes answer the economic question.
+Holder revenue can include buybacks/burns or
+distributions to eligible stakers, not a cash yield available to every holder.
+Read the provider methodology and verify the current mechanism in primary docs;
+missing coverage is unavailable evidence, not zero holder value.
 
-Use `fees_overview`, `chains`, `stablecoins`, `dex_overview`, and `open_interest_overview` for macro context, not as a substitute for named protocol data.
+Use `chains`, `stablecoins`, `dex_overview`, and `open_interest_overview` for macro
+context. Collection pages may contain fewer rows than the requested limit to
+stay readable: follow `page.nextCursor` (Hyperliquid: `pagination.next_offset`)
+rather than increasing the limit or reading tool-overflow files. Pagination is
+not a ranking cutoff; continue through relevant candidates beyond page one.
 
 Label DeFiLlama outputs as DeFiLlama free API data.
+
+`protocol` returns protocol metadata, methodology and current chain TVL without
+the large historical arrays listed in `historicalFieldsOmitted`. Omission is not
+missing provider data. Use `protocol_tvl_history` with a bounded `days` window
+for aggregate history and chain changes; the Python client's `protocol()` still
+returns the full provider payload when bulk analysis is needed.
+
+`protocol_fees` keeps aggregate daily history, reported period totals and metric
+definitions compact by default. Set `includeChainBreakdown=true` only for a
+chain-by-chain comparison, with a short `days` window; the full breakdown can be
+large. The omitted-breakdown flag does not mean chain data is unavailable.
 
 ## Pendle / PT / YT Flow
 
