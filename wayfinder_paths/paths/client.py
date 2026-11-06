@@ -43,6 +43,18 @@ def _id_segment(value: str, *, label: str) -> str:
     return value
 
 
+def _refuse_redirect(resp: httpx.Response) -> None:
+    # Keyed requests never follow redirects (the key must not leave the API
+    # host). Fail loudly rather than parse or save the redirect body.
+    if 300 <= resp.status_code < 400:
+        location = resp.headers.get("location", "")
+        raise PathsApiError(
+            f"Unexpected redirect from API host ({resp.status_code} to {location!r}) "
+            f"for {resp.request.method} {resp.request.url}; the request was not "
+            "followed so the API key stays on the API host. Check the Paths API URL."
+        )
+
+
 class PathsApiClient:
     def __init__(
         self,
@@ -55,9 +67,14 @@ class PathsApiClient:
         # follow_redirects=False, since a caller-supplied client may follow
         # redirects and httpx keeps X-API-Key across hosts.
         try:
-            self.base_url = validate_api_base_url(
-                api_base_url or get_paths_api_base_url(), label="Paths API URL"
-            )
+            if api_base_url:
+                self.base_url = validate_api_base_url(
+                    api_base_url,
+                    label="Paths API URL (--api-url)",
+                    fix="pass an allowed --api-url, or omit it to use the configured API",
+                )
+            else:
+                self.base_url = get_paths_api_base_url()
         except UntrustedApiOriginError as exc:
             raise PathsApiError(str(exc)) from exc
         self._client = client or httpx.Client(timeout=httpx.Timeout(60))
@@ -119,6 +136,7 @@ class PathsApiClient:
         resp = self._client.post(
             url, follow_redirects=False, data=data, files=files, headers=self._headers()
         )
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(f"Publish failed ({resp.status_code}): {resp.text}")
         return resp.json()
@@ -182,6 +200,7 @@ class PathsApiClient:
         resp = self._client.post(
             url, follow_redirects=False, json=payload, headers=self._headers()
         )
+        _refuse_redirect(resp)
         if resp.status_code in {404, 405}:
             raise PathsApiError(f"Publish init unavailable ({resp.status_code})")
         if resp.status_code >= 400:
@@ -200,6 +219,7 @@ class PathsApiClient:
             json={"upload_id": upload_id, "finalize_token": finalize_token},
             headers=self._headers(),
         )
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(
                 f"Publish finalize failed ({resp.status_code}): {resp.text}"
@@ -356,6 +376,7 @@ class PathsApiClient:
         resp = self._client.post(
             url, follow_redirects=False, json=body, headers=self._headers()
         )
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(
                 f"Create install intent failed ({resp.status_code}): {resp.text}"
@@ -392,6 +413,7 @@ class PathsApiClient:
         resp = self._client.post(
             url, follow_redirects=False, json=body, headers=self._headers()
         )
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(
                 f"Install receipt failed ({resp.status_code}): {resp.text}"
@@ -420,6 +442,7 @@ class PathsApiClient:
         resp = self._client.post(
             url, follow_redirects=False, json=body, headers=headers
         )
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(
                 f"Install heartbeat failed ({resp.status_code}): {resp.text}"
@@ -457,6 +480,7 @@ class PathsApiClient:
             resp = self._client.post(
                 url, follow_redirects=False, json=body, headers=self._headers()
             )
+            _refuse_redirect(resp)
         except httpx.HTTPError as exc:
             raise PathsApiError(f"Shells inventory sync failed: {exc}") from exc
         if resp.status_code >= 400:
@@ -485,6 +509,7 @@ class PathsApiClient:
                 headers=self._headers(),
                 timeout=5.0,
             )
+            _refuse_redirect(resp)
         except httpx.HTTPError as exc:
             raise PathsApiError(f"Batch install heartbeat failed: {exc}") from exc
         if resp.status_code >= 400:
@@ -529,6 +554,7 @@ class PathsApiClient:
         resp = self._client.post(
             url, follow_redirects=False, json=payload, headers=self._headers()
         )
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(f"Signal emit failed ({resp.status_code}): {resp.text}")
         return resp.json()
@@ -556,6 +582,7 @@ class PathsApiClient:
         resp = self._client.post(
             url, follow_redirects=False, json=body, headers=self._headers()
         )
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(f"Event emit failed ({resp.status_code}): {resp.text}")
         return resp.json()
@@ -577,6 +604,7 @@ class PathsApiClient:
         resp = self._client.get(
             url, follow_redirects=False, params=params, headers=self._headers()
         )
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(f"List paths failed ({resp.status_code}): {resp.text}")
         data = resp.json()
@@ -604,6 +632,7 @@ class PathsApiClient:
     def get_path(self, *, slug: str) -> dict[str, Any]:
         url = f"{self.base_url}/api/v1/paths/{_slug_segment(slug)}/"
         resp = self._client.get(url, follow_redirects=False, headers=self._headers())
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(f"Get path failed ({resp.status_code}): {resp.text}")
         return resp.json()
@@ -614,6 +643,7 @@ class PathsApiClient:
             f"/versions/{_version_segment(version)}"
         )
         resp = self._client.get(url, follow_redirects=False, headers=self._headers())
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(
                 f"Get path version failed ({resp.status_code}): {resp.text}"
@@ -635,6 +665,7 @@ class PathsApiClient:
         with self._client.stream(
             "GET", url, follow_redirects=False, headers=self._headers()
         ) as resp:
+            _refuse_redirect(resp)
             if resp.status_code >= 400:
                 raise PathsApiError(
                     f"Download bundle failed ({resp.status_code}): {resp.text}"
@@ -674,6 +705,7 @@ class PathsApiClient:
         resp = self._client.post(
             url, follow_redirects=False, json=body, headers=self._headers()
         )
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(f"Fork failed ({resp.status_code}): {resp.text}")
         return resp.json()

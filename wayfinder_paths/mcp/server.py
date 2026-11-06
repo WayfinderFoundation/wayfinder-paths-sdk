@@ -34,10 +34,16 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, Literal
 
+from loguru import logger
 from mcp.server.fastmcp import FastMCP
 
+from wayfinder_paths.core.api_origin import UntrustedApiOriginError
 from wayfinder_paths.core.clients.WayfinderClient import close_async_clients
-from wayfinder_paths.core.config import is_opencode_instance
+from wayfinder_paths.core.config import (
+    get_api_base_url,
+    get_paths_api_base_url,
+    is_opencode_instance,
+)
 from wayfinder_paths.mcp.tools.alpha_lab import (
     research_get_alpha_types,
     research_search_alpha,
@@ -309,8 +315,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def report_refused_api_url() -> str | None:
+    """Log a refused API URL once at startup; return the message, if any.
+
+    The server still starts: tools that need the API return the same message as
+    an ``invalid_api_url`` error, and tools that do not keep working.
+    """
+    try:
+        get_api_base_url()
+        get_paths_api_base_url()
+    except UntrustedApiOriginError as exc:
+        logger.error("{}", exc)
+        return str(exc)
+    return None
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
+    report_refused_api_url()
     maybe_heartbeat_installed_paths(trigger="mcp-server")
     build_mcp(host=args.host, port=args.port).run(
         transport=args.transport,
