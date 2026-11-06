@@ -1,5 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
+from typing import Any
 
 import httpx
 from web3 import AsyncHTTPProvider, AsyncWeb3
@@ -121,18 +122,18 @@ def _get_rpcs_for_chain_id(chain_id: int) -> list:
     return rpcs
 
 
+def _wayfinder_request_kwargs() -> dict[str, Any]:
+    # aiohttp follows redirects and keeps custom headers such as X-API-KEY.
+    return {"headers": _wayfinder_auth_headers(), "allow_redirects": False}
+
+
 def _get_web3(rpc: str, chain_id: int) -> AsyncWeb3:
     if _is_gorlami_fork_rpc(rpc):
-        provider = _GorlamiProvider(
-            rpc,
-            request_kwargs={"headers": _wayfinder_auth_headers()},
-        )
+        provider = _GorlamiProvider(rpc, request_kwargs=_wayfinder_request_kwargs())
         web3 = AsyncWeb3(provider)
     elif _is_wayfinder_rpc(rpc):
         web3 = AsyncWeb3(
-            AsyncHTTPProvider(
-                rpc, request_kwargs={"headers": _wayfinder_auth_headers()}
-            )
+            AsyncHTTPProvider(rpc, request_kwargs=_wayfinder_request_kwargs())
         )
     else:
         web3 = AsyncWeb3(AsyncHTTPProvider(rpc))

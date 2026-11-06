@@ -41,6 +41,10 @@ def on_shells_instance() -> bool:
     return bool(os.environ.get("OPENCODE_INSTANCE_ID"))
 
 
+def _loopback_allowed() -> bool:
+    return not on_shells_instance()
+
+
 def _parse(url: str) -> tuple[str, str, int | None, str] | None:
     match = _URL_RE.fullmatch(url)
     if not match:
@@ -106,7 +110,7 @@ def validate_api_base_url(url: str, *, label: str = "API base URL") -> str:
             pinned = pinned_api_base_url()
             if pinned is None or httpx.URL(pinned).host == parts[1]:
                 return candidate
-        elif parts[1] in _LOOPBACK_HOSTS and not on_shells_instance():
+        elif parts[1] in _LOOPBACK_HOSTS and _loopback_allowed():
             return candidate
     allowed = ", ".join(f"https://{h}" for h in sorted(OFFICIAL_API_HOSTS))
     raise UntrustedApiOriginError(

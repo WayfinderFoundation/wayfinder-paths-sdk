@@ -459,7 +459,7 @@ def test_paths_api_client_list_paths_defaults_to_bonded_only():
             }
 
     class FakeHttpClient:
-        def get(self, url, params=None, headers=None):
+        def get(self, url, params=None, headers=None, follow_redirects=True):
             return FakeResponse()
 
     client = PathsApiClient(

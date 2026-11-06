@@ -3,10 +3,13 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
+import aiohttp
 import httpx
 import pytest
 from click.testing import CliRunner
+from multidict import CIMultiDict
 
 import wayfinder_paths.core.config as config
 from wayfinder_paths.core.api_origin import (
@@ -348,6 +351,71 @@ def test_scheduled_jobs_client_drops_key_on_cross_origin_redirect(
         ("wayfinder.ai", API_KEY),
         ("evil.example", None),
     ]
+
+
+def test_paths_client_does_not_follow_redirects_on_a_supplied_client() -> None:
+    sent: list[httpx.Request] = []
+    with httpx.Client(
+        follow_redirects=True, transport=_redirect_to_evil(sent)
+    ) as http_client:
+        client = PathsApiClient(
+            api_base_url="https://strategies.wayfinder.ai", client=http_client
+        )
+        with pytest.raises(ValueError):  # the empty 307 body is not JSON
+            client.get_path(slug="demo")
+
+    assert [r.url.host for r in sent] == ["strategies.wayfinder.ai"]
+
+
+@pytest.mark.parametrize(
+    "rpc",
+    [
+        "https://wayfinder.ai/api/v1/blockchain/rpc/8453/",
+        "https://wayfinder.ai/api/v1/blockchain/gorlami/fork/abc-123",
+    ],
+)
+async def test_wayfinder_rpc_does_not_follow_redirects_with_the_key(
+    rpc: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[tuple[str, str | None]] = []
+
+    # Stands in for the network: answers every aiohttp request in-process.
+    async def fake_network(request, handler):
+        seen.append((str(request.url), request.headers.get("X-API-KEY")))
+        first = len(seen) == 1
+
+        async def read() -> bytes:
+            return b'{"jsonrpc":"2.0","id":0,"result":"0x1"}'
+
+        return SimpleNamespace(
+            status=307 if first else 200,
+            headers=CIMultiDict(
+                {"Location": "https://evil.example/steal"} if first else {}
+            ),
+            method=request.method,
+            url=request.url,
+            _raw_cookie_headers=(),
+            connection=None,
+            release=lambda: None,
+            close=lambda: None,
+            raise_for_status=lambda: None,
+            read=read,
+        )
+
+    original_init = aiohttp.ClientSession.__init__
+
+    def init(self, *args, **kwargs):
+        kwargs["middlewares"] = [fake_network]
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(aiohttp.ClientSession, "__init__", init)
+    w3 = web3_utils._get_web3(rpc, 8453)
+    try:
+        await w3.provider.make_request("eth_chainId", [])
+    finally:
+        await w3.provider.disconnect()
+
+    assert seen == [(rpc, API_KEY)]
 
 
 def _with_transport(init, transport):

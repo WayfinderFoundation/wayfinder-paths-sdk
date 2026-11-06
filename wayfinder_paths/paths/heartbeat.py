@@ -158,8 +158,8 @@ def maybe_heartbeat_installed_paths(
             trigger=trigger,
         )
 
-    batch_client = client or PathsApiClient()
     try:
+        batch_client = client or PathsApiClient()
         response = batch_client.submit_batch_install_heartbeats(
             heartbeats=heartbeats,
             source=trigger,
