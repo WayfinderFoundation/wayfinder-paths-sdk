@@ -842,3 +842,21 @@ def test_compatible_runtime_version_accepts_a_missing_pin():
     from wayfinder_paths.paths.runtime_registry import compatible_runtime_version
 
     assert compatible_runtime_version("wayfinder-paths", None) == ""
+
+
+def test_path_init_defaults_to_the_source_dir_env(tmp_path: Path, monkeypatch):
+    from click.testing import CliRunner
+
+    from wayfinder_paths.paths.cli import path_cli
+
+    sources = tmp_path / "vault-sources"
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(
+        path_cli,
+        ["init", "env-dir-path", "--no-applet"],
+        env={"WAYFINDER_PATHS_SOURCE_DIR": str(sources)},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (sources / "env-dir-path" / "wfpath.yaml").exists()
+    assert not (tmp_path / "env-dir-path").exists()
