@@ -432,7 +432,7 @@ def test_path_activate_copies_rendered_export_to_host_scope(tmp_path: Path):
             dest / ".claude" / "skills" / "activate-demo" / "runtime" / "manifest.json"
         ).exists()
         assert (dest / ".claude" / "CLAUDE.md").exists()
-        assert (dest / ".claude" / "settings.json").exists()
+        assert not (dest / ".claude" / "settings.json").exists()
 
 
 def test_paths_api_client_list_paths_defaults_to_bonded_only():
