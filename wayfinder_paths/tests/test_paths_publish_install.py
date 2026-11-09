@@ -134,7 +134,7 @@ def test_path_publish_uploads_rendered_skill_exports_and_bond_metadata(
             "--out",
             str(path_dir / "dist" / "bundle.zip"),
             "--api-url",
-            "https://paths.example",
+            "https://strategies-dev.wayfinder.ai",
             "--bonded",
             "--owner-wallet",
             "0x1234567890AbcdEF1234567890aBcdef12345678",
@@ -279,7 +279,7 @@ def test_paths_api_client_publish_uses_direct_upload_flow(tmp_path: Path):
         raise AssertionError(f"Unexpected request: {request.method} {request.url}")
 
     client = PathsApiClient(
-        api_base_url="https://paths.example",
+        api_base_url="https://strategies-dev.wayfinder.ai",
         client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
 
@@ -383,7 +383,7 @@ def test_path_publish_allows_bonded_upgrade_without_owner_wallet(
             "--path",
             str(path_dir),
             "--api-url",
-            "https://paths.example",
+            "https://strategies-dev.wayfinder.ai",
             "--bonded",
         ],
     )
@@ -460,11 +460,11 @@ def test_paths_api_client_list_paths_defaults_to_bonded_only():
             }
 
     class FakeHttpClient:
-        def get(self, url, params=None, headers=None):
+        def get(self, url, params=None, headers=None, follow_redirects=True):
             return FakeResponse()
 
     client = PathsApiClient(
-        api_base_url="https://paths.example",
+        api_base_url="https://strategies-dev.wayfinder.ai",
         client=FakeHttpClient(),
     )
 
@@ -565,7 +565,7 @@ def test_path_install_requests_intent_and_submits_receipt(
             "--dir",
             str(install_root),
             "--api-url",
-            "https://paths.example",
+            "https://strategies-dev.wayfinder.ai",
         ],
     )
 
@@ -1199,7 +1199,7 @@ def test_path_activate_can_install_required_dependencies(tmp_path: Path, monkeyp
                 "wayfinder/kimi-k2.5",
                 "--include-dependencies",
                 "--api-url",
-                "https://paths.example",
+                "https://strategies-dev.wayfinder.ai",
             ],
         )
 
@@ -1214,7 +1214,7 @@ def test_path_activate_can_install_required_dependencies(tmp_path: Path, monkeyp
     assert call["host"] == "opencode"
     assert call["scope"] == "project"
     assert call["install_dir"] == str(tmp_path / ".wayfinder" / "paths")
-    assert call["api_url"] == "https://paths.example"
+    assert call["api_url"] == "https://strategies-dev.wayfinder.ai"
     assert call["model"] == "wayfinder/kimi-k2.5"
     assert call["activate"] is True
     assert call["visited"] == {"activate-demo"}
@@ -1582,7 +1582,7 @@ def test_dependency_download_rejection_stops_install(
 
     client_type = httpx.Client
     client = PathsApiClient(
-        api_base_url="https://api.test",
+        api_base_url="https://strategies-dev.wayfinder.ai",
         client=client_type(transport=httpx.MockTransport(api)),
     )
     monkeypatch.setattr(
@@ -2388,7 +2388,7 @@ def test_path_update_ignores_newer_latest_when_active_bonded_matches_install(
                 "--dir",
                 str(tmp_path / ".wayfinder" / "paths"),
                 "--api-url",
-                "https://paths.example",
+                "https://strategies-dev.wayfinder.ai",
             ],
         )
 
@@ -2549,7 +2549,7 @@ def test_path_update_reuses_lockfile_activation_for_live_bonded_upgrade(
                 "--dir",
                 str(tmp_path / ".wayfinder" / "paths"),
                 "--api-url",
-                "https://paths.example",
+                "https://strategies-dev.wayfinder.ai",
             ],
         )
 

@@ -161,7 +161,7 @@ def test_client_keeps_legacy_payload_shape_when_new_fields_are_omitted() -> None
         return httpx.Response(200, json={"upserted": 0, "deleted": 0})
 
     client = PathsApiClient(
-        api_base_url="https://paths.example",
+        api_base_url="https://strategies-dev.wayfinder.ai",
         client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
     client.submit_shells_inventory_sync(
@@ -178,7 +178,7 @@ def test_client_translates_network_errors() -> None:
         raise httpx.ConnectError("offline", request=request)
 
     client = PathsApiClient(
-        api_base_url="https://paths.example",
+        api_base_url="https://strategies-dev.wayfinder.ai",
         client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
 

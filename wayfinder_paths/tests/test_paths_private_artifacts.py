@@ -22,7 +22,7 @@ def _client(monkeypatch, api, storage=None) -> PathsApiClient:
             lambda **kw: client_type(transport=httpx.MockTransport(storage), **kw),
         )
     return PathsApiClient(
-        api_base_url="https://api.test",
+        api_base_url="https://strategies-dev.wayfinder.ai",
         client=client_type(
             transport=httpx.MockTransport(api), cookies={"session": "not-for-storage"}
         ),

@@ -2,18 +2,58 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
+from wayfinder_paths.core.api_origin import (
+    UntrustedApiOriginError,
+    validate_api_base_url,
+)
 from wayfinder_paths.core.config import get_api_key, get_paths_api_base_url
 from wayfinder_paths.paths.builder import _sha256_file
+from wayfinder_paths.paths.path_safety import validate_path_slug, validate_path_version
+
+_ID_SEGMENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", re.ASCII)
 
 
 class PathsApiError(Exception):
     pass
+
+
+def _slug_segment(slug: str) -> str:
+    try:
+        return validate_path_slug(slug)
+    except ValueError as exc:
+        raise PathsApiError(str(exc)) from exc
+
+
+def _version_segment(version: str) -> str:
+    try:
+        return validate_path_version(version)
+    except ValueError as exc:
+        raise PathsApiError(str(exc)) from exc
+
+
+def _id_segment(value: str, *, label: str) -> str:
+    if not isinstance(value, str) or not _ID_SEGMENT_RE.fullmatch(value):
+        raise PathsApiError(f"Invalid {label}: {value!r}")
+    return value
+
+
+def _refuse_redirect(resp: httpx.Response) -> None:
+    # Keyed requests never follow redirects (the key must not leave the API
+    # host). Fail loudly rather than parse or save the redirect body.
+    if 300 <= resp.status_code < 400:
+        location = resp.headers.get("location", "")
+        raise PathsApiError(
+            f"Unexpected redirect from API host ({resp.status_code} to {location!r}) "
+            f"for {resp.request.method} {resp.request.url}; the request was not "
+            "followed so the API key stays on the API host. Check the Paths API URL."
+        )
 
 
 class PathsApiClient:
@@ -23,8 +63,21 @@ class PathsApiClient:
         api_base_url: str | None = None,
         client: httpx.Client | None = None,
     ):
-        base = (api_base_url or get_paths_api_base_url()).rstrip("/")
-        self.base_url = base
+        # Validated before any request: every call carries the API key, so the
+        # base URL must be an allowlisted Wayfinder origin. Keyed calls also pass
+        # follow_redirects=False, since a caller-supplied client may follow
+        # redirects and httpx keeps X-API-Key across hosts.
+        try:
+            if api_base_url:
+                self.base_url = validate_api_base_url(
+                    api_base_url,
+                    label="Paths API URL (--api-url)",
+                    fix="pass an allowed --api-url, or omit it to use the configured API",
+                )
+            else:
+                self.base_url = get_paths_api_base_url()
+        except UntrustedApiOriginError as exc:
+            raise PathsApiError(str(exc)) from exc
         self._client = client or httpx.Client(timeout=httpx.Timeout(60))
 
     def _headers(self) -> dict[str, str]:
@@ -81,7 +134,10 @@ class PathsApiClient:
                     "application/zip",
                 )
 
-        resp = self._client.post(url, data=data, files=files, headers=self._headers())
+        resp = self._client.post(
+            url, follow_redirects=False, data=data, files=files, headers=self._headers()
+        )
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(f"Publish failed ({resp.status_code}): {resp.text}")
         return resp.json()
@@ -142,7 +198,10 @@ class PathsApiClient:
                 }
             payload["skill_exports"] = exports_payload
 
-        resp = self._client.post(url, json=payload, headers=self._headers())
+        resp = self._client.post(
+            url, follow_redirects=False, json=payload, headers=self._headers()
+        )
+        _refuse_redirect(resp)
         if resp.status_code in {404, 405}:
             raise PathsApiError(f"Publish init unavailable ({resp.status_code})")
         if resp.status_code >= 400:
@@ -157,9 +216,11 @@ class PathsApiClient:
         url = f"{self.base_url}/api/v1/paths/publish/finalize/"
         resp = self._client.post(
             url,
+            follow_redirects=False,
             json={"upload_id": upload_id, "finalize_token": finalize_token},
             headers=self._headers(),
         )
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(
                 f"Publish finalize failed ({resp.status_code}): {resp.text}"
@@ -301,8 +362,11 @@ class PathsApiClient:
         wallet_address: str | None = None,
         install_target: str | None = None,
     ) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/paths/{slug}/install-intent/"
-        body: dict[str, Any] = {"version": version, "runtime": runtime}
+        url = f"{self.base_url}/api/v1/paths/{_slug_segment(slug)}/install-intent/"
+        body: dict[str, Any] = {
+            "version": _version_segment(version),
+            "runtime": runtime,
+        }
         if venue:
             body["venue"] = venue
         if wallet_address:
@@ -310,7 +374,10 @@ class PathsApiClient:
         if install_target:
             body["install_target"] = install_target
 
-        resp = self._client.post(url, json=body, headers=self._headers())
+        resp = self._client.post(
+            url, follow_redirects=False, json=body, headers=self._headers()
+        )
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(
                 f"Create install intent failed ({resp.status_code}): {resp.text}"
@@ -329,7 +396,7 @@ class PathsApiClient:
         extracted_files: int | None = None,
         workspace_hash: str | None = None,
     ) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/paths/{slug}/install-receipt/"
+        url = f"{self.base_url}/api/v1/paths/{_slug_segment(slug)}/install-receipt/"
         body: dict[str, Any] = {
             "intent": intent,
             "signature": signature,
@@ -344,7 +411,10 @@ class PathsApiClient:
         if workspace_hash:
             body["workspace_hash"] = workspace_hash
 
-        resp = self._client.post(url, json=body, headers=self._headers())
+        resp = self._client.post(
+            url, follow_redirects=False, json=body, headers=self._headers()
+        )
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(
                 f"Install receipt failed ({resp.status_code}): {resp.text}"
@@ -359,7 +429,8 @@ class PathsApiClient:
         status: str | None = None,
         metrics: dict[str, float] | None = None,
     ) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/paths/installations/{installation_id}/heartbeat/"
+        installation = _id_segment(installation_id, label="installation id")
+        url = f"{self.base_url}/api/v1/paths/installations/{installation}/heartbeat/"
         body: dict[str, Any] = {}
         if status:
             body["status"] = status
@@ -369,7 +440,10 @@ class PathsApiClient:
         headers = self._headers()
         headers["X-Heartbeat-Token"] = heartbeat_token
 
-        resp = self._client.post(url, json=body, headers=headers)
+        resp = self._client.post(
+            url, follow_redirects=False, json=body, headers=headers
+        )
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(
                 f"Install heartbeat failed ({resp.status_code}): {resp.text}"
@@ -389,7 +463,8 @@ class PathsApiClient:
     ) -> dict[str, Any]:
         """Push this Fly machine's installed-paths state to vault-backend.
         Called by path CLI mutations and boot reconciliation."""
-        url = f"{self.base_url}/api/v1/opencode/instances/{app_name}/inventory-sync/"
+        app = _id_segment(app_name, label="instance name")
+        url = f"{self.base_url}/api/v1/opencode/instances/{app}/inventory-sync/"
         body: dict[str, Any] = {
             "lockfile_present": lockfile_present,
             "paths": paths,
@@ -403,7 +478,10 @@ class PathsApiClient:
         if source is not None:
             body["source"] = source
         try:
-            resp = self._client.post(url, json=body, headers=self._headers())
+            resp = self._client.post(
+                url, follow_redirects=False, json=body, headers=self._headers()
+            )
+            _refuse_redirect(resp)
         except httpx.HTTPError as exc:
             raise PathsApiError(f"Shells inventory sync failed: {exc}") from exc
         if resp.status_code >= 400:
@@ -426,8 +504,13 @@ class PathsApiClient:
         # Best-effort startup reporting must not stall MCP for the normal 60s timeout.
         try:
             resp = self._client.post(
-                url, json=body, headers=self._headers(), timeout=5.0
+                url,
+                follow_redirects=False,
+                json=body,
+                headers=self._headers(),
+                timeout=5.0,
             )
+            _refuse_redirect(resp)
         except httpx.HTTPError as exc:
             raise PathsApiError(f"Batch install heartbeat failed: {exc}") from exc
         if resp.status_code >= 400:
@@ -455,7 +538,7 @@ class PathsApiClient:
         metrics: dict[str, float] | None = None,
         visibility: str = "public",
     ) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/paths/{slug}/events/"
+        url = f"{self.base_url}/api/v1/paths/{_slug_segment(slug)}/events/"
         payload: dict[str, Any] = {
             "type": "signal",
             "visibility": visibility,
@@ -469,7 +552,10 @@ class PathsApiClient:
         if path_version:
             payload["path_version"] = path_version
 
-        resp = self._client.post(url, json=payload, headers=self._headers())
+        resp = self._client.post(
+            url, follow_redirects=False, json=payload, headers=self._headers()
+        )
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(f"Signal emit failed ({resp.status_code}): {resp.text}")
         return resp.json()
@@ -484,7 +570,7 @@ class PathsApiClient:
         visibility: str = "public",
         stream_key: str = "public",
     ) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/paths/{slug}/events/"
+        url = f"{self.base_url}/api/v1/paths/{_slug_segment(slug)}/events/"
         body: dict[str, Any] = {
             "type": event_type,
             "visibility": visibility,
@@ -494,7 +580,10 @@ class PathsApiClient:
         if path_version:
             body["path_version"] = path_version
 
-        resp = self._client.post(url, json=body, headers=self._headers())
+        resp = self._client.post(
+            url, follow_redirects=False, json=body, headers=self._headers()
+        )
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(f"Event emit failed ({resp.status_code}): {resp.text}")
         return resp.json()
@@ -513,7 +602,10 @@ class PathsApiClient:
         if tag:
             params["tag"] = tag
 
-        resp = self._client.get(url, params=params, headers=self._headers())
+        resp = self._client.get(
+            url, follow_redirects=False, params=params, headers=self._headers()
+        )
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(f"List paths failed ({resp.status_code}): {resp.text}")
         data = resp.json()
@@ -539,15 +631,20 @@ class PathsApiClient:
         return bool(str(path.get("active_bonded_version") or "").strip())
 
     def get_path(self, *, slug: str) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/paths/{slug}/"
-        resp = self._client.get(url, headers=self._headers())
+        url = f"{self.base_url}/api/v1/paths/{_slug_segment(slug)}/"
+        resp = self._client.get(url, follow_redirects=False, headers=self._headers())
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(f"Get path failed ({resp.status_code}): {resp.text}")
         return resp.json()
 
     def get_path_version(self, *, slug: str, version: str) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/paths/{slug}/versions/{version}"
-        resp = self._client.get(url, headers=self._headers())
+        url = (
+            f"{self.base_url}/api/v1/paths/{_slug_segment(slug)}"
+            f"/versions/{_version_segment(version)}"
+        )
+        resp = self._client.get(url, follow_redirects=False, headers=self._headers())
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(
                 f"Get path version failed ({resp.status_code}): {resp.text}"
@@ -590,13 +687,17 @@ class PathsApiClient:
         artifact bucket. The caller must verify the sha256 before using the
         file. A partial or oversized download never reaches ``out_path``.
         """
-        url = f"{self.base_url}/api/v1/paths/{slug}/versions/{version}/download/"
+        url = (
+            f"{self.base_url}/api/v1/paths/{_slug_segment(slug)}"
+            f"/versions/{_version_segment(version)}/download/"
+        )
         resp = self._client.post(
             url,
             json={"intent": intent, "signature": signature},
             headers=self._headers(),
             follow_redirects=False,
         )
+        _refuse_redirect(resp)
         if resp.status_code != 200:
             raise PathsApiError(f"Download bundle failed ({resp.status_code})")
         try:
@@ -658,12 +759,12 @@ class PathsApiClient:
         summary: str | None = None,
         owner_wallet: str | None = None,
     ) -> dict[str, Any]:
-        url = f"{self.base_url}/api/v1/paths/{slug}/fork/"
+        url = f"{self.base_url}/api/v1/paths/{_slug_segment(slug)}/fork/"
         body: dict[str, Any] = {}
         if version:
-            body["version"] = version
+            body["version"] = _version_segment(version)
         if new_slug:
-            body["slug"] = new_slug
+            body["slug"] = _slug_segment(new_slug)
         if name:
             body["name"] = name
         if summary:
@@ -671,7 +772,10 @@ class PathsApiClient:
         if owner_wallet:
             body["owner_wallet"] = owner_wallet
 
-        resp = self._client.post(url, json=body, headers=self._headers())
+        resp = self._client.post(
+            url, follow_redirects=False, json=body, headers=self._headers()
+        )
+        _refuse_redirect(resp)
         if resp.status_code >= 400:
             raise PathsApiError(f"Fork failed ({resp.status_code}): {resp.text}")
         return resp.json()

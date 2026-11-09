@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from wayfinder_paths.core.api_origin import drop_api_key_off_origin
 from wayfinder_paths.core.config import (
     get_api_base_url,
     get_api_key,
@@ -12,11 +13,19 @@ from wayfinder_paths.core.config import (
 )
 
 
+def _keep_api_key_on_api_origin(request: httpx.Request) -> None:
+    drop_api_key_off_origin(request, get_api_base_url())
+
+
 class ScheduledJobsClient:
     """Sync HTTP client for pushing job/run data to vault-backend."""
 
     def __init__(self) -> None:
-        self._client = httpx.Client(timeout=httpx.Timeout(10), follow_redirects=True)
+        self._client = httpx.Client(
+            timeout=httpx.Timeout(10),
+            follow_redirects=True,
+            event_hooks={"request": [_keep_api_key_on_api_origin]},
+        )
 
     def _base_url(self) -> str:
         return (

@@ -3,6 +3,14 @@ import os
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
+from wayfinder_paths.core.api_origin import (
+    on_shells_instance,
+    pinned_api_base_url,
+    validate_api_base_url,
+)
+
 _CONFIG_ENV_KEYS = ("WAYFINDER_CONFIG_PATH", "WAYFINDER_CONFIG")
 _DEFAULT_CONFIG_FILENAME = "config.json"
 _DEFAULT_API_BASE_URL = "https://wayfinder.ai/api/v1"
@@ -60,7 +68,34 @@ def write_config_json(path: str | Path | None, config: dict[str, Any]) -> Path:
     return cfg_path
 
 
-CONFIG: dict[str, Any] = load_config_json()
+def _drop_volume_endpoint_overrides(
+    config: dict[str, Any], cfg_path: Path
+) -> dict[str, Any]:
+    # On a Shells instance config.json lives on the user volume and survives
+    # reboots, so endpoint overrides written there must not steer the SDK.
+    # In-process overrides (set_rpc_urls, used by Gorlami forks) still apply.
+    if not on_shells_instance():
+        return config
+    dropped: list[str] = []
+    for section, key in (("system", "paths_api_base_url"), ("strategy", "rpc_urls")):
+        block = config.get(section)
+        if isinstance(block, dict) and block.pop(key, None) is not None:
+            dropped.append(f"{section}.{key}")
+    if dropped:
+        logger.warning(
+            "Ignoring {} from {}: endpoint overrides in config.json are not "
+            "trusted inside a Wayfinder Shells instance",
+            ", ".join(dropped),
+            cfg_path,
+        )
+    return config
+
+
+# Where CONFIG was last loaded from, named in error messages about its values.
+_config_path: Path = resolve_config_path()
+CONFIG: dict[str, Any] = _drop_volume_endpoint_overrides(
+    load_config_json(_config_path), _config_path
+)
 
 
 def set_config(config: dict[str, Any]) -> None:
@@ -76,10 +111,16 @@ def load_config(
     path: str | Path | None = None, *, require_exists: bool = False
 ) -> None:
     """Load config from disk into the global CONFIG dict."""
+    global _config_path
     cfg_path = resolve_config_path(path)
     if not cfg_path.exists() and path is not None and not require_exists:
         return
-    set_config(load_config_json(cfg_path, require_exists=require_exists))
+    set_config(
+        _drop_volume_endpoint_overrides(
+            load_config_json(cfg_path, require_exists=require_exists), cfg_path
+        )
+    )
+    _config_path = cfg_path
 
 
 def set_rpc_urls(rpc_urls):
@@ -94,26 +135,41 @@ def get_rpc_urls() -> dict[str, Any]:
     return CONFIG.get("strategy", {}).get("rpc_urls", {})
 
 
+def _validate_config_url(value: Any, key: str, default: str) -> str:
+    return validate_api_base_url(
+        str(value),
+        label=f"config.json key {key} ({_config_path})",
+        fix=f"correct {key} in {_config_path}, or delete it to use {default}",
+    )
+
+
 def get_api_base_url() -> str:
-    system = CONFIG.get("system", {})
-    api_url = system.get("api_base_url")
-    if api_url:
-        return str(api_url).strip()
-    return _DEFAULT_API_BASE_URL
+    if pinned := pinned_api_base_url():
+        return pinned
+    api_url = CONFIG.get("system", {}).get("api_base_url")
+    if not api_url:
+        return _DEFAULT_API_BASE_URL
+    return _validate_config_url(api_url, "system.api_base_url", _DEFAULT_API_BASE_URL)
 
 
 def get_paths_api_base_url() -> str:
     system = CONFIG.get("system", {})
     paths_url = system.get("paths_api_base_url")
     if paths_url:
-        return str(paths_url).strip().rstrip("/")
+        return _validate_config_url(
+            paths_url, "system.paths_api_base_url", "the system.api_base_url host"
+        )
 
     env_url = os.environ.get("WAYFINDER_PATHS_API_URL")
     if env_url:
-        return str(env_url).strip().rstrip("/")
+        return validate_api_base_url(
+            env_url,
+            label="Environment variable WAYFINDER_PATHS_API_URL",
+            fix="set WAYFINDER_PATHS_API_URL to an allowed URL, or unset it",
+        )
 
     # Fallback: derive from api_base_url by stripping known API path suffixes
-    base = get_api_base_url().strip().rstrip("/")
+    base = get_api_base_url()
     for suffix in ("/api/v1", "/api"):
         if base.endswith(suffix):
             return base[: -len(suffix)]

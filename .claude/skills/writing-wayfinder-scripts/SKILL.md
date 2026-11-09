@@ -48,7 +48,9 @@ async with web3_from_chain_id(8453) as w3:
 
 It uses the Wayfinder RPC proxy by default. `strategy.rpc_urls` is only for
 explicit overrides such as local forks, Gorlami simulations, or debugging a
-specific provider. In normal Shell usage, keep `strategy.rpc_urls` empty. For
+specific provider. In normal Shell usage, keep `strategy.rpc_urls` empty; on a
+Shells instance the SDK ignores `strategy.rpc_urls` read from `config.json`, so
+point at a fork in-process with `set_rpc_urls()` (as the Gorlami helpers do). For
 sync access, use `get_web3s_from_chain_id(chain_id)` instead.
 
 Run scripts with poetry: `poetry run python .wayfinder_runs/my_script.py`

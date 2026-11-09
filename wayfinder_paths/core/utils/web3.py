@@ -1,11 +1,13 @@
 import logging
 from contextlib import asynccontextmanager
+from typing import Any
 
 import httpx
 from web3 import AsyncHTTPProvider, AsyncWeb3
 from web3.middleware import ExtraDataToPOAMiddleware
 from web3.module import Module
 
+from wayfinder_paths.core.api_origin import is_under_api_base
 from wayfinder_paths.core.config import (
     get_api_base_url,
     get_api_key,
@@ -56,16 +58,17 @@ class _GorlamiProvider(AsyncHTTPProvider):
         )
 
 
+# A plain prefix match would also accept look-alike hosts such as
+# ``https://wayfinder.ai.example`` and send them the API key.
 def _is_wayfinder_rpc(rpc: str) -> bool:
-    return rpc.startswith(get_api_base_url())
+    return is_under_api_base(rpc, get_api_base_url())
 
 
-_GORLAMI_FORK_PREFIX = "/blockchain/gorlami/fork/"
+_GORLAMI_FORK_PREFIX = "/blockchain/gorlami/fork"
 
 
 def _is_gorlami_fork_rpc(rpc: str) -> bool:
-    base = get_api_base_url().rstrip("/")
-    return rpc.startswith(f"{base}{_GORLAMI_FORK_PREFIX}")
+    return is_under_api_base(rpc, f"{get_api_base_url()}{_GORLAMI_FORK_PREFIX}")
 
 
 def _wayfinder_auth_headers() -> dict[str, str]:
@@ -119,18 +122,18 @@ def _get_rpcs_for_chain_id(chain_id: int) -> list:
     return rpcs
 
 
+def _wayfinder_request_kwargs() -> dict[str, Any]:
+    # aiohttp follows redirects and keeps custom headers such as X-API-KEY.
+    return {"headers": _wayfinder_auth_headers(), "allow_redirects": False}
+
+
 def _get_web3(rpc: str, chain_id: int) -> AsyncWeb3:
     if _is_gorlami_fork_rpc(rpc):
-        provider = _GorlamiProvider(
-            rpc,
-            request_kwargs={"headers": _wayfinder_auth_headers()},
-        )
+        provider = _GorlamiProvider(rpc, request_kwargs=_wayfinder_request_kwargs())
         web3 = AsyncWeb3(provider)
     elif _is_wayfinder_rpc(rpc):
         web3 = AsyncWeb3(
-            AsyncHTTPProvider(
-                rpc, request_kwargs={"headers": _wayfinder_auth_headers()}
-            )
+            AsyncHTTPProvider(rpc, request_kwargs=_wayfinder_request_kwargs())
         )
     else:
         web3 = AsyncWeb3(AsyncHTTPProvider(rpc))

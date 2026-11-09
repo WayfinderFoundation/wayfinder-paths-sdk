@@ -37,7 +37,11 @@ from wayfinder_paths.paths.manifest import (
     PathSkillDependencyConfig,
     resolve_skill_dependencies,
 )
-from wayfinder_paths.paths.path_safety import resolve_contained_path
+from wayfinder_paths.paths.path_safety import (
+    resolve_contained_path,
+    validate_path_slug,
+    validate_path_version,
+)
 from wayfinder_paths.paths.preview import (
     PathPreviewError,
     inspect_preview_path,
@@ -1936,7 +1940,7 @@ def publish_cmd(
         render_report,
         doctor_report,
     )
-    client = PathsApiClient(api_base_url=api_url)
+    client = _paths_api_client(api_url)
     try:
         resp = client.publish(
             bundle_path=built.bundle_path,
@@ -2021,7 +2025,7 @@ def search_cmd(
     q = (query or "").strip().lower()
     limit = max(1, min(int(limit or 25), 200))
 
-    client = PathsApiClient(api_base_url=api_url)
+    client = _paths_api_client(api_url)
     try:
         paths = client.list_paths(owner_wallet=owner_wallet, tag=tag)
     except PathsApiError as exc:
@@ -2054,7 +2058,7 @@ def search_cmd(
 @click.option("--slug", required=True, help="Path slug.")
 @click.option("--api-url", "api_url", default=None, help="Override Paths API base URL.")
 def info_cmd(slug: str, api_url: str | None) -> None:
-    client = PathsApiClient(api_base_url=api_url)
+    client = _paths_api_client(api_url)
     try:
         data = client.get_path(slug=slug)
     except PathsApiError as exc:
@@ -2083,7 +2087,7 @@ def fork_cmd(
     owner_wallet: str | None,
     api_url: str | None,
 ) -> None:
-    client = PathsApiClient(api_base_url=api_url)
+    client = _paths_api_client(api_url)
     try:
         resp = client.fork_path(
             slug=slug,
@@ -2104,6 +2108,22 @@ def _safe_extract_zip(zip_path: Path, *, dest_dir: Path) -> list[str]:
         return safe_extract_zip(zip_path, dest_dir=dest_dir)
     except (PathInstallError, BadZipFile) as exc:
         raise click.ClickException(f"Refusing to install bundle: {exc}") from exc
+
+
+def _paths_api_client(api_url: str | None) -> PathsApiClient:
+    try:
+        return PathsApiClient(api_base_url=api_url)
+    except PathsApiError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def _require_valid_path_names(slug: str, version: str | None) -> None:
+    try:
+        validate_path_slug(slug)
+        if version is not None:
+            validate_path_version(version)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 def _read_path_registry_detail(
@@ -2206,6 +2226,7 @@ def _install_path_version(
     if not re.fullmatch(r"[0-9a-f]{64}", expected_sha):
         raise click.ClickException("Version is missing bundle_sha256 (cannot verify)")
 
+    _require_valid_path_names(slug, desired_version)
     base = _canonical_install_root(install_dir)
     state_dir = _state_dir_for_install_root(base)
     dest = base / slug / desired_version
@@ -2436,7 +2457,8 @@ def _install_path_with_options(
         return {"slug": slug, "skipped": True, "reason": "already_visited"}
     visited.add(slug)
 
-    client = PathsApiClient(api_base_url=api_url)
+    _require_valid_path_names(slug, path_version or None)
+    client = _paths_api_client(api_url)
     path_obj, versions = _read_path_registry_detail(client, slug=slug)
     desired_version = _default_install_version(
         path_obj=path_obj,
@@ -2821,7 +2843,7 @@ def update_cmd(
             f"Installed path is missing a version in the lockfile: {slug}"
         )
 
-    client = PathsApiClient(api_base_url=api_url)
+    client = _paths_api_client(api_url)
     path_obj, versions = _read_path_registry_detail(client, slug=slug)
     target_version = _default_update_version(
         path_obj=path_obj,
@@ -3059,7 +3081,7 @@ def heartbeat_install_cmd(
             "This install does not have heartbeat credentials. Reinstall the path first."
         )
 
-    client = PathsApiClient(api_base_url=api_url)
+    client = _paths_api_client(api_url)
     try:
         resp = client.submit_install_heartbeat(
             installation_id=installation_id,
@@ -3120,7 +3142,7 @@ def signal_emit_cmd(
                 f"Invalid --metric value (expected number): {item}"
             ) from exc
 
-    client = PathsApiClient(api_base_url=api_url)
+    client = _paths_api_client(api_url)
     try:
         resp = client.emit_signal(
             slug=slug,
@@ -3197,7 +3219,7 @@ def event_emit_cmd(
     if not isinstance(payload_value, dict):
         raise click.ClickException("Payload must be a JSON object")
 
-    client = PathsApiClient(api_base_url=api_url)
+    client = _paths_api_client(api_url)
     try:
         resp = client.emit_event(
             slug=slug,
