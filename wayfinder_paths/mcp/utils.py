@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from wayfinder_paths.core.api_origin import UntrustedApiOriginError
 from wayfinder_paths.core.clients.MetricsClient import METRICS_CLIENT
 from wayfinder_paths.core.utils.wallets import (  # noqa: F401
     SessionExpiredError,
@@ -104,6 +105,8 @@ def _wrap(fn: Callable, prefix: str) -> Callable:
                 )
             except SessionExpiredError as exc:
                 result = err("session_expired", str(exc))
+            except UntrustedApiOriginError as exc:
+                result = err("invalid_api_url", str(exc))
             except Exception as exc:
                 result = err("error", f"{prefix} {exc}".strip())
             _report_tool_metric(
@@ -126,6 +129,8 @@ def _wrap(fn: Callable, prefix: str) -> Callable:
             )
         except SessionExpiredError as exc:
             result = err("session_expired", str(exc))
+        except UntrustedApiOriginError as exc:
+            result = err("invalid_api_url", str(exc))
         except Exception as exc:
             result = err("error", f"{prefix} {exc}".strip())
         _report_tool_metric(fn.__name__, result, (time.perf_counter() - start) * 1000)

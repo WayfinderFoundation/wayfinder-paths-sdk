@@ -55,7 +55,10 @@ def resolve_contained_path(root: Path, value: str, *, label: str) -> Path:
     return resolved
 
 
-_PATH_SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*", re.ASCII)
+# Matches what the registry's slugify produces: lower-case letters, digits, "_" and
+# "-", starting and ending with a letter or digit, no "--". No dots or slashes,
+# so a slug can never name a parent directory or another URL segment.
+_PATH_SLUG_RE = re.compile(r"[a-z0-9]+(?:(?:_+|_*-_*)[a-z0-9]+)*", re.ASCII)
 _PATH_SLUG_MAX_LENGTH = 255
 _PATH_VERSION_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+_!-]*", re.ASCII)
 
@@ -67,7 +70,11 @@ def validate_path_slug(slug: object) -> str:
         or len(slug) > _PATH_SLUG_MAX_LENGTH
         or not _PATH_SLUG_RE.fullmatch(slug)
     ):
-        raise ValueError(f"Invalid path slug: {slug!r}")
+        raise ValueError(
+            f"Invalid path slug: {slug!r} (use lower-case letters, digits, '_' and "
+            "'-', starting and ending with a letter or digit, no '--', at most "
+            f"{_PATH_SLUG_MAX_LENGTH} characters)"
+        )
     return slug
 
 
