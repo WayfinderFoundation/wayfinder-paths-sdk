@@ -41,6 +41,12 @@ RUNTIME_ENTRIES = frozenset(
 # Interpreter caches, ignored wherever they appear when looking for extra files.
 CACHE_DIRS = frozenset({"__pycache__"})
 
+# Lockfile ``integrity`` value of a path installed through the verified flow
+# (signed intent, sha256-checked download, safe extraction). Activation refuses
+# such a path if it changed since install. Entries without it predate verified
+# installs: they are grandfathered and only warned about.
+VERIFIED_INSTALL_INTEGRITY = "verified"
+
 _SAFE_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}")
 
 

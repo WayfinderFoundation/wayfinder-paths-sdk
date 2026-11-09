@@ -592,6 +592,7 @@ def test_path_install_requests_intent_and_submits_receipt(
     assert lock["paths"][registry_slug]["installation_id"] == "install-123"
     assert lock["paths"][registry_slug]["heartbeat_token"] == "heartbeat-secret"
     assert lock["paths"][registry_slug]["venue"] == "sdk-cli"
+    assert lock["paths"][registry_slug]["integrity"] == "verified"
     # Forks retain reviewed bytes and manifest identity, while receipts belong to the fork.
     installed = install_root / registry_slug / "0.1.0"
     assert (installed / "bundle.zip").read_bytes() == built.bundle_path.read_bytes()
@@ -1030,6 +1031,90 @@ def test_path_activate_supports_slug_for_installed_path(tmp_path: Path, monkeypa
     assert activation["scope"] == "project"
     assert activation["model"] == "moonshot/kimi-k2-5"
     assert activation["root"] == activation["dest"]
+
+
+def _tamper_installed_path(
+    installed_path: Path, entry: dict[str, object], tamper: str
+) -> None:
+    readme = installed_path / "README.md"
+    if tamper == "edited":
+        readme.write_text(readme.read_text() + "\nedited after install\n")
+    elif tamper == "executable":
+        readme.chmod(0o755)
+    elif tamper == "no_bundle":
+        (installed_path / "bundle.zip").unlink()
+    elif tamper == "no_sha":
+        entry.pop("bundle_sha256")
+
+
+@pytest.mark.parametrize(
+    "tamper", ["none", "edited", "executable", "no_bundle", "no_sha"]
+)
+@pytest.mark.parametrize("verified", [True, False])
+def test_path_activate_refuses_changed_verified_installs_and_grandfathers_older_ones(
+    tmp_path: Path, monkeypatch, tamper: str, verified: bool
+):
+    installed_path = tmp_path / ".wayfinder" / "paths" / "integrity-demo" / "0.1.0"
+    init_path(
+        path_dir=installed_path,
+        slug="integrity-demo",
+        primary_kind="monitor",
+        with_applet=False,
+        with_skill=True,
+    )
+    entry: dict[str, object] = {
+        "version": "0.1.0",
+        "bundle_sha256": _seal_installed_path(installed_path),
+        "path": str(installed_path),
+    }
+    if verified:
+        entry["integrity"] = "verified"
+    _tamper_installed_path(installed_path, entry, tamper)
+    _write_paths_lockfile(tmp_path, {"integrity-demo": entry})
+
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._activate_export",
+        lambda **kwargs: {
+            "host": kwargs["host"],
+            "scope": kwargs["scope"],
+            "source": str(kwargs["path_dir"]),
+            "dest": str(Path.cwd()),
+            "mode": "install",
+            "applied": [],
+        },
+    )
+    runner = CliRunner()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    with runner.isolated_filesystem(temp_dir=str(workspace)):
+        result = runner.invoke(
+            path_cli,
+            [
+                "activate",
+                "--host",
+                "opencode",
+                "--scope",
+                "project",
+                "--slug",
+                "integrity-demo",
+                "--dir",
+                str(tmp_path / ".wayfinder" / "paths"),
+            ],
+        )
+
+    if tamper == "none":
+        assert result.exit_code == 0, result.output
+        assert "integrity_warnings" not in json.loads(result.output)["result"]
+    elif verified:
+        assert result.exit_code != 0
+        assert "Refusing to activate integrity-demo" in result.output
+    else:
+        # Installed before verified installs: activates as before, with a warning.
+        assert result.exit_code == 0, result.output
+        warnings = json.loads(result.output)["result"]["integrity_warnings"]
+        assert warnings[0].startswith(
+            "Not verified (installed before verified installs)"
+        )
 
 
 def test_path_activate_can_install_required_dependencies(tmp_path: Path, monkeypatch):

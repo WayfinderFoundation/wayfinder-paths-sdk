@@ -25,6 +25,7 @@ from wayfinder_paths.paths.evaluator import PathEvalError, run_path_eval
 from wayfinder_paths.paths.formatter import PathFormatError, format_path
 from wayfinder_paths.paths.hooks import PathHooksError, install_path_hooks
 from wayfinder_paths.paths.install_safety import (
+    VERIFIED_INSTALL_INTEGRITY,
     PathInstallError,
     safe_extract_zip,
     safe_path_component,
@@ -1699,14 +1700,23 @@ def activate_cmd(
             .resolve()
         )
         # Installed bundles are re-checked before every activation, including
-        # the boot-time restore on Shells boxes: nothing changed since install.
+        # the boot-time restore on Shells boxes. A verified install must be
+        # unchanged since install. Paths installed before verified installs are
+        # grandfathered: they activate as before, with the problem as a warning.
+        verified_install = entry.get("integrity") == VERIFIED_INSTALL_INTEGRITY
         try:
             integrity_warnings = verify_installed_tree(
                 install_dir=source_path,
                 expected_sha256=str(entry.get("bundle_sha256") or ""),
             )
-        except (PathInstallError, BadZipFile) as exc:
-            raise click.ClickException(f"Refusing to activate {slug}: {exc}") from exc
+        except Exception as exc:
+            if verified_install:
+                raise click.ClickException(
+                    f"Refusing to activate {slug}: {exc}"
+                ) from exc
+            integrity_warnings = [
+                f"Not verified (installed before verified installs): {exc}"
+            ]
     else:
         source_path = Path(path_dir).expanduser().resolve() if path_dir else None
         integrity_warnings = []
@@ -2322,6 +2332,7 @@ def _install_path_version(
         {
             "version": desired_version,
             "bundle_sha256": actual_sha,
+            "integrity": VERIFIED_INSTALL_INTEGRITY,
             "venue": venue,
             "installed_at": _iso_utc_now(),
             "path": str(dest),
