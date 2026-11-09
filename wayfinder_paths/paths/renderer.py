@@ -429,79 +429,6 @@ def _render_claude_rules(manifest: PathManifest) -> str:
 
 
 # Simple tools that map directly to a permission name.
-_SIMPLE_TOOL_PERMISSIONS: dict[str, str] = {
-    "websearch": "WebSearch",
-    "webfetch": "WebFetch",
-}
-
-# Bash command patterns to pre-authorize when agents declare "bash".
-_BASH_ALLOW_PATTERNS: tuple[str, ...] = (
-    "Bash(python *)",
-    "Bash(poetry run python *)",
-    "Bash(cat *)",
-    "Bash(ls *)",
-)
-
-
-def _render_claude_settings(manifest: PathManifest, skill: PathSkillConfig) -> str:
-    matchers = "|".join(
-        _claude_agent_name(skill.name, agent.agent_id) for agent in manifest.agents
-    )
-    inject_cmd = f'python "$CLAUDE_PROJECT_DIR/.claude/skills/{skill.name}/scripts/inject_run_context.py"'
-    validate_cmd = f'python "$CLAUDE_PROJECT_DIR/.claude/skills/{skill.name}/scripts/validate_hook.py"'
-    settings: dict[str, Any] = {
-        "hooks": {
-            "SubagentStart": [
-                {
-                    "matcher": matchers or skill.name,
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": inject_cmd if manifest.pipeline else "true",
-                        }
-                    ],
-                }
-            ],
-            "PostToolUse": [
-                {
-                    "matcher": "Write|Edit",
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": validate_cmd,
-                            "async": True,
-                            "timeout": 120,
-                        }
-                    ],
-                }
-            ],
-        }
-    }
-
-    # Collect tools that need explicit permission from all agents.
-    allow_entries: list[str] = []
-    has_bash = False
-    for agent in manifest.agents:
-        for tool in agent.tools:
-            tool_lower = tool.lower()
-            if tool_lower in _SIMPLE_TOOL_PERMISSIONS:
-                perm = _SIMPLE_TOOL_PERMISSIONS[tool_lower]
-                if perm not in allow_entries:
-                    allow_entries.append(perm)
-            if tool_lower == "bash":
-                has_bash = True
-    if has_bash:
-        for pattern in _BASH_ALLOW_PATTERNS:
-            if pattern not in allow_entries:
-                allow_entries.append(pattern)
-    if allow_entries:
-        settings["permissions"] = {
-            "allow": sorted(allow_entries),
-        }
-
-    return json.dumps(settings, indent=2) + "\n"
-
-
 def _render_opencode_agents_md(manifest: PathManifest, skill: PathSkillConfig) -> str:
     command_name = (
         manifest.pipeline.entry_command
@@ -1568,22 +1495,8 @@ def _write_host_install_assets(
                 "section_id": f"wayfinder-path:{manifest.slug}:claude-rules",
             }
         )
-        settings_rel = ".claude/settings.json"
-        written.append(
-            _write_install_json(
-                export_dir,
-                settings_rel,
-                json.loads(_render_claude_settings(manifest, skill)),
-                output_root,
-            )
-        )
-        install_targets.append(
-            {
-                "op": "merge_json",
-                "source": f"install/{settings_rel}",
-                "destination": settings_rel,
-            }
-        )
+        # No .claude/settings.json: its hooks ran the path's own scripts on every
+        # edit and its permissions pre-approved Bash, so Path review rejects it.
         return written, install_targets
 
     if host == "opencode":

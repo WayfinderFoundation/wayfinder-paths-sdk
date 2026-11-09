@@ -627,7 +627,7 @@ def test_claude_export_preserves_existing_agent_contract(tmp_path: Path):
     assert "return JSON.stringify(payload, null, 2)" not in claude_agent_text
     assert "wayfinder_artifact_gate" not in claude_agent_text
     assert claude_rules.exists()
-    assert claude_settings.exists()
+    assert not claude_settings.exists()
 
 
 def _make_skill_only_path(tmp_path: Path) -> Path:
