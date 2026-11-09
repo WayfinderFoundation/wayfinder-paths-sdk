@@ -675,7 +675,11 @@ def test_version_traversal_and_tricks_are_refused(version: str) -> None:
         lambda c: c.get_path(slug="../admin"),
         lambda c: c.get_path_version(slug="demo", version="../../x"),
         lambda c: c.download_bundle(
-            slug="demo", version="1.0.0/../..", out_path=Path("unused")
+            slug="demo",
+            version="1.0.0/../..",
+            out_path=Path("unused"),
+            intent={},
+            signature="",
         ),
         lambda c: c.create_install_intent(slug="demo/../x", version="1.0.0"),
         lambda c: c.submit_install_receipt(
@@ -809,7 +813,13 @@ def test_redirected_bundle_download_errors_without_writing_a_file(
         )
         out = tmp_path / "bundle.zip"
         with pytest.raises(PathsApiError, match="Unexpected redirect from API host"):
-            client.download_bundle(slug="demo", version="1.0.0", out_path=out)
+            client.download_bundle(
+                slug="demo",
+                version="1.0.0",
+                out_path=out,
+                intent={"slug": "demo"},
+                signature="sig",
+            )
 
     assert not out.exists()
     assert [r.url.host for r in sent] == ["strategies.wayfinder.ai"]

@@ -8,12 +8,13 @@ import shlex
 import shutil
 import subprocess
 import sys
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 import click
 
@@ -23,6 +24,13 @@ from wayfinder_paths.paths.doctor import PathDoctorError, PathDoctorReport, run_
 from wayfinder_paths.paths.evaluator import PathEvalError, run_path_eval
 from wayfinder_paths.paths.formatter import PathFormatError, format_path
 from wayfinder_paths.paths.hooks import PathHooksError, install_path_hooks
+from wayfinder_paths.paths.install_safety import (
+    VERIFIED_INSTALL_INTEGRITY,
+    PathInstallError,
+    safe_extract_zip,
+    safe_path_component,
+    verify_installed_tree,
+)
 from wayfinder_paths.paths.manifest import (
     PathManifest,
     PathManifestError,
@@ -1695,8 +1703,27 @@ def activate_cmd(
             .expanduser()
             .resolve()
         )
+        # Installed bundles are re-checked before every activation, including
+        # the boot-time restore on Shells boxes. A verified install must be
+        # unchanged since install. Paths installed before verified installs are
+        # grandfathered: they activate as before, with the problem as a warning.
+        verified_install = entry.get("integrity") == VERIFIED_INSTALL_INTEGRITY
+        try:
+            integrity_warnings = verify_installed_tree(
+                install_dir=source_path,
+                expected_sha256=str(entry.get("bundle_sha256") or ""),
+            )
+        except Exception as exc:
+            if verified_install:
+                raise click.ClickException(
+                    f"Refusing to activate {slug}: {exc}"
+                ) from exc
+            integrity_warnings = [
+                f"Not verified (installed before verified installs): {exc}"
+            ]
     else:
         source_path = Path(path_dir).expanduser().resolve() if path_dir else None
+        integrity_warnings = []
     rendered_export_path = (
         Path(export_path).expanduser().resolve() if export_path else None
     )
@@ -1723,6 +1750,8 @@ def activate_cmd(
     )
     if dependency_results:
         result["dependencies"] = dependency_results
+    if integrity_warnings:
+        result["integrity_warnings"] = integrity_warnings
 
     activation_recorded = False
     if source_path is not None:
@@ -1931,6 +1960,11 @@ def publish_cmd(
         raise click.ClickException(str(exc)) from exc
 
     _echo_json({"ok": True, "result": resp})
+    if resp.get("uploadId") and resp.get("status") != "published":
+        click.echo(
+            f"\nUpload queued for isolated review. Check: wayfinder path upload-status {resp['uploadId']}",
+            err=True,
+        )
     if resp.get("ownerLinkRequired"):
         manage_url = resp.get("manageUrl", "")
         click.echo(f"\nLink owner wallet and bond at: {manage_url}", err=True)
@@ -1962,6 +1996,17 @@ def publish_cmd(
         click.echo(
             "Slug reservation is temporary until approval/publication.", err=True
         )
+
+
+@path_cli.command(
+    name="upload-status", help="Check publication/review status for your upload."
+)
+@click.argument("upload_id")
+def upload_status_cmd(upload_id: str) -> None:
+    try:
+        _echo_json(PathsApiClient().get_upload_status(upload_id))
+    except (PathsApiError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @path_cli.command(name="search", help="Search paths in the registry.")
@@ -2059,28 +2104,10 @@ def fork_cmd(
 
 
 def _safe_extract_zip(zip_path: Path, *, dest_dir: Path) -> list[str]:
-    extracted: list[str] = []
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    with ZipFile(zip_path, "r") as zf:
-        for info in zf.infolist():
-            name = info.filename
-            if not name or name.endswith("/"):
-                continue
-            rel = Path(name)
-            if rel.is_absolute() or ".." in rel.parts:
-                continue
-            target = (dest_dir / rel).resolve()
-            if (
-                dest_dir.resolve() not in target.parents
-                and target != dest_dir.resolve()
-            ):
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(info, "r") as src, target.open("wb") as out:
-                out.write(src.read())
-            extracted.append(rel.as_posix())
-    extracted.sort()
-    return extracted
+    try:
+        return safe_extract_zip(zip_path, dest_dir=dest_dir)
+    except (PathInstallError, BadZipFile) as exc:
+        raise click.ClickException(f"Refusing to install bundle: {exc}") from exc
 
 
 def _paths_api_client(api_url: str | None) -> PathsApiClient:
@@ -2185,9 +2212,18 @@ def _install_path_version(
     reuse_existing: bool = False,
 ) -> dict[str, Any]:
     venue = _path_install_venue(runtime="sdk-cli")
+    try:
+        safe_path_component(slug, label="slug")
+        safe_path_component(desired_version, label="version")
+    except PathInstallError as exc:
+        raise click.ClickException(str(exc)) from exc
 
+    warnings: list[str] = []
+    if no_verify:
+        # Bundles are always verified; the flag stays only so old commands parse.
+        warnings.append("--no-verify is ignored: bundles are always verified")
     expected_sha = str(version_obj.get("bundle_sha256") or "").strip().lower()
-    if not expected_sha and not no_verify:
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha):
         raise click.ClickException("Version is missing bundle_sha256 (cannot verify)")
 
     _require_valid_path_names(slug, desired_version)
@@ -2198,7 +2234,6 @@ def _install_path_version(
 
     intent_payload: dict[str, Any] | None = None
     intent_signature = ""
-    warnings: list[str] = []
 
     if dest.exists() and any(dest.iterdir()) and not force:
         # Only dependencies may reuse a completed, matching install. Keep the
@@ -2241,6 +2276,8 @@ def _install_path_version(
             "reused": True,
         }
 
+    # The download needs a signed intent, and the intent must name exactly the
+    # version and bundle the registry listed.
     try:
         intent_resp = client.create_install_intent(
             slug=slug,
@@ -2249,17 +2286,48 @@ def _install_path_version(
             venue=venue,
             install_target=str(dest),
         )
-        payload = intent_resp.get("intent")
-        signature = intent_resp.get("signature")
-        if isinstance(payload, dict) and isinstance(signature, str) and signature:
-            intent_payload = payload
-            intent_signature = signature
     except PathsApiError as exc:
-        warnings.append(f"Could not create install intent: {exc}")
+        raise click.ClickException(f"Could not create install intent: {exc}") from exc
+    payload = intent_resp.get("intent")
+    signature = intent_resp.get("signature")
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(signature, str)
+        or not signature
+        or payload.get("path_slug") != slug
+        or payload.get("version") != desired_version
+        or str(payload.get("bundle_sha256") or "").lower() != expected_sha
+    ):
+        raise click.ClickException(
+            "Install intent does not match the registry version; refusing to install"
+        )
+    intent_payload = payload
+    intent_signature = signature
 
-    dest.mkdir(parents=True, exist_ok=True)
-    if intent_payload and intent_signature:
-        (dest / "install-intent.json").write_text(
+    # Download, verify and extract into a fresh staging directory next to the
+    # destination; it replaces the destination only when everything passed.
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    staging = dest.parent / f".{desired_version}.staging-{uuid.uuid4().hex}"
+    try:
+        download_path = dest.parent / f"{staging.name}.zip"
+        try:
+            client.download_bundle(
+                slug=slug,
+                version=desired_version,
+                out_path=download_path,
+                intent=intent_payload,
+                signature=intent_signature,
+            )
+        except PathsApiError as exc:
+            raise click.ClickException(str(exc)) from exc
+        actual_sha = _sha256_file(download_path)
+        if actual_sha != expected_sha:
+            raise click.ClickException(
+                f"Bundle SHA-256 mismatch (expected {expected_sha}, got {actual_sha})"
+            )
+        extracted = _safe_extract_zip(download_path, dest_dir=staging)
+        download_path.replace(staging / "bundle.zip")
+        (staging / "install-intent.json").write_text(
             json.dumps(
                 {"intent": intent_payload, "signature": intent_signature},
                 indent=2,
@@ -2267,18 +2335,16 @@ def _install_path_version(
             + "\n",
             encoding="utf-8",
         )
-    try:
-        client.download_bundle(slug=slug, version=desired_version, out_path=bundle_path)
-    except PathsApiError as exc:
-        raise click.ClickException(str(exc)) from exc
-
-    actual_sha = _sha256_file(bundle_path)
-    if not no_verify and expected_sha and actual_sha != expected_sha:
-        raise click.ClickException(
-            f"Bundle SHA-256 mismatch (expected {expected_sha}, got {actual_sha})"
-        )
-
-    extracted = _safe_extract_zip(bundle_path, dest_dir=dest)
+        if dest.exists() or dest.is_symlink():
+            if dest.is_symlink() or not dest.is_dir():
+                dest.unlink()
+            else:
+                shutil.rmtree(dest)
+        staging.replace(dest)
+    finally:
+        download_path.unlink(missing_ok=True)
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
 
     lock, lock_path = _load_install_lock(state_dir)
     existing_entry = _lock_path_entry(lock, slug) or {}
@@ -2287,6 +2353,7 @@ def _install_path_version(
         {
             "version": desired_version,
             "bundle_sha256": actual_sha,
+            "integrity": VERIFIED_INSTALL_INTEGRITY,
             "venue": venue,
             "installed_at": _iso_utc_now(),
             "path": str(dest),

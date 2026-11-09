@@ -5,6 +5,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -650,30 +651,99 @@ class PathsApiClient:
             )
         return resp.json()
 
+    # Reviewed bundles are at most 50 MiB (the backend's upload limit).
+    MAX_BUNDLE_BYTES = 50 * 1024 * 1024
+    ARTIFACT_HOST = "storage.googleapis.com"
+
+    @classmethod
+    def _checked_download_url(cls, value: Any) -> str:
+        """The signed artifact URL, only if it points at Google Cloud Storage
+        over HTTPS with no credentials or unusual port."""
+        url = str(value or "")
+        parsed = urlparse(url)
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != cls.ARTIFACT_HOST
+            or parsed.username
+            or parsed.password
+            or parsed.port not in (None, 443)
+        ):
+            raise PathsApiError("Invalid artifact download destination")
+        return url
+
     def download_bundle(
         self,
         *,
         slug: str,
         version: str,
         out_path: Path,
+        intent: dict[str, Any],
+        signature: str,
     ) -> Path:
+        """Download a reviewed bundle to ``out_path``.
+
+        The backend checks the signed install intent and answers with a
+        short-lived signed URL; the bytes come straight from the private
+        artifact bucket. The caller must verify the sha256 before using the
+        file. A partial or oversized download never reaches ``out_path``.
+        """
         url = (
             f"{self.base_url}/api/v1/paths/{_slug_segment(slug)}"
-            f"/versions/{_version_segment(version)}/bundle.zip"
+            f"/versions/{_version_segment(version)}/download/"
         )
+        resp = self._client.post(
+            url,
+            json={"intent": intent, "signature": signature},
+            headers=self._headers(),
+            follow_redirects=False,
+        )
+        _refuse_redirect(resp)
+        if resp.status_code != 200:
+            raise PathsApiError(f"Download bundle failed ({resp.status_code})")
+        try:
+            download_url = self._checked_download_url(resp.json().get("downloadUrl"))
+        except ValueError as exc:
+            raise PathsApiError("Download bundle returned an invalid response") from exc
+
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._client.stream(
-            "GET", url, follow_redirects=False, headers=self._headers()
-        ) as resp:
-            _refuse_redirect(resp)
-            if resp.status_code >= 400:
-                raise PathsApiError(
-                    f"Download bundle failed ({resp.status_code}): {resp.text}"
-                )
-            with out_path.open("wb") as f:
-                for chunk in resp.iter_bytes():
-                    f.write(chunk)
+        partial = out_path.with_name(out_path.name + ".part")
+        partial.unlink(missing_ok=True)
+        try:
+            # A fresh client sends no API key, Authorization, cookies or proxy
+            # settings to storage, follows no redirects and verifies TLS.
+            with httpx.Client(
+                timeout=60, follow_redirects=False, trust_env=False, verify=True
+            ) as storage_client:
+                with storage_client.stream("GET", download_url) as stream:
+                    if stream.status_code != 200:
+                        raise PathsApiError(
+                            f"Artifact download failed ({stream.status_code})"
+                        )
+                    total = 0
+                    with partial.open("xb") as f:
+                        for chunk in stream.iter_bytes():
+                            total += len(chunk)
+                            if total > self.MAX_BUNDLE_BYTES:
+                                raise PathsApiError(
+                                    "Artifact exceeds download size limit"
+                                )
+                            f.write(chunk)
+            partial.replace(out_path)
+        finally:
+            partial.unlink(missing_ok=True)
         return out_path
+
+    def get_upload_status(self, upload_id: str) -> dict[str, Any]:
+        from uuid import UUID
+
+        upload_id = str(UUID(upload_id))
+        response = self._client.get(
+            f"{self.base_url}/api/v1/paths/uploads/{upload_id}/",
+            headers=self._headers(),
+        )
+        if response.status_code >= 400:
+            raise PathsApiError(f"Upload status failed ({response.status_code})")
+        return response.json()
 
     @staticmethod
     def sha256_file(path: Path) -> str:

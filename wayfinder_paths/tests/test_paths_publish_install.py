@@ -19,6 +19,7 @@ from wayfinder_paths.paths.cli import _apply_install_targets, path_cli
 from wayfinder_paths.paths.client import PathsApiClient
 from wayfinder_paths.paths.doctor import DoctorIssue, PathDoctorReport
 from wayfinder_paths.paths.formatter import format_path
+from wayfinder_paths.paths.manifest import PathManifest, PathManifestError
 from wayfinder_paths.paths.scaffold import init_path
 
 pytestmark = pytest.mark.usefixtures("published_installed_runtime")
@@ -474,7 +475,10 @@ def test_paths_api_client_list_paths_defaults_to_bonded_only():
     assert [path["slug"] for path in all_paths] == ["bonded-path", "unbonded-path"]
 
 
-def test_path_install_requests_intent_and_submits_receipt(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("registry_slug", ["install-demo", "forked-demo"])
+def test_path_install_requests_intent_and_submits_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, registry_slug: str
+) -> None:
     path_dir = tmp_path / "install-demo"
     init_path(
         path_dir=path_dir,
@@ -523,7 +527,15 @@ def test_path_install_requests_intent_and_submits_receipt(tmp_path: Path, monkey
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path
@@ -547,7 +559,7 @@ def test_path_install_requests_intent_and_submits_receipt(tmp_path: Path, monkey
         [
             "install",
             "--slug",
-            "install-demo",
+            registry_slug,
             "--version",
             "0.1.0",
             "--dir",
@@ -573,12 +585,27 @@ def test_path_install_requests_intent_and_submits_receipt(tmp_path: Path, monkey
     assert receipt["runtime"] == "sdk-cli"
     assert receipt["venue"] == "sdk-cli"
     assert receipt["extracted_files"] > 0
-    assert receipt["install_path"].endswith("install-demo/0.1.0")
+    assert receipt["slug"] == registry_slug
+    assert receipt["install_path"].endswith(f"{registry_slug}/0.1.0")
 
     lock = json.loads((tmp_path / ".wayfinder" / "paths.lock.json").read_text())
-    assert lock["paths"]["install-demo"]["installation_id"] == "install-123"
-    assert lock["paths"]["install-demo"]["heartbeat_token"] == "heartbeat-secret"
-    assert lock["paths"]["install-demo"]["venue"] == "sdk-cli"
+    assert lock["paths"][registry_slug]["installation_id"] == "install-123"
+    assert lock["paths"][registry_slug]["heartbeat_token"] == "heartbeat-secret"
+    assert lock["paths"][registry_slug]["venue"] == "sdk-cli"
+    assert lock["paths"][registry_slug]["integrity"] == "verified"
+    # Forks retain reviewed bytes and manifest identity, while receipts belong to the fork.
+    installed = install_root / registry_slug / "0.1.0"
+    assert (installed / "bundle.zip").read_bytes() == built.bundle_path.read_bytes()
+    from wayfinder_paths.paths.cli import _activate_export
+
+    activated = _activate_export(
+        path_dir=installed,
+        host="opencode",
+        scope="project",
+        destination_root=tmp_path / "workspace",
+    )
+    assert activated["host"] == "opencode"
+    assert activated["applied"]
 
 
 def test_path_install_migrates_legacy_lockfile_and_directory(
@@ -636,11 +663,22 @@ def test_path_install_migrates_legacy_lockfile_and_directory(
                     "intent_id": "intent-456",
                     "path_slug": kwargs["slug"],
                     "version": kwargs["version"],
+                    "bundle_sha256": self.get_path_version(
+                        slug=kwargs["slug"], version=kwargs["version"]
+                    )["version"]["bundle_sha256"],
                 },
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path
@@ -808,6 +846,26 @@ def _build_path_bundle(
     )
 
 
+def _seal_installed_path(installed_path: Path) -> str:
+    """Zip an installed path's files into its bundle.zip, as install leaves it,
+    and return the sha256 activation will check."""
+    import zipfile
+
+    from wayfinder_paths.paths.install_safety import RUNTIME_ENTRIES
+
+    files = sorted(
+        p
+        for p in installed_path.rglob("*")
+        if p.is_file()
+        and p.relative_to(installed_path).parts[0] not in RUNTIME_ENTRIES
+        and "__pycache__" not in p.parts
+    )
+    with zipfile.ZipFile(installed_path / "bundle.zip", "w") as zf:
+        for file in files:
+            zf.write(file, file.relative_to(installed_path).as_posix())
+    return hashlib.sha256((installed_path / "bundle.zip").read_bytes()).hexdigest()
+
+
 def _write_paths_lockfile(tmp_path: Path, paths: dict[str, object]) -> Path:
     lock_dir = tmp_path / ".wayfinder"
     lock_dir.mkdir(parents=True, exist_ok=True)
@@ -904,12 +962,13 @@ def test_path_activate_supports_slug_for_installed_path(tmp_path: Path, monkeypa
         with_applet=False,
         with_skill=True,
     )
+    sealed_sha = _seal_installed_path(installed_path)
     _write_paths_lockfile(
         tmp_path,
         {
             "activate-demo": {
                 "version": "0.1.0",
-                "bundle_sha256": "abc123",
+                "bundle_sha256": sealed_sha,
                 "path": str(installed_path),
             }
         },
@@ -974,6 +1033,90 @@ def test_path_activate_supports_slug_for_installed_path(tmp_path: Path, monkeypa
     assert activation["root"] == activation["dest"]
 
 
+def _tamper_installed_path(
+    installed_path: Path, entry: dict[str, object], tamper: str
+) -> None:
+    readme = installed_path / "README.md"
+    if tamper == "edited":
+        readme.write_text(readme.read_text() + "\nedited after install\n")
+    elif tamper == "executable":
+        readme.chmod(0o755)
+    elif tamper == "no_bundle":
+        (installed_path / "bundle.zip").unlink()
+    elif tamper == "no_sha":
+        entry.pop("bundle_sha256")
+
+
+@pytest.mark.parametrize(
+    "tamper", ["none", "edited", "executable", "no_bundle", "no_sha"]
+)
+@pytest.mark.parametrize("verified", [True, False])
+def test_path_activate_refuses_changed_verified_installs_and_grandfathers_older_ones(
+    tmp_path: Path, monkeypatch, tamper: str, verified: bool
+):
+    installed_path = tmp_path / ".wayfinder" / "paths" / "integrity-demo" / "0.1.0"
+    init_path(
+        path_dir=installed_path,
+        slug="integrity-demo",
+        primary_kind="monitor",
+        with_applet=False,
+        with_skill=True,
+    )
+    entry: dict[str, object] = {
+        "version": "0.1.0",
+        "bundle_sha256": _seal_installed_path(installed_path),
+        "path": str(installed_path),
+    }
+    if verified:
+        entry["integrity"] = "verified"
+    _tamper_installed_path(installed_path, entry, tamper)
+    _write_paths_lockfile(tmp_path, {"integrity-demo": entry})
+
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._activate_export",
+        lambda **kwargs: {
+            "host": kwargs["host"],
+            "scope": kwargs["scope"],
+            "source": str(kwargs["path_dir"]),
+            "dest": str(Path.cwd()),
+            "mode": "install",
+            "applied": [],
+        },
+    )
+    runner = CliRunner()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    with runner.isolated_filesystem(temp_dir=str(workspace)):
+        result = runner.invoke(
+            path_cli,
+            [
+                "activate",
+                "--host",
+                "opencode",
+                "--scope",
+                "project",
+                "--slug",
+                "integrity-demo",
+                "--dir",
+                str(tmp_path / ".wayfinder" / "paths"),
+            ],
+        )
+
+    if tamper == "none":
+        assert result.exit_code == 0, result.output
+        assert "integrity_warnings" not in json.loads(result.output)["result"]
+    elif verified:
+        assert result.exit_code != 0
+        assert "Refusing to activate integrity-demo" in result.output
+    else:
+        # Installed before verified installs: activates as before, with a warning.
+        assert result.exit_code == 0, result.output
+        warnings = json.loads(result.output)["result"]["integrity_warnings"]
+        assert warnings[0].startswith(
+            "Not verified (installed before verified installs)"
+        )
+
+
 def test_path_activate_can_install_required_dependencies(tmp_path: Path, monkeypatch):
     installed_path = tmp_path / ".wayfinder" / "paths" / "activate-demo" / "0.1.0"
     init_path(
@@ -983,12 +1126,13 @@ def test_path_activate_can_install_required_dependencies(tmp_path: Path, monkeyp
         with_applet=False,
         with_skill=True,
     )
+    sealed_sha = _seal_installed_path(installed_path)
     _write_paths_lockfile(
         tmp_path,
         {
             "activate-demo": {
                 "version": "0.1.0",
-                "bundle_sha256": "abc123",
+                "bundle_sha256": sealed_sha,
                 "path": str(installed_path),
             }
         },
@@ -1244,7 +1388,9 @@ def test_path_install_opencode_activates_and_installs_required_dependencies(
                     "intent_id": f"intent-{kwargs['slug']}",
                     "path_slug": kwargs["slug"],
                     "version": kwargs["version"],
-                    "bundle_sha256": "aa" * 32,
+                    "bundle_sha256": self.get_path_version(
+                        slug=kwargs["slug"], version=kwargs["version"]
+                    )["version"]["bundle_sha256"],
                     "issued_at": datetime.now(UTC).isoformat(),
                     "expires_at": expires_at,
                     "runtime": kwargs["runtime"],
@@ -1252,7 +1398,15 @@ def test_path_install_opencode_activates_and_installs_required_dependencies(
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             bundle = (
                 main_build.bundle_path
                 if slug == "install-opencode-demo"
@@ -1348,9 +1502,21 @@ class _DependencyRegistry:
 
     def create_install_intent(self, **kwargs: Any) -> dict[str, Any]:
         self.intents.append(kwargs["slug"])
-        return {"intent": {"intent_id": str(len(self.intents))}, "signature": "test"}
+        return {
+            "intent": {
+                "intent_id": str(len(self.intents)),
+                "path_slug": kwargs["slug"],
+                "version": kwargs["version"],
+                "bundle_sha256": self.bundles[kwargs["slug"]][
+                    kwargs["version"]
+                ].bundle_sha256,
+            },
+            "signature": "test",
+        }
 
-    def download_bundle(self, *, slug: str, version: str, out_path: Path) -> Path:
+    def download_bundle(
+        self, *, slug: str, version: str, out_path: Path, intent=None, signature=None
+    ) -> Path:
         self.downloads.append((slug, version))
         out_path.write_bytes(self.bundles[slug][version].bundle_path.read_bytes())
         return out_path
@@ -1383,6 +1549,85 @@ def _invoke_path(*args: str) -> dict[str, Any]:
     result = CliRunner().invoke(path_cli, list(args))
     assert result.exit_code == 0, result.output
     return json.loads(result.output)["result"]
+
+
+@pytest.mark.parametrize("transitive", [False, True])
+def test_dependency_download_rejection_stops_install(
+    dependency_registry: _DependencyRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+    transitive: bool,
+) -> None:
+    registry = dependency_registry
+    registry.publish("blocked")
+    registry.publish("middle", dependencies=["blocked"])
+    registry.publish("parent", dependencies=["middle" if transitive else "blocked"])
+
+    def api(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path.endswith("/versions/0.1.0/download/")
+        slug = request.url.path.split("/")[4]
+        if slug == "blocked":
+            return httpx.Response(404, json={"detail": "Not found."})
+        registry.downloads.append((slug, "0.1.0"))
+        return httpx.Response(
+            200,
+            json={"downloadUrl": f"https://storage.googleapis.com/artifacts/{slug}"},
+        )
+
+    def storage(request: httpx.Request) -> httpx.Response:
+        slug = request.url.path.rsplit("/", 1)[-1]
+        return httpx.Response(
+            200, content=registry.bundles[slug]["0.1.0"].bundle_path.read_bytes()
+        )
+
+    client_type = httpx.Client
+    client = PathsApiClient(
+        api_base_url="https://strategies-dev.wayfinder.ai",
+        client=client_type(transport=httpx.MockTransport(api)),
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.client.httpx.Client",
+        lambda **kw: client_type(transport=httpx.MockTransport(storage), **kw),
+    )
+    monkeypatch.setattr(registry, "download_bundle", client.download_bundle)
+    result = CliRunner().invoke(
+        path_cli,
+        [
+            "install",
+            "--slug",
+            "parent",
+            "--host",
+            "opencode",
+            "--scope",
+            "project",
+            "--no-verify",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "Download bundle failed (404)" in result.output
+    assert ("parent", "0.1.0") in registry.downloads
+    assert ("blocked", "0.1.0") not in registry.downloads
+    assert not Path(".wayfinder/paths/blocked/0.1.0/bundle.zip").exists()
+    assert not Path(".opencode/skills/parent/SKILL.md").exists()
+
+
+@pytest.mark.parametrize(
+    "alias", ["../escaped", "/tmp/escaped", "nested/escaped", ".."]
+)
+def test_dependency_host_alias_must_be_a_skill_name(tmp_path: Path, alias: str) -> None:
+    path_dir = tmp_path / "alias-test"
+    init_path(path_dir=path_dir, slug="alias-test", with_skill=True, with_applet=False)
+    manifest_file = path_dir / "wfpath.yaml"
+    manifest = yaml.safe_load(manifest_file.read_text())
+    manifest["skill"]["dependencies"] = [
+        {
+            "name": "using-hyperliquid-adapter",
+            "host_names": {"opencode": alias},
+        }
+    ]
+    manifest_file.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    with pytest.raises(PathManifestError, match="host_names"):
+        PathManifest.load(manifest_file)
 
 
 def test_path_activation_reuses_dependency_and_restores_export(
@@ -1765,7 +2010,9 @@ def test_path_install_claude_activates_and_installs_required_dependencies(
                     "intent_id": f"intent-{kwargs['slug']}",
                     "path_slug": kwargs["slug"],
                     "version": kwargs["version"],
-                    "bundle_sha256": "aa" * 32,
+                    "bundle_sha256": self.get_path_version(
+                        slug=kwargs["slug"], version=kwargs["version"]
+                    )["version"]["bundle_sha256"],
                     "issued_at": datetime.now(UTC).isoformat(),
                     "expires_at": expires_at,
                     "runtime": kwargs["runtime"],
@@ -1773,7 +2020,15 @@ def test_path_install_claude_activates_and_installs_required_dependencies(
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             bundle = (
                 main_build.bundle_path
                 if slug == "install-claude-demo"
@@ -1939,7 +2194,9 @@ def test_path_install_opencode_uses_bundled_sdk_skill_dependencies(
                     "intent_id": f"intent-{kwargs['slug']}",
                     "path_slug": kwargs["slug"],
                     "version": kwargs["version"],
-                    "bundle_sha256": "aa" * 32,
+                    "bundle_sha256": self.get_path_version(
+                        slug=kwargs["slug"], version=kwargs["version"]
+                    )["version"]["bundle_sha256"],
                     "issued_at": datetime.now(UTC).isoformat(),
                     "expires_at": expires_at,
                     "runtime": kwargs["runtime"],
@@ -1947,7 +2204,15 @@ def test_path_install_opencode_uses_bundled_sdk_skill_dependencies(
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             if slug != "install-opencode-bundled-demo":
                 raise AssertionError(f"unexpected bundle download for {slug}")
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2235,7 +2500,15 @@ def test_path_update_reuses_lockfile_activation_for_live_bonded_upgrade(
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path
@@ -2373,11 +2646,24 @@ def test_path_update_uses_default_activation_when_workspace_has_single_marker(
 
         def create_install_intent(self, **kwargs):
             return {
-                "intent": {"intent_id": "intent-default", "version": kwargs["version"]},
+                "intent": {
+                    "intent_id": "intent-default",
+                    "path_slug": kwargs["slug"],
+                    "version": kwargs["version"],
+                    "bundle_sha256": built.bundle_sha256,
+                },
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path
@@ -2475,7 +2761,15 @@ def test_path_remove_opencode_deactivates_and_cleans_lockfile(
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path
@@ -2606,11 +2900,26 @@ def test_path_update_falls_back_to_pull_without_activation_target(
 
         def create_install_intent(self, **kwargs):
             return {
-                "intent": {"intent_id": "intent-manual", "version": kwargs["version"]},
+                "intent": {
+                    "intent_id": "intent-manual",
+                    "path_slug": kwargs["slug"],
+                    "version": kwargs["version"],
+                    "bundle_sha256": self.get_path_version(
+                        slug=kwargs["slug"], version=kwargs["version"]
+                    )["version"]["bundle_sha256"],
+                },
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path
@@ -2725,11 +3034,26 @@ def test_path_update_reuses_lockfile_activation_root_for_codex_repo(
 
         def create_install_intent(self, **kwargs):
             return {
-                "intent": {"intent_id": "intent-codex", "version": kwargs["version"]},
+                "intent": {
+                    "intent_id": "intent-codex",
+                    "path_slug": kwargs["slug"],
+                    "version": kwargs["version"],
+                    "bundle_sha256": self.get_path_version(
+                        slug=kwargs["slug"], version=kwargs["version"]
+                    )["version"]["bundle_sha256"],
+                },
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path
@@ -2885,11 +3209,23 @@ def test_path_update_reuses_lockfile_activation_root_for_other_supported_hosts(
                 "intent": {
                     "intent_id": f"intent-{slug}",
                     "version": kwargs["version"],
+                    "path_slug": kwargs["slug"],
+                    "bundle_sha256": self.get_path_version(
+                        slug=kwargs["slug"], version=kwargs["version"]
+                    )["version"]["bundle_sha256"],
                 },
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path
@@ -3026,11 +3362,23 @@ def test_path_update_warns_and_falls_back_when_recorded_root_is_missing(
                 "intent": {
                     "intent_id": "intent-missing-root",
                     "version": kwargs["version"],
+                    "path_slug": kwargs["slug"],
+                    "bundle_sha256": self.get_path_version(
+                        slug=kwargs["slug"], version=kwargs["version"]
+                    )["version"]["bundle_sha256"],
                 },
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path
@@ -3083,6 +3431,7 @@ def test_path_update_warns_and_falls_back_when_recorded_root_is_missing(
 
 
 def test_path_update_allows_explicit_version_override(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     built = _build_path_bundle(tmp_path, slug="override-demo", version="1.0.1")
     _write_paths_lockfile(
         tmp_path,
@@ -3123,11 +3472,23 @@ def test_path_update_allows_explicit_version_override(tmp_path: Path, monkeypatc
                 "intent": {
                     "intent_id": "intent-override",
                     "version": kwargs["version"],
+                    "path_slug": kwargs["slug"],
+                    "bundle_sha256": self.get_path_version(
+                        slug=kwargs["slug"], version=kwargs["version"]
+                    )["version"]["bundle_sha256"],
                 },
                 "signature": "signed-intent",
             }
 
-        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+        def download_bundle(
+            self,
+            *,
+            slug: str,
+            version: str,
+            out_path: Path,
+            intent=None,
+            signature=None,
+        ):
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_bytes(built.bundle_path.read_bytes())
             return out_path
