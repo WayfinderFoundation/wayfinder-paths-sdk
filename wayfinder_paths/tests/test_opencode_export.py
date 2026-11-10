@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import click
@@ -116,6 +117,11 @@ def test_opencode_export_is_model_neutral_and_callable_by_default(tmp_path: Path
     assert (
         "context?.worktree ?? context?.directory ?? process.cwd()" in artifact_gate_text
     )
+    # Slugs, run ids and file names are validated and every path stays inside
+    # the artifacts directory.
+    assert "isSafeName(args.slug)" in artifact_gate_text
+    assert "artifactPath(context, args.run_id, args.file)" in artifact_gate_text
+    assert "join(resolveRoot(context), ARTIFACTS_DIR" not in artifact_gate_text
     assert "return jsonOutput(" in artifact_gate_text
     assert "return JSON.stringify(payload, null, 2)" in artifact_gate_text
     assert "return { ok:" not in artifact_gate_text
@@ -766,3 +772,50 @@ def test_reactivating_a_skill_only_path_prunes_its_old_orchestrator(tmp_path: Pa
         ],
     )
     assert stale.exists()
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_artifact_gate_refuses_paths_outside_the_artifacts_dir(tmp_path: Path):
+    path_dir = _make_pipeline_path(tmp_path)
+    report = render_skill_exports(path_dir=path_dir, hosts=["opencode"])
+    gate = (
+        report.exports["opencode"].export_dir
+        / "install"
+        / ".opencode"
+        / "tools"
+        / "wayfinder_artifact_gate.ts"
+    )
+    run_dir = tmp_path / "gate"
+    plugin = run_dir / "node_modules" / "@opencode-ai" / "plugin"
+    plugin.mkdir(parents=True)
+    (plugin / "package.json").write_text(
+        '{"name": "@opencode-ai/plugin", "type": "module", "main": "index.js"}'
+    )
+    (plugin / "index.js").write_text(
+        "export function tool(def) { return def }\n"
+        'tool.schema = { string: () => "string" }\n'
+    )
+    (run_dir / "gate.mjs").write_text(gate.read_text())
+    (run_dir / "run.mjs").write_text(
+        'import { init_run, assert_required_artifacts, read_artifact } from "./gate.mjs"\n'
+        "const ctx = { worktree: process.argv[2] }\n"
+        "const call = async (t, args) => JSON.parse(String(await t.execute(args, ctx))).ok\n"
+        "console.log(JSON.stringify([\n"
+        '  await call(init_run, { slug: "../../escape" }),\n'
+        '  await call(init_run, { slug: "/tmp/escape" }),\n'
+        '  await call(assert_required_artifacts, { run_id: ".." }),\n'
+        '  await call(read_artifact, { run_id: "x", file: "../../etc/passwd" }),\n'
+        '  await call(init_run, { slug: "demo" }),\n'
+        "]))\n"
+    )
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    result = subprocess.run(
+        ["node", "run.mjs", str(worktree)],
+        cwd=run_dir,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(result.stdout) == [False, False, False, False, True]
+    assert not (tmp_path / "escape").exists()

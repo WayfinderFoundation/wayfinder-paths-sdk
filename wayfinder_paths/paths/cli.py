@@ -1287,8 +1287,9 @@ def path_cli() -> None:
     "--dir",
     "base_dir",
     default=".",
+    envvar="WAYFINDER_PATHS_SOURCE_DIR",
     show_default=True,
-    help="Base directory to create the path in.",
+    help="Base directory to create the path in (env: WAYFINDER_PATHS_SOURCE_DIR).",
 )
 @click.option("--name", default=None, help="Path display name (defaults from slug).")
 @click.option("--version", default="0.1.0", show_default=True)
