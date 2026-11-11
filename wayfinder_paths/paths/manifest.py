@@ -39,6 +39,20 @@ _DEFAULT_BOOTSTRAP = "uv"
 _DEFAULT_FALLBACK_BOOTSTRAP = "pipx"
 _DEFAULT_API_KEY_ENV = "WAYFINDER_API_KEY"
 _DEFAULT_CONFIG_PATH_ENV = "WAYFINDER_CONFIG_PATH"
+PROMPT_PLACEHOLDER = "..."
+# Written by `path init` and re-added by `path fmt` (which drops YAML comments)
+# while the manifest has no `prompts:`.
+PROMPTS_COMMENT_BLOCK = (
+    "# Starter prompts (recommended): 3 short things a user might ask this Path,\n"
+    "# shown as suggestions when it's picked in chat. Write your own, in the\n"
+    "# user's voice: plain text, at most 100 characters, no links or markdown.\n"
+    "# If you leave this out, Wayfinder drafts generic ones at publish.\n"
+    "# prompts:\n" + f'#   - "{PROMPT_PLACEHOLDER}"\n' * 3
+)
+MISSING_PROMPTS_WARNING = (
+    "No `prompts:`: add 3 starter prompts so users see suggestions written by "
+    "you (otherwise Wayfinder drafts them at publish)."
+)
 _PROMPTS_MAX_COUNT = 5
 _PROMPT_MAX_LENGTH = 100
 _PROMPT_URL_RE = re.compile(
@@ -96,10 +110,10 @@ def _parse_prompts(raw_obj: Any) -> tuple[str, ...]:
         return ()
     if not isinstance(raw_obj, list):
         raise PathManifestError("wfpath.yaml prompts must be a list of strings")
-    if not 1 <= len(raw_obj) <= _PROMPTS_MAX_COUNT:
+    if len(raw_obj) > _PROMPTS_MAX_COUNT:
         raise PathManifestError(
-            f"wfpath.yaml prompts must have 1-{_PROMPTS_MAX_COUNT} entries "
-            f"(got {len(raw_obj)}); omit the key to let Wayfinder draft them"
+            f"wfpath.yaml prompts must have at most {_PROMPTS_MAX_COUNT} entries "
+            f"(got {len(raw_obj)})"
         )
     prompts: list[str] = []
     for idx, item in enumerate(raw_obj):
@@ -120,6 +134,17 @@ def _parse_prompts(raw_obj: Any) -> tuple[str, ...]:
             raise PathManifestError(f"{label} must be plain text, not markdown")
         prompts.append(prompt)
     return tuple(prompts)
+
+
+def prompt_warnings(prompts: tuple[str, ...]) -> list[str]:
+    if not prompts:
+        return [MISSING_PROMPTS_WARNING]
+    return [
+        f"wfpath.yaml prompts[{idx}] is still the scaffold placeholder "
+        f"{PROMPT_PLACEHOLDER!r}: replace it with a starter prompt of your own"
+        for idx, prompt in enumerate(prompts)
+        if prompt == PROMPT_PLACEHOLDER
+    ]
 
 
 def _parse_bool(raw_obj: Any, *, name: str) -> bool | None:

@@ -7,7 +7,11 @@ from typing import Any
 
 import yaml
 
-from wayfinder_paths.paths.manifest import PathManifest, PathManifestError
+from wayfinder_paths.paths.manifest import (
+    PROMPTS_COMMENT_BLOCK,
+    PathManifest,
+    PathManifestError,
+)
 from wayfinder_paths.paths.renderer import PathSkillRenderError, render_skill_exports
 
 
@@ -262,10 +266,26 @@ def _manifest_dict(manifest: PathManifest) -> dict[str, Any]:
         ordered["host"] = host
 
     for key, value in raw.items():
-        if key not in ordered:
+        # an empty `prompts:` is dropped in favour of the commented block
+        if key not in ordered and key != "prompts":
             ordered[key] = value
 
     return ordered
+
+
+def _dump_yaml(data: dict[str, Any]) -> str:
+    return yaml.safe_dump(data, sort_keys=False, allow_unicode=False)
+
+
+def _manifest_text(ordered: dict[str, Any]) -> str:
+    if "prompts" in ordered:
+        return _dump_yaml(ordered)
+    keys = list(ordered)
+    split = keys.index("tags") + 1
+    head = {key: ordered[key] for key in keys[:split]}
+    tail = {key: ordered[key] for key in keys[split:]}
+    text = _dump_yaml(head) + PROMPTS_COMMENT_BLOCK
+    return text + _dump_yaml(tail) if tail else text
 
 
 def format_path(*, path_dir: Path) -> PathFormatReport:
@@ -281,11 +301,7 @@ def format_path(*, path_dir: Path) -> PathFormatReport:
 
     changed: list[str] = []
 
-    manifest_text = yaml.safe_dump(
-        _manifest_dict(manifest),
-        sort_keys=False,
-        allow_unicode=False,
-    )
+    manifest_text = _manifest_text(_manifest_dict(manifest))
     if _write_if_changed(manifest_path, manifest_text):
         changed.append("wfpath.yaml")
 
