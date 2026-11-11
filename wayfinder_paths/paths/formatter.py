@@ -228,6 +228,8 @@ def _manifest_dict(manifest: PathManifest) -> dict[str, Any]:
         ordered["summary"] = manifest.summary
     ordered["primary_kind"] = manifest.primary_kind
     ordered["tags"] = manifest.tags
+    if manifest.prompts:
+        ordered["prompts"] = list(manifest.prompts)
 
     components = raw.get("components")
     if components is not None:

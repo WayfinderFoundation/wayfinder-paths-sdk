@@ -104,6 +104,11 @@ def _build_wfpath_yaml(
     lines.append("tags:")
     for tag in tags_unique:
         lines.append(f"  - {tag}")
+    lines.append("")
+    lines.append(
+        "# prompts:            # optional, up to 5 short starter prompts shown when your Path is picked in chat"
+    )
+    lines.append('#   - "Find the best ETH basis trade right now"')
 
     lines.append("")
     lines.append("components:")

@@ -33,6 +33,24 @@ tags:
   - monitor
 ```
 
+## Starter prompts (optional)
+
+`prompts` lists short starter prompts shown as tappable suggestions under the Path chip when a user picks your Path in the Wayfinder agent chat:
+
+```yaml
+prompts:
+  - "Find the best ETH basis trade right now"
+  - "Which basis spreads widened in the last 24h?"
+```
+
+Rules (checked by `PathManifest.load`, so `wfpath fmt`, `doctor`, build and publish all fail on a bad value):
+
+- a list of 1-5 strings
+- each prompt is non-empty after trimming and at most 100 characters
+- plain text only: no URLs (`https://…`, `www.…`, `example.com`) and no markdown (backticks, `**bold**`, `[links](…)`, headings, list or quote markers)
+
+If you omit `prompts`, Wayfinder drafts 3 from your `SKILL.md`, name and summary at publish. At publish review, Wayfinder also drops any prompt (yours or drafted) that looks like a URL, a wallet/contract address, markdown or a prompt injection.
+
 ## Skill block
 
 If the path should export skill artifacts, add a `skill` block.
