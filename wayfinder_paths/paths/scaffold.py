@@ -2046,7 +2046,7 @@ def init_path(
     summary: str = "",
     primary_kind: str = "bundle",
     tags: list[str] | None = None,
-    with_applet: bool = True,
+    with_applet: bool = False,
     with_skill: bool = True,
     template: str = "basic",
     archetype: str | None = None,

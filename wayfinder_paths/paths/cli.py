@@ -1307,9 +1307,9 @@ def path_cli() -> None:
 @click.option("--tag", "tags", multiple=True, help="Tag (repeatable).")
 @click.option(
     "--applet/--no-applet",
-    default=True,
+    default=False,
     show_default=True,
-    help="Include the browser applet scaffold used for preview and verification.",
+    help="Include a browser applet scaffold. Applets are retired: Wayfinder no longer serves them.",
 )
 @click.option("--skill/--no-skill", default=True, show_default=True)
 @click.option(

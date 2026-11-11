@@ -107,18 +107,18 @@ def test_path_init_falls_back_to_latest_published_runtime(
     assert manifest.skill.runtime.version == "0.11.1"
 
 
-def test_path_init_defaults_to_applet(tmp_path: Path):
-    path_dir = tmp_path / "default-applet"
+def test_path_init_defaults_to_no_applet(tmp_path: Path):
+    # Applets are retired (Wayfinder no longer serves them).
+    path_dir = tmp_path / "default-no-applet"
     init_path(
         path_dir=path_dir,
-        slug="default-applet",
+        slug="default-no-applet",
         primary_kind="monitor",
     )
 
     manifest = PathManifest.load(path_dir / "wfpath.yaml")
-    assert manifest.applet is not None
-    assert (path_dir / "applet" / "applet.manifest.json").exists()
-    assert (path_dir / "applet" / "dist" / "index.html").exists()
+    assert manifest.applet is None
+    assert not (path_dir / "applet").exists()
 
 
 def test_path_init_no_skill_omits_skill_source(tmp_path: Path):

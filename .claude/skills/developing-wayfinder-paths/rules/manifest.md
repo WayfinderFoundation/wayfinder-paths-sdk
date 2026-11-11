@@ -170,12 +170,4 @@ Use this only for install and render metadata. The source path remains host-neut
 
 ## Applet block
 
-If you include a static applet UI, add:
-
-```yaml
-applet:
-  build_dir: "applet/dist"
-  manifest: "applet/applet.manifest.json"
-```
-
-`build_dir` must contain the HTML entry file declared by the applet manifest.
+Applets are retired: leave the `applet:` block out (see [applet.md](applet.md)).

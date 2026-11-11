@@ -304,9 +304,9 @@ Handling:
 
 Wayfinder paths are user-contributed and validated skills that extend your capabilities. On Shells, you both consume paths and create new ones.
 
-When creating a new Wayfinder path, include a browser applet by default or explicitly ask before omitting one. The manage page uses applet presence as a verification requirement.
+Don't add a browser applet to a path: applets are retired and Wayfinder no longer serves them.
 
-Use `poetry run wayfinder path init <slug>` to scaffold a path. Use `--no-applet` only when the owner intentionally wants no presentation UI.
+Use `poetry run wayfinder path init <slug>` to scaffold a path (it adds no applet).
 
 Use `poetry run wayfinder path update <slug>` for installed path updates. Default target selection is the API's `active_bonded_version`, not `latest_version` and not a pending version. `--version <x.y.z>` lets the user choose a public version. If activation metadata is missing, the CLI completes the pull and prints a manual `path activate` command rather than failing.
 

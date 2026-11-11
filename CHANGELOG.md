@@ -7,6 +7,10 @@ Added
 1. **Onchain token orders via Definitive Flash**: `DefinitiveAdapter` and the `onchain_place_order` / `onchain_cancel_order` / `onchain_list_orders` MCP tools rest limit, stop-loss, take-profit, breakout-buy, trailing-stop and TP + SL orders on EVM tokens through the Wayfinder relay. Tokens stay in the wallet until fill; the adapter checks Definitive's EIP-712 order and approval before signing, and EIP-7702 Kernel wallets sign through their EIP-1271 wrapping.
 2. **Hyperliquid trailing stops** (#854): `HyperliquidAdapter.place_trailing_stop` and the `hyperliquid_place_trailing_stop` MCP tool place HL's native trailing stop (retracement as a percent or price distance, optional activation price; perp only, reduce-only by default, no builder fee).
 
+Changed
+
+1. **Applets are retired**: `wayfinder path init` no longer scaffolds a browser applet by default (`--applet` still adds one), and the README and the paths skill no longer tell agents to build one. Wayfinder doesn't serve path applets.
+
 Fixed
 
 1. **`wayfinder path init` follows `WAYFINDER_PATHS_SOURCE_DIR`**: when set, it is the default `--dir`, so Shells can keep path sources on their persistent volume instead of the image's working tree, which is replaced on every boot.

@@ -5,7 +5,7 @@
 Standard path:
 
 ```bash
-poetry run wayfinder path init my-path --kind monitor --applet --dir examples/paths
+poetry run wayfinder path init my-path --kind monitor --dir examples/paths
 ```
 
 Compiled strategy pipeline:
