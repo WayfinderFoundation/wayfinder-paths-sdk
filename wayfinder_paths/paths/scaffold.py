@@ -8,6 +8,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+from wayfinder_paths.paths.kinds import primary_kind_error
 from wayfinder_paths.paths.pipeline import (
     DEFAULT_ARTIFACTS_DIR,
     STANDARD_OUTPUT_CONTRACT,
@@ -2044,7 +2045,7 @@ def init_path(
     name: str | None = None,
     version: str = "0.1.0",
     summary: str = "",
-    primary_kind: str = "bundle",
+    primary_kind: str | None = None,
     tags: list[str] | None = None,
     with_applet: bool = True,
     with_skill: bool = True,
@@ -2066,9 +2067,12 @@ def init_path(
         raise PathScaffoldError("Unsupported template (expected basic or pipeline)")
     if template == "pipeline" and not archetype:
         raise PathScaffoldError("template=pipeline requires an archetype")
-    primary_kind = (primary_kind or "bundle").strip()
-    if template == "pipeline" and primary_kind == "bundle":
-        primary_kind = "policy"
+    primary_kind = (primary_kind or "").strip().lower() or (
+        "policy" if template == "pipeline" else "script"
+    )
+    kind_error = primary_kind_error(primary_kind)
+    if kind_error:
+        raise PathScaffoldError(kind_error)
     tag_list = tags if tags is not None else [primary_kind]
     if primary_kind not in tag_list:
         tag_list = [primary_kind, *tag_list]
@@ -2106,6 +2110,8 @@ def init_path(
         "summary": summary.strip() or "TODO: describe what this path does.",
         "primary_kind": primary_kind,
         "component_path": component_path,
+        "class_name": "".join(part.title() for part in re.split(r"[-_]+", slug))
+        + "Strategy",
         "template": template,
         "archetype": archetype or "",
     }

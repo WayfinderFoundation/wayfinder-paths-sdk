@@ -7,14 +7,30 @@
 - `slug`
 - `name`
 - `version`
+- `primary_kind`
 
 Recommended top-level metadata:
 
 - `schema_version`
 - `summary`
-- `primary_kind`
 - `tags`
 - `components`
+
+## `primary_kind`
+
+One of `strategy`, `monitor`, `script`, `skill`, `policy`, `tool`, `contract`.
+`wayfinder path doctor` and the registry's review check the path against it, and
+the registry rejects a version that fails:
+
+- `strategy`: a component with `kind: strategy` whose file defines a `Strategy`
+  (or `ActivePerpsStrategy`) subclass implementing `deposit`, `update`, `exit`
+  and `_status` — something `run_strategy` can load. Signals, scores and
+  research without that class are a `monitor` or `tool`.
+- `contract`: ships its Solidity source (`.sol`).
+- `skill`: ships `skill/SKILL.md` or enables the `skill` block.
+- `monitor`, `script`, `policy`, `tool`: no structural rule.
+
+`bundle`, `dashboard` and `applet` are retired and rejected.
 
 Minimal example:
 

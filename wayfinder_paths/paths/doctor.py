@@ -11,6 +11,8 @@ from typing import Any
 import yaml
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 
+from wayfinder_paths.paths.builder import _DEFAULT_IGNORE_DIRS
+from wayfinder_paths.paths.kinds import kind_problems
 from wayfinder_paths.paths.manifest import (
     PathManifest,
     PathManifestError,
@@ -179,6 +181,32 @@ def _validate_components(
                     message=f"Component Python syntax is invalid: {exc}",
                     path=target,
                 )
+
+
+def _validate_kind(
+    *, path_dir: Path, manifest: PathManifest, errors: list[DoctorIssue]
+) -> None:
+    """The registry rejects a version that does not ship what its
+    primary_kind promises; report the same problems before publishing."""
+    files: dict[str, str] = {}
+    for path in sorted(path_dir.rglob("*")):
+        rel = path.relative_to(path_dir)
+        if (
+            path.suffix not in {".py", ".sol"}
+            or not path.is_file()
+            or any(part in _DEFAULT_IGNORE_DIRS for part in rel.parts)
+            or rel.parts[0] == "dist"
+        ):
+            continue
+        try:
+            files[rel.as_posix()] = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+    has_skill = (path_dir / "skill" / "SKILL.md").is_file()
+    for file, message in kind_problems(
+        manifest=manifest.raw, files=files, has_skill=has_skill
+    ):
+        _record_issue(errors, level="error", message=message, path=path_dir / file)
 
 
 def _validate_skill(
@@ -1220,6 +1248,7 @@ def run_doctor(
                 errors=errors,
                 warnings=warnings,
             )
+            _validate_kind(path_dir=path_dir, manifest=manifest, errors=errors)
 
             readme_path = path_dir / "README.md"
             if not readme_path.exists():
