@@ -17,7 +17,18 @@ import ast
 from collections.abc import Mapping
 from typing import Any
 
-PATH_KINDS = ("strategy", "monitor", "script", "skill", "policy", "tool", "contract")
+# Each kind's one-line meaning. Rejections quote these so the author (or their
+# agent) can pick the right kind from the error alone.
+KIND_HINTS = {
+    "strategy": "runs trades through a Strategy subclass run_strategy can load",
+    "monitor": "watches markets or state and emits signals, scores or alerts",
+    "script": "a runnable one-off task or workflow",
+    "skill": "instructions that extend an agent's abilities",
+    "policy": "constrains or guides agent behavior",
+    "tool": "a function the agent calls on demand",
+    "contract": "ships a smart contract with its Solidity source",
+}
+PATH_KINDS = tuple(KIND_HINTS)
 
 # SDK base classes a strategy may extend, and the abstract methods a subclass
 # still owes. ActivePerpsStrategy implements all of Strategy's itself.
@@ -31,12 +42,15 @@ MANIFEST_FILE = "wfpath.yaml"
 
 def primary_kind_error(raw: Any) -> str | None:
     kind = str(raw or "").strip()
-    allowed = ", ".join(PATH_KINDS)
-    if not kind:
-        return f"primary_kind is required; use one of: {allowed}"
-    if kind not in PATH_KINDS:
-        return f"primary_kind '{kind}' is not supported; use one of: {allowed}"
-    return None
+    if kind in PATH_KINDS:
+        return None
+    choices = "; ".join(f"{name} ({hint})" for name, hint in KIND_HINTS.items())
+    problem = (
+        "primary_kind is required"
+        if not kind
+        else f"primary_kind '{kind}' is not supported"
+    )
+    return f"{problem}. Pick the kind that matches what the path ships: {choices}."
 
 
 def kind_problems(
@@ -121,11 +135,17 @@ def _strategy_component_problem(
         if not missing:
             return None
         incomplete.append(
-            f"{node.name} does not implement {', '.join(sorted(missing))}"
+            f"{node.name} leaves {', '.join(sorted(missing))} unimplemented"
         )
     if incomplete:
-        return f"Strategy component '{path}': {'; '.join(incomplete)}."
-    return f"Strategy component '{path}' defines no Strategy subclass."
+        return (
+            f"Strategy component '{path}': {'; '.join(incomplete)} "
+            "(missing, or only a stub such as pass or a constant return)."
+        )
+    return (
+        f"Strategy component '{path}' defines no Strategy subclass. A path that only "
+        "signals, scores or researches is a monitor or tool, not a strategy."
+    )
 
 
 def _missing_methods(
@@ -167,9 +187,47 @@ def _class_index(files: Mapping[str, str]) -> dict[str, tuple[list[str], set[str
                     item.name
                     for item in node.body
                     if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and not _is_stub(item)
                 }
                 index[node.name] = (bases, methods)
     return index
+
+
+def _is_stub(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """A body that does nothing: pass, ..., a raise, or a constant return (the
+    scaffold's ``return False, "TODO"``). It does not count as implemented."""
+    body = func.body
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+    ):
+        body = body[1:]  # docstring
+    if not body:
+        return True
+    if len(body) > 1:
+        return False
+    stmt = body[0]
+    if isinstance(stmt, (ast.Pass, ast.Raise)):
+        return True
+    if isinstance(stmt, ast.Expr):
+        return isinstance(stmt.value, ast.Constant)
+    if isinstance(stmt, ast.Return):
+        return stmt.value is None or _is_constant(stmt.value)
+    return False
+
+
+def _is_constant(node: ast.expr) -> bool:
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return all(_is_constant(item) for item in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(
+            key is not None and _is_constant(key) and _is_constant(value)
+            for key, value in zip(node.keys, node.values, strict=True)
+        )
+    return False
 
 
 def _base_name(node: ast.expr) -> str:

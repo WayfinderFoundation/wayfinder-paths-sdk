@@ -20,16 +20,16 @@ from wayfinder_paths.core.strategies.Strategy import Strategy
 
 class Grid(Strategy):
     async def deposit(self, **kwargs):
-        return True, "ok"
+        return await self.place_grid(kwargs["amount"])
 
     async def update(self):
-        return True, "ok"
+        return await self.rebalance()
 
     async def exit(self, **kwargs):
-        return True, "ok"
+        return await self.close_all()
 
     async def _status(self):
-        return {}
+        return {"portfolio_value": self.value}
 """
 
 
@@ -57,10 +57,27 @@ def test_active_perps_subclass_inherits_the_methods():
 
 
 def test_missing_abstract_methods_are_named():
-    code = "class Half(Strategy):\n    async def deposit(self):\n        pass\n"
+    code = "class Half(Strategy):\n    async def deposit(self):\n        return await self.go()\n"
     [(file, message)] = problems({"strategy.py": code})
     assert file == "strategy.py"
-    assert "Half does not implement _status, exit, update" in message
+    assert "Half leaves _status, exit, update unimplemented" in message
+
+
+def test_scaffold_stubs_do_not_count_as_implemented():
+    code = (
+        "class Grid(Strategy):\n"
+        "    async def deposit(self, **kwargs):\n"
+        "        return False, 'TODO: move funds'\n"
+        "    async def update(self):\n"
+        '        """Rebalance."""\n'
+        "        pass\n"
+        "    async def exit(self, **kwargs):\n"
+        "        raise NotImplementedError\n"
+        "    async def _status(self):\n"
+        "        return {'portfolio_value': 0.0}\n"
+    )
+    [(_, message)] = problems({"strategy.py": code})
+    assert "Grid leaves _status, deposit, exit, update unimplemented" in message
 
 
 def test_a_locally_defined_strategy_base_does_not_count():
@@ -85,7 +102,7 @@ def _errors(path_dir: Path) -> list[str]:
     return [issue.message for issue in run_doctor(path_dir=path_dir).errors]
 
 
-def test_scaffolded_strategy_passes_doctor(tmp_path: Path):
+def test_scaffolded_strategy_fails_doctor_until_implemented(tmp_path: Path):
     path_dir = tmp_path / "grid-bot"
     init_path(
         path_dir=path_dir,
@@ -95,8 +112,14 @@ def test_scaffolded_strategy_passes_doctor(tmp_path: Path):
         with_skill=False,
     )
 
-    source = (path_dir / "strategy.py").read_text(encoding="utf-8")
+    strategy = path_dir / "strategy.py"
+    source = strategy.read_text(encoding="utf-8")
     assert "class GridBotStrategy(Strategy):" in source
+    assert any("unimplemented" in error for error in _errors(path_dir))
+
+    strategy.write_text(
+        FULL_STRATEGY.replace("class Grid", "class GridBot"), encoding="utf-8"
+    )
     assert _errors(path_dir) == []
 
 

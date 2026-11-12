@@ -6,8 +6,9 @@ from wayfinder_paths.core.strategies.Strategy import StatusDict, StatusTuple, St
 class {{class_name}}(Strategy):
     """TODO: describe the trade this strategy runs.
 
-    `wayfinder path doctor` and the registry both require a Strategy subclass
-    with deposit, update, exit and _status implemented.
+    `wayfinder path doctor` and the registry reject this path until deposit,
+    update, exit and _status do real work; the TODO stubs below don't count.
+    If the path only signals, scores or researches, use --kind monitor or tool.
     """
 
     async def deposit(self, **kwargs) -> StatusTuple:

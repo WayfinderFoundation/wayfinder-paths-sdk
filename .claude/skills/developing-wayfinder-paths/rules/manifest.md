@@ -24,7 +24,8 @@ the registry rejects a version that fails:
 
 - `strategy`: a component with `kind: strategy` whose file defines a `Strategy`
   (or `ActivePerpsStrategy`) subclass implementing `deposit`, `update`, `exit`
-  and `_status` — something `run_strategy` can load. Signals, scores and
+  and `_status` with real bodies — something `run_strategy` can load. Stubs
+  (`pass`, `...`, `raise`, a constant return like the scaffold's TODOs) fail. Signals, scores and
   research without that class are a `monitor` or `tool`.
 - `contract`: ships its Solidity source (`.sol`).
 - `skill`: ships `skill/SKILL.md` or enables the `skill` block.
