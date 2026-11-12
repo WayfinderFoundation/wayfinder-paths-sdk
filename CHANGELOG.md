@@ -2,10 +2,17 @@
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-11-12
+
+Everything merged from #784 through #867 since `v0.11.1`. Path publishing needs this release: review rejects skill exports built by 0.11.1.
+
 Added
 
 1. **Onchain token orders via Definitive Flash**: `DefinitiveAdapter` and the `onchain_place_order` / `onchain_cancel_order` / `onchain_list_orders` MCP tools rest limit, stop-loss, take-profit, breakout-buy, trailing-stop and TP + SL orders on EVM tokens through the Wayfinder relay. Tokens stay in the wallet until fill; the adapter checks Definitive's EIP-712 order and approval before signing, and EIP-7702 Kernel wallets sign through their EIP-1271 wrapping.
 2. **Hyperliquid trailing stops** (#854): `HyperliquidAdapter.place_trailing_stop` and the `hyperliquid_place_trailing_stop` MCP tool place HL's native trailing stop (retracement as a percent or price distance, optional activation price; perp only, reduce-only by default, no builder fee).
+3. **Starter prompts in `wfpath.yaml`** (#865): an optional `prompts:` key holds 1–5 plain-text suggestions (at most 100 characters each, no links or markdown) shown when the Path is picked in chat. `path init` scaffolds a commented-out guidance block, `path fmt` keeps it, and `path doctor` warns when prompts are missing or still the placeholder; publishing still works and Wayfinder drafts generic ones. `path build` and `path publish` print doctor warnings to stderr.
+4. **Upload status**: `wayfinder path upload-status <id>` shows where a publish queued for isolated review stands, including the reason and findings when it is rejected.
+5. **Arc mainnet** (#789, #790): chain 5042 replaces the unreleased Arc testnet support, with native USDC (18 decimals) and ERC-20 USDC (6 decimals) handled as one balance. Adds Aave v4 lending and vaults, Morpho discovery without a public allocator, and Uniswap v4 position lifecycle methods on Arc. Gas-token, settlement-asset and quote responses carry Arc context, and the agent chain table lists it.
 
 Changed
 
@@ -17,6 +24,14 @@ Fixed
 1. **`wayfinder path init` follows `WAYFINDER_PATHS_SOURCE_DIR`**: when set, it is the default `--dir`, so Shells can keep path sources on their persistent volume instead of the image's working tree, which is replaced on every boot.
 2. **Polymarket Data API v2**: v1 was retired (every route returns HTTP 410), which broke `get_positions` / `get_activity` / `get_trades` and the positions, PnL, activity and trades in `polymarket_get_state`. The adapter now calls `/v2`, follows `cursor` pagination (bounded pages, repeated-cursor guard, retry on 429) and maps v2 rows back to the existing field names. `offset` is emulated by walking cursors; `market=` is sent as `condition=`.
 3. **Paths pinned to SDK 0.7.0–0.10.0 run again**: the runtime floor from #774 now covers every pin below 0.11.1, not just 0.11.0. Such pins resolve to 0.11.1, so the installed SDK is used (or `~=0.11.1` is bootstrapped) instead of a PyPI release that can't run a path (no `wayfinder path` before 0.11.0; no `mcp` dependency in 0.11.0). An editable checkout still reporting 0.10.0 no longer counts as a compatible runtime for those paths.
+4. **Skill-only paths run on OpenCode** (#853): the export rendered a `<skill>-orchestrator` for every path, including paths with no workers, where it was told to delegate and denied every subagent, so the agent could only stop. An orchestrator is now rendered only when the path declares `agents`; a skill-only path's command runs on the current agent.
+5. **Path dependencies survive `path fmt` and are reused** (#831): `wayfinder path fmt` keeps `skill.dependencies` (required/optional flags and host-specific names). A required dependency that is already installed is reused when its lockfile entry, manifest identity and cached bundle checksum match the registry, instead of being downloaded and installed again.
+6. **Job notifications follow the invoking chat** (#832): a scheduled job's results go to the chat that most recently added, updated, resumed or ran it. The binding is saved before the work can start, which removes the race where a fast worker posted into the previous chat. Notifications to archived or deleted sessions are skipped.
+7. **MCP startup no longer hangs on path heartbeats** (#786): installed-path heartbeats use a 5-second timeout and their failures don't block startup. Raw Hyperliquid info requests skip the eager market-metadata download, stay off the event loop and retry transient read timeouts. Job-log reads are capped at 64 KB.
+8. **A dead RPC no longer aborts a transaction** (#847): nonce, gas price and block-number reads take the answer from the RPCs that responded, broadcast tries each RPC in order, and waiting for a receipt ignores RPCs that fail.
+9. **Slipstream in-range probability for mixed-decimal pools** (#846): `slipstream_prob_in_range_week` compared range bounds and the pool price in different units unless both tokens had the same decimals, so it returned 0 (and a zero fee-APR estimate) for pools such as WETH/USDC.
+10. **`ActivePerpsStrategy` accepts every live HIP-3 dex** (#844): `abcd`, `cash`, `para`, `mkts` and `io` join `xyz`, `flx`, `vntl`, `hyna` and `km`; declaring one of them no longer fails when the class is defined.
+11. **Definitive approvals sized for other open orders** (#858): placing a second order that spends the same token failed with "the approval is larger than the order". The approval is now accepted up to the new order plus what the wallet's open orders on that chain can still spend of the token.
 
 Security
 
@@ -26,7 +41,8 @@ Security
 4. **Activation re-verifies installed paths**: `wayfinder path activate --slug` (including the Shells boot-time restore) checks `bundle.zip` against the lockfile sha256 and every bundle file on disk against the bundle. A path installed through the verified flow is marked `"integrity": "verified"` in the lockfile, and activation refuses it if a file is modified, missing, symlinked or newly executable. Paths installed before this release have no mark and are grandfathered: they activate as before, and anything the check finds is reported in `integrity_warnings`. Reinstalling or upgrading such a path marks it. Files the bundle didn't contain are reported as `integrity_warnings` either way.
 5. **OpenCode artifact gate stays inside its artifacts directory**: `wayfinder_artifact_gate.ts` validates the slug in `init_run` (it was used unchecked to build the run directory) as well as run ids and file names, and refuses any path that resolves outside `<worktree>/<artifacts_dir>`.
 6. **No `.claude/settings.json` in the Claude skill export** (#863): its hooks ran the path's own `validate_hook.py` / `inject_run_context.py` on every edit and it pre-approved Bash patterns, so Path review rejects it. Skills, agents and `.claude/CLAUDE.md` rules still install; Claude Code asks before a tool's first use.
-5. **Upload status** (`wayfinder path upload-status <id>`) for publishes queued for isolated review.
+7. **The SDK only talks to Wayfinder API hosts** (#860): `--api-url`, `system.api_base_url`, `system.paths_api_base_url` and `WAYFINDER_PATHS_API_URL` can select `wayfinder.ai`, `strategies.wayfinder.ai` or `strategies-dev.wayfinder.ai` over https, and nothing else (plus `localhost` off a Shells instance). On a Shells instance the host comes from `WAYFINDER_API_BASE_URL`. `X-API-KEY` is dropped from any request or redirect that leaves the API host, and `PathsApiClient` does not follow redirects.
+8. **Compromised eMudhra CAs are no longer trusted** (#845): `certifi >= 2026.10.19` drops the emSign roots whose intermediates had their keys compromised, and an offline test fails if any of the published roots or intermediates is in the trust store.
 
 ## [0.11.1] - 2026-09-09
 
