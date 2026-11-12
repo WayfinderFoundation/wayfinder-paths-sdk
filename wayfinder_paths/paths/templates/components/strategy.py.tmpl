@@ -1,5 +1,34 @@
 from __future__ import annotations
 
+from wayfinder_paths.core.strategies.Strategy import StatusDict, StatusTuple, Strategy
+
+
+class {{class_name}}(Strategy):
+    """TODO: describe the trade this strategy runs.
+
+    `wayfinder path doctor` and the registry reject this path until deposit,
+    update, exit and _status do real work; the TODO stubs below don't count.
+    If the path only signals, scores or researches, use --kind monitor or tool.
+    """
+
+    async def deposit(self, **kwargs) -> StatusTuple:
+        return False, "TODO: move funds into the strategy"
+
+    async def update(self) -> StatusTuple:
+        return False, "TODO: act on the latest market state"
+
+    async def exit(self, **kwargs) -> StatusTuple:
+        return False, "TODO: unwind positions and return funds"
+
+    async def _status(self) -> StatusDict:
+        return {
+            "portfolio_value": 0.0,
+            "net_deposit": 0.0,
+            "strategy_status": "idle",
+            "gas_available": 0.0,
+            "gassed_up": False,
+        }
+
 
 def wfpath_meta() -> dict:
     return {

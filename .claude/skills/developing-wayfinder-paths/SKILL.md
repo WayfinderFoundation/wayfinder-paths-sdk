@@ -8,7 +8,7 @@ metadata:
 ## When to use
 
 Use this skill when you are:
-- Creating a new Path (bundle) to share a strategy/script/skill/contract UI
+- Creating a new Path to share a strategy, monitor, script, skill, policy, tool or contract
 - Creating a compiled strategy-pipeline path with fixed phases, artifacts, and evals
 - Publishing a new path version
 - Emitting signals/receipts to make a path page feel “alive”
@@ -17,7 +17,7 @@ Use this skill when you are:
 
 ## How to use
 
-- To scaffold a normal path, start with `poetry run wayfinder path init <slug> --dir <base-dir>`.
+- To scaffold a normal path, start with `poetry run wayfinder path init <slug> --dir <base-dir> --kind <kind>`. Pick the kind from what the path ships ([rules/manifest.md](rules/manifest.md#primary_kind)): `strategy` only for a working `Strategy` subclass that trades; signals, scores and research are `monitor` or `tool`.
 - To scaffold a compiled strategy pipeline, use `poetry run wayfinder path init <slug> --dir <base-dir> --template pipeline --archetype <conditional-router|hedge-finder|spread-radar>`.
 - `path init` uses `--dir`, while the later path commands (`fmt`, `doctor`, `render-skill`, `build`, `publish`) use `--path`.
 - For pipeline paths, run `poetry run wayfinder path eval --path .` before publishing or exporting skills.

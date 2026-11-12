@@ -352,6 +352,8 @@ Don't add a browser applet to a path: applets are retired and Wayfinder no longe
 
 Use `poetry run wayfinder path init <slug>` to scaffold a path (it adds no applet).
 
+Pass `--kind` for what the path actually ships; doctor and the registry check it. Use `strategy` only for a working `Strategy` subclass that trades (TODO stubs are rejected). Signals, scores, alerts and research are `monitor` or `tool`; a one-off task is `script`; agent instructions are `skill`. If the owner calls something a strategy but it doesn't trade, say so and pick the honest kind.
+
 Use `poetry run wayfinder path update <slug>` for installed path updates. Default target selection is the API's `active_bonded_version`, not `latest_version` and not a pending version. `--version <x.y.z>` lets the user choose a public version. If activation metadata is missing, the CLI completes the pull and prints a manual `path activate` command rather than failing.
 
 ### More
