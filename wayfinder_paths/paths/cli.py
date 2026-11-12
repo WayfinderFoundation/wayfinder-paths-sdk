@@ -31,6 +31,7 @@ from wayfinder_paths.paths.install_safety import (
     safe_path_component,
     verify_installed_tree,
 )
+from wayfinder_paths.paths.kinds import PATH_KINDS
 from wayfinder_paths.paths.manifest import (
     PathManifest,
     PathManifestError,
@@ -1300,12 +1301,9 @@ def path_cli() -> None:
 @click.option(
     "--kind",
     "primary_kind",
-    default="bundle",
-    show_default=True,
-    type=click.Choice(
-        ["bundle", "monitor", "strategy", "script", "contract", "dashboard", "policy"],
-        case_sensitive=False,
-    ),
+    default=None,
+    type=click.Choice(list(PATH_KINDS), case_sensitive=False),
+    help="Path kind (default: script, or policy for --template pipeline).",
 )
 @click.option("--tag", "tags", multiple=True, help="Tag (repeatable).")
 @click.option(
@@ -1331,7 +1329,7 @@ def init_cmd(
     name: str | None,
     version: str,
     summary: str,
-    primary_kind: str,
+    primary_kind: str | None,
     tags: tuple[str, ...],
     applet: bool,
     skill: bool,
@@ -1348,7 +1346,7 @@ def init_cmd(
             name=name,
             version=version,
             summary=summary,
-            primary_kind=primary_kind.lower(),
+            primary_kind=primary_kind,
             tags=list(tags) if tags else None,
             with_applet=applet,
             with_skill=skill,
