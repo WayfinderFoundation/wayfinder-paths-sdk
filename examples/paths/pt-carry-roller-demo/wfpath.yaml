@@ -3,8 +3,8 @@ schema_version: "0.1"
 slug: pt-carry-roller-demo
 name: PT Carry Roller (Delta Lab Demo)
 version: 0.1.0
-summary: "Demo strategy path: pick a Pendle PT by net carry and roll it; applet shows selection + NAV using Delta Lab."
-primary_kind: strategy
+summary: "Demo backtest: pick a Pendle PT by net carry and roll it; applet shows selection + NAV using Delta Lab."
+primary_kind: script
 
 tags:
   - demo

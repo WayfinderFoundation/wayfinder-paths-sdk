@@ -32,6 +32,10 @@ class Grid(Strategy):
         return {"portfolio_value": self.value}
 """
 
+EXAMPLE_MANIFESTS = sorted(
+    (Path(__file__).resolve().parents[2] / "examples" / "paths").glob("*/wfpath.yaml")
+)
+
 
 def problems(files, manifest=STRATEGY_MANIFEST, has_skill=False):
     return kind_problems(manifest=manifest, files=files, has_skill=has_skill)
@@ -161,3 +165,23 @@ def test_init_defaults_and_rejects_retired_kinds(tmp_path: Path):
 
     with pytest.raises(PathScaffoldError, match="not supported"):
         init_path(path_dir=tmp_path / "b", slug="b", primary_kind="bundle")
+
+
+@pytest.mark.parametrize(
+    "manifest_path", EXAMPLE_MANIFESTS, ids=lambda p: p.parent.name
+)
+def test_example_paths_ship_what_their_kind_promises(manifest_path: Path):
+    # The registry rejects a version that fails these rules, so the examples
+    # people copy from have to pass them.
+    path_dir = manifest_path.parent
+    files = {
+        path.relative_to(path_dir).as_posix(): path.read_text(encoding="utf-8")
+        for path in path_dir.rglob("*")
+        if path.suffix in {".py", ".sol"} and path.is_file()
+    }
+    problems_found = kind_problems(
+        manifest=PathManifest.load(manifest_path).raw,
+        files=files,
+        has_skill=(path_dir / "skill" / "SKILL.md").is_file(),
+    )
+    assert problems_found == []
