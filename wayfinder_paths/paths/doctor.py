@@ -17,6 +17,7 @@ from wayfinder_paths.paths.manifest import (
     PathManifest,
     PathManifestError,
     PathSkillConfig,
+    prompt_warnings,
     resolve_skill_runtime,
 )
 from wayfinder_paths.paths.path_safety import (
@@ -1242,6 +1243,10 @@ def run_doctor(
 
         if not installed_host_mode:
             ctx = _path_context(manifest)
+            for message in prompt_warnings(manifest.prompts):
+                _record_issue(
+                    warnings, level="warning", message=message, path=manifest_path
+                )
             _validate_components(
                 path_dir=path_dir,
                 manifest=manifest,

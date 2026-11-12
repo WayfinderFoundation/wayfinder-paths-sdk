@@ -353,6 +353,9 @@ def _prepare_path_for_build(
     except PathDoctorError as exc:
         raise click.ClickException(str(exc)) from exc
     _raise_for_doctor_errors(doctor_report)
+    # stderr keeps build/publish JSON on stdout parseable
+    for warning in _skill_export_warning_strings(doctor_report):
+        click.echo(f"warning: {warning}", err=True)
 
     try:
         render_report = render_skill_exports(path_dir=path_dir)
