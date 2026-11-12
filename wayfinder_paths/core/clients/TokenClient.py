@@ -80,6 +80,7 @@ class GasToken(TypedDict):
 
 
 class FuzzyTokenResult(TypedDict):
+    token_id: NotRequired[str]
     coingecko_id: NotRequired[str]
     address: NotRequired[str]
     chain: NotRequired[str]
@@ -177,10 +178,20 @@ class TokenClient(WayfinderClient):
         return token
 
     async def discover_tokens(
-        self, chain_code: str, dimension: str = "trending", limit: int = 25
+        self,
+        chain_code: str,
+        dimension: str = "trending",
+        limit: int = 25,
+        query: str | None = None,
     ) -> dict[str, Any]:
         url = f"{get_api_base_url()}/blockchain/tokens/discover/"
-        params = {"chain_code": chain_code, "dimension": dimension, "limit": limit}
+        params: dict[str, Any] = {
+            "chain_code": chain_code,
+            "dimension": dimension,
+            "limit": limit,
+        }
+        if query:
+            params["query"] = query
         response = await self._authed_request("GET", url, params=params)
         response.raise_for_status()
         return response.json()
@@ -218,7 +229,14 @@ class TokenClient(WayfinderClient):
         tokens: list[FuzzyTokenResult] = []
         for token_elem in root.findall("token"):
             token: FuzzyTokenResult = {}
-            for field in ["coingecko_id", "address", "chain", "name", "symbol"]:
+            for field in [
+                "token_id",
+                "coingecko_id",
+                "address",
+                "chain",
+                "name",
+                "symbol",
+            ]:
                 elem = token_elem.find(field)
                 if elem is not None and elem.text:
                     token[field] = elem.text  # type: ignore[literal-required]
