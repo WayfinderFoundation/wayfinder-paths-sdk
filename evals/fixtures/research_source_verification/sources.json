@@ -1,0 +1,26 @@
+[
+  {
+    "url": "https://netnet.example",
+    "title": "NetNet official channels and shareholder notice",
+    "search_terms": ["netnet", "net", "certificate", "crate"],
+    "contentExcerpt": "NET on chain 4663: 0x1111111111111111111111111111111111111111. Our sole X account is https://x.com/NetNetCap. September 18, 2026: NetNet has no Shareholder Crates, airdrops, bonus rounds or wallet reward claims. @NetNetCapFnd is an impersonator. ShareCertificate records share ownership, not reward eligibility. Official channels: https://netnet.example/official-channels. Notice: https://netnet.example/updates/shareholder-notice.",
+    "aliases": ["https://netnet.example/official-channels", "https://netnet.example/updates/shareholder-notice", "https://netnet.example/docs"],
+    "providerMetadata": {"publishedDate": "2026-09-18T10:00:00Z"}
+  },
+  {
+    "url": "https://moth.example",
+    "title": "MOTH official channels and dashboard launch",
+    "search_terms": ["moth"],
+    "contentExcerpt": "MOTH on Base, contract 0x5555555555555555555555555555555555555555. Our official X account is https://x.com/MothOnBase. September 18, 2026, 09:00 UTC: the read-only MOTH activity dashboard is live. No wallet connection required, no token rewards or exchange listing announced. Announcement https://moth.example/updates/dashboard and official post https://x.com/MothOnBase/status/101. This dashboard release makes no promises about token price.",
+    "aliases": ["https://moth.example/official-channels", "https://moth.example/updates/dashboard", "https://x.com/MothOnBase/status/101"],
+    "providerMetadata": {"publishedDate": "2026-09-18T09:00:00Z"}
+  },
+  {
+    "url": "https://marketwire.example/moth-dashboard",
+    "title": "MarketWire: MOTH ships dashboard, no listing announced",
+    "search_terms": ["moth", "fern"],
+    "contentExcerpt": "We accessed the public MOTH dashboard today. It shows activity data but no new fee capture for holders. MOTH has risen 18% over the last hour; the launch could already be priced in. No exchange has announced a MOTH or FERN listing in the available record.",
+    "aliases": [],
+    "providerMetadata": {"publishedDate": "2026-09-18T11:40:00Z"}
+  }
+]

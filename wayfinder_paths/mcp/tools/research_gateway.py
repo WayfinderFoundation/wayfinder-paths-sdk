@@ -230,6 +230,11 @@ async def research_social_x_search(
 ) -> dict[str, Any]:
     """Search X through the Wayfinder Research Gateway.
 
+    Returns an AI-generated social search summary, not identity-verified evidence.
+    Handle filters limit search scope; they do not verify an account or its claims.
+    Establish official handles independently before using allowedXHandles to
+    check a project announcement. Missing evidence metadata is not verification.
+
     Args:
         query: Social/X search query.
         allowedXHandles: Optional comma/newline-separated handles to include.
