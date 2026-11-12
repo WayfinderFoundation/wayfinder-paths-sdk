@@ -32,8 +32,14 @@ class Grid(Strategy):
         return {"portfolio_value": self.value}
 """
 
-EXAMPLE_MANIFESTS = sorted(
-    (Path(__file__).resolve().parents[2] / "examples" / "paths").glob("*/wfpath.yaml")
+# The example paths committed to the repo. examples/paths/ is gitignored, so a
+# glob would also pick up whatever a developer keeps there locally.
+EXAMPLE_PATHS = Path(__file__).resolve().parents[2] / "examples" / "paths"
+COMMITTED_EXAMPLES = (
+    "boros-carry-demo",
+    "conditional-router-reference",
+    "pt-carry-roller-demo",
+    "virtual-delta-neutral",
 )
 
 
@@ -167,20 +173,18 @@ def test_init_defaults_and_rejects_retired_kinds(tmp_path: Path):
         init_path(path_dir=tmp_path / "b", slug="b", primary_kind="bundle")
 
 
-@pytest.mark.parametrize(
-    "manifest_path", EXAMPLE_MANIFESTS, ids=lambda p: p.parent.name
-)
-def test_example_paths_ship_what_their_kind_promises(manifest_path: Path):
+@pytest.mark.parametrize("example", COMMITTED_EXAMPLES)
+def test_example_paths_ship_what_their_kind_promises(example: str):
     # The registry rejects a version that fails these rules, so the examples
     # people copy from have to pass them.
-    path_dir = manifest_path.parent
+    path_dir = EXAMPLE_PATHS / example
     files = {
         path.relative_to(path_dir).as_posix(): path.read_text(encoding="utf-8")
         for path in path_dir.rglob("*")
         if path.suffix in {".py", ".sol"} and path.is_file()
     }
     problems_found = kind_problems(
-        manifest=PathManifest.load(manifest_path).raw,
+        manifest=PathManifest.load(path_dir / "wfpath.yaml").raw,
         files=files,
         has_skill=(path_dir / "skill" / "SKILL.md").is_file(),
     )
