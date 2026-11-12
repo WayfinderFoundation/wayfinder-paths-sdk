@@ -346,9 +346,9 @@ Handling:
 
 Wayfinder paths are user-contributed and validated skills that extend your capabilities. On Shells, you both consume paths and create new ones.
 
-When creating a new Wayfinder path, include a browser applet by default or explicitly ask before omitting one. The manage page uses applet presence as a verification requirement.
+Don't add a browser applet to a path: applets are retired and Wayfinder no longer serves them.
 
-Use `poetry run wayfinder path init <slug>` to scaffold a path. Use `--no-applet` only when the owner intentionally wants no presentation UI.
+Use `poetry run wayfinder path init <slug>` to scaffold a path (it adds no applet).
 
 Pass `--kind` for what the path actually ships; doctor and the registry check it. Use `strategy` only for a working `Strategy` subclass that trades (TODO stubs are rejected). Signals, scores, alerts and research are `monitor` or `tool`; a one-off task is `script`; agent instructions are `skill`. If the owner calls something a strategy but it doesn't trade, say so and pick the honest kind.
 

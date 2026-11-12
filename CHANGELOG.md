@@ -10,6 +10,7 @@ Added
 Changed
 
 1. **Path kinds are a fixed list, and a strategy must ship a strategy**: `primary_kind` must be one of `strategy`, `monitor`, `script`, `skill`, `policy`, `tool`, `contract`; `wayfinder path doctor` (and so `build`/`publish`) errors on a missing or retired kind (`bundle`, `dashboard`). A `strategy` path needs a `kind: strategy` component defining a `Strategy` (or `ActivePerpsStrategy`) subclass whose `deposit`, `update`, `exit` and `_status` do real work (stubs such as `pass` or the scaffold's `return False, "TODO"` fail); a `contract` path needs `.sol` source; a `skill` path needs `skill/SKILL.md` or an enabled `skill` block. The registry applies the same rules at review. `wayfinder path init --kind` offers only the supported kinds and defaults to `script` (`policy` for `--template pipeline`), the strategy scaffold now includes a `Strategy` subclass to fill in, and the Wayfinder agents and the paths skill tell the agent how to pick a kind. Rejections list every kind with its meaning. Loading a manifest stays permissive, so installed paths published under a retired kind keep working.
+2. **Applets are retired**: `wayfinder path init` no longer scaffolds a browser applet by default (`--applet` still adds one), and the README and the paths skill no longer tell agents to build one. Wayfinder doesn't serve path applets.
 
 Fixed
 
