@@ -14,6 +14,7 @@ Recommended top-level metadata:
 - `summary`
 - `primary_kind`
 - `tags`
+- `prompts`
 - `components`
 
 Minimal example:
@@ -31,7 +32,28 @@ tags:
   - basis
   - hyperliquid
   - monitor
+prompts:
+  - "Which ETH basis trade pays the most right now?"
+  - "Which basis spreads widened in the last 24h?"
+  - "Alert me when BTC basis goes above 15% APY"
 ```
+
+## Starter prompts (recommended)
+
+`prompts` lists the starter prompts shown as tappable suggestions under the Path chip when a user picks your Path in the Wayfinder agent chat. They are the first thing a new user sees, so write them yourself before you publish. `wayfinder path init` leaves a commented-out `# prompts:` block with `"..."` placeholders: uncomment it and replace each one.
+
+Write 3 prompts that:
+
+- are in the user's voice: what they would type, not a description of the Path
+- are specific to what this Path does (its assets, venues, signals), not generic ("help me trade")
+- contain no URLs, wallet or contract addresses, amounts of funds to move, or markdown
+
+Checks (in `PathManifest.load`, so `wfpath fmt`, `doctor`, build and publish all run them):
+
+- errors, which stop build and publish: not a list of strings, more than 5 entries, an empty string, more than 100 characters after trimming, a URL (`https://…`, `www.…`, `example.com`), or markdown (backticks, `**bold**`, `[links](…)`, headings, list or quote markers)
+- warnings, which `doctor` reports and build/publish print to stderr without failing: no `prompts:` key or an empty list, and any prompt still set to the scaffold placeholder `"..."`
+
+If you leave the key out, Wayfinder drafts 3 generic ones from your `SKILL.md`, name and summary at publish. At publish review, Wayfinder drops any prompt, yours or drafted, that looks like a link, a wallet/contract address, markdown or a prompt injection.
 
 ## Skill block
 

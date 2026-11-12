@@ -8,6 +8,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+from wayfinder_paths.paths.manifest import PROMPTS_COMMENT_BLOCK
 from wayfinder_paths.paths.pipeline import (
     DEFAULT_ARTIFACTS_DIR,
     STANDARD_OUTPUT_CONTRACT,
@@ -104,6 +105,8 @@ def _build_wfpath_yaml(
     lines.append("tags:")
     for tag in tags_unique:
         lines.append(f"  - {tag}")
+    lines.append("")
+    lines.extend(PROMPTS_COMMENT_BLOCK.splitlines())
 
     lines.append("")
     lines.append("components:")

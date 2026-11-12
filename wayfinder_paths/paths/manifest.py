@@ -39,6 +39,29 @@ _DEFAULT_BOOTSTRAP = "uv"
 _DEFAULT_FALLBACK_BOOTSTRAP = "pipx"
 _DEFAULT_API_KEY_ENV = "WAYFINDER_API_KEY"
 _DEFAULT_CONFIG_PATH_ENV = "WAYFINDER_CONFIG_PATH"
+PROMPT_PLACEHOLDER = "..."
+# Written by `path init` and re-added by `path fmt` (which drops YAML comments)
+# while the manifest has no `prompts:`.
+PROMPTS_COMMENT_BLOCK = (
+    "# Starter prompts (recommended): 3 short things a user might ask this Path,\n"
+    "# shown as suggestions when it's picked in chat. Write your own, in the\n"
+    "# user's voice: plain text, at most 100 characters, no links or markdown.\n"
+    "# If you leave this out, Wayfinder drafts generic ones at publish.\n"
+    "# prompts:\n" + f'#   - "{PROMPT_PLACEHOLDER}"\n' * 3
+)
+MISSING_PROMPTS_WARNING = (
+    "No `prompts:`: add 3 starter prompts so users see suggestions written by "
+    "you (otherwise Wayfinder drafts them at publish)."
+)
+_PROMPTS_MAX_COUNT = 5
+_PROMPT_MAX_LENGTH = 100
+_PROMPT_URL_RE = re.compile(
+    r"[a-z][a-z0-9+.-]*://|\bwww\.|\b[a-z0-9-]+\.(?:com|org|net|io|xyz|ai|app|co|fi|finance|gg|eth)\b",
+    re.IGNORECASE,
+)
+_PROMPT_MARKDOWN_RE = re.compile(
+    r"`|\*\*|__|~~|!?\[[^\]]*\]\(|^\s*(?:#{1,6}\s|>|[-*+]\s|\d+[.)]\s)"
+)
 
 
 def _slugify(value: str) -> str:
@@ -80,6 +103,48 @@ def _parse_string_list(raw_obj: Any, *, name: str) -> list[str]:
         raise PathManifestError(f"{name} must be a list")
     values = [str(item).strip() for item in raw_obj if str(item).strip()]
     return values
+
+
+def _parse_prompts(raw_obj: Any) -> tuple[str, ...]:
+    if raw_obj is None:
+        return ()
+    if not isinstance(raw_obj, list):
+        raise PathManifestError("wfpath.yaml prompts must be a list of strings")
+    if len(raw_obj) > _PROMPTS_MAX_COUNT:
+        raise PathManifestError(
+            f"wfpath.yaml prompts must have at most {_PROMPTS_MAX_COUNT} entries "
+            f"(got {len(raw_obj)})"
+        )
+    prompts: list[str] = []
+    for idx, item in enumerate(raw_obj):
+        label = f"wfpath.yaml prompts[{idx}]"
+        if not isinstance(item, str):
+            raise PathManifestError(f"{label} must be a string")
+        prompt = item.strip()
+        if not prompt:
+            raise PathManifestError(f"{label} must not be empty")
+        if len(prompt) > _PROMPT_MAX_LENGTH:
+            raise PathManifestError(
+                f"{label} must be at most {_PROMPT_MAX_LENGTH} characters "
+                f"(got {len(prompt)})"
+            )
+        if _PROMPT_URL_RE.search(prompt):
+            raise PathManifestError(f"{label} must not contain a URL")
+        if _PROMPT_MARKDOWN_RE.search(prompt):
+            raise PathManifestError(f"{label} must be plain text, not markdown")
+        prompts.append(prompt)
+    return tuple(prompts)
+
+
+def prompt_warnings(prompts: tuple[str, ...]) -> list[str]:
+    if not prompts:
+        return [MISSING_PROMPTS_WARNING]
+    return [
+        f"wfpath.yaml prompts[{idx}] is still the scaffold placeholder "
+        f"{PROMPT_PLACEHOLDER!r}: replace it with a starter prompt of your own"
+        for idx, prompt in enumerate(prompts)
+        if prompt == PROMPT_PLACEHOLDER
+    ]
 
 
 def _parse_bool(raw_obj: Any, *, name: str) -> bool | None:
@@ -724,6 +789,7 @@ class PathManifest:
     summary: str
     primary_kind: str
     tags: list[str]
+    prompts: tuple[str, ...]
     applet: PathAppletConfig | None
     skill: PathSkillConfig | None
     pipeline: PathPipelineConfig | None
@@ -808,6 +874,7 @@ class PathManifest:
         if not isinstance(tags_raw, list):
             raise PathManifestError("wfpath.yaml tags must be a list")
         tags = [str(t).strip() for t in tags_raw if str(t).strip()]
+        prompts = _parse_prompts(raw_obj.get("prompts"))
 
         applet_obj = raw_obj.get("applet") or None
         applet: PathAppletConfig | None = None
@@ -838,6 +905,7 @@ class PathManifest:
             summary=summary,
             primary_kind=primary_kind,
             tags=tags,
+            prompts=prompts,
             applet=applet,
             skill=skill,
             pipeline=pipeline,
