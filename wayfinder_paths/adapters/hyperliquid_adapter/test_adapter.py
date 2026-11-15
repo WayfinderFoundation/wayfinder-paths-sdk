@@ -5,8 +5,8 @@ import pytest
 
 from wayfinder_paths.adapters.hyperliquid_adapter.adapter import (
     HyperliquidAdapter,
-    _spot_token_by_index,
 )
+from wayfinder_paths.adapters.hyperliquid_adapter.utils import spot_asset_ids
 
 
 class TestHyperliquidAdapter:
@@ -123,16 +123,17 @@ class TestHyperliquidAdapter:
             success, data = await adapter.get_spot_meta()
             assert success
 
-    def test_spot_token_by_index_maps_by_index_field(self):
+    def test_spot_asset_ids_maps_by_token_index_field(self) -> None:
         # position 1 holds a token whose `index` is 844 — the real HL shape once
         # earlier tokens delist. A positional list lookup can't reach index 844.
         tokens = [
             {"index": 0, "name": "USDC"},
             {"index": 844, "name": "UANSEM"},
         ]
-        by_index = _spot_token_by_index(tokens)
-        assert by_index[844]["name"] == "UANSEM"
-        assert by_index[0]["name"] == "USDC"
+        assets = spot_asset_ids(
+            {"tokens": tokens, "universe": [{"index": 699, "tokens": [844, 0]}]}
+        )
+        assert assets == {"UANSEM/USDC": 10699}
         assert 844 >= len(tokens)  # positional access would be out of range
 
     @pytest.mark.asyncio
