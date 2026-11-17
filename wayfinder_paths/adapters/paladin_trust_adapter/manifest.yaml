@@ -1,0 +1,6 @@
+schema_version: "0.1"
+entrypoint: "wayfinder_paths.adapters.paladin_trust_adapter.adapter.PaladinTrustAdapter"
+capabilities:
+  - "trust.check"
+  - "trust.screen"
+dependencies: []
