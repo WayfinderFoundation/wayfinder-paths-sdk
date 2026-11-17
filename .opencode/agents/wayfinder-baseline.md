@@ -1,7 +1,6 @@
 ---
 description: EVAL BASELINE — wayfinder primary without any sports tooling (no sports worker, no sports tools, no slate pipelines). Do not use outside A/B evals.
 mode: primary
-temperature: 0.1
 permission:
   task:
     explore: allow
