@@ -8,6 +8,7 @@ from typing import Any
 
 from substrateinterface import SubstrateInterface
 from substrateinterface.exceptions import SubstrateRequestException
+from websocket import WebSocketException
 
 from wayfinder_paths.core.flop.signer import FlopSigner
 from wayfinder_paths.core.flop.wire import ModelIdentity, blake2_256, u32le
@@ -147,7 +148,12 @@ class FlopChain:
         """A dropped websocket is reconnected once; a second failure is the caller's."""
         try:
             return operation(self._connect())
-        except (ConnectionError, OSError, SubstrateRequestException) as first:
+        except (
+            ConnectionError,
+            OSError,
+            WebSocketException,
+            SubstrateRequestException,
+        ) as first:
             if isinstance(first, SubstrateRequestException) and "1010" in str(first):
                 raise
             self.close()
@@ -354,7 +360,9 @@ class FlopChain:
     def _send(
         self, call: Any, nonce: int, signature: bytes, account_id: bytes
     ) -> Submitted:
-        s = self._connect()
+        # The RPC drops idle sockets, and signing can take a moment: make sure the
+        # connection is alive before the one call that must not be sent twice.
+        s = self._retrying(lambda live: live.rpc_request("system_health", []) and live)
         extrinsic = s.runtime_config.create_scale_object(
             type_string="Extrinsic", metadata=s.metadata
         )
