@@ -14,6 +14,7 @@ to scope a persona's surface.
 
 Namespaces:
   - shells       instance ↔ frontend bridge (chart workspace, annotations, notify, ui ctx)
+  - flop         FLOP network inference from the user's own FLOP account
   - research     alpha-lab, delta-lab, DeFiLlama, Goldsky, social/sentiment
   - hyperliquid  HL perp/spot/HIP-3/HIP-4 reads + writes
   - onchain      token resolution, swaps, sends, wallet activity
@@ -75,6 +76,16 @@ from wayfinder_paths.mcp.tools.evm_contract import (
     contracts_execute,
 )
 from wayfinder_paths.mcp.tools.execute import onchain_send, onchain_swap
+from wayfinder_paths.mcp.tools.flop import (
+    flop_activity,
+    flop_connect,
+    flop_estimate,
+    flop_faucet,
+    flop_infer,
+    flop_models,
+    flop_status,
+    flop_subagent,
+)
 from wayfinder_paths.mcp.tools.goldsky_direct import (
     research_goldsky_graphql,
     research_goldsky_schema,
@@ -289,6 +300,17 @@ def build_mcp(
         mcp.tool()(visual_set_chart_indicators)
         mcp.tool()(visual_clear_chart_workspace)
         mcp.tool()(notification_send)
+
+        # ─── flop_* (FLOP network; the key is a Privy-held agent wallet, so
+        # these only work on an instance) ───────────────────────────────
+        mcp.tool()(flop_status)
+        mcp.tool()(flop_connect)
+        mcp.tool()(flop_models)
+        mcp.tool()(flop_estimate)
+        mcp.tool()(flop_infer)
+        mcp.tool()(flop_faucet)
+        mcp.tool()(flop_activity)
+        mcp.tool()(flop_subagent)
 
     return mcp
 

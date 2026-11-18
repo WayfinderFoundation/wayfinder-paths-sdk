@@ -234,6 +234,26 @@ def get_openai_credentials() -> dict[str, str | None]:
     }
 
 
+def get_flop_config() -> dict[str, Any]:
+    """FLOP settings from ``system.flop`` (env fallback).
+
+    ``miners`` maps a miner's FLOP address to the HTTPS endpoint it serves direct sessions
+    on; without one, inference goes through FLOP's hosted gateway.
+    """
+    flop = CONFIG.get("system", {}).get("flop", {})
+    miners = dict(flop.get("miners") or {})
+    env_miner = os.environ.get("FLOP_MINER_ADDRESS")
+    env_endpoint = os.environ.get("FLOP_MINER_ENDPOINT")
+    if env_miner and env_endpoint:
+        miners.setdefault(env_miner, env_endpoint)
+    return {
+        "rpc_url": flop.get("rpc_url") or os.environ.get("FLOP_RPC_URL"),
+        "miners": miners,
+        "per_call_flop": str(flop.get("per_call_flop") or "1"),
+        "daily_flop": str(flop.get("daily_flop") or "10"),
+    }
+
+
 def is_opencode_instance() -> bool:
     return bool(os.environ.get("OPENCODE_INSTANCE_ID"))
 
