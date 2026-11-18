@@ -183,6 +183,30 @@ def test_faucet_refusal_is_recorded_with_its_wait_and_not_retried(monkeypatch):
     assert len(posts) == 1
 
 
+@pytest.mark.parametrize("answer", ["timeout", "html"])
+def test_faucet_answer_that_cannot_be_read_is_unknown_and_held_off(monkeypatch, answer):
+    posts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/limits":
+            return httpx.Response(200, json={"faucet": {"status": "open"}})
+        posts.append(1)
+        if answer == "timeout":
+            raise httpx.ReadTimeout("no answer", request=request)
+        return httpx.Response(502, text="<html>bad gateway</html>")
+
+    _fake_http(monkeypatch, faucet, handler)
+    result = asyncio.run(faucet.collect_if_due(ADDRESS, now=5_000))
+    assert not result.granted
+    assert (result.reason, result.retry_at) == (
+        "unknown",
+        5_000 + faucet.UNKNOWN_HOLD_SECONDS,
+    )
+    again = asyncio.run(faucet.collect_if_due(ADDRESS, now=5_000 + 60))
+    assert again.reason == "not_due"
+    assert len(posts) == 1
+
+
 def test_faucet_is_not_asked_when_closed(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/limits"
@@ -287,3 +311,34 @@ def test_gateway_chat_gives_up_on_other_errors(monkeypatch):
     with pytest.raises(gateway.GatewayError) as caught:
         asyncio.run(gateway.chat("k", "m", [], max_tokens=1, max_cost_flop=1))
     assert caught.value.code == "max_cost_exceeded"
+
+
+def test_gateway_body_that_is_not_json_is_a_gateway_error(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, text="<html>bad gateway</html>")
+
+    _fake_http(monkeypatch, gateway, handler)
+    with pytest.raises(gateway.GatewayError) as caught:
+        asyncio.run(gateway.models())
+    assert (caught.value.status, caught.value.code) == (502, "invalid_response")
+
+
+def test_gateway_enrollment_refusal_keeps_its_code_and_sentence(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/challenge"):
+            return httpx.Response(200, json={"message": "challenge"})
+        return httpx.Response(
+            503,
+            json={
+                "error": "wallet_enrollment_unavailable",
+                "message": "Wallet enrollment is temporarily unavailable.",
+            },
+        )
+
+    signer = LocalFlopSigner(bytes.fromhex("11" * 32))
+    _fake_http(monkeypatch, gateway, handler)
+    with pytest.raises(gateway.GatewayError) as caught:
+        asyncio.run(gateway.enroll(signer))
+    assert caught.value.code == "wallet_enrollment_unavailable"
+    assert caught.value.message == "Wallet enrollment is temporarily unavailable."
+    assert gateway.stored_key(signer.address) is None

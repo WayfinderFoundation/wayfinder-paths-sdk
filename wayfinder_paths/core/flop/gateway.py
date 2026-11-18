@@ -49,7 +49,13 @@ def _body(response: httpx.Response) -> Any:
         raise GatewayError(
             response.status_code, "response_too_large", "response too large"
         )
-    return response.json()
+    try:
+        return response.json()
+    except ValueError as exc:
+        # An overloaded gateway answers with an empty or HTML body.
+        raise GatewayError(
+            response.status_code, "invalid_response", "the response was not JSON"
+        ) from exc
 
 
 def _raise(response: httpx.Response) -> None:
@@ -59,6 +65,9 @@ def _raise(response: httpx.Response) -> None:
         raise GatewayError(
             response.status_code, str(error.get("code")), str(error.get("message"))
         )
+    # The enrolment routes answer {"error": "<code>", "message": "<sentence>"}.
+    if isinstance(error, str) and isinstance(body.get("message"), str):
+        raise GatewayError(response.status_code, error, body["message"])
     raise GatewayError(response.status_code, str(error or "error"), str(body)[:200])
 
 

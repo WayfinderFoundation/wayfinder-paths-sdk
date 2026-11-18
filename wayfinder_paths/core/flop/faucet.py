@@ -12,6 +12,7 @@ from wayfinder_paths.core.flop import state
 
 FAUCET_URL = "https://faucet.flop.network"
 GRANT_COOLDOWN_SECONDS = 24 * 3600
+UNKNOWN_HOLD_SECONDS = 3600
 TIMEOUT_SECONDS = 30
 MAX_RESPONSE_BYTES = 64 * 1024
 
@@ -48,9 +49,23 @@ async def limits() -> dict[str, Any]:
 
 async def fund(address: str, *, now: float | None = None) -> FaucetResult:
     current = int(now if now is not None else time.time())
-    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-        response = await client.post(f"{FAUCET_URL}/fund", json={"address": address})
-    body = _json(response)
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                f"{FAUCET_URL}/fund", json={"address": address}
+            )
+        body = _json(response)
+    except (httpx.HTTPError, ValueError):
+        # A timeout or an unreadable body: the grant may or may not have been made.
+        # The faucet cannot tie a request to its transaction, so asking again at once
+        # could not tell either. Hold off, and let the balance show what happened.
+        return FaucetResult(
+            granted=False,
+            reason="unknown",
+            message="the faucet gave no readable answer; check the balance later",
+            action="retry_later",
+            retry_at=current + UNKNOWN_HOLD_SECONDS,
+        )
     if response.status_code == 200 and body.get("success"):
         return FaucetResult(
             granted=True,
