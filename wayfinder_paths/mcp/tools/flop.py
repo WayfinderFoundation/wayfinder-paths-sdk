@@ -7,7 +7,7 @@ import httpx
 
 from wayfinder_paths.core.clients.FlopClient import FLOP_CLIENT
 from wayfinder_paths.core.config import get_flop_config
-from wayfinder_paths.core.flop import faucet, gateway, jobs, service, state
+from wayfinder_paths.core.flop import faucet, gateway, jobs, recovery, service, state
 from wayfinder_paths.core.flop.account import raw_to_flop
 from wayfinder_paths.core.flop.chain import FlopChainError
 from wayfinder_paths.core.flop.session import DirectSessionError
@@ -110,6 +110,10 @@ async def flop_status() -> dict:
             if key
             else None,
             "faucet_next_eligible_at": faucet.next_eligible_at(address) or None,
+            # Scheduling is repeated here so a box whose runner was down when the
+            # account was connected still gets its faucet job.
+            "faucet_job": jobs.ensure_faucet_job(),
+            "pending_channels": len(recovery.pending_channels()),
         }
     )
 

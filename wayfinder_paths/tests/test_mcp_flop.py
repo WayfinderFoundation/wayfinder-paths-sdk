@@ -524,8 +524,12 @@ def test_status_never_returns_the_gateway_key(monkeypatch):
             ADDRESS: {"key": "flop_secret", "model": "m", "expires_at": 9_999_999_999}
         }
     )
+    monkeypatch.setattr(
+        jobs, "ensure_faucet_job", lambda: {"scheduled": True, "created": False}
+    )
     result = asyncio.run(tools.flop_status())
     assert result["ok"] and result["result"]["balance_flop"] == "25"
+    assert result["result"]["faucet_job"]["scheduled"]
     assert result["result"]["gateway_key"] == {
         "model": "m",
         "expires_at": 9_999_999_999,
