@@ -7,7 +7,9 @@
 
 ## Deployment variants matter
 
-- Slipstream uses multiple deployment variants on Base.
+- Slipstream uses multiple deployment variants on Base: `initial`,
+  `gauge_caps`, and `gauges_v3`.
+- `gauges_v3` is the default write deployment for new positions.
 - `get_all_markets(...)` returns the deployment set it scanned.
 - Reads can accept `deployments=...`; writes use the adapter’s configured `write_deployment` unless a method resolves a manager from the token id.
 - `get_pool(...)` can fail with a multi-match error if the same pair and tick spacing exists across deployments and you do not pass `deployment_variant`.
@@ -34,6 +36,9 @@
 - A position can go out of range, which changes inventory composition and fee earning behavior.
 - Do not reuse classic Aerodrome assumptions for Slipstream positions.
 - Analytics like `slipstream_fee_apr_percent(...)` and `slipstream_prob_in_range_week(...)` are adapter-level estimates based on current state and swap logs, not protocol-guaranteed outputs.
+- Tick spacing is part of pool identity. Common docs examples include 1, 50,
+  200, and 2000, but always read the actual pool or pass the exact spacing.
+- The adapter does not execute swaps; swap logs are used only for analytics.
 
 ## veAERO vote timing
 
@@ -45,6 +50,16 @@
 
 - Token amounts and liquidity values are raw on-chain integers.
 - Explicit min amounts must be non-negative raw values.
+- When explicit mins are omitted, the adapter derives mins from current pool
+  price and `slippage_bps`. If current pool price cannot be resolved, pass
+  explicit `amount0_min` and `amount1_min`.
+
+## Gauges V3 penalties
+
+- Gauges V3 adds minimum stake time and early-unstake/getReward penalty logic
+  at the gauge layer.
+- Claiming `claim_position_rewards(...)` or calling `unstake_position(...)`
+  too soon after staking can be economically different from older gauges.
 
 ## Burn requires a cleared position
 

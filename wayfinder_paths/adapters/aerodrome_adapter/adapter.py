@@ -105,7 +105,13 @@ class SugarPool:
     unstaked_fee_pips: int
     token0_fees: int
     token1_fees: int
-    created_at: int
+    emissions_cap: int = 0
+    locked: int = 0
+    emerging: int = 0
+    created_at: int = 0
+    nfpm: str = ZERO_ADDRESS
+    alm: str = ZERO_ADDRESS
+    root: str = ZERO_ADDRESS
 
     @property
     def is_cl(self) -> bool:
@@ -352,6 +358,36 @@ class AerodromeAdapter(
         if len(row) < 26:
             raise ValueError(f"Unexpected Sugar pool tuple length: {len(row)}")
 
+        emissions_cap = 0
+        pool_fee_pips = row[21]
+        unstaked_fee_pips = row[22]
+        token0_fees = row[23]
+        token1_fees = row[24]
+        locked = 0
+        emerging = 0
+        created_at = 0
+        nfpm = ZERO_ADDRESS
+        alm = ZERO_ADDRESS
+        root = ZERO_ADDRESS
+
+        if len(row) >= 32:
+            emissions_cap = row[21]
+            pool_fee_pips = row[22]
+            unstaked_fee_pips = row[23]
+            token0_fees = row[24]
+            token1_fees = row[25]
+            locked = row[26]
+            emerging = row[27]
+            created_at = row[28]
+            nfpm = to_checksum_address(row[29])
+            alm = to_checksum_address(row[30])
+            root = to_checksum_address(row[31])
+        elif len(row) >= 27:
+            nfpm = to_checksum_address(row[25])
+            alm = to_checksum_address(row[26])
+        else:
+            created_at = row[25]
+
         return SugarPool(
             lp=to_checksum_address(row[0]),
             symbol=row[1],
@@ -374,11 +410,17 @@ class AerodromeAdapter(
             factory=to_checksum_address(row[18]),
             emissions_per_sec=row[19],
             emissions_token=to_checksum_address(row[20]),
-            pool_fee_pips=row[21],
-            unstaked_fee_pips=row[22],
-            token0_fees=row[23],
-            token1_fees=row[24],
-            created_at=row[25],
+            pool_fee_pips=pool_fee_pips,
+            unstaked_fee_pips=unstaked_fee_pips,
+            token0_fees=token0_fees,
+            token1_fees=token1_fees,
+            emissions_cap=emissions_cap,
+            locked=locked,
+            emerging=emerging,
+            created_at=created_at,
+            nfpm=nfpm,
+            alm=alm,
+            root=root,
         )
 
     async def sugar_all(
@@ -386,6 +428,7 @@ class AerodromeAdapter(
         *,
         limit: int = _SUGAR_ALL_PAGE_SIZE,
         offset: int = 0,
+        pool_filter: int = 0,
     ) -> list[SugarPool]:
         async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
             sugar = web3.eth.contract(
@@ -398,15 +441,17 @@ class AerodromeAdapter(
             # Not calling gather here, because each sugar call is heavy so we may hit limits
             while remaining > 0:
                 batch_limit = min(remaining, _SUGAR_ALL_PAGE_SIZE)
-                batch = await sugar.functions.all(batch_limit, next_offset).call(
-                    transaction={"gas": _SUGAR_CALL_GAS}, block_identifier="latest"
-                )
+                batch = await sugar.functions.all(
+                    batch_limit,
+                    next_offset,
+                    pool_filter,
+                ).call(transaction={"gas": _SUGAR_CALL_GAS}, block_identifier="latest")
                 out.extend(batch)
                 received = len(batch)
                 if received == 0:
                     break
                 remaining -= received
-                next_offset += received
+                next_offset += batch_limit
 
             return [self._parse_sugar_pool(row) for row in out]
 
@@ -465,7 +510,9 @@ class AerodromeAdapter(
     ) -> list[SugarEpoch]:
         async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
             sugar = web3.eth.contract(
-                address=self.core_contracts["sugar"],
+                address=self.core_contracts.get(
+                    "rewards_sugar", self.core_contracts["sugar"]
+                ),
                 abi=AERODROME_SUGAR_ABI,
             )
             rows = await sugar.functions.epochsLatest(limit, offset).call(
@@ -483,7 +530,9 @@ class AerodromeAdapter(
         pool = to_checksum_address(pool)
         async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
             sugar = web3.eth.contract(
-                address=self.core_contracts["sugar"],
+                address=self.core_contracts.get(
+                    "rewards_sugar", self.core_contracts["sugar"]
+                ),
                 abi=AERODROME_SUGAR_ABI,
             )
             rows = await sugar.functions.epochsByAddress(limit, offset, pool).call(

@@ -708,6 +708,7 @@ AERODROME_SUGAR_ABI: list[dict[str, Any]] = [
         "inputs": [
             {"name": "_limit", "type": "uint256"},
             {"name": "_offset", "type": "uint256"},
+            {"name": "_filter", "type": "uint256"},
         ],
         "outputs": [
             {
@@ -735,11 +736,17 @@ AERODROME_SUGAR_ABI: list[dict[str, Any]] = [
                     {"name": "factory", "type": "address"},
                     {"name": "emissions", "type": "uint256"},
                     {"name": "emissions_token", "type": "address"},
+                    {"name": "emissions_cap", "type": "uint256"},
                     {"name": "pool_fee", "type": "uint256"},
                     {"name": "unstaked_fee", "type": "uint256"},
                     {"name": "token0_fees", "type": "uint256"},
                     {"name": "token1_fees", "type": "uint256"},
-                    {"name": "created_at", "type": "uint256"},
+                    {"name": "locked", "type": "uint256"},
+                    {"name": "emerging", "type": "uint256"},
+                    {"name": "created_at", "type": "uint32"},
+                    {"name": "nfpm", "type": "address"},
+                    {"name": "alm", "type": "address"},
+                    {"name": "root", "type": "address"},
                 ],
             }
         ],
