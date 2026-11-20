@@ -6,8 +6,9 @@ capabilities:
   - "vault.read"
   - "vault.deposit"
   - "vault.withdraw"
-  - "position.open"
-  - "position.close"
+  - "order.read"
   - "collateral.deposit"
   - "collateral.withdraw"
+  - "gas.read"
+  - "simulation.preview"
 dependencies: []

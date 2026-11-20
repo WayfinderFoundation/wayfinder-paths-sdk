@@ -26,7 +26,10 @@ In Wayfinder Paths, the building blocks are:
   - perp meta/context via `HyperliquidAdapter.get_meta_and_asset_ctxs()`
   - Note: `HyperliquidAdapter` does **not** implement `get_funding_history(...)` (that was the cause of recent script failures).
 - Fixed-rate observations: `BorosAdapter.quote_market(...)` / `quote_markets_for_underlying(...)`
-- Execution: `BorosAdapter.place_rate_order(...)` (plus deposits/withdrawals)
+- Execution draft/simulation: `BorosAdapter.simulate_place_order(...)`, then
+  escalate if actual order placement is required. Current Boros place/cancel
+  endpoints are agent-key-only and are not the default wallet-signed Wayfinder
+  product path.
 
 ## Recipe: hedge funding payments for a perp long
 
