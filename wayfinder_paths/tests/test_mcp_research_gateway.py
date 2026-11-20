@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -237,13 +238,27 @@ async def test_research_crypto_sentiment_uses_gateway(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("include_evidence", [False, True])
 async def test_research_social_x_search_converts_gateway_arguments(
     monkeypatch: pytest.MonkeyPatch,
+    include_evidence: bool,
 ) -> None:
+    response: dict[str, Any] = {
+        "result": {
+            "content": "A social search summary",
+            "citations": ["https://x.com/ethena_labs/status/1"],
+            "inlineCitations": [{"url": "https://x.com/ethena_labs/status/1"}],
+        }
+    }
+    if include_evidence:
+        response["result"]["evidence"] = {
+            "kind": "social_search_summary",
+            "identityVerification": "not_performed",
+        }
     fake_client = type(
         "FakeResearchClient",
         (),
-        {"social_x_search": AsyncMock(return_value={"result": {"content": ""}})},
+        {"social_x_search": AsyncMock(return_value=response)},
     )()
     monkeypatch.setattr(research_gateway, "RESEARCH_CLIENT", fake_client)
 
@@ -256,6 +271,7 @@ async def test_research_social_x_search_converts_gateway_arguments(
     )
 
     assert result["ok"] is True
+    assert result["result"] == response
     fake_client.social_x_search.assert_awaited_once_with(
         query="$ENA launch",
         allowed_x_handles=["ethena_labs", "EthenaGrowth"],
