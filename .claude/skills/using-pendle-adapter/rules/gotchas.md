@@ -46,6 +46,13 @@ The adapter accepts both forms:
 - Hosted SDK may omit `effectiveApy`/`impliedApy` depending on market state
 - Always handle missing fields with `.get()` defaults
 
+## Market history endpoint
+
+- Use `fetch_market_history()` for market time series. It calls Pendle's v3
+  historical-data endpoint; v2 is deprecated in current Pendle docs.
+- APY and fee breakdowns are optional and more expensive in computing units, so
+  request them only when the user needs those fields.
+
 ## Expired PT redemption (don't use `execute_swap`)
 
 - **`execute_swap` doesn't work for expired markets** — use `execute_convert` instead
