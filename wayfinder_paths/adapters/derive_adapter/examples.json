@@ -1,0 +1,107 @@
+{
+  "list_eth_options": {
+    "method": "list_options",
+    "kwargs": {
+      "currency": "ETH",
+      "expired": false
+    }
+  },
+  "get_eth_option_tickers": {
+    "method": "get_option_tickers",
+    "kwargs": {
+      "currency": "ETH",
+      "expiry_date": "20260522"
+    }
+  },
+  "ensure_existing_subaccount": {
+    "method": "ensure_subaccount",
+    "kwargs": {}
+  },
+  "create_empty_standard_margin_subaccount": {
+    "method": "ensure_subaccount",
+    "kwargs": {
+      "create_if_missing": true,
+      "amount": "0",
+      "asset_name": "USDC",
+      "margin_type": "SM"
+    }
+  },
+  "create_account_and_empty_subaccount": {
+    "method": "ensure_subaccount",
+    "kwargs": {
+      "create_account_if_missing": true,
+      "account_secret": "invite-secret",
+      "create_if_missing": true,
+      "amount": "0",
+      "asset_name": "USDC",
+      "margin_type": "SM"
+    }
+  },
+  "deposit_usdc": {
+    "method": "deposit_collateral",
+    "kwargs": {
+      "subaccount_id": 12345,
+      "amount": "100",
+      "asset_name": "USDC"
+    }
+  },
+  "get_deposit_history": {
+    "method": "get_deposit_history",
+    "kwargs": {
+      "subaccount_id": 12345
+    }
+  },
+  "withdraw_usdc": {
+    "method": "withdraw_collateral",
+    "kwargs": {
+      "subaccount_id": 12345,
+      "amount": "25",
+      "asset_name": "USDC"
+    }
+  },
+  "transfer_usdc_between_subaccounts": {
+    "method": "transfer_erc20",
+    "kwargs": {
+      "subaccount_id": 12345,
+      "recipient_subaccount_id": 67890,
+      "amount": "10",
+      "asset_name": "USDC"
+    }
+  },
+  "callback_signed_order_dry_run": {
+    "method": "place_order",
+    "kwargs": {
+      "dry_run": true,
+      "asset_address": "0xInstrumentBaseAssetAddress",
+      "asset_sub_id": 123456789,
+      "order": {
+        "subaccount_id": 12345,
+        "instrument_name": "ETH-20260522-2500-C",
+        "direction": "buy",
+        "amount": "0.1",
+        "limit_price": "20",
+        "max_fee": "2",
+        "order_type": "limit",
+        "time_in_force": "gtc"
+      }
+    }
+  },
+  "signed_order_dry_run": {
+    "method": "submit_order",
+    "kwargs": {
+      "dry_run": true,
+      "order": {
+        "subaccount_id": 12345,
+        "instrument_name": "ETH-20260522-2500-C",
+        "direction": "buy",
+        "amount": "0.1",
+        "limit_price": "20",
+        "max_fee": "2",
+        "nonce": 1779327000000001,
+        "signature_expiry_sec": 1779327600,
+        "signer": "0x0000000000000000000000000000000000000000",
+        "signature": "0x..."
+      }
+    }
+  }
+}
