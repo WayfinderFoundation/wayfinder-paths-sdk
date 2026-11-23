@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -13,6 +14,12 @@ from wayfinder_paths.core.flop import state
 FAUCET_URL = "https://faucet.flop.network"
 GRANT_COOLDOWN_SECONDS = 24 * 3600
 UNKNOWN_HOLD_SECONDS = 3600
+# The faucet also counts grants per caller IP. Shells share outbound addresses, so that
+# limit can refuse a Shell for other people's requests; the user's browser is not shared.
+SHARED_ADDRESS_HINT = (
+    "Shells share outbound addresses, so the faucet's per-IP limit can refuse them. "
+    "Use Get test FLOP in the FLOP panel, which asks from the user's own browser."
+)
 TIMEOUT_SECONDS = 30
 MAX_RESPONSE_BYTES = 64 * 1024
 
@@ -73,12 +80,26 @@ async def fund(address: str, *, now: float | None = None) -> FaucetResult:
             tx_hash=body.get("txHash"),
         )
     retry_after = body.get("retryAfterSeconds") or response.headers.get("Retry-After")
+    reason = str(body.get("reason") or f"http_{response.status_code}")
+    message = str(body.get("error") or "the faucet refused the request")
+    action = body.get("action")
+    if _per_ip_refusal(response.status_code, reason, message):
+        message = f"{message}. {SHARED_ADDRESS_HINT}"
+        action = "use_flop_panel_faucet"
     return FaucetResult(
         granted=False,
-        reason=str(body.get("reason") or f"http_{response.status_code}"),
-        message=str(body.get("error") or "the faucet refused the request"),
-        action=body.get("action"),
+        reason=reason,
+        message=message,
+        action=action,
         retry_at=current + int(float(retry_after)) if retry_after else None,
+    )
+
+
+def _per_ip_refusal(status: int, reason: str, message: str) -> bool:
+    """A refusal for the caller's IP rather than the FLOP address being funded."""
+    words = set(re.split(r"[^a-z0-9]+", reason.lower()))
+    return bool(words & {"ip", "client", "prefix"}) or (
+        status == 429 and re.search(r"\bip\b", message.lower()) is not None
     )
 
 

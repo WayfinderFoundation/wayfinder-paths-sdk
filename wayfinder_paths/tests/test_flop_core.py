@@ -342,3 +342,85 @@ def test_gateway_enrollment_refusal_keeps_its_code_and_sentence(monkeypatch):
     assert caught.value.code == "wallet_enrollment_unavailable"
     assert caught.value.message == "Wallet enrollment is temporarily unavailable."
     assert gateway.stored_key(signer.address) is None
+
+
+# ---- signing freshness ---------------------------------------------------------------
+
+
+class _Value:
+    def __init__(self, value):
+        self.value = value
+
+
+class _Node:
+    def __init__(self, block_ms: int, stamp_ms: int) -> None:
+        self.block_ms = block_ms
+        self.stamp_ms = stamp_ms
+
+    def get_constant(self, module, name):
+        assert (module, name) == ("Babe", "ExpectedBlockTime")
+        return _Value(self.block_ms)
+
+    def query(self, module, name, params=None, block_hash=None):
+        assert (module, name, block_hash) == ("Timestamp", "Now", "0xhead")
+        return _Value(self.stamp_ms)
+
+
+@pytest.mark.parametrize(
+    ("drift_ms", "fresh"),
+    [(0, True), (16_000, True), (-16_000, True), (16_001, False), (-16_001, False)],
+)
+def test_signing_needs_a_finalized_head_near_the_local_clock(drift_ms, fresh):
+    from wayfinder_paths.core.flop.chain import FlopChain, FlopChainError
+
+    chain = FlopChain()
+    now = 1_800_000_000_000
+    chain._now_ms = lambda: now
+    # 1 s blocks: a 64-block era is 64 s, and a quarter of it is 16 s.
+    node = _Node(block_ms=1000, stamp_ms=now - drift_ms)
+    if fresh:
+        chain._check_head_fresh(node, "0xhead")
+    else:
+        with pytest.raises(FlopChainError, match="not signing"):
+            chain._check_head_fresh(node, "0xhead")
+
+
+def test_signing_is_refused_when_the_block_time_cannot_be_read():
+    from wayfinder_paths.core.flop.chain import FlopChain, FlopChainError
+
+    chain = FlopChain()
+    chain._now_ms = lambda: 5
+    with pytest.raises(FlopChainError, match="block time"):
+        chain._check_head_fresh(_Node(block_ms=0, stamp_ms=5), "0xhead")
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "per_ip"),
+    [
+        (
+            429,
+            {"error": "Too many grants from this IP today", "reason": "ip_daily_limit"},
+            True,
+        ),
+        (429, {"error": "Too many requests from this IP"}, True),
+        (429, {"error": "slow down", "reason": "client_rate_limited"}, True),
+        (
+            429,
+            {
+                "error": "This address was funded recently.",
+                "reason": "address_cooldown",
+            },
+            False,
+        ),
+        (403, {"error": "faucet paused", "reason": "paused"}, False),
+    ],
+)
+def test_a_per_ip_faucet_refusal_points_to_the_panel(monkeypatch, status, body, per_ip):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json=body)
+
+    _fake_http(monkeypatch, faucet, handler)
+    refused = asyncio.run(faucet.fund(ADDRESS, now=1))
+    assert not refused.granted
+    assert (refused.action == "use_flop_panel_faucet") is per_ip
+    assert ("FLOP panel" in refused.message) is per_ip

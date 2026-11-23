@@ -56,6 +56,20 @@ class MinerTurnError(MinerError):
     """The miner reported a failed turn mid-stream. Its text is unsigned: diagnosis only."""
 
 
+class MinerRefusedError(MinerError):
+    """The miner answered a request with an HTTP error. `detail` is its unsigned text."""
+
+    def __init__(self, url: str, status: int, detail: str) -> None:
+        super().__init__(f"{url} -> {status} {detail}")
+        self.status = status
+        self.detail = detail
+
+    @property
+    def channel_not_seen_yet(self) -> bool:
+        """The miner's own node has not caught up with the channel's open."""
+        return self.status == 400 and "channel not found" in self.detail.lower()
+
+
 class RequestSigner(Protocol):
     def sign(self, message: bytes) -> bytes: ...
 
@@ -585,7 +599,7 @@ class MinerSession:
         }
         response, raw = await self._exchange("POST", path, headers=headers, body=body)
         if not response.is_success:
-            raise MinerError(f"{url} -> {response.status_code} {_error_text(raw)}")
+            raise MinerRefusedError(url, response.status_code, _error_text(raw))
         try:
             return json.loads(raw)
         except ValueError as error:

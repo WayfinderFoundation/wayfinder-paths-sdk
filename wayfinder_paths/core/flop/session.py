@@ -29,6 +29,7 @@ from wayfinder_paths.core.flop.chain import (
 from wayfinder_paths.core.flop.miner import (
     Checkpoint,
     MinerEndpoint,
+    MinerRefusedError,
     MinerSession,
     MinerSettled,
     SettlementClaim,
@@ -59,6 +60,10 @@ CHAT_ROLES = ("developer", "system", "user", "assistant", "tool")
 SESSION_LIFETIME_MS = 120_000
 POLL_SECONDS = 1.0
 FINALITY_WAIT_MS = 60_000
+# The miner reads its own node, which the RPC pool serves while up to ~30 blocks behind
+# ours, so it can refuse a channel we already see open. Its refusal says so; wait for it.
+MINER_CATCH_UP_MS = 60_000
+MINER_CATCH_UP_POLL_SECONDS = 2.0
 RECONCILE_MS = 60_000
 TIMING_PAD_MS = 250 + 100
 TERMINAL_EVENTS = (
@@ -663,6 +668,20 @@ class _DirectSession:
 
     # ---- flow -----------------------------------------------------------------------
 
+    async def _open_with_miner(self) -> None:
+        """Hand the miner the session. Until its node sees the open channel it answers
+        400 "channel not found on-chain"; that is retried for MINER_CATCH_UP_MS, and
+        any other refusal fails at once (the caller then recovers the escrow)."""
+        deadline = self.now_ms() + MINER_CATCH_UP_MS
+        while True:
+            try:
+                await self.miner_session.open(self.key.public_key)
+                return
+            except MinerRefusedError as refused:
+                if not refused.channel_not_seen_yet or self.now_ms() >= deadline:
+                    raise
+            await self.sleep(MINER_CATCH_UP_POLL_SECONDS)
+
     async def _wait_open(self) -> Channel:
         while True:
             view = await self.chain.channel(self.channel_id)
@@ -743,7 +762,7 @@ class _DirectSession:
             escrow=self.escrow,
             base_per_turn=self.base_per_turn,
         )
-        await self.miner_session.open(self.key.public_key)
+        await self._open_with_miner()
 
         agent_send_ms = self.now_ms()
         receipt = await self.miner_session.turn(turn_input)

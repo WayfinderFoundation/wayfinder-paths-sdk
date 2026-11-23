@@ -1407,3 +1407,59 @@ async def test_miner_without_a_challenge_gets_no_signed_request():
         await endpoint.session(CHANNEL, SessionKey(bytes([5]) * 32)).info()
 
     assert len(requests) == 1
+
+
+# ---- a miner whose node lags ours --------------------------------------------------
+
+
+def _open_refused_until(miner: FakeMiner, refusals: int, text: str) -> list[int]:
+    """The miner answers /session/open with 400 `text` `refusals` times, then serves."""
+    attempts: list[int] = []
+    serve = miner._open
+
+    def open_(payload: dict[str, Any]) -> httpx.Response:
+        attempts.append(miner.chain.now)
+        if len(attempts) <= refusals:
+            return httpx.Response(400, json={"error": text})
+        return serve(payload)
+
+    miner._open = open_
+    return attempts
+
+
+async def test_open_waits_for_a_miner_whose_node_has_not_seen_the_channel(chain, miner):
+    attempts = _open_refused_until(miner, 3, "channel not found on-chain")
+
+    result = await run(chain, miner)
+
+    assert result.settlement == "settled"
+    assert len(attempts) == 4
+    assert [b - a for a, b in zip(attempts, attempts[1:], strict=False)] == [
+        2000,
+        2000,
+        2000,
+    ]
+    assert chain.functions() == ["force_open"]
+
+
+async def test_open_stops_waiting_after_a_minute_and_recovers_the_escrow(chain, miner):
+    attempts = _open_refused_until(miner, 10_000, "channel not found on-chain")
+
+    with pytest.raises(DirectSessionError, match="channel not found") as failure:
+        await run(chain, miner)
+
+    assert failure.value.recovery == "refunded"
+    assert attempts[-1] - attempts[0] >= 60_000
+    assert len(attempts) <= 32
+    assert miner.turn_inputs == []
+
+
+async def test_any_other_open_refusal_is_not_retried(chain, miner):
+    attempts = _open_refused_until(miner, 10_000, "agent key mismatch")
+
+    with pytest.raises(DirectSessionError, match="agent key mismatch") as failure:
+        await run(chain, miner)
+
+    assert len(attempts) == 1
+    assert failure.value.recovery == "refunded"
+    assert miner.turn_inputs == []

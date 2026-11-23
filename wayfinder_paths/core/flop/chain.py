@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,7 +19,12 @@ DEVNET_GENESIS_HASH = (
     "0x99c172c095340ace980631f9123544c6bebd4839f3437e463533422d8be2d631"
 )
 ECDSA_SIGNATURE_VERSION = 2
-IMMORTAL_ERA = "00"
+# Transactions are mortal: valid for this many blocks from a finalized checkpoint, so
+# one that is not included in time can never land later.
+MORTAL_ERA_PERIOD = 64
+# A node whose finalized head is further from the local clock than this share of the
+# era would sign a transaction that expires early (or is already dead): refuse instead.
+STALE_HEAD_FRACTION = 4
 PRECISIONS = ("FP32", "FP16", "BF16", "INT8", "INT4", "Mixed")
 # What the transaction payload carries after the call, in this chain's signed-extension
 # order. A runtime that changes it fails the self-check in `_unsigned_payload`.
@@ -112,6 +118,7 @@ class FlopChain:
         self.rpc_url = rpc_url
         self.expected_genesis_hash = expected_genesis_hash.lower()
         self._substrate: SubstrateInterface | None = None
+        self._now_ms = lambda: int(time.time() * 1000)
 
     # ---- connection -----------------------------------------------------------------
 
@@ -313,12 +320,12 @@ class FlopChain:
     async def submit(
         self, module: str, function: str, args: dict[str, Any], signer: FlopSigner
     ) -> Submitted:
-        call, nonce, payload = await self._run(
+        call, nonce, era, payload = await self._run(
             lambda s: self._prepare(s, module, function, args, signer.address)
         )
         signature = await signer.sign_payload(payload)
         return await asyncio.to_thread(
-            self._send, call, nonce, signature, signer.account_id
+            self._send, call, nonce, era, signature, signer.account_id
         )
 
     def _prepare(
@@ -328,27 +335,55 @@ class FlopChain:
         function: str,
         args: dict[str, Any],
         address: str,
-    ) -> tuple[Any, int, bytes]:
+    ) -> tuple[Any, int, dict[str, int], bytes]:
+        head = s.get_chain_finalised_head()
+        self._check_head_fresh(s, head)
+        era = {
+            "period": MORTAL_ERA_PERIOD,
+            "current": s.get_block_header(block_hash=head)["header"]["number"],
+        }
         call = s.compose_call(module, function, args)
         nonce = s.get_account_nonce(address)
-        return call, nonce, self._unsigned_payload(s, call, nonce)
+        return call, nonce, era, self._unsigned_payload(s, call, nonce, era)
 
-    def _unsigned_payload(self, s: SubstrateInterface, call: Any, nonce: int) -> bytes:
+    def _check_head_fresh(self, s: SubstrateInterface, head: str) -> None:
+        """Refuse to sign from a node whose finalized head is far from the local clock.
+        A uniformly lagging node would otherwise anchor the era in the past, and the
+        transaction would expire before (or without) inclusion."""
+        block_ms = int(s.get_constant("Babe", "ExpectedBlockTime").value)
+        stamp_ms = int(s.query("Timestamp", "Now", block_hash=head).value)
+        if block_ms <= 0 or stamp_ms <= 0:
+            raise FlopChainError("cannot read the FLOP node's block time; not signing")
+        allowed_ms = MORTAL_ERA_PERIOD * block_ms // STALE_HEAD_FRACTION
+        drift_ms = self._now_ms() - stamp_ms
+        if abs(drift_ms) > allowed_ms:
+            where = "behind" if drift_ms > 0 else "ahead of"
+            raise FlopChainError(
+                f"the FLOP node's finalized head is {abs(drift_ms) // 1000}s {where} "
+                "this machine's clock; not signing until it catches up"
+            )
+
+    def _unsigned_payload(
+        self, s: SubstrateInterface, call: Any, nonce: int, era: dict[str, int]
+    ) -> bytes:
         """The full payload, unhashed, so the backend can check what it is asked to sign."""
+        encoded_era = s.runtime_config.create_scale_object("Era")
+        encoded_era.encode(dict(era))
+        checkpoint = _bytes(s.get_block_hash(encoded_era.birth(era["current"])))
         payload = (
             bytes(call.data.data)
-            + bytes.fromhex(IMMORTAL_ERA)
+            + bytes(encoded_era.data.data)
             + _compact(nonce)
             + _compact(0)
             + b"\x00"
             + u32le(s.runtime_version)
             + u32le(s.transaction_version)
             + self.genesis_hash
-            + self.genesis_hash
+            + checkpoint
             + b"\x00"
         )
         reference = bytes(
-            s.generate_signature_payload(call=call, era=IMMORTAL_ERA, nonce=nonce).data
+            s.generate_signature_payload(call=call, era=dict(era), nonce=nonce).data
         )
         expected = payload if len(payload) <= 256 else blake2_256(payload)
         if reference != expected:
@@ -358,7 +393,12 @@ class FlopChain:
         return payload
 
     def _send(
-        self, call: Any, nonce: int, signature: bytes, account_id: bytes
+        self,
+        call: Any,
+        nonce: int,
+        era: dict[str, int],
+        signature: bytes,
+        account_id: bytes,
     ) -> Submitted:
         # The RPC drops idle sockets, and signing can take a moment: make sure the
         # connection is alive before the one call that must not be sent twice.
@@ -374,7 +414,7 @@ class FlopChain:
                 "call_module": call.value["call_module"],
                 "call_args": call.value["call_args"],
                 "nonce": nonce,
-                "era": IMMORTAL_ERA,
+                "era": dict(era),
                 "tip": 0,
                 "asset_id": {"tip": 0, "asset_id": None},
                 "mode": "Disabled",
