@@ -424,3 +424,59 @@ def test_a_per_ip_faucet_refusal_points_to_the_panel(monkeypatch, status, body, 
     assert not refused.granted
     assert (refused.action == "use_flop_panel_faucet") is per_ip
     assert ("FLOP panel" in refused.message) is per_ip
+
+
+# ---- waiting for inclusion -------------------------------------------------------------
+
+
+class _Extrinsic:
+    data = "0xfeed"
+    extrinsic_hash = bytes([0xAB]) * 32
+
+
+class _WatchingNode:
+    def __init__(self, statuses):
+        self.statuses = statuses
+        self.calls = []
+
+    def rpc_request(self, method, params, result_handler=None):
+        self.calls.append(method)
+        if result_handler is None:
+            return {"result": True}
+        for number, status in enumerate(self.statuses):
+            outcome = result_handler(
+                {"params": {"result": status, "subscription": "sub"}}, number, "sub"
+            )
+            if outcome is not None:
+                return outcome
+        raise AssertionError("the watch never ended")
+
+
+def test_inclusion_returns_the_block_it_landed_in():
+    from wayfinder_paths.core.flop.chain import _submit_and_wait_for_inclusion
+
+    node = _WatchingNode(["ready", {"broadcast": ["peer"]}, {"inBlock": "0xb10c"}])
+    receipt = _submit_and_wait_for_inclusion(node, _Extrinsic())
+    assert receipt.block_hash == "0xb10c"
+    assert receipt.extrinsic_hash == "0x" + "ab" * 32
+    assert node.calls == ["author_submitAndWatchExtrinsic", "author_unwatchExtrinsic"]
+
+
+@pytest.mark.parametrize(
+    ("status", "says"),
+    [
+        ("invalid", "cannot be included later"),
+        ("Invalid", "cannot be included later"),
+        ({"usurped": "0x1"}, "cannot be included later"),
+        ("dropped", "may still be included"),
+    ],
+)
+def test_a_transaction_the_node_gives_up_on_ends_the_wait(status, says):
+    from wayfinder_paths.core.flop.chain import (
+        FlopChainError,
+        _submit_and_wait_for_inclusion,
+    )
+
+    node = _WatchingNode(["ready", status, {"inBlock": "0xnever"}])
+    with pytest.raises(FlopChainError, match=says):
+        _submit_and_wait_for_inclusion(node, _Extrinsic())

@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from substrateinterface import SubstrateInterface
+from substrateinterface import ExtrinsicReceipt, SubstrateInterface
 from substrateinterface.exceptions import SubstrateRequestException
 from websocket import WebSocketException
 
@@ -25,6 +25,10 @@ MORTAL_ERA_PERIOD = 64
 # A node whose finalized head is further from the local clock than this share of the
 # era would sign a transaction that expires early (or is already dead): refuse instead.
 STALE_HEAD_FRACTION = 4
+# Pool statuses that end the wait for inclusion. A mortal transaction that outlives
+# its era ends "invalid"; one replaced at the same nonce is "usurped"; "dropped" only
+# means this node's pool let it go.
+DEAD_POOL_STATUSES = ("dropped", "invalid", "usurped")
 PRECISIONS = ("FP32", "FP16", "BF16", "INT8", "INT4", "Mixed")
 # What the transaction payload carries after the call, in this chain's signed-extension
 # order. A runtime that changes it fails the self-check in `_unsigned_payload`.
@@ -421,7 +425,7 @@ class FlopChain:
                 "signature_version": ECDSA_SIGNATURE_VERSION,
             }
         )
-        receipt = s.submit_extrinsic(extrinsic, wait_for_inclusion=True)
+        receipt = _submit_and_wait_for_inclusion(s, extrinsic)
         if not receipt.is_success:
             error = receipt.error_message or {}
             raise FlopChainError(
@@ -445,6 +449,57 @@ class FlopChain:
             ]
 
         return await self._run(read)
+
+
+def _submit_and_wait_for_inclusion(
+    s: SubstrateInterface, extrinsic: Any
+) -> ExtrinsicReceipt:
+    """`SubstrateInterface.submit_extrinsic`, except that a transaction the node gives up
+    on ends the wait. The library ignores the "dropped" and "invalid" statuses and would
+    wait forever for a transaction that can no longer be included."""
+
+    def handler(message: dict[str, Any], update_nr: int, subscription_id: str):
+        if "params" not in message:
+            return None
+        status = message["params"]["result"]
+        name, value = (
+            (status, None) if isinstance(status, str) else next(iter(status.items()))
+        )
+        name = name.lower()
+        if name == "inblock":
+            outcome = {"block_hash": value}
+        elif name in DEAD_POOL_STATUSES:
+            outcome = {"dead": name}
+        else:
+            return None
+        try:
+            s.rpc_request("author_unwatchExtrinsic", [subscription_id])
+        except SubstrateRequestException:
+            pass  # the node may already have closed a dead subscription
+        return outcome
+
+    outcome = s.rpc_request(
+        "author_submitAndWatchExtrinsic", [str(extrinsic.data)], result_handler=handler
+    )
+    if outcome.get("dead") == "dropped":
+        # Only this node's pool let go of it; another node may still include it
+        # before its era ends.
+        raise FlopChainError(
+            "the FLOP node dropped the transaction from its pool; it may still be "
+            f"included within its {MORTAL_ERA_PERIOD}-block era, so check the account "
+            "before retrying"
+        )
+    if "dead" in outcome:
+        raise FlopChainError(
+            f"the FLOP node reports the transaction {outcome['dead']}; it was not "
+            "included and cannot be included later"
+        )
+    return ExtrinsicReceipt(
+        substrate=s,
+        extrinsic_hash="0x" + extrinsic.extrinsic_hash.hex(),
+        block_hash=outcome["block_hash"],
+        finalized=False,
+    )
 
 
 def _text(value: Any) -> str:
