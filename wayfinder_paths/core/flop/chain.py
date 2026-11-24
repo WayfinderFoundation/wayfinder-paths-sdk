@@ -25,6 +25,11 @@ MORTAL_ERA_PERIOD = 64
 # A node whose finalized head is further from the local clock than this share of the
 # era would sign a transaction that expires early (or is already dead): refuse instead.
 STALE_HEAD_FRACTION = 4
+# The public devnet RPC's finalized head usually trails the clock by 8-15 s against a
+# 16 s limit (1 s blocks), with spikes past it: a stale head is waited out for this long,
+# re-read every poll, before signing is refused.
+STALE_HEAD_WAIT_SECONDS = 30
+STALE_HEAD_POLL_SECONDS = 2.0
 # Pool statuses that end the wait for inclusion. A mortal transaction that outlives
 # its era ends "invalid"; one replaced at the same nonce is "usurped"; "dropped" only
 # means this node's pool let it go.
@@ -47,6 +52,10 @@ EXPECTED_SIGNED_EXTENSIONS = (
 
 class FlopChainError(Exception):
     pass
+
+
+class FlopStaleHeadError(FlopChainError):
+    """The node's finalized head is too far from the local clock to anchor an era."""
 
 
 @dataclass(frozen=True)
@@ -123,6 +132,7 @@ class FlopChain:
         self.expected_genesis_hash = expected_genesis_hash.lower()
         self._substrate: SubstrateInterface | None = None
         self._now_ms = lambda: int(time.time() * 1000)
+        self._sleep = asyncio.sleep
 
     # ---- connection -----------------------------------------------------------------
 
@@ -324,9 +334,17 @@ class FlopChain:
     async def submit(
         self, module: str, function: str, args: dict[str, Any], signer: FlopSigner
     ) -> Submitted:
-        call, nonce, era, payload = await self._run(
-            lambda s: self._prepare(s, module, function, args, signer.address)
-        )
+        deadline_ms = self._now_ms() + STALE_HEAD_WAIT_SECONDS * 1000
+        while True:
+            try:
+                call, nonce, era, payload = await self._run(
+                    lambda s: self._prepare(s, module, function, args, signer.address)
+                )
+                break
+            except FlopStaleHeadError:
+                if self._now_ms() >= deadline_ms:
+                    raise
+                await self._sleep(STALE_HEAD_POLL_SECONDS)
         signature = await signer.sign_payload(payload)
         return await asyncio.to_thread(
             self._send, call, nonce, era, signature, signer.account_id
@@ -362,7 +380,7 @@ class FlopChain:
         drift_ms = self._now_ms() - stamp_ms
         if abs(drift_ms) > allowed_ms:
             where = "behind" if drift_ms > 0 else "ahead of"
-            raise FlopChainError(
+            raise FlopStaleHeadError(
                 f"the FLOP node's finalized head is {abs(drift_ms) // 1000}s {where} "
                 "this machine's clock; not signing until it catches up"
             )

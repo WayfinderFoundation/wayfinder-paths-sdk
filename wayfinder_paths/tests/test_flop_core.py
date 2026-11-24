@@ -385,6 +385,65 @@ def test_signing_needs_a_finalized_head_near_the_local_clock(drift_ms, fresh):
             chain._check_head_fresh(node, "0xhead")
 
 
+def _stale_then_fresh_chain(stale_reads: int):
+    from wayfinder_paths.core.flop.chain import FlopChain, FlopStaleHeadError
+
+    chain = FlopChain()
+    clock = {"ms": 1_800_000_000_000}
+    chain._now_ms = lambda: clock["ms"]
+    sleeps: list[float] = []
+    reads = {"n": 0}
+
+    async def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock["ms"] += int(seconds * 1000)
+
+    async def run(operation):
+        reads["n"] += 1
+        if reads["n"] <= stale_reads:
+            raise FlopStaleHeadError("the FLOP node's finalized head is 22s behind")
+        return "call", 7, {"period": 64, "current": 100}, b"payload"
+
+    chain._sleep = sleep
+    chain._run = run
+    chain._send = lambda call, nonce, era, signature, account_id: ("sent", nonce)
+    return chain, sleeps, reads
+
+
+class _PayloadSigner:
+    address = "5signer"
+    account_id = b"\x01" * 32
+
+    def __init__(self) -> None:
+        self.signed: list[bytes] = []
+
+    async def sign_payload(self, payload: bytes) -> bytes:
+        self.signed.append(payload)
+        return b"sig"
+
+
+async def test_a_lagging_finalized_head_is_waited_out_before_signing():
+    chain, sleeps, reads = _stale_then_fresh_chain(stale_reads=3)
+    signer = _PayloadSigner()
+
+    assert await chain.submit("M", "f", {}, signer) == ("sent", 7)
+    assert sleeps == [2.0, 2.0, 2.0]
+    assert reads["n"] == 4
+    assert signer.signed == [b"payload"]
+
+
+async def test_a_head_still_stale_after_the_wait_is_refused_unsigned():
+    from wayfinder_paths.core.flop.chain import FlopStaleHeadError
+
+    chain, sleeps, _ = _stale_then_fresh_chain(stale_reads=1_000)
+    signer = _PayloadSigner()
+
+    with pytest.raises(FlopStaleHeadError, match="behind"):
+        await chain.submit("M", "f", {}, signer)
+    assert sum(sleeps) == 30
+    assert signer.signed == []
+
+
 def test_signing_is_refused_when_the_block_time_cannot_be_read():
     from wayfinder_paths.core.flop.chain import FlopChain, FlopChainError
 
