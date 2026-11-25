@@ -10,6 +10,7 @@ import pytest
 from wayfinder_paths.core import config
 from wayfinder_paths.core.flop import faucet, gateway, jobs, recovery, service, state
 from wayfinder_paths.core.flop.chain import Channel, ChannelView, FlopChainError
+from wayfinder_paths.core.flop.networks import DEVNET, TESTNET
 from wayfinder_paths.core.flop.session import DirectSessionError
 from wayfinder_paths.mcp.tools import flop as tools
 
@@ -17,7 +18,7 @@ ADDRESS = "5CY2922WBXSso1pELFnqQWZy7DeKvLS63P6Cz488X2h1NFzq"
 ACCOUNT = {
     "connected": True,
     "network": "devnet",
-    "genesis_hash": "0x" + "99" * 32,
+    "genesis_hash": DEVNET.genesis_hash,
     "flop_address": ADDRESS,
     "account_id": "0x" + "11" * 32,
     "wallet_address": "0x283b000000000000000000000000000000000000",
@@ -472,6 +473,91 @@ def test_job_run_collects_the_grant_and_recovers_pending_channels(monkeypatch):
     assert outcome["granted"] and outcome["address"] == ADDRESS
     assert outcome["recovered_channels"][0]["outcome"] == "timeout"
     assert outcome["notices"] == []
+
+
+TESTNET_ACCOUNT = ACCOUNT | {"network": "testnet", "genesis_hash": TESTNET.genesis_hash}
+
+
+def _testnet_job(monkeypatch, *, supply, balance=10 * 10**18, miners=None):
+    monkeypatch.setattr(
+        jobs.FLOP_CLIENT, "get_account", AsyncMock(return_value=TESTNET_ACCOUNT)
+    )
+    monkeypatch.setattr(
+        service.FLOP_CLIENT, "get_account", AsyncMock(return_value=TESTNET_ACCOUNT)
+    )
+    collect = AsyncMock(return_value=faucet.FaucetResult(granted=True, amount_flop=10))
+    monkeypatch.setattr(faucet, "collect_if_due", collect)
+    notify = AsyncMock()
+    monkeypatch.setattr(jobs.NOTIFY_CLIENT, "notify", notify)
+    _fake_chain(
+        monkeypatch,
+        balance=AsyncMock(return_value=SimpleNamespace(free=balance, reserved=0)),
+        inference_supply=AsyncMock(return_value=supply),
+    )
+    if miners:
+        _set_flop_config(monkeypatch, miners=miners)
+    session = AsyncMock(return_value=_session_result(payable=3 * 10**16))
+    monkeypatch.setattr(service, "run_direct_session", session)
+    return collect, notify, session
+
+
+def test_testnet_job_claims_with_the_testnet_profile_and_waits_for_inference(
+    monkeypatch,
+):
+    collect, notify, session = _testnet_job(
+        monkeypatch, supply=(0, 0), miners={MINER: "https://miner.example"}
+    )
+    outcome = asyncio.run(jobs.collect_faucet_grant())
+    signer, network = collect.await_args.args
+    assert network is TESTNET and signer.account_id == bytes.fromhex("11" * 32)
+    assert outcome["network"] == "testnet"
+    assert outcome["spend"] == {"spent": False, "reason": "testnet_inference_not_open"}
+    session.assert_not_awaited()
+    notify.assert_not_awaited()
+
+
+def test_testnet_job_spends_once_a_day_when_miners_are_live(monkeypatch):
+    _, notify, session = _testnet_job(
+        monkeypatch, supply=(3, 2), miners={MINER: "https://miner.example"}
+    )
+    outcome = asyncio.run(jobs.collect_faucet_grant())
+    assert outcome["spend"]["spent"] and outcome["spend"]["cost_flop"] == "0.03"
+    assert session.await_args.kwargs["miner"] == MINER
+    assert state.last_spend_at() > 0
+    again = asyncio.run(jobs.collect_faucet_grant())
+    assert again["spend"] == {"spent": False, "reason": "spent_recently"}
+    assert session.await_count == 1
+    # Told once that testnet inference opened.
+    assert [c.args[0] for c in notify.await_args_list] == [
+        "FLOP testnet now sells inference"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("balance", "miners", "reason"),
+    [
+        (10 * 10**18, None, "no_miner_endpoint"),
+        (10**17, {MINER: "https://miner.example"}, "balance_below_floor"),
+    ],
+)
+def test_testnet_job_does_not_spend_without_a_miner_or_a_balance(
+    monkeypatch, balance, miners, reason
+):
+    _, _, session = _testnet_job(
+        monkeypatch, supply=(1, 1), balance=balance, miners=miners
+    )
+    outcome = asyncio.run(jobs.collect_faucet_grant())
+    assert outcome["spend"] == {"spent": False, "reason": reason}
+    session.assert_not_awaited()
+
+
+def test_testnet_inference_without_a_miner_says_there_is_no_gateway(monkeypatch):
+    monkeypatch.setattr(
+        service.FLOP_CLIENT, "get_account", AsyncMock(return_value=TESTNET_ACCOUNT)
+    )
+    result = asyncio.run(tools.flop_infer("hello"))
+    assert result["ok"] is False
+    assert result["error"]["code"] == "flop_no_gateway"
 
 
 def test_job_warns_once_about_an_expiring_session_and_a_low_balance(monkeypatch):

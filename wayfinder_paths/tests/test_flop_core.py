@@ -11,6 +11,7 @@ import pytest
 from eth_keys import keys as eth_keys
 
 from wayfinder_paths.core.flop import account, faucet, gateway, state
+from wayfinder_paths.core.flop.networks import DEVNET, TESTNET
 from wayfinder_paths.core.flop.signer import LocalFlopSigner
 
 FIXTURES = Path(__file__).parent / "fixtures" / "flop"
@@ -122,12 +123,28 @@ def test_activity_log_is_bounded():
 # ---- faucet -------------------------------------------------------------------------
 
 
+class _Address:
+    address = ADDRESS
+
+
+DEV = _Address()
+
+
+def _identity(network, genesis=None):
+    return httpx.Response(
+        200,
+        json={"network": network.name, "genesisHash": genesis or network.genesis_hash},
+    )
+
+
 def test_faucet_grant_is_recorded_and_not_asked_again_within_a_day(monkeypatch):
     calls = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append((request.method, request.url.path))
-        assert request.url.host == "faucet.flop.network"
+        if request.url.path == "/chain":
+            return _identity(DEVNET)
+        assert request.url.host == "faucet.devnet.flop.network"
         if request.url.path == "/limits":
             return httpx.Response(200, json={"faucet": {"status": "open"}})
         assert json.loads(request.content) == {"address": ADDRESS}
@@ -142,14 +159,16 @@ def test_faucet_grant_is_recorded_and_not_asked_again_within_a_day(monkeypatch):
         )
 
     _fake_http(monkeypatch, faucet, handler)
-    first = asyncio.run(faucet.collect_if_due(ADDRESS, now=1_000_000))
+    first = asyncio.run(faucet.collect_if_due(DEV, DEVNET, now=1_000_000))
     assert first.granted and first.amount_flop == 25 and first.tx_hash == "0xabc"
-    again = asyncio.run(faucet.collect_if_due(ADDRESS, now=1_000_000 + 3600))
+    again = asyncio.run(faucet.collect_if_due(DEV, DEVNET, now=1_000_000 + 3600))
     assert not again.granted and again.reason == "not_due"
     assert again.retry_at == 1_000_000 + faucet.GRANT_COOLDOWN_SECONDS
-    assert calls == [("GET", "/limits"), ("POST", "/fund")]
+    assert calls == [("GET", "/chain"), ("GET", "/limits"), ("POST", "/fund")]
     later = asyncio.run(
-        faucet.collect_if_due(ADDRESS, now=1_000_000 + faucet.GRANT_COOLDOWN_SECONDS)
+        faucet.collect_if_due(
+            DEV, DEVNET, now=1_000_000 + faucet.GRANT_COOLDOWN_SECONDS
+        )
     )
     assert later.granted
 
@@ -158,6 +177,8 @@ def test_faucet_refusal_is_recorded_with_its_wait_and_not_retried(monkeypatch):
     posts = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/chain":
+            return _identity(DEVNET)
         if request.url.path == "/limits":
             return httpx.Response(200, json={"faucet": {"status": "open"}})
         posts.append(1)
@@ -172,14 +193,14 @@ def test_faucet_refusal_is_recorded_with_its_wait_and_not_retried(monkeypatch):
         )
 
     _fake_http(monkeypatch, faucet, handler)
-    refused = asyncio.run(faucet.collect_if_due(ADDRESS, now=5_000))
+    refused = asyncio.run(faucet.collect_if_due(DEV, DEVNET, now=5_000))
     assert not refused.granted
     assert (refused.reason, refused.action, refused.retry_at) == (
         "address_cooldown",
         "retry_later",
         5_000 + 7200,
     )
-    asyncio.run(faucet.collect_if_due(ADDRESS, now=5_000 + 60))
+    asyncio.run(faucet.collect_if_due(DEV, DEVNET, now=5_000 + 60))
     assert len(posts) == 1
 
 
@@ -188,6 +209,8 @@ def test_faucet_answer_that_cannot_be_read_is_unknown_and_held_off(monkeypatch, 
     posts = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/chain":
+            return _identity(DEVNET)
         if request.url.path == "/limits":
             return httpx.Response(200, json={"faucet": {"status": "open"}})
         posts.append(1)
@@ -196,25 +219,238 @@ def test_faucet_answer_that_cannot_be_read_is_unknown_and_held_off(monkeypatch, 
         return httpx.Response(502, text="<html>bad gateway</html>")
 
     _fake_http(monkeypatch, faucet, handler)
-    result = asyncio.run(faucet.collect_if_due(ADDRESS, now=5_000))
+    result = asyncio.run(faucet.collect_if_due(DEV, DEVNET, now=5_000))
     assert not result.granted
     assert (result.reason, result.retry_at) == (
         "unknown",
         5_000 + faucet.UNKNOWN_HOLD_SECONDS,
     )
-    again = asyncio.run(faucet.collect_if_due(ADDRESS, now=5_000 + 60))
+    again = asyncio.run(faucet.collect_if_due(DEV, DEVNET, now=5_000 + 60))
     assert again.reason == "not_due"
     assert len(posts) == 1
 
 
 def test_faucet_is_not_asked_when_closed(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/chain":
+            return _identity(DEVNET)
         assert request.url.path == "/limits"
         return httpx.Response(200, json={"faucet": {"status": "paused"}})
 
     _fake_http(monkeypatch, faucet, handler)
-    result = asyncio.run(faucet.collect_if_due(ADDRESS, now=1))
+    result = asyncio.run(faucet.collect_if_due(DEV, DEVNET, now=1))
     assert not result.granted and result.reason == "faucet_closed"
+
+
+# ---- testnet agent claims --------------------------------------------------------------
+
+
+class _CountingSigner(LocalFlopSigner):
+    def __init__(self, key: bytes) -> None:
+        super().__init__(key)
+        self.claims: list[tuple[str, str]] = []
+
+    async def sign_faucet_claim(self, message: str, nonce: str) -> bytes:
+        self.claims.append((message, nonce))
+        return await super().sign_faucet_claim(message, nonce)
+
+
+def _testnet_faucet(monkeypatch, answer, *, limits=None, genesis=None):
+    """A testnet faucet whose claim route answers with `answer(body)`; returns the posts."""
+    posts: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "faucet.flop.network"
+        if request.url.path == "/chain":
+            return _identity(TESTNET, genesis)
+        if request.url.path == "/limits":
+            return httpx.Response(
+                200,
+                json=limits
+                or {
+                    "faucet": {
+                        "status": "open",
+                        "agent": {"claimPath": faucet.AGENT_CLAIM_PATH},
+                    }
+                },
+            )
+        assert (request.method, request.url.path) == ("POST", faucet.AGENT_CLAIM_PATH)
+        assert request.headers["content-type"] == "application/json"
+        body = json.loads(request.content)
+        posts.append(body)
+        return answer(body, request)
+
+    _fake_http(monkeypatch, faucet, handler)
+    return posts
+
+
+def _granted(body, request):
+    return httpx.Response(
+        200,
+        json={
+            "success": True,
+            "amount": 10,
+            "txHash": "0x" + "ab" * 32,
+            "status": "included",
+        },
+    )
+
+
+def test_a_testnet_claim_signs_the_versioned_text_with_the_account_key(monkeypatch):
+    signer = _CountingSigner(bytes([7]) * 32)
+    posts = _testnet_faucet(monkeypatch, _granted)
+    result = asyncio.run(faucet.collect_if_due(signer, TESTNET, now=1_700_000_000))
+    assert result.granted and result.amount_flop == 10
+    assert result.transfer_status == "included"
+    (body,) = posts
+    nonce = "1700000000000"
+    assert body["address"] == signer.address and body["nonce"] == nonce
+    message = f"flop-faucet-agent/v1|{TESTNET.genesis_hash}|{signer.address}|{nonce}"
+    assert signer.claims == [(message, nonce)]
+    signature = bytes.fromhex(body["signature"][2:])
+    recovered = account.recover_compressed_public_key(
+        account.blake2_256(message.encode()), signature
+    )
+    assert account.account_id_from_public_key(recovered) == signer.account_id
+    record = state.read_state()["faucet"][signer.address]
+    assert (
+        record["pending_claim"] is None and record["last_tx_hash"] == "0x" + "ab" * 32
+    )
+
+
+def test_an_unclear_claim_is_repeated_with_the_same_nonce_and_signature(monkeypatch):
+    signer = _CountingSigner(bytes([8]) * 32)
+    answers = iter(["timeout", "grant"])
+
+    def answer(body, request):
+        if next(answers) == "timeout":
+            raise httpx.ReadTimeout("no answer", request=request)
+        return _granted(body, request)
+
+    posts = _testnet_faucet(monkeypatch, answer)
+    first = asyncio.run(faucet.collect_if_due(signer, TESTNET, now=10_000))
+    assert first.reason == "unknown"
+    assert (
+        asyncio.run(faucet.collect_if_due(signer, TESTNET, now=10_060)).reason
+        == "not_due"
+    )
+    later = 10_000 + faucet.UNKNOWN_HOLD_SECONDS
+    assert asyncio.run(faucet.collect_if_due(signer, TESTNET, now=later)).granted
+    assert len(posts) == 2 and posts[0] == posts[1]
+    assert len(signer.claims) == 1
+
+
+def test_a_retry_later_claim_keeps_its_nonce(monkeypatch):
+    signer = _CountingSigner(bytes([9]) * 32)
+    answers = iter(["busy", "grant"])
+
+    def answer(body, request):
+        if next(answers) == "busy":
+            return httpx.Response(
+                503,
+                json={
+                    "success": False,
+                    "error": "Indexer unavailable; retry later",
+                    "reason": "indexer_unavailable",
+                    "action": "retry_later",
+                    "retryAfterSeconds": 60,
+                },
+            )
+        return _granted(body, request)
+
+    posts = _testnet_faucet(monkeypatch, answer)
+    busy = asyncio.run(faucet.collect_if_due(signer, TESTNET, now=20_000))
+    assert (busy.reason, busy.retry_at) == ("indexer_unavailable", 20_060)
+    assert asyncio.run(faucet.collect_if_due(signer, TESTNET, now=20_060)).granted
+    assert posts[0] == posts[1] and len(signer.claims) == 1
+
+
+def test_the_next_claim_waits_for_a_spend_when_the_faucet_asks_for_one(monkeypatch):
+    signer = _CountingSigner(bytes([10]) * 32)
+    answers = iter(["spend", "grant"])
+
+    def answer(body, request):
+        if next(answers) == "spend":
+            return httpx.Response(
+                403,
+                json={
+                    "success": False,
+                    "error": "Spend the last grant first",
+                    "reason": "agent_spend_missing",
+                    "action": "fix_request",
+                },
+            )
+        return _granted(body, request)
+
+    posts = _testnet_faucet(monkeypatch, answer)
+    refused = asyncio.run(faucet.collect_if_due(signer, TESTNET, now=30_000))
+    assert (refused.reason, refused.action) == ("agent_spend_missing", "spend_first")
+    assert faucet.waiting_for_spend(signer.address)
+    held = asyncio.run(faucet.collect_if_due(signer, TESTNET, now=30_000 + 10 * 86400))
+    assert held.reason == "agent_spend_missing" and len(posts) == 1
+    state.add_spend(5 * 10**16, now=30_500)
+    assert not faucet.waiting_for_spend(signer.address)
+    assert asyncio.run(faucet.collect_if_due(signer, TESTNET, now=31_000)).granted
+    assert len(posts) == 2 and posts[0]["nonce"] != posts[1]["nonce"]
+
+
+def test_a_faucet_serving_another_genesis_is_not_signed_for(monkeypatch):
+    signer = _CountingSigner(bytes([11]) * 32)
+    posts = _testnet_faucet(monkeypatch, _granted, genesis="0x" + "11" * 32)
+    with pytest.raises(faucet.FaucetIdentityError):
+        asyncio.run(faucet.collect_if_due(signer, TESTNET, now=1))
+    assert posts == [] and signer.claims == []
+
+
+def test_a_claim_signature_from_another_key_is_never_sent(monkeypatch):
+    signer = _CountingSigner(bytes([12]) * 32)
+    other = LocalFlopSigner(bytes([13]) * 32)
+
+    async def wrong(message, nonce):
+        return await other.sign_faucet_claim(message, nonce)
+
+    signer.sign_faucet_claim = wrong
+    posts = _testnet_faucet(monkeypatch, _granted)
+    with pytest.raises(ValueError, match="not the account's"):
+        asyncio.run(faucet.collect_if_due(signer, TESTNET, now=1))
+    assert posts == []
+
+
+def test_a_testnet_faucet_without_agent_claims_is_not_asked(monkeypatch):
+    signer = _CountingSigner(bytes([14]) * 32)
+    posts = _testnet_faucet(
+        monkeypatch, _granted, limits={"faucet": {"status": "open", "agent": None}}
+    )
+    result = asyncio.run(faucet.collect_if_due(signer, TESTNET, now=1))
+    assert result.reason == "faucet_closed" and posts == [] and signer.claims == []
+
+
+def test_a_per_ip_claim_refusal_says_the_address_is_shared(monkeypatch):
+    signer = _CountingSigner(bytes([15]) * 32)
+
+    def answer(body, request):
+        return httpx.Response(
+            429,
+            json={
+                "success": False,
+                "error": "This IP funded recently; retry in 947 min",
+                "reason": "ip_cooldown",
+                "action": "retry_later",
+                "retryAfterSeconds": 56807,
+            },
+        )
+
+    _testnet_faucet(monkeypatch, answer)
+    refused = asyncio.run(faucet.collect_if_due(signer, TESTNET, now=1))
+    assert refused.action == "retry_later" and refused.retry_at == 56808
+    assert "Shells share outbound addresses" in refused.message
+
+
+def test_claim_nonces_are_canonical_decimals():
+    with pytest.raises(ValueError):
+        faucet.agent_claim_message(TESTNET.genesis_hash, ADDRESS, "0123")
+    with pytest.raises(ValueError):
+        faucet.agent_claim_message(TESTNET.genesis_hash, ADDRESS, "1" * 20)
 
 
 # ---- gateway ------------------------------------------------------------------------
@@ -479,7 +715,7 @@ def test_a_per_ip_faucet_refusal_points_to_the_panel(monkeypatch, status, body, 
         return httpx.Response(status, json=body)
 
     _fake_http(monkeypatch, faucet, handler)
-    refused = asyncio.run(faucet.fund(ADDRESS, now=1))
+    refused = asyncio.run(faucet.fund(ADDRESS, DEVNET, now=1))
     assert not refused.granted
     assert (refused.action == "use_flop_panel_faucet") is per_ip
     assert ("FLOP panel" in refused.message) is per_ip

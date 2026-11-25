@@ -1,4 +1,5 @@
-"""The recurring job for this box's FLOP account: faucet grant and escrow recovery."""
+"""The recurring job for this box's FLOP account: faucet grant, escrow recovery and, on
+testnet, the daily spend that keeps the grant coming."""
 
 from __future__ import annotations
 
@@ -12,8 +13,10 @@ import httpx
 
 from wayfinder_paths.core.clients.FlopClient import FLOP_CLIENT
 from wayfinder_paths.core.clients.NotifyClient import NOTIFY_CLIENT
+from wayfinder_paths.core.config import get_flop_config
 from wayfinder_paths.core.flop import faucet, recovery, service, state
 from wayfinder_paths.core.flop.account import RAW_PER_FLOP
+from wayfinder_paths.core.flop.networks import TESTNET
 from wayfinder_paths.mcp.state.runs import runs_root
 from wayfinder_paths.runner.client import RunnerControlClient
 from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT
@@ -27,9 +30,18 @@ FAUCET_CHECK_INTERVAL_SECONDS = 6 * 3600
 SESSION_WARNING_SECONDS = 24 * 3600
 LOW_BALANCE_RAW = RAW_PER_FLOP
 LOW_BALANCE_NOTICE_SECONDS = 3 * 24 * 3600
+SPEND_INTERVAL_SECONDS = 24 * 3600
+# Keep enough for the transactions a session needs (open, settle) and a recovery.
+SPEND_FLOOR_RAW = RAW_PER_FLOP // 2
+DAILY_SPEND_MAX_TOKENS = 192
+DAILY_SPEND_PROMPT = (
+    "In three short bullet points, give one practical tip each for writing clear "
+    "commit messages, naming functions, and structuring a README."
+)
 
-_FAUCET_SCRIPT = '''"""Collects the daily FLOP faucet grant for this box's FLOP account, and closes out any
-compute channel a session left open so its escrow comes back.
+_FAUCET_SCRIPT = '''"""Collects the daily FLOP faucet grant for this box's FLOP account, closes out any
+compute channel a session left open so its escrow comes back, and on FLOP testnet spends
+part of the grant on one inference a day once miners are live.
 
 Written and scheduled by the Wayfinder SDK (job "flop-faucet"). Delete the job with
 `wayfinder runner delete flop-faucet` to stop it.
@@ -45,28 +57,92 @@ async def collect_faucet_grant() -> dict[str, Any]:
     account = await FLOP_CLIENT.get_account()
     if not account.get("connected"):
         return {"granted": False, "reason": "flop_not_connected"}
-    result = await faucet.collect_if_due(account["flop_address"])
-    outcome: dict[str, Any] = {"address": account["flop_address"], **result.as_dict()}
+    network = service.network_for(account)
+    signer = service.signer_for(account)
+    try:
+        result = await faucet.collect_if_due(signer, network)
+    except (httpx.HTTPError, ValueError, faucet.FaucetIdentityError) as exc:
+        result = faucet.FaucetResult(
+            granted=False, reason="faucet_unavailable", message=str(exc)[:200]
+        )
+    outcome: dict[str, Any] = {
+        "address": account["flop_address"],
+        "network": network.name,
+        **result.as_dict(),
+    }
     chain = service.chain_for(account)
     try:
         if recovery.pending_channels():
             outcome["recovered_channels"] = await recovery.recover_channels(
-                chain, service.signer_for(account)
+                chain, signer
             )
         balance_raw = (await chain.balance(account["flop_address"])).free
+        supply = await chain.inference_supply() if network is TESTNET else None
     finally:
         chain.close()
-    outcome["notices"] = await send_due_notices(account, balance_raw)
+    if supply is not None:
+        outcome["testnet_miners"], outcome["testnet_models"] = supply
+        outcome["spend"] = await spend_testnet_grant(balance_raw, supply)
+    outcome["notices"] = await send_due_notices(account, balance_raw, supply=supply)
     return outcome
 
 
+async def spend_testnet_grant(
+    balance_raw: int, supply: tuple[int, int], *, now: float | None = None
+) -> dict[str, Any]:
+    """Spend part of the testnet grant on one direct session, at most once a day.
+
+    The testnet faucet gives the next grant only after the last one has been spent on
+    inference, so once testnet sells inference the job buys one small turn a day from a
+    configured miner. The amount is the box's per-call cap at most.
+    """
+    current = int(now if now is not None else time.time())
+    if supply == (0, 0):
+        return {"spent": False, "reason": "testnet_inference_not_open"}
+    if not get_flop_config()["miners"]:
+        return {"spent": False, "reason": "no_miner_endpoint"}
+    if balance_raw < SPEND_FLOOR_RAW:
+        return {"spent": False, "reason": "balance_below_floor"}
+    if current - state.last_spend_at() < SPEND_INTERVAL_SECONDS:
+        return {"spent": False, "reason": "spent_recently"}
+    try:
+        result = await service.infer(
+            [{"role": "user", "content": DAILY_SPEND_PROMPT}],
+            mode="direct",
+            max_tokens=DAILY_SPEND_MAX_TOKENS,
+        )
+    except Exception as exc:  # noqa: BLE001 - reported, retried next run
+        return {"spent": False, "reason": type(exc).__name__, "error": str(exc)[:200]}
+    return {
+        "spent": True,
+        "cost_flop": result.cost_flop,
+        "channel_id": result.channel_id,
+        "miner": result.miner,
+    }
+
+
 async def send_due_notices(
-    account: dict[str, Any], balance_raw: int, *, now: float | None = None
+    account: dict[str, Any],
+    balance_raw: int,
+    *,
+    supply: tuple[int, int] | None = None,
+    now: float | None = None,
 ) -> list[str]:
-    """Tell the user, once, about the two things only they can fix."""
+    """Tell the user, once, about the things only they can act on."""
     current = int(now if now is not None else time.time())
     sent = dict(state.read_state().get("notices", {}))
     due: list[tuple[str, int, str, str]] = []
+    if supply is not None and supply != (0, 0) and not sent.get("testnet_inference"):
+        due.append(
+            (
+                "testnet_inference",
+                current,
+                "FLOP testnet now sells inference",
+                "Miners are live on FLOP testnet, so your agent can now pay for "
+                "inference there. Add a testnet miner endpoint under system.flop.miners "
+                "so the daily FLOP job can spend its faucet grant.",
+            )
+        )
     expires_at = account.get("session_expires_at")
     if (
         expires_at
@@ -91,8 +167,8 @@ async def send_due_notices(
                 "low_balance",
                 current,
                 "Your FLOP account is low",
-                "It holds less than 1 FLOP. The faucet job tops it up once a day; you "
-                "can also use Get test FLOP in Settings.",
+                "It holds less than 1 FLOP. The FLOP job asks the faucet for a grant "
+                "once a day when one is due.",
             )
         )
     delivered: list[str] = []

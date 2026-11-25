@@ -81,5 +81,12 @@ def add_spend(raw: int, now: float | None = None) -> int:
     total = int(state.get("spend", {}).get(day, 0)) + raw
     # Only today's total is kept; older days are of no use to the cap.
     state["spend"] = {day: str(total)}
+    if raw > 0:
+        state["last_spend_at"] = int(now if now is not None else time.time())
     write_state(state)
     return total
+
+
+def last_spend_at() -> int:
+    """When this box last paid for inference from the account (epoch seconds, 0 if never)."""
+    return int(read_state().get("last_spend_at") or 0)

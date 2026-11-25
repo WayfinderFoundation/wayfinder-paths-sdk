@@ -11,13 +11,12 @@ from substrateinterface import ExtrinsicReceipt, SubstrateInterface
 from substrateinterface.exceptions import SubstrateRequestException
 from websocket import WebSocketException
 
+from wayfinder_paths.core.flop.networks import DEVNET
 from wayfinder_paths.core.flop.signer import FlopSigner
 from wayfinder_paths.core.flop.wire import ModelIdentity, blake2_256, u32le
 
-DEVNET_RPC_URL = "wss://rpc.devnet.flop.network"
-DEVNET_GENESIS_HASH = (
-    "0x99c172c095340ace980631f9123544c6bebd4839f3437e463533422d8be2d631"
-)
+DEVNET_RPC_URL = DEVNET.rpc_url
+DEVNET_GENESIS_HASH = DEVNET.genesis_hash
 ECDSA_SIGNATURE_VERSION = 2
 # Transactions are mortal: valid for this many blocks from a finalized checkpoint, so
 # one that is not included in time can never land later.
@@ -199,6 +198,16 @@ class FlopChain:
         def read(s: SubstrateInterface) -> Balance:
             data = s.query("System", "Account", [address]).value["data"]
             return Balance(free=int(data["free"]), reserved=int(data["reserved"]))
+
+        return await self._run(read)
+
+    async def inference_supply(self) -> tuple[int, int]:
+        """(staked miners, registered models): both zero means no inference can be bought."""
+
+        def read(s: SubstrateInterface) -> tuple[int, int]:
+            miners = s.query("MinerStaking", "TotalMiners").value or 0
+            models = s.query("ModelRegistry", "ModelCount").value or 0
+            return int(miners), int(models)
 
         return await self._run(read)
 

@@ -55,6 +55,17 @@ def _failure(exc: Exception) -> dict[str, Any]:
     raise exc
 
 
+async def _collect(account: dict[str, Any]) -> faucet.FaucetResult:
+    try:
+        return await faucet.collect_if_due(
+            service.signer_for(account), service.network_for(account)
+        )
+    except (httpx.HTTPError, ValueError, faucet.FaucetIdentityError) as exc:
+        return faucet.FaucetResult(
+            granted=False, reason="faucet_unavailable", message=str(exc)[:200]
+        )
+
+
 async def _strategy_wallet_address(label: str) -> str | None:
     for wallet in await load_remote_wallets():
         if (
@@ -110,6 +121,7 @@ async def flop_status() -> dict:
             if key
             else None,
             "faucet_next_eligible_at": faucet.next_eligible_at(address) or None,
+            "faucet_waiting_for_spend": faucet.waiting_for_spend(address),
             # Scheduling is repeated here so a box whose runner was down when the
             # account was connected still gets its faucet job.
             "faucet_job": jobs.ensure_faucet_job(),
@@ -138,7 +150,7 @@ async def flop_connect(wallet_label: str = FLOP_WALLET_LABEL) -> dict:
     except httpx.HTTPStatusError as exc:
         return _backend_error(exc)
     job = jobs.ensure_faucet_job()
-    grant = await faucet.collect_if_due(account["flop_address"])
+    grant = await _collect(account)
     return ok(
         {
             "flop_address": account["flop_address"],
@@ -243,14 +255,16 @@ async def flop_infer(
 async def flop_faucet() -> dict:
     """Ask the FLOP faucet for this account's daily grant, if one is due.
 
-    The faucet gives one grant per address per day. A refusal is reported with when to
-    try again; it is not retried. A recurring job also does this automatically.
+    The faucet gives one grant per address per day. On testnet the claim is signed by
+    the account, and the next grant needs the last one spent on inference
+    (reason "agent_spend_missing"). A refusal is reported with when to try again; it is
+    not retried. A recurring job also does this automatically.
     """
     try:
         account = await service.connected_account()
     except Exception as exc:  # noqa: BLE001
         return _failure(exc)
-    result = await faucet.collect_if_due(account["flop_address"])
+    result = await _collect(account)
     return ok({"address": account["flop_address"], **result.as_dict()})
 
 

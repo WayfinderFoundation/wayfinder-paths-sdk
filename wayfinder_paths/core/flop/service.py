@@ -11,7 +11,9 @@ from wayfinder_paths.core.clients.FlopClient import FLOP_CLIENT
 from wayfinder_paths.core.config import get_flop_config
 from wayfinder_paths.core.flop import gateway, recovery, state
 from wayfinder_paths.core.flop.account import flop_to_raw, raw_to_flop
-from wayfinder_paths.core.flop.chain import DEVNET_RPC_URL, FlopChain
+from wayfinder_paths.core.flop.chain import FlopChain
+from wayfinder_paths.core.flop.networks import FlopNetwork, UnknownFlopNetworkError
+from wayfinder_paths.core.flop.networks import for_account as _network_for_account
 from wayfinder_paths.core.flop.session import DirectSessionError, run_direct_session
 from wayfinder_paths.core.flop.signer import BackendFlopSigner
 
@@ -63,9 +65,18 @@ def signer_for(account: dict[str, Any]) -> BackendFlopSigner:
     )
 
 
+def network_for(account: dict[str, Any]) -> FlopNetwork:
+    try:
+        return _network_for_account(account)
+    except UnknownFlopNetworkError as exc:
+        raise FlopError("flop_unknown_network", str(exc)) from exc
+
+
 def chain_for(account: dict[str, Any]) -> FlopChain:
+    # The configured RPC overrides the profile's; FlopChain still refuses a node whose
+    # genesis is not the account's network.
     return FlopChain(
-        rpc_url=get_flop_config()["rpc_url"] or DEVNET_RPC_URL,
+        rpc_url=get_flop_config()["rpc_url"] or network_for(account).rpc_url,
         expected_genesis_hash=account["genesis_hash"],
     )
 
@@ -135,6 +146,12 @@ async def infer(
         raise FlopError(
             "flop_no_miner_endpoint",
             "A direct session needs a miner endpoint in system.flop.miners.",
+        )
+    if target is None and network_for(account).gateway_url is None:
+        raise FlopError(
+            "flop_no_gateway",
+            f"FLOP {network_for(account).name} has no inference gateway yet. Inference "
+            "there is a direct session with a miner listed in system.flop.miners.",
         )
     if target is not None:
         result = await _direct(

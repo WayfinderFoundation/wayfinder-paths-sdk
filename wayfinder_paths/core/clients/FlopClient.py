@@ -39,6 +39,15 @@ class FlopClient(WayfinderClient):
         )
         return response.json()["signature"]
 
+    async def sign_faucet_claim(self, nonce: str) -> str:
+        """The account's signature on the testnet faucet's agent claim for `nonce`."""
+        response = await self._authed_request(
+            "POST",
+            f"{get_api_base_url()}/flop/sign/",
+            json={"kind": "faucet_claim", "nonce": nonce},
+        )
+        return response.json()["signature"]
+
     async def get_activity(self, limit: int = 20) -> dict[str, Any]:
         response = await self._authed_request(
             "GET", f"{get_api_base_url()}/flop/activity/", params={"limit": limit}
