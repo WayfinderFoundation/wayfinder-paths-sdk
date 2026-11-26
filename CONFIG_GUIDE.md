@@ -62,11 +62,14 @@ The `config.json` file has three main sections:
 | `api_key` | Yes | Wayfinder API key (sent as `X-API-KEY` header) |
 | `api_base_url` | No | API endpoint (default: `https://wayfinder.ai/api/v1`) |
 | `etherscan_api_key` | No | Etherscan V2 API key (used for Solidity contract verification) |
+| `flop` | No | FLOP Testnet settings: `miners` (map of miner address to its HTTPS session endpoint, for inference bought from your own FLOP account), `per_call_flop` (default `1`), `daily_flop` (default `10`), `rpc_url` |
 | `polymarket_builder_code` | No | Optional Polymarket v2 builder code for order attribution / builder rewards when builder support is enabled |
 
 The API key is automatically loaded and included in all API requests (including Gorlami dry-runs). You don't need to pass it explicitly to strategies or clients.
 
 `system.etherscan_api_key` is optional — it is only used when deploying contracts with `verify=true` (deploy still succeeds without it).
+
+`system.flop` is optional and only used on a Shell. FLOP Testnet has no hosted gateway, so `flop_infer` needs a miner in `system.flop.miners`; without one it returns `flop_no_miner_endpoint`. `FLOP_MINER_ADDRESS` and `FLOP_MINER_ENDPOINT` set one miner from the environment.
 
 ## Strategy Configuration
 

@@ -38,6 +38,7 @@ packaging = "^25.0"
 py-clob-client-v2-felix = "1.0.2"
 croniter = "^6.0.0"
 mcp = "^1.10.1"
+substrate-interface = "1.7.11"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.2"

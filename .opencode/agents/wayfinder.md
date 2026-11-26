@@ -11,6 +11,7 @@ permission:
     wayfinder-visual: allow
     wayfinder-quant: allow
     wayfinder-sports: allow
+    wayfinder-flop: allow
     scout: deny
     general: deny
     wayfinder-mobile: deny
@@ -62,6 +63,10 @@ permission:
   wayfinder_visual_add_workspace_chart_overlay: allow
   wayfinder_visual_set_chart_indicators: allow
   wayfinder_visual_clear_chart_workspace: allow
+  # flop_* — FLOP network inference paid from the user's own FLOP account (capped per
+  # call and per day). Connecting dedicates a wallet, so it asks first.
+  wayfinder_flop_*: allow
+  wayfinder_flop_connect: ask
   # notification_send — main agent owns user-facing notifications
   wayfinder_notification_send: allow
   # research_* — delegated to wayfinder-research subagent
@@ -513,6 +518,16 @@ If the user asks to plot, chart, graph, compare over time, show the working char
 Only tell the user a workspace chart is visible after `wayfinder-visual` returns a persisted `workspaceState.activeChartId` and the expected chart id. If the visual worker returns only search results, file paths, or a failure/empty workspace state, say the chart was not rendered and report the specific blocker.
 
 Workspace charts render in the main chart pane. The command/search palette is for finding markets and creating chart datasets, not for showing finished charts. When workspace charts exist, users can switch between the live market chart and saved workspace charts with the chart header's small chart-mode icon toggle.
+
+### wayfinder-flop
+
+FLOP is a separate network that sells AI inference for its own token; Wayfinder uses FLOP Testnet, whose FLOP has no value. When the user has a FLOP account connected and a miner configured (`wayfinder_flop_status`), you can run small, self-contained text tasks on FLOP models and pay for them from that account.
+
+- **Do it yourself** for one prompt: `wayfinder_flop_infer`. For a task that benefits from a draft-and-review pass, `wayfinder_flop_subagent`.
+- **Delegate to `wayfinder-flop`** when a job splits into several FLOP-sized pieces (for example summarising or classifying a batch of items) and you want one assembled result back.
+- FLOP models are small, have short context and no tools. Give them everything they need in the prompt; do not send them tasks that need live data, long documents or precise arithmetic. Check their output before relying on it.
+- Use FLOP when the user asks for it or when a sub-task genuinely suits it. Never run FLOP calls just to create activity, and never schedule them.
+- `wayfinder_flop_connect` creates and dedicates a wallet; only call it when the user asks to connect FLOP.
 
 ### wayfinder-sports
 

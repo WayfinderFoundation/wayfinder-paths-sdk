@@ -208,6 +208,8 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
         "wayfinder_visual_add_workspace_chart_overlay": "allow",
         "wayfinder_visual_set_chart_indicators": "allow",
         "wayfinder_visual_clear_chart_workspace": "allow",
+        "wayfinder_flop_*": "allow",
+        "wayfinder_flop_connect": "ask",
         "wayfinder_notification_send": "allow",
         "wayfinder_research_*": "deny",
         "wayfinder_sports_snapshot": "allow",
@@ -784,3 +786,22 @@ def test_claude_settings_reference_registered_tool_names(monkeypatch) -> None:
         matcher = hook["matcher"]
         if matcher.startswith("mcp__wayfinder__") and "(" not in matcher:
             assert matcher.removeprefix("mcp__wayfinder__") in registry_names
+
+
+def test_flop_worker_can_only_read_and_run_flop_inference() -> None:
+    worker = _agent_permission("wayfinder-flop")
+    assert {
+        key: value for key, value in worker.items() if key.startswith("wayfinder_")
+    } == {
+        "wayfinder_*": "deny",
+        "wayfinder_flop_status": "allow",
+        "wayfinder_flop_models": "allow",
+        "wayfinder_flop_estimate": "allow",
+        "wayfinder_flop_infer": "allow",
+        "wayfinder_flop_subagent": "allow",
+        "wayfinder_flop_activity": "allow",
+    }
+    assert worker["task"] == {"*": "deny"}
+    assert worker["write"] == "deny"
+    _assert_rule_order(worker, "wayfinder_*", "wayfinder_flop_infer")
+    assert _agent_permission("wayfinder")["task"]["wayfinder-flop"] == "allow"
