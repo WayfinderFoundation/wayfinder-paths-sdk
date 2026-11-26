@@ -86,7 +86,9 @@ async def collect_faucet_grant() -> dict[str, Any]:
         )
     finally:
         chain.close()
-    outcome["notices"] = await send_due_notices(account, balance_raw, supply=supply)
+    outcome["notices"] = await send_due_notices(
+        account, balance_raw, first_spend=bool(outcome["spend"].get("spent"))
+    )
     return outcome
 
 
@@ -172,22 +174,23 @@ async def send_due_notices(
     account: dict[str, Any],
     balance_raw: int,
     *,
-    supply: tuple[int, int] | None = None,
+    first_spend: bool = False,
     now: float | None = None,
 ) -> list[str]:
     """Tell the user, once, about the things only they can act on."""
     current = int(now if now is not None else time.time())
     sent = dict(state.read_state().get("notices", {}))
     due: list[tuple[str, int, str, str]] = []
-    if inference_open(supply) and not sent.get("testnet_inference"):
+    # Said only once the agent has actually bought inference: miners and models on
+    # chain are not enough while no miner endpoint can be reached.
+    if first_spend and not sent.get("testnet_inference"):
         due.append(
             (
                 "testnet_inference",
                 current,
-                "FLOP testnet now sells inference",
-                "Miners are live on FLOP testnet, so your agent can now pay for "
-                "inference there. Add a testnet miner endpoint under system.flop.miners "
-                "so the daily FLOP job can spend its faucet grant.",
+                "Your agent is buying FLOP inference",
+                "It bought its first inference on FLOP Testnet with its test FLOP. It "
+                "spends a small amount once a day so the faucet keeps sending grants.",
             )
         )
     expires_at = account.get("session_expires_at")

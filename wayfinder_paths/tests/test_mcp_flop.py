@@ -503,9 +503,9 @@ def test_testnet_job_spends_once_a_day_when_miners_are_live(monkeypatch):
     again = asyncio.run(jobs.collect_faucet_grant())
     assert again["spend"] == {"spent": False, "reason": "spent_recently"}
     assert session.await_count == 1
-    # Told once that testnet inference opened.
+    # Told once, after the first spend, that the agent is buying inference.
     assert [c.args[0] for c in notify.await_args_list] == [
-        "FLOP testnet now sells inference"
+        "Your agent is buying FLOP inference"
     ]
 
 
@@ -519,12 +519,16 @@ def test_testnet_job_spends_once_a_day_when_miners_are_live(monkeypatch):
 def test_testnet_job_does_not_spend_without_a_miner_or_a_balance(
     monkeypatch, balance, miners, reason
 ):
-    _, _, session = _testnet_job(
+    _, notify, session = _testnet_job(
         monkeypatch, supply=(1, 1), balance=balance, miners=miners
     )
     outcome = asyncio.run(jobs.collect_faucet_grant())
     assert outcome["spend"] == {"spent": False, "reason": reason}
     session.assert_not_awaited()
+    # Miners on chain are not news while the agent cannot buy anything.
+    assert "Your agent is buying FLOP inference" not in [
+        c.args[0] for c in notify.await_args_list
+    ]
 
 
 @pytest.mark.parametrize("supply", [(3, 0), (0, 2)])
