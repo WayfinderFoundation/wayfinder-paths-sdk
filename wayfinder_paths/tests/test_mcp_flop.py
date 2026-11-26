@@ -27,7 +27,7 @@ ACCOUNT = {
 }
 MODELS = [
     {
-        "id": "qwen/qwen2.5-0.5b-instruct",
+        "id": "qwen/qwen3-14b",
         "context_length": 32768,
         "top_provider": {"max_completion_tokens": 8192},
         "pricing": {"prompt": "0.006", "completion": "0.006"},
@@ -540,8 +540,8 @@ def test_testnet_job_spends_once_a_day_when_miners_are_live(monkeypatch):
     outcome = asyncio.run(jobs.collect_faucet_grant())
     assert outcome["spend"]["spent"] and outcome["spend"]["cost_flop"] == "0.03"
     assert session.await_args.kwargs["miner"] == MINER
-    # Testnet registers no 0.5B model; the spend uses the network's own model.
-    assert session.await_args.kwargs["model"] == TESTNET.daily_spend_model
+    # The spend uses the network's own default model.
+    assert session.await_args.kwargs["model"] == "Qwen/Qwen3-30B-A3B-FP8"
     assert state.last_spend_at() > 0
     again = asyncio.run(jobs.collect_faucet_grant())
     assert again["spend"] == {"spent": False, "reason": "spent_recently"}
@@ -603,6 +603,26 @@ def test_testnet_job_does_not_spend_on_a_miner_that_cannot_serve(
     }
     session.assert_not_awaited()
     assert state.last_spend_at() == 0
+
+
+@pytest.mark.parametrize(
+    ("account", "model"),
+    [(ACCOUNT, "qwen/qwen3-14b"), (TESTNET_ACCOUNT, "Qwen/Qwen3-30B-A3B-FP8")],
+)
+def test_inference_defaults_to_the_strongest_model_on_the_network(
+    monkeypatch, account, model
+):
+    monkeypatch.setattr(
+        service.FLOP_CLIENT, "get_account", AsyncMock(return_value=account)
+    )
+    _set_flop_config(monkeypatch, miners={MINER: "https://miner.example"})
+    _fake_chain(monkeypatch)
+    session = AsyncMock(return_value=_session_result(payable=3 * 10**16))
+    monkeypatch.setattr(service, "run_direct_session", session)
+    result = asyncio.run(tools.flop_infer("ping", mode="direct"))
+    assert result["ok"], result
+    assert session.await_args.kwargs["model"] == model
+    assert result["result"]["model"] == model
 
 
 def test_testnet_inference_without_a_miner_says_there_is_no_gateway(monkeypatch):

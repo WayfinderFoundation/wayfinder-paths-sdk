@@ -107,7 +107,7 @@ async def _spend_target(
     """
     skipped: dict[str, str] = {}
     try:
-        await chain.resolve_model_identity(network.daily_spend_model)
+        await chain.resolve_model_identity(network.default_model)
     except FlopChainError:
         return None, {"*": "spend_model_not_registered"}
     for miner, endpoint in get_flop_config()["miners"].items():
@@ -155,7 +155,7 @@ async def spend_testnet_grant(
     try:
         result = await service.infer(
             [{"role": "user", "content": DAILY_SPEND_PROMPT}],
-            model=network.daily_spend_model,
+            model=network.default_model,
             mode="direct",
             miner=target[0],
             max_tokens=DAILY_SPEND_MAX_TOKENS,

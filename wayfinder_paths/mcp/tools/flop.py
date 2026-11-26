@@ -189,11 +189,17 @@ async def flop_models() -> dict:
 
 
 @catch_errors
-async def flop_estimate(
-    prompt: str, model: str = service.DEFAULT_MODEL, max_tokens: int = 256
-) -> dict:
-    """Estimate the most one flop_infer call could cost, from the model's listed price."""
+async def flop_estimate(prompt: str, model: str = UNSET, max_tokens: int = 256) -> dict:
+    """Estimate the most one flop_infer call could cost, from the model's listed price.
+
+    Without `model`, it estimates the default: the strongest model the account's network
+    serves.
+    """
     text = throw_if_empty_str("prompt is required", prompt)
+    try:
+        model = _optional(model) or await service.default_model()
+    except Exception as exc:  # noqa: BLE001
+        return _failure(exc)
     try:
         listed = await gateway.models()
     except gateway.GatewayError as exc:
@@ -215,7 +221,7 @@ async def flop_estimate(
 @catch_errors
 async def flop_infer(
     prompt: str,
-    model: str = service.DEFAULT_MODEL,
+    model: str = UNSET,
     max_tokens: int = 256,
     max_cost_flop: str = UNSET,
     system: str = UNSET,
@@ -228,7 +234,8 @@ async def flop_infer(
     listed in system.flop.miners, verifies the miner's signed receipt and settles; the
     result says paid_by="own_account". mode="gateway" uses FLOP's hosted gateway, which
     pays from the gateway operator's account (paid_by="gateway_operator"). mode="auto"
-    picks direct when a miner endpoint is configured, otherwise gateway.
+    picks direct when a miner endpoint is configured, otherwise gateway. Without `model`
+    it uses the strongest model the account's network serves.
 
     Spend is capped per call and per day (see flop_status). Use this for real work the
     user or task needs; do not loop it to generate activity.
@@ -240,7 +247,7 @@ async def flop_infer(
     try:
         result = await service.infer(
             messages,
-            model=model,
+            model=_optional(model),
             max_tokens=int(max_tokens),
             max_cost_flop=_optional(max_cost_flop),
             mode=mode,
@@ -291,7 +298,7 @@ async def flop_activity(limit: int = 20) -> dict:
 async def flop_subagent(
     task: str,
     context: str = UNSET,
-    model: str = service.DEFAULT_MODEL,
+    model: str = UNSET,
     max_steps: int = 2,
     max_tokens: int = 384,
     max_cost_flop: str = UNSET,
@@ -310,7 +317,7 @@ async def flop_subagent(
         result = await service.run_subagent(
             brief,
             context=_optional(context),
-            model=model,
+            model=_optional(model),
             max_steps=int(max_steps),
             max_tokens=int(max_tokens),
             max_cost_flop=_optional(max_cost_flop),

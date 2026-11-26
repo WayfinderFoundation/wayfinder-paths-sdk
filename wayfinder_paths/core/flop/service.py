@@ -17,7 +17,6 @@ from wayfinder_paths.core.flop.networks import for_account as _network_for_accou
 from wayfinder_paths.core.flop.session import DirectSessionError, run_direct_session
 from wayfinder_paths.core.flop.signer import BackendFlopSigner
 
-DEFAULT_MODEL = "qwen/qwen2.5-0.5b-instruct"
 # Used when FLOP's catalogue has no price for the model being asked for.
 FALLBACK_DIRECT_ESCROW_FLOP = "0.05"
 OWN_ACCOUNT = "own_account"
@@ -57,6 +56,11 @@ async def connected_account() -> dict[str, Any]:
             "No FLOP account is connected. Run flop_connect first.",
         )
     return account
+
+
+async def default_model() -> str:
+    """The strongest model the connected account's network serves."""
+    return network_for(await connected_account()).default_model
 
 
 def signer_for(account: dict[str, Any]) -> BackendFlopSigner:
@@ -130,7 +134,7 @@ def _pick_miner(miner: str | None) -> tuple[str, str] | None:
 async def infer(
     messages: list[dict[str, str]],
     *,
-    model: str = DEFAULT_MODEL,
+    model: str | None = None,
     max_tokens: int = 256,
     max_cost_flop: str | None = None,
     mode: str = "auto",
@@ -139,6 +143,7 @@ async def infer(
     if mode not in ("auto", "direct", "gateway"):
         raise FlopError("invalid_argument", "mode must be auto, direct or gateway")
     account = await connected_account()
+    model = model or network_for(account).default_model
     signer = signer_for(account)
     ceiling_raw = _spend_ceiling_raw(max_cost_flop)
     target = None if mode == "gateway" else _pick_miner(miner)
@@ -305,7 +310,7 @@ async def run_subagent(
     task: str,
     *,
     context: str | None = None,
-    model: str = DEFAULT_MODEL,
+    model: str | None = None,
     max_steps: int = 2,
     max_tokens: int = 384,
     max_cost_flop: str | None = None,
@@ -318,6 +323,7 @@ async def run_subagent(
     """
     if not 1 <= max_steps <= 4:
         raise FlopError("invalid_argument", "max_steps must be between 1 and 4")
+    model = model or await default_model()
     brief = task if not context else f"{task}\n\nContext:\n{context}"
     steps: list[Inference] = []
     draft = await infer(

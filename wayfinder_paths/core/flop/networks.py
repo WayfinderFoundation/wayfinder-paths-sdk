@@ -20,9 +20,10 @@ class FlopNetwork:
     # FLOP's hosted inference gateway. Testnet has none yet (`gateway.testnet.flop.network`
     # is announced but does not resolve), so testnet inference is direct sessions only.
     gateway_url: str | None
-    # The model the daily job buys one small turn of. It must be a verified registry
-    # entry on this network; the job checks that before it escrows anything.
-    daily_spend_model: str
+    # The strongest model this network serves: what inference uses when no model is named,
+    # and what the daily job buys its turn of (it checks the model is a verified registry
+    # entry here before it escrows anything).
+    default_model: str
 
 
 DEVNET = FlopNetwork(
@@ -31,7 +32,8 @@ DEVNET = FlopNetwork(
     rpc_url="wss://rpc.devnet.flop.network",
     faucet_url="https://faucet.devnet.flop.network",
     gateway_url="https://api.flop.network/v1",
-    daily_spend_model="qwen/qwen2.5-0.5b-instruct",
+    # The gateway serves only qwen3-14b and qwen2.5-0.5b-instruct.
+    default_model="qwen/qwen3-14b",
 )
 # Opened 24 November 2026.
 TESTNET = FlopNetwork(
@@ -40,8 +42,8 @@ TESTNET = FlopNetwork(
     rpc_url="wss://testnet.flop.network",
     faucet_url="https://faucet.flop.network",
     gateway_url=None,
-    # Testnet has no 0.5B model; Qwen3-1.7B is the smallest it registers.
-    daily_spend_model="Qwen/Qwen3-1.7B",
+    # The largest of its verified models (all Qwen, 1.7B to 30B).
+    default_model="Qwen/Qwen3-30B-A3B-FP8",
 )
 NETWORKS = (DEVNET, TESTNET)
 
