@@ -4,7 +4,9 @@ Devnet funds an address on request (`POST /fund`). Testnet takes signed agent cl
 (`POST /v1/testnet/agent-claims`): the account signs `flop-faucet-agent/v1|<genesis>|
 <address>|<nonce>`, and a claim repeated with the same nonce and signature returns the same
 transfer and never pays twice. That is how an unclear outcome is reconciled, so a claim's
-nonce and signature are kept until the faucet gives it a final answer.
+nonce and signature are kept until the faucet gives it a final answer, and a grant counts
+(and starts the 24h cooldown) only once its transfer is finalized: an included transfer can
+still be dropped.
 """
 
 from __future__ import annotations
@@ -27,6 +29,9 @@ from wayfinder_paths.core.flop.wire import blake2_256
 
 GRANT_COOLDOWN_SECONDS = 24 * 3600
 UNKNOWN_HOLD_SECONDS = 3600
+# A transfer the faucet reports as included but not yet finalized is checked again (by
+# repeating the same claim) after this long.
+TRANSFER_PENDING_HOLD_SECONDS = 600
 # A request the faucet called malformed is not sent again for this long.
 FIX_REQUEST_HOLD_SECONDS = 6 * 3600
 AGENT_CLAIM_PATH = "/v1/testnet/agent-claims"
@@ -43,6 +48,10 @@ DEVNET_PANEL_HINT = (
 SPEND_NEEDED_MESSAGE = (
     "The testnet faucet gives the next grant only after the last one has been spent "
     "on inference. The job asks again after this account's next FLOP spend."
+)
+TRANSFER_PENDING_MESSAGE = (
+    "The faucet sent the grant, but its transfer is not final yet. The same claim is "
+    "repeated until the faucet reports it finalized; it cannot pay twice."
 )
 TIMEOUT_SECONDS = 60
 MAX_RESPONSE_BYTES = 64 * 1024
@@ -196,14 +205,37 @@ async def claim(
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
             response = await client.post(
                 f"{network.faucet_url}{AGENT_CLAIM_PATH}",
-                json={"address": signer.address, **pending},
+                json={
+                    "address": signer.address,
+                    "nonce": pending["nonce"],
+                    "signature": pending["signature"],
+                },
             )
         body = _json(response)
     except (httpx.HTTPError, ValueError):
         return _unknown(current), pending
     result = _classify(response, body, current, hint=SHARED_ADDRESS_HINT)
-    if result.granted:
+    if result.granted and result.transfer_status == "finalized":
         return result, None
+    if result.granted:
+        # Included (or no status at all) is not final: the transfer can still be dropped.
+        # Keep the claim and its transaction; the same claim, repeated, reports the same
+        # transfer, so only a finalized answer counts as the grant.
+        if result.tx_hash:
+            pending = {**pending, "tx_hash": result.tx_hash}
+        return (
+            FaucetResult(
+                granted=False,
+                amount_flop=result.amount_flop,
+                tx_hash=result.tx_hash,
+                transfer_status=result.transfer_status or "unconfirmed",
+                reason="transfer_not_final",
+                message=TRANSFER_PENDING_MESSAGE,
+                action="retry_later",
+                retry_at=current + TRANSFER_PENDING_HOLD_SECONDS,
+            ),
+            pending,
+        )
     if response.status_code >= 500 and result.action != "retry_later":
         return _unknown(current), pending
     if result.action == "retry_later":

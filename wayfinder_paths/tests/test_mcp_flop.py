@@ -478,7 +478,16 @@ def test_job_run_collects_the_grant_and_recovers_pending_channels(monkeypatch):
 TESTNET_ACCOUNT = ACCOUNT | {"network": "testnet", "genesis_hash": TESTNET.genesis_hash}
 
 
-def _testnet_job(monkeypatch, *, supply, balance=10 * 10**18, miners=None):
+def _testnet_job(
+    monkeypatch,
+    *,
+    supply,
+    balance=10 * 10**18,
+    miners=None,
+    miner_active=True,
+    endpoint_up=True,
+    model_registered=True,
+):
     monkeypatch.setattr(
         jobs.FLOP_CLIENT, "get_account", AsyncMock(return_value=TESTNET_ACCOUNT)
     )
@@ -489,11 +498,19 @@ def _testnet_job(monkeypatch, *, supply, balance=10 * 10**18, miners=None):
     monkeypatch.setattr(faucet, "collect_if_due", collect)
     notify = AsyncMock()
     monkeypatch.setattr(jobs.NOTIFY_CLIENT, "notify", notify)
+    resolve = AsyncMock(
+        side_effect=None
+        if model_registered
+        else FlopChainError("not exactly one verified model")
+    )
     _fake_chain(
         monkeypatch,
         balance=AsyncMock(return_value=SimpleNamespace(free=balance, reserved=0)),
         inference_supply=AsyncMock(return_value=supply),
+        resolve_model_identity=resolve,
+        miner_is_active=AsyncMock(return_value=miner_active),
     )
+    monkeypatch.setattr(jobs, "endpoint_answers", AsyncMock(return_value=endpoint_up))
     if miners:
         _set_flop_config(monkeypatch, miners=miners)
     session = AsyncMock(return_value=_session_result(payable=3 * 10**16))
@@ -523,6 +540,8 @@ def test_testnet_job_spends_once_a_day_when_miners_are_live(monkeypatch):
     outcome = asyncio.run(jobs.collect_faucet_grant())
     assert outcome["spend"]["spent"] and outcome["spend"]["cost_flop"] == "0.03"
     assert session.await_args.kwargs["miner"] == MINER
+    # Testnet registers no 0.5B model; the spend uses the network's own model.
+    assert session.await_args.kwargs["model"] == TESTNET.daily_spend_model
     assert state.last_spend_at() > 0
     again = asyncio.run(jobs.collect_faucet_grant())
     assert again["spend"] == {"spent": False, "reason": "spent_recently"}
@@ -549,6 +568,41 @@ def test_testnet_job_does_not_spend_without_a_miner_or_a_balance(
     outcome = asyncio.run(jobs.collect_faucet_grant())
     assert outcome["spend"] == {"spent": False, "reason": reason}
     session.assert_not_awaited()
+
+
+@pytest.mark.parametrize("supply", [(3, 0), (0, 2)])
+def test_testnet_job_needs_both_miners_and_models(monkeypatch, supply):
+    _, notify, session = _testnet_job(
+        monkeypatch, supply=supply, miners={MINER: "https://miner.example"}
+    )
+    outcome = asyncio.run(jobs.collect_faucet_grant())
+    assert outcome["spend"] == {"spent": False, "reason": "testnet_inference_not_open"}
+    session.assert_not_awaited()
+    notify.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("check", "skipped"),
+    [
+        ({"miner_active": False}, {MINER: "miner_not_active"}),
+        ({"endpoint_up": False}, {MINER: "miner_unreachable"}),
+        ({"model_registered": False}, {"*": "spend_model_not_registered"}),
+    ],
+)
+def test_testnet_job_does_not_spend_on_a_miner_that_cannot_serve(
+    monkeypatch, check, skipped
+):
+    _, _, session = _testnet_job(
+        monkeypatch, supply=(3, 2), miners={MINER: "https://miner.example"}, **check
+    )
+    outcome = asyncio.run(jobs.collect_faucet_grant())
+    assert outcome["spend"] == {
+        "spent": False,
+        "reason": "no_ready_miner",
+        "skipped": skipped,
+    }
+    session.assert_not_awaited()
+    assert state.last_spend_at() == 0
 
 
 def test_testnet_inference_without_a_miner_says_there_is_no_gateway(monkeypatch):

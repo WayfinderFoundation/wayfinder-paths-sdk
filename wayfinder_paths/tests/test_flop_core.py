@@ -284,16 +284,22 @@ def _testnet_faucet(monkeypatch, answer, *, limits=None, genesis=None):
     return posts
 
 
-def _granted(body, request):
-    return httpx.Response(
-        200,
-        json={
-            "success": True,
-            "amount": 10,
-            "txHash": "0x" + "ab" * 32,
-            "status": "included",
-        },
-    )
+def _answer(status):
+    def answer(body, request):
+        return httpx.Response(
+            200,
+            json={
+                "success": True,
+                "amount": 10,
+                "txHash": "0x" + "ab" * 32,
+                "status": status,
+            },
+        )
+
+    return answer
+
+
+_granted = _answer("finalized")
 
 
 def test_a_testnet_claim_signs_the_versioned_text_with_the_account_key(monkeypatch):
@@ -301,7 +307,7 @@ def test_a_testnet_claim_signs_the_versioned_text_with_the_account_key(monkeypat
     posts = _testnet_faucet(monkeypatch, _granted)
     result = asyncio.run(faucet.collect_if_due(signer, TESTNET, now=1_700_000_000))
     assert result.granted and result.amount_flop == 10
-    assert result.transfer_status == "included"
+    assert result.transfer_status == "finalized"
     (body,) = posts
     nonce = "1700000000000"
     assert body["address"] == signer.address and body["nonce"] == nonce
@@ -315,6 +321,40 @@ def test_a_testnet_claim_signs_the_versioned_text_with_the_account_key(monkeypat
     record = state.read_state()["faucet"][signer.address]
     assert (
         record["pending_claim"] is None and record["last_tx_hash"] == "0x" + "ab" * 32
+    )
+
+
+@pytest.mark.parametrize("status", ["included", None])
+def test_a_transfer_that_is_not_final_is_no_grant_until_it_is(monkeypatch, status):
+    signer = _CountingSigner(bytes([11]) * 32)
+    answers = iter([_answer(status), _answer("finalized")])
+    posts = _testnet_faucet(
+        monkeypatch, lambda body, request: next(answers)(body, request)
+    )
+    start = 30_000
+
+    first = asyncio.run(faucet.collect_if_due(signer, TESTNET, now=start))
+    assert not first.granted and first.reason == "transfer_not_final"
+    assert first.tx_hash == "0x" + "ab" * 32 and first.action == "retry_later"
+    record = state.read_state()["faucet"][signer.address]
+    # No grant recorded and no 24h cooldown; the claim and its transaction are kept.
+    assert "last_grant_at" not in record
+    assert record["pending_claim"]["tx_hash"] == "0x" + "ab" * 32
+    assert faucet.next_eligible_at(signer.address) == (
+        start + faucet.TRANSFER_PENDING_HOLD_SECONDS
+    )
+
+    later = start + faucet.TRANSFER_PENDING_HOLD_SECONDS
+    final = asyncio.run(faucet.collect_if_due(signer, TESTNET, now=later))
+    assert final.granted and final.transfer_status == "finalized"
+    # The same claim was repeated: same nonce and signature, and our tx hash stays local.
+    assert len(posts) == 2 and posts[0] == posts[1]
+    assert set(posts[1]) == {"address", "nonce", "signature"}
+    assert len(signer.claims) == 1
+    record = state.read_state()["faucet"][signer.address]
+    assert record["pending_claim"] is None and record["last_grant_at"] == later
+    assert faucet.next_eligible_at(signer.address) == (
+        later + faucet.GRANT_COOLDOWN_SECONDS
     )
 
 

@@ -506,6 +506,34 @@ def _refuse_unsafe(response: httpx.Response) -> None:
         raise MinerError("miner response uses an unsupported content encoding")
 
 
+async def endpoint_answers(
+    endpoint: str, *, transport: httpx.AsyncBaseTransport | None = None
+) -> bool:
+    """Whether a miner's session endpoint answers, without signing or paying for anything.
+
+    A live session endpoint refuses an unsigned `GET /session/info` and hands back the
+    request challenge the signed call needs. Only that answer counts: any other web server,
+    a redirect, a server error or no answer at all means there is no miner there.
+    """
+    try:
+        target = MinerEndpoint(endpoint, transport=transport)
+    except ValueError:
+        return False
+    try:
+        async with (
+            asyncio.timeout(PROBE_TIMEOUT_SECONDS),
+            target.client(PROBE_TIMEOUT_SECONDS) as client,
+        ):
+            response = await client.get(target.base_url + "/session/info")
+    except (TimeoutError, httpx.HTTPError):
+        return False
+    return (
+        not response.is_redirect
+        and response.status_code < 500
+        and bool(response.headers.get(CHALLENGE_HEADER))
+    )
+
+
 class MinerEndpoint:
     def __init__(
         self, endpoint: str, *, transport: httpx.AsyncBaseTransport | None = None

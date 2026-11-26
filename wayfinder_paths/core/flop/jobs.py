@@ -16,7 +16,9 @@ from wayfinder_paths.core.clients.NotifyClient import NOTIFY_CLIENT
 from wayfinder_paths.core.config import get_flop_config
 from wayfinder_paths.core.flop import faucet, recovery, service, state
 from wayfinder_paths.core.flop.account import RAW_PER_FLOP
-from wayfinder_paths.core.flop.networks import TESTNET
+from wayfinder_paths.core.flop.chain import FlopChain, FlopChainError
+from wayfinder_paths.core.flop.miner import endpoint_answers
+from wayfinder_paths.core.flop.networks import TESTNET, FlopNetwork
 from wayfinder_paths.mcp.state.runs import runs_root
 from wayfinder_paths.runner.client import RunnerControlClient
 from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT
@@ -78,26 +80,65 @@ async def collect_faucet_grant() -> dict[str, Any]:
             )
         balance_raw = (await chain.balance(account["flop_address"])).free
         supply = await chain.inference_supply() if network is TESTNET else None
+        if supply is not None:
+            outcome["testnet_miners"], outcome["testnet_models"] = supply
+            outcome["spend"] = await spend_testnet_grant(
+                balance_raw, supply, chain=chain, network=network
+            )
     finally:
         chain.close()
-    if supply is not None:
-        outcome["testnet_miners"], outcome["testnet_models"] = supply
-        outcome["spend"] = await spend_testnet_grant(balance_raw, supply)
     outcome["notices"] = await send_due_notices(account, balance_raw, supply=supply)
     return outcome
 
 
+def inference_open(supply: tuple[int, int] | None) -> bool:
+    """Testnet sells inference only once it has both staked miners and registered models."""
+    return supply is not None and supply[0] > 0 and supply[1] > 0
+
+
+async def _spend_target(
+    chain: FlopChain, network: FlopNetwork
+) -> tuple[tuple[str, str] | None, dict[str, str]]:
+    """The first configured miner that can take today's spend, checked without escrowing.
+
+    A miner qualifies when it is an active miner on this network, the spend model is a
+    verified registry entry here, and its session endpoint answers. Returns the miner
+    (address, endpoint) or None, and why each miner that was passed over was skipped.
+    """
+    skipped: dict[str, str] = {}
+    try:
+        await chain.resolve_model_identity(network.daily_spend_model)
+    except FlopChainError:
+        return None, {"*": "spend_model_not_registered"}
+    for miner, endpoint in get_flop_config()["miners"].items():
+        if not endpoint.startswith("https://"):
+            skipped[miner] = "endpoint_not_https"
+        elif not await chain.miner_is_active(miner):
+            skipped[miner] = "miner_not_active"
+        elif not await endpoint_answers(endpoint):
+            skipped[miner] = "miner_unreachable"
+        else:
+            return (miner, endpoint), skipped
+    return None, skipped
+
+
 async def spend_testnet_grant(
-    balance_raw: int, supply: tuple[int, int], *, now: float | None = None
+    balance_raw: int,
+    supply: tuple[int, int],
+    *,
+    chain: FlopChain,
+    network: FlopNetwork,
+    now: float | None = None,
 ) -> dict[str, Any]:
     """Spend part of the testnet grant on one direct session, at most once a day.
 
     The testnet faucet gives the next grant only after the last one has been spent on
     inference, so once testnet sells inference the job buys one small turn a day from a
-    configured miner. The amount is the box's per-call cap at most.
+    configured miner that it has checked can serve it. The amount is the box's per-call cap
+    at most.
     """
     current = int(now if now is not None else time.time())
-    if supply == (0, 0):
+    if not inference_open(supply):
         return {"spent": False, "reason": "testnet_inference_not_open"}
     if not get_flop_config()["miners"]:
         return {"spent": False, "reason": "no_miner_endpoint"}
@@ -106,9 +147,17 @@ async def spend_testnet_grant(
     if current - state.last_spend_at() < SPEND_INTERVAL_SECONDS:
         return {"spent": False, "reason": "spent_recently"}
     try:
+        target, skipped = await _spend_target(chain, network)
+    except Exception as exc:  # noqa: BLE001 - reported, checked again next run
+        return {"spent": False, "reason": "miner_check_failed", "error": str(exc)[:200]}
+    if target is None:
+        return {"spent": False, "reason": "no_ready_miner", "skipped": skipped}
+    try:
         result = await service.infer(
             [{"role": "user", "content": DAILY_SPEND_PROMPT}],
+            model=network.daily_spend_model,
             mode="direct",
+            miner=target[0],
             max_tokens=DAILY_SPEND_MAX_TOKENS,
         )
     except Exception as exc:  # noqa: BLE001 - reported, retried next run
@@ -132,7 +181,7 @@ async def send_due_notices(
     current = int(now if now is not None else time.time())
     sent = dict(state.read_state().get("notices", {}))
     due: list[tuple[str, int, str, str]] = []
-    if supply is not None and supply != (0, 0) and not sent.get("testnet_inference"):
+    if inference_open(supply) and not sent.get("testnet_inference"):
         due.append(
             (
                 "testnet_inference",

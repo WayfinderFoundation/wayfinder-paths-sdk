@@ -211,6 +211,15 @@ class FlopChain:
 
         return await self._run(read)
 
+    async def miner_is_active(self, miner: str) -> bool:
+        """Whether `miner` is a registered, active miner on this network."""
+
+        def read(s: SubstrateInterface) -> bool:
+            record = s.query("MinerStaking", "Miners", [miner]).value
+            return bool(isinstance(record, dict) and record.get("is_active"))
+
+        return await self._run(read)
+
     async def constant(self, module: str, name: str) -> int:
         return await self._run(lambda s: int(s.get_constant(module, name).value))
 

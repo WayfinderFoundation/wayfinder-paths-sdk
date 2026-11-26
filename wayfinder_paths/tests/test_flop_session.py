@@ -1463,3 +1463,57 @@ async def test_any_other_open_refusal_is_not_retried(chain, miner):
     assert len(attempts) == 1
     assert failure.value.recovery == "refunded"
     assert miner.turn_inputs == []
+
+
+# ---- endpoint reachability ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("answer", "up"),
+    [
+        (
+            lambda request: httpx.Response(
+                401, headers={miner_wire.CHALLENGE_HEADER: "c"}
+            ),
+            True,
+        ),
+        # A web server that is not a miner: it answers, but with no session challenge.
+        (lambda request: httpx.Response(401), False),
+        (lambda request: httpx.Response(200, json={}), False),
+        (lambda request: httpx.Response(503), False),
+        (
+            lambda request: httpx.Response(
+                302, headers={"location": "https://elsewhere.example/"}
+            ),
+            False,
+        ),
+        (
+            lambda request: (_ for _ in ()).throw(
+                httpx.ConnectError("refused", request=request)
+            ),
+            False,
+        ),
+    ],
+)
+def test_a_miner_endpoint_is_up_when_it_answers_the_unsigned_probe(answer, up):
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(f"{request.method} {request.url}")
+        return answer(request)
+
+    transport = httpx.MockTransport(handler)
+    assert (
+        asyncio.run(
+            miner_wire.endpoint_answers("https://miner.example/", transport=transport)
+        )
+        is up
+    )
+    assert seen == ["GET https://miner.example/session/info"]
+
+
+def test_an_endpoint_that_is_not_https_is_never_probed():
+    transport = httpx.MockTransport(lambda request: pytest.fail("probed"))
+    assert not asyncio.run(
+        miner_wire.endpoint_answers("http://miner.example", transport=transport)
+    )
