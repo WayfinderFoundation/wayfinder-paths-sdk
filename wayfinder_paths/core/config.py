@@ -238,7 +238,7 @@ def get_flop_config() -> dict[str, Any]:
     """FLOP settings from ``system.flop`` (env fallback).
 
     ``miners`` maps a miner's FLOP address to the HTTPS endpoint it serves direct sessions
-    on; without one, inference goes through FLOP's hosted gateway.
+    on. FLOP Testnet has no hosted gateway, so without one there is no inference.
     """
     flop = CONFIG.get("system", {}).get("flop", {})
     miners = dict(flop.get("miners") or {})

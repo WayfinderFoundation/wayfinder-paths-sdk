@@ -29,8 +29,8 @@ They are small, have short context windows and no tools. They are suited to summ
 
 ## How to work
 
-1. Call `wayfinder_flop_status` once. If no account is connected, stop and report that; you cannot connect one.
-2. Call `wayfinder_flop_models` if you need to pick a model or check a context limit.
+1. Call `wayfinder_flop_status` once. If no account is connected, or no miner is configured (`direct_miners_configured` is 0), stop and report that; you cannot fix either.
+2. Call `wayfinder_flop_models` if you need to pick a model. Without one, calls use the default it marks.
 3. Split the job into self-contained pieces that each fit one prompt. Put every fact a piece needs into its prompt; the model remembers nothing between calls.
 4. Run each piece with `wayfinder_flop_infer`, or `wayfinder_flop_subagent` when a draft-and-review pass is worth the extra call.
 5. Read every output. If one is off-task, empty or cut off, retry it once with a tighter prompt; if it fails again, mark that piece as failed.
@@ -39,7 +39,7 @@ They are small, have short context windows and no tools. They are suited to summ
 ## Limits
 
 - Every call spends FLOP from the user's account, capped per call and per day. Stay within the job you were given; if the job would need more than about ten calls, do the first ten and report what remains.
-- If a call returns `flop_daily_cap_reached`, `flop_limit_exceeded` or a session error, stop and report it. Do not work around caps.
+- If a call returns `flop_daily_cap_reached`, `flop_limit_exceeded`, `flop_no_miner_endpoint` or a session error, stop and report it. Do not work around caps.
 - Never call FLOP to generate activity, and never suggest scheduling FLOP calls.
 
 ## Output

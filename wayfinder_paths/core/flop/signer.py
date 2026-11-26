@@ -26,8 +26,6 @@ class FlopSigner(Protocol):
 
     async def sign_payload(self, payload: bytes) -> bytes: ...
 
-    async def sign_enrollment(self, message: str) -> bytes: ...
-
     async def sign_faucet_claim(self, message: str, nonce: str) -> bytes:
         """Sign the faucet's agent claim `message`, which carries `nonce`."""
         ...
@@ -44,9 +42,6 @@ class LocalFlopSigner:
     async def sign_payload(self, payload: bytes) -> bytes:
         return self._key.sign_msg_hash(signing_digest(payload)).to_bytes()
 
-    async def sign_enrollment(self, message: str) -> bytes:
-        return self._key.sign_msg_hash(blake2_256(message.encode())).to_bytes()
-
     async def sign_faucet_claim(self, message: str, nonce: str) -> bytes:
         return self._key.sign_msg_hash(blake2_256(message.encode())).to_bytes()
 
@@ -61,10 +56,6 @@ class BackendFlopSigner:
         signature = await self._client.sign_extrinsic("0x" + payload.hex())
         return normalise_signature(bytes.fromhex(signature.removeprefix("0x")))
 
-    async def sign_enrollment(self, message: str) -> bytes:
-        signature = await self._client.sign_gateway_enrollment(message)
-        return normalise_signature(bytes.fromhex(signature.removeprefix("0x")))
-
     async def sign_faucet_claim(self, message: str, nonce: str) -> bytes:
         # The backend builds the claim text itself from the account and the nonce, so it
         # never signs free text for this route; the caller checks the signature against
@@ -75,7 +66,5 @@ class BackendFlopSigner:
 
 class BackendSigningClient(Protocol):
     async def sign_extrinsic(self, payload_hex: str) -> str: ...
-
-    async def sign_gateway_enrollment(self, message: str) -> str: ...
 
     async def sign_faucet_claim(self, nonce: str) -> str: ...

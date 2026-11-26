@@ -18,7 +18,7 @@ from wayfinder_paths.core.flop import faucet, recovery, service, state
 from wayfinder_paths.core.flop.account import RAW_PER_FLOP
 from wayfinder_paths.core.flop.chain import FlopChain, FlopChainError
 from wayfinder_paths.core.flop.miner import endpoint_answers
-from wayfinder_paths.core.flop.networks import TESTNET, FlopNetwork
+from wayfinder_paths.core.flop.networks import FlopNetwork
 from wayfinder_paths.mcp.state.runs import runs_root
 from wayfinder_paths.runner.client import RunnerControlClient
 from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT
@@ -79,12 +79,11 @@ async def collect_faucet_grant() -> dict[str, Any]:
                 chain, signer
             )
         balance_raw = (await chain.balance(account["flop_address"])).free
-        supply = await chain.inference_supply() if network is TESTNET else None
-        if supply is not None:
-            outcome["testnet_miners"], outcome["testnet_models"] = supply
-            outcome["spend"] = await spend_testnet_grant(
-                balance_raw, supply, chain=chain, network=network
-            )
+        supply = await chain.inference_supply()
+        outcome["testnet_miners"], outcome["testnet_models"] = supply
+        outcome["spend"] = await spend_testnet_grant(
+            balance_raw, supply, chain=chain, network=network
+        )
     finally:
         chain.close()
     outcome["notices"] = await send_due_notices(account, balance_raw, supply=supply)
@@ -156,7 +155,6 @@ async def spend_testnet_grant(
         result = await service.infer(
             [{"role": "user", "content": DAILY_SPEND_PROMPT}],
             model=network.default_model,
-            mode="direct",
             miner=target[0],
             max_tokens=DAILY_SPEND_MAX_TOKENS,
         )

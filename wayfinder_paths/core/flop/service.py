@@ -1,15 +1,14 @@
-"""What the FLOP tools do: account, inference (own-account channel or gateway), sub-agent."""
+"""What the FLOP tools do: account, inference (a direct session from the user's own FLOP
+account), sub-agent."""
 
 from __future__ import annotations
 
-import math
 from dataclasses import asdict, dataclass
-from decimal import Decimal
 from typing import Any
 
 from wayfinder_paths.core.clients.FlopClient import FLOP_CLIENT
 from wayfinder_paths.core.config import get_flop_config
-from wayfinder_paths.core.flop import gateway, recovery, state
+from wayfinder_paths.core.flop import recovery, state
 from wayfinder_paths.core.flop.account import flop_to_raw, raw_to_flop
 from wayfinder_paths.core.flop.chain import FlopChain
 from wayfinder_paths.core.flop.networks import FlopNetwork, UnknownFlopNetworkError
@@ -17,10 +16,10 @@ from wayfinder_paths.core.flop.networks import for_account as _network_for_accou
 from wayfinder_paths.core.flop.session import DirectSessionError, run_direct_session
 from wayfinder_paths.core.flop.signer import BackendFlopSigner
 
-# Used when FLOP's catalogue has no price for the model being asked for.
-FALLBACK_DIRECT_ESCROW_FLOP = "0.05"
+# What one turn offers the miner. FLOP Testnet lists no prices, and a cooperative
+# settlement pays the miner the whole escrow, so this is the price offered per turn.
+DIRECT_ESCROW_FLOP = "0.05"
 OWN_ACCOUNT = "own_account"
-GATEWAY_OPERATOR = "gateway_operator"
 
 
 class FlopError(Exception):
@@ -33,7 +32,6 @@ class FlopError(Exception):
 class Inference:
     text: str
     model: str
-    mode: str
     paid_by: str
     prompt_tokens: int
     completion_tokens: int
@@ -85,21 +83,7 @@ def chain_for(account: dict[str, Any]) -> FlopChain:
     )
 
 
-def estimate_cost_flop(
-    model: dict[str, Any], prompt_chars: int, max_tokens: int
-) -> Decimal:
-    """A ceiling for one call from the model's listed per-token price.
-
-    Three characters per token overstates the prompt for English, which is the safe side.
-    """
-    pricing = model.get("pricing") or {}
-    prompt_tokens = math.ceil(prompt_chars / 3)
-    return prompt_tokens * Decimal(
-        str(pricing.get("prompt", 0))
-    ) + max_tokens * Decimal(str(pricing.get("completion", 0)))
-
-
-def _spend_ceiling_raw(max_cost_flop: str | None) -> int:
+def spend_ceiling_raw(max_cost_flop: str | None) -> int:
     config = get_flop_config()
     per_call = flop_to_raw(config["per_call_flop"])
     ceiling = min(flop_to_raw(max_cost_flop), per_call) if max_cost_flop else per_call
@@ -137,35 +121,24 @@ async def infer(
     model: str | None = None,
     max_tokens: int = 256,
     max_cost_flop: str | None = None,
-    mode: str = "auto",
     miner: str | None = None,
 ) -> Inference:
-    if mode not in ("auto", "direct", "gateway"):
-        raise FlopError("invalid_argument", "mode must be auto, direct or gateway")
+    """One chat turn bought from a miner over a direct session, paid from the user's own
+    FLOP account. FLOP Testnet has no hosted gateway, so a miner must be configured."""
     account = await connected_account()
     model = model or network_for(account).default_model
     signer = signer_for(account)
-    ceiling_raw = _spend_ceiling_raw(max_cost_flop)
-    target = None if mode == "gateway" else _pick_miner(miner)
-    if mode == "direct" and target is None:
+    ceiling_raw = spend_ceiling_raw(max_cost_flop)
+    target = _pick_miner(miner)
+    if target is None:
         raise FlopError(
             "flop_no_miner_endpoint",
-            "A direct session needs a miner endpoint in system.flop.miners.",
+            "FLOP Testnet has no inference gateway: inference is a direct session with "
+            "a miner listed in system.flop.miners, and none is configured.",
         )
-    if target is None and network_for(account).gateway_url is None:
-        raise FlopError(
-            "flop_no_gateway",
-            f"FLOP {network_for(account).name} has no inference gateway yet. Inference "
-            "there is a direct session with a miner listed in system.flop.miners.",
-        )
-    if target is not None:
-        result = await _direct(
-            account, signer, target, model, messages, max_tokens, ceiling_raw
-        )
-    else:
-        result = await _through_gateway(
-            signer, model, messages, max_tokens, ceiling_raw
-        )
+    result = await _direct(
+        account, signer, target, model, messages, max_tokens, ceiling_raw
+    )
     state.record_activity(
         {k: v for k, v in result.as_dict().items() if k != "text"}
         | {"kind": "inference"}
@@ -173,29 +146,9 @@ async def infer(
     return result
 
 
-async def _direct_escrow_raw(
-    model: str, messages: list[dict[str, str]], max_tokens: int, ceiling_raw: int
-) -> int:
-    """What to escrow for one turn.
-
-    A cooperative settlement pays the miner the whole escrow, so the escrow is the price
-    offered, not a ceiling: size it from the model's listed price.
-    """
-    try:
-        listed = await gateway.models()
-    except (gateway.GatewayError, OSError):
-        listed = []
-    match = next((m for m in listed if m["id"].lower() == model.lower()), None)
-    prompt_chars = sum(len(m.get("content", "")) for m in messages)
-    estimate = (
-        estimate_cost_flop(match, prompt_chars, max_tokens) if match else Decimal(0)
-    )
-    offered = flop_to_raw(
-        format(estimate.quantize(Decimal(1).scaleb(-18)), "f")
-        if estimate > 0
-        else FALLBACK_DIRECT_ESCROW_FLOP
-    )
-    return min(offered, ceiling_raw)
+def direct_escrow_raw(ceiling_raw: int) -> int:
+    """What one turn escrows: the fixed offer, or less if the caps leave less."""
+    return min(flop_to_raw(DIRECT_ESCROW_FLOP), ceiling_raw)
 
 
 async def _direct(
@@ -208,7 +161,7 @@ async def _direct(
     ceiling_raw: int,
 ) -> Inference:
     miner, endpoint = target
-    escrow_raw = await _direct_escrow_raw(model, messages, max_tokens, ceiling_raw)
+    escrow_raw = direct_escrow_raw(ceiling_raw)
     chain = chain_for(account)
     try:
         session = await run_direct_session(
@@ -228,7 +181,6 @@ async def _direct(
         state.record_activity(
             {
                 "kind": "inference_failed",
-                "mode": "direct",
                 "model": model,
                 "miner": miner,
                 "channel_id": channel_hex,
@@ -246,7 +198,6 @@ async def _direct(
     return Inference(
         text=session.reply,
         model=model,
-        mode="direct",
         paid_by=OWN_ACCOUNT,
         prompt_tokens=receipt.prompt_tokens or 0,
         completion_tokens=receipt.completion_tokens or 0,
@@ -255,42 +206,6 @@ async def _direct(
         miner=miner,
         settlement=session.settlement,
         transaction=session.settle_tx,
-    )
-
-
-async def _through_gateway(
-    signer: BackendFlopSigner,
-    model: str,
-    messages: list[dict[str, str]],
-    max_tokens: int,
-    ceiling_raw: int,
-) -> Inference:
-    key = await gateway.ensure_key(signer)
-    if key["model"].lower() != model.lower():
-        raise FlopError(
-            "flop_gateway_model_scope",
-            f"This account's gateway key only serves {key['model']}.",
-        )
-    reply = await gateway.chat(
-        key["key"],
-        model,
-        messages,
-        max_tokens=max_tokens,
-        max_cost_flop=float(raw_to_flop(ceiling_raw)),
-    )
-    receipt = reply.receipt or {}
-    return Inference(
-        text=reply.text,
-        model=model,
-        mode="gateway",
-        paid_by=GATEWAY_OPERATOR,
-        prompt_tokens=reply.prompt_tokens,
-        completion_tokens=reply.completion_tokens,
-        cost_flop=str(reply.cost_flop) if reply.cost_flop is not None else None,
-        channel_id=receipt.get("channelId"),
-        miner=receipt.get("miner"),
-        settlement=receipt.get("settlementStatus"),
-        request_id=reply.request_id,
     )
 
 
@@ -314,7 +229,6 @@ async def run_subagent(
     max_steps: int = 2,
     max_tokens: int = 384,
     max_cost_flop: str | None = None,
-    mode: str = "auto",
 ) -> dict[str, Any]:
     """A small worker that runs entirely on a FLOP model: draft, then self-review.
 
@@ -334,7 +248,6 @@ async def run_subagent(
         model=model,
         max_tokens=max_tokens,
         max_cost_flop=max_cost_flop,
-        mode=mode,
     )
     steps.append(draft)
     answer = draft.text
@@ -350,7 +263,6 @@ async def run_subagent(
             model=model,
             max_tokens=max_tokens,
             max_cost_flop=max_cost_flop,
-            mode=mode,
         )
         steps.append(review)
         if review.text.strip() == answer.strip():

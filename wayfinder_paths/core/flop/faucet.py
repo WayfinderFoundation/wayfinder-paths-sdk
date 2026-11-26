@@ -1,7 +1,6 @@
-"""The FLOP faucets. One grant per address per day; a refusal is never retried in a loop.
+"""The FLOP Testnet faucet. One grant per address per day; a refusal is never retried in a loop.
 
-Devnet funds an address on request (`POST /fund`). Testnet takes signed agent claims
-(`POST /v1/testnet/agent-claims`): the account signs `flop-faucet-agent/v1|<genesis>|
+The faucet takes signed agent claims (`POST /v1/testnet/agent-claims`): the account signs `flop-faucet-agent/v1|<genesis>|
 <address>|<nonce>`, and a claim repeated with the same nonce and signature returns the same
 transfer and never pays twice. That is how an unclear outcome is reconciled, so a claim's
 nonce and signature are kept until the faucet gives it a final answer, and a grant counts
@@ -41,9 +40,6 @@ AGENT_CLAIM_VERSION = "flop-faucet-agent/v1"
 SHARED_ADDRESS_HINT = (
     "The faucet also limits grants per IP address, and Shells share outbound "
     "addresses, so this refusal may be for someone else's request."
-)
-DEVNET_PANEL_HINT = (
-    "Use Get test FLOP in the FLOP panel, which asks from the user's own browser."
 )
 SPEND_NEEDED_MESSAGE = (
     "The testnet faucet gives the next grant only after the last one has been spent "
@@ -129,7 +125,7 @@ def _unknown(current: int) -> FaucetResult:
 
 
 def _classify(
-    response: httpx.Response, body: dict[str, Any], current: int, *, hint: str
+    response: httpx.Response, body: dict[str, Any], current: int
 ) -> FaucetResult:
     if response.status_code == 200 and body.get("success"):
         status = body.get("status")
@@ -144,8 +140,7 @@ def _classify(
     message = str(body.get("error") or "the faucet refused the request")
     action = body.get("action")
     if _per_ip_refusal(response.status_code, reason, message):
-        message = f"{message}. {hint}"
-        action = "use_flop_panel_faucet" if hint == DEVNET_PANEL_HINT else action
+        message = f"{message}. {SHARED_ADDRESS_HINT}"
     return FaucetResult(
         granted=False,
         reason=reason,
@@ -153,22 +148,6 @@ def _classify(
         action=action,
         retry_at=current + int(float(retry_after)) if retry_after else None,
     )
-
-
-async def fund(
-    address: str, network: FlopNetwork, *, now: float | None = None
-) -> FaucetResult:
-    """Devnet: ask the faucet to fund `address`."""
-    current = int(now if now is not None else time.time())
-    try:
-        async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-            response = await client.post(
-                f"{network.faucet_url}/fund", json={"address": address}
-            )
-        body = _json(response)
-    except (httpx.HTTPError, ValueError):
-        return _unknown(current)
-    return _classify(response, body, current, hint=DEVNET_PANEL_HINT)
 
 
 async def _claim_signature(
@@ -214,7 +193,7 @@ async def claim(
         body = _json(response)
     except (httpx.HTTPError, ValueError):
         return _unknown(current), pending
-    result = _classify(response, body, current, hint=SHARED_ADDRESS_HINT)
+    result = _classify(response, body, current)
     if result.granted and result.transfer_status == "finalized":
         return result, None
     if result.granted:
@@ -321,17 +300,14 @@ async def collect_if_due(
             reason="faucet_closed",
             message=f"faucet status is {faucet_limits.get('status')!r}",
         )
-    if network.name == TESTNET.name:
-        claim_path = (faucet_limits.get("agent") or {}).get("claimPath")
-        if claim_path != AGENT_CLAIM_PATH:
-            return FaucetResult(
-                granted=False,
-                reason="faucet_closed",
-                message=f"the faucet offers no agent claims (claim path {claim_path!r})",
-            )
-        result, keep = await claim(signer, network, pending=pending, now=current)
-    else:
-        result, keep = await fund(address, network, now=current), None
+    claim_path = (faucet_limits.get("agent") or {}).get("claimPath")
+    if claim_path != AGENT_CLAIM_PATH:
+        return FaucetResult(
+            granted=False,
+            reason="faucet_closed",
+            message=f"the faucet offers no agent claims (claim path {claim_path!r})",
+        )
+    result, keep = await claim(signer, network, pending=pending, now=current)
     record = _record(address)
     record["pending_claim"] = keep
     if result.granted:

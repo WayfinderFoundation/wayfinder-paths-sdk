@@ -1,6 +1,7 @@
 """Per-box FLOP state under `.wayfinder/flop/` (on a Shell this is the persisted user vault).
 
-It holds the gateway bearer, so the directory is 0700 and the file 0600.
+It records this box's spend, activity and pending faucet claims, so the directory is
+0700 and the file 0600.
 """
 
 from __future__ import annotations

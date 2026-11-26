@@ -7,7 +7,7 @@ import httpx
 
 from wayfinder_paths.core.clients.FlopClient import FLOP_CLIENT
 from wayfinder_paths.core.config import get_flop_config
-from wayfinder_paths.core.flop import faucet, gateway, jobs, recovery, service, state
+from wayfinder_paths.core.flop import faucet, jobs, recovery, service, state
 from wayfinder_paths.core.flop.account import raw_to_flop
 from wayfinder_paths.core.flop.chain import FlopChainError
 from wayfinder_paths.core.flop.session import DirectSessionError
@@ -38,8 +38,6 @@ def _failure(exc: Exception) -> dict[str, Any]:
         return _backend_error(exc)
     if isinstance(exc, service.FlopError):
         return err(exc.code, str(exc))
-    if isinstance(exc, gateway.GatewayError):
-        return err(f"flop_gateway_{exc.code}", exc.message)
     if isinstance(exc, DirectSessionError):
         return err(
             "flop_session_failed",
@@ -81,8 +79,9 @@ async def _strategy_wallet_address(label: str) -> str | None:
 async def flop_status() -> dict:
     """Show this account's FLOP connection: address, balance, wallet session, caps, faucet.
 
-    FLOP is a separate network for AI inference. `connected: false` means no FLOP
-    account exists yet; call flop_connect. Testnet/devnet FLOP has no value.
+    FLOP is a separate network for AI inference; this account is on FLOP Testnet, whose
+    FLOP has no value. `connected: false` means no FLOP account exists yet; call
+    flop_connect.
     """
     try:
         account = await FLOP_CLIENT.get_account()
@@ -100,7 +99,6 @@ async def flop_status() -> dict:
     finally:
         chain.close()
     config = get_flop_config()
-    key = gateway.stored_key(address)
     return ok(
         {
             "connected": True,
@@ -117,9 +115,6 @@ async def flop_status() -> dict:
             },
             "account_limits": account.get("limits"),
             "direct_miners_configured": len(config["miners"]),
-            "gateway_key": {"model": key["model"], "expires_at": key["expires_at"]}
-            if key
-            else None,
             "faucet_next_eligible_at": faucet.next_eligible_at(address) or None,
             "faucet_waiting_for_spend": faucet.waiting_for_spend(address),
             # Scheduling is repeated here so a box whose runner was down when the
@@ -164,58 +159,38 @@ async def flop_connect(wallet_label: str = FLOP_WALLET_LABEL) -> dict:
 
 @catch_errors
 async def flop_models() -> dict:
-    """List the models FLOP serves right now, with context size, output cap and price.
+    """List the models FLOP Testnet has verified, and which one inference uses by default.
 
-    Current FLOP models are small, have short context and no tool calling.
+    Testnet lists no prices and no per-model limits. Which models a given miner runs is
+    known only once a session opens with it. Current FLOP models have short context and
+    no tool calling.
     """
     try:
-        listed = await gateway.models()
-    except gateway.GatewayError as exc:
+        account = await service.connected_account()
+        default = service.network_for(account).default_model
+        chain = service.chain_for(account)
+        try:
+            names = await chain.verified_models()
+        finally:
+            chain.close()
+    except Exception as exc:  # noqa: BLE001
         return _failure(exc)
-    return ok(
-        [
-            {
-                "id": model["id"],
-                "context_length": model.get("context_length"),
-                "max_completion_tokens": (model.get("top_provider") or {}).get(
-                    "max_completion_tokens"
-                ),
-                "price_per_token_flop": (model.get("pricing") or {}).get("completion"),
-                "supported_parameters": model.get("supported_parameters"),
-            }
-            for model in listed
-        ]
-    )
+    return ok([{"id": name, "default": name == default} for name in names])
 
 
 @catch_errors
-async def flop_estimate(prompt: str, model: str = UNSET, max_tokens: int = 256) -> dict:
-    """Estimate the most one flop_infer call could cost, from the model's listed price.
+async def flop_estimate(max_cost_flop: str = UNSET) -> dict:
+    """The most one flop_infer call can cost right now.
 
-    Without `model`, it estimates the default: the strongest model the account's network
-    serves.
+    FLOP Testnet lists no prices: each call offers the miner a fixed escrow, and a
+    cooperative settlement pays all of it. This reports that escrow after the per-call
+    cap, the daily cap already spent, and `max_cost_flop` if given.
     """
-    text = throw_if_empty_str("prompt is required", prompt)
     try:
-        model = _optional(model) or await service.default_model()
+        ceiling = service.spend_ceiling_raw(_optional(max_cost_flop))
     except Exception as exc:  # noqa: BLE001
         return _failure(exc)
-    try:
-        listed = await gateway.models()
-    except gateway.GatewayError as exc:
-        return _failure(exc)
-    match = next((m for m in listed if m["id"].lower() == model.lower()), None)
-    if match is None:
-        return err("flop_unknown_model", f"FLOP does not list {model}")
-    return ok(
-        {
-            "model": match["id"],
-            "max_cost_flop": float(
-                round(service.estimate_cost_flop(match, len(text), max_tokens), 6)
-            ),
-            "max_tokens": max_tokens,
-        }
-    )
+    return ok({"max_cost_flop": raw_to_flop(service.direct_escrow_raw(ceiling))})
 
 
 @catch_errors
@@ -225,17 +200,15 @@ async def flop_infer(
     max_tokens: int = 256,
     max_cost_flop: str = UNSET,
     system: str = UNSET,
-    mode: str = "auto",
     miner: str = UNSET,
 ) -> dict:
     """Run one prompt on a FLOP model and pay for it in FLOP.
 
-    mode="direct" opens a compute channel from the user's own FLOP account with a miner
-    listed in system.flop.miners, verifies the miner's signed receipt and settles; the
-    result says paid_by="own_account". mode="gateway" uses FLOP's hosted gateway, which
-    pays from the gateway operator's account (paid_by="gateway_operator"). mode="auto"
-    picks direct when a miner endpoint is configured, otherwise gateway. Without `model`
-    it uses the strongest model the account's network serves.
+    Opens a compute channel from the user's own FLOP account with a miner listed in
+    system.flop.miners (the first one unless `miner` names another), verifies the miner's
+    signed receipt and settles. FLOP Testnet has no hosted gateway, so without a
+    configured miner this returns flop_no_miner_endpoint. Without `model` it uses the
+    strongest model Testnet serves (see flop_models).
 
     Spend is capped per call and per day (see flop_status). Use this for real work the
     user or task needs; do not loop it to generate activity.
@@ -250,7 +223,6 @@ async def flop_infer(
             model=_optional(model),
             max_tokens=int(max_tokens),
             max_cost_flop=_optional(max_cost_flop),
-            mode=mode,
             miner=_optional(miner),
         )
     except Exception as exc:  # noqa: BLE001
@@ -302,7 +274,6 @@ async def flop_subagent(
     max_steps: int = 2,
     max_tokens: int = 384,
     max_cost_flop: str = UNSET,
-    mode: str = "auto",
 ) -> dict:
     """Hand one self-contained task to a worker that runs entirely on a FLOP model.
 
@@ -321,7 +292,6 @@ async def flop_subagent(
             max_steps=int(max_steps),
             max_tokens=int(max_tokens),
             max_cost_flop=_optional(max_cost_flop),
-            mode=mode,
         )
     except Exception as exc:  # noqa: BLE001
         return _failure(exc)

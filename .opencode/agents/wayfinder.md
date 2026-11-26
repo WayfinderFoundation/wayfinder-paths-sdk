@@ -521,7 +521,7 @@ Workspace charts render in the main chart pane. The command/search palette is fo
 
 ### wayfinder-flop
 
-FLOP is a separate network that sells AI inference for its own token. When the user has a FLOP account connected (`wayfinder_flop_status`), you can run small, self-contained text tasks on FLOP models and pay for them from that account.
+FLOP is a separate network that sells AI inference for its own token; Wayfinder uses FLOP Testnet, whose FLOP has no value. When the user has a FLOP account connected and a miner configured (`wayfinder_flop_status`), you can run small, self-contained text tasks on FLOP models and pay for them from that account.
 
 - **Do it yourself** for one prompt: `wayfinder_flop_infer`. For a task that benefits from a draft-and-review pass, `wayfinder_flop_subagent`.
 - **Delegate to `wayfinder-flop`** when a job splits into several FLOP-sized pieces (for example summarising or classifying a batch of items) and you want one assembled result back.

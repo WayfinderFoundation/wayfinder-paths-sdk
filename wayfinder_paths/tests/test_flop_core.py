@@ -1,4 +1,4 @@
-"""FLOP account helpers, local state, faucet and gateway clients (no network)."""
+"""FLOP account helpers, local state, the network profile and the faucet (no network)."""
 
 import asyncio
 import hashlib
@@ -8,14 +8,13 @@ from pathlib import Path
 
 import httpx
 import pytest
-from eth_keys import keys as eth_keys
 
-from wayfinder_paths.core.flop import account, faucet, gateway, state
-from wayfinder_paths.core.flop.networks import DEVNET, TESTNET
+from wayfinder_paths.core.flop import account, faucet, networks, state
+from wayfinder_paths.core.flop.networks import TESTNET
 from wayfinder_paths.core.flop.signer import LocalFlopSigner
 
 FIXTURES = Path(__file__).parent / "fixtures" / "flop"
-# A throwaway devnet key's public half and the address the chain derived for it.
+# A throwaway key's public half and the address the chain derived for it.
 COMPRESSED_KEY = "027765f496ae000d2ba3861c708deaa593cd4386c46a5a8e6ed2ac7fa06744d39d"
 ADDRESS = "5CY2922WBXSso1pELFnqQWZy7DeKvLS63P6Cz488X2h1NFzq"
 
@@ -96,7 +95,7 @@ def test_flop_amount_rejects_more_than_18_decimals():
 
 
 def test_state_file_is_private(flop_state_dir):
-    state.update_state(gateway={"addr": {"key": "secret"}})
+    state.update_state(faucet={"addr": {"pending_claim": {"signature": "0x01"}}})
     mode = stat.S_IMODE((flop_state_dir / "state.json").stat().st_mode)
     assert mode == 0o600
     assert stat.S_IMODE(flop_state_dir.stat().st_mode) == 0o700
@@ -120,14 +119,19 @@ def test_activity_log_is_bounded():
     assert log[-1]["n"] == state.MAX_ACTIVITY_ENTRIES + 4
 
 
+# ---- network ------------------------------------------------------------------------
+
+
+def test_only_flop_testnet_is_supported():
+    assert (
+        networks.for_account({"genesis_hash": TESTNET.genesis_hash.upper()}) is TESTNET
+    )
+    devnet = "0x99c172c095340ace980631f9123544c6bebd4839f3437e463533422d8be2d631"
+    with pytest.raises(networks.UnknownFlopNetworkError, match="only network"):
+        networks.for_account({"genesis_hash": devnet})
+
+
 # ---- faucet -------------------------------------------------------------------------
-
-
-class _Address:
-    address = ADDRESS
-
-
-DEV = _Address()
 
 
 def _identity(network, genesis=None):
@@ -138,50 +142,26 @@ def _identity(network, genesis=None):
 
 
 def test_faucet_grant_is_recorded_and_not_asked_again_within_a_day(monkeypatch):
-    calls = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls.append((request.method, request.url.path))
-        if request.url.path == "/chain":
-            return _identity(DEVNET)
-        assert request.url.host == "faucet.devnet.flop.network"
-        if request.url.path == "/limits":
-            return httpx.Response(200, json={"faucet": {"status": "open"}})
-        assert json.loads(request.content) == {"address": ADDRESS}
-        return httpx.Response(
-            200,
-            json={
-                "success": True,
-                "amount": 25,
-                "tier": "anonymous",
-                "txHash": "0xabc",
-            },
-        )
-
-    _fake_http(monkeypatch, faucet, handler)
-    first = asyncio.run(faucet.collect_if_due(DEV, DEVNET, now=1_000_000))
-    assert first.granted and first.amount_flop == 25 and first.tx_hash == "0xabc"
-    again = asyncio.run(faucet.collect_if_due(DEV, DEVNET, now=1_000_000 + 3600))
+    signer = LocalFlopSigner(bytes([3]) * 32)
+    posts = _testnet_faucet(monkeypatch, _granted)
+    first = asyncio.run(faucet.collect_if_due(signer, TESTNET, now=1_000_000))
+    assert first.granted and first.amount_flop == 10
+    again = asyncio.run(faucet.collect_if_due(signer, TESTNET, now=1_000_000 + 3600))
     assert not again.granted and again.reason == "not_due"
     assert again.retry_at == 1_000_000 + faucet.GRANT_COOLDOWN_SECONDS
-    assert calls == [("GET", "/chain"), ("GET", "/limits"), ("POST", "/fund")]
+    assert len(posts) == 1
     later = asyncio.run(
         faucet.collect_if_due(
-            DEV, DEVNET, now=1_000_000 + faucet.GRANT_COOLDOWN_SECONDS
+            signer, TESTNET, now=1_000_000 + faucet.GRANT_COOLDOWN_SECONDS
         )
     )
-    assert later.granted
+    assert later.granted and len(posts) == 2
 
 
 def test_faucet_refusal_is_recorded_with_its_wait_and_not_retried(monkeypatch):
-    posts = []
+    signer = LocalFlopSigner(bytes([4]) * 32)
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/chain":
-            return _identity(DEVNET)
-        if request.url.path == "/limits":
-            return httpx.Response(200, json={"faucet": {"status": "open"}})
-        posts.append(1)
+    def answer(body, request):
         return httpx.Response(
             429,
             json={
@@ -192,54 +172,49 @@ def test_faucet_refusal_is_recorded_with_its_wait_and_not_retried(monkeypatch):
             },
         )
 
-    _fake_http(monkeypatch, faucet, handler)
-    refused = asyncio.run(faucet.collect_if_due(DEV, DEVNET, now=5_000))
+    posts = _testnet_faucet(monkeypatch, answer)
+    refused = asyncio.run(faucet.collect_if_due(signer, TESTNET, now=5_000))
     assert not refused.granted
     assert (refused.reason, refused.action, refused.retry_at) == (
         "address_cooldown",
         "retry_later",
         5_000 + 7200,
     )
-    asyncio.run(faucet.collect_if_due(DEV, DEVNET, now=5_000 + 60))
+    asyncio.run(faucet.collect_if_due(signer, TESTNET, now=5_000 + 60))
     assert len(posts) == 1
 
 
-@pytest.mark.parametrize("answer", ["timeout", "html"])
-def test_faucet_answer_that_cannot_be_read_is_unknown_and_held_off(monkeypatch, answer):
-    posts = []
+@pytest.mark.parametrize("unreadable", ["timeout", "html"])
+def test_faucet_answer_that_cannot_be_read_is_unknown_and_held_off(
+    monkeypatch, unreadable
+):
+    signer = LocalFlopSigner(bytes([5]) * 32)
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/chain":
-            return _identity(DEVNET)
-        if request.url.path == "/limits":
-            return httpx.Response(200, json={"faucet": {"status": "open"}})
-        posts.append(1)
-        if answer == "timeout":
+    def answer(body, request):
+        if unreadable == "timeout":
             raise httpx.ReadTimeout("no answer", request=request)
         return httpx.Response(502, text="<html>bad gateway</html>")
 
-    _fake_http(monkeypatch, faucet, handler)
-    result = asyncio.run(faucet.collect_if_due(DEV, DEVNET, now=5_000))
+    posts = _testnet_faucet(monkeypatch, answer)
+    result = asyncio.run(faucet.collect_if_due(signer, TESTNET, now=5_000))
     assert not result.granted
     assert (result.reason, result.retry_at) == (
         "unknown",
         5_000 + faucet.UNKNOWN_HOLD_SECONDS,
     )
-    again = asyncio.run(faucet.collect_if_due(DEV, DEVNET, now=5_000 + 60))
+    again = asyncio.run(faucet.collect_if_due(signer, TESTNET, now=5_000 + 60))
     assert again.reason == "not_due"
     assert len(posts) == 1
 
 
 def test_faucet_is_not_asked_when_closed(monkeypatch):
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/chain":
-            return _identity(DEVNET)
-        assert request.url.path == "/limits"
-        return httpx.Response(200, json={"faucet": {"status": "paused"}})
-
-    _fake_http(monkeypatch, faucet, handler)
-    result = asyncio.run(faucet.collect_if_due(DEV, DEVNET, now=1))
+    signer = LocalFlopSigner(bytes([6]) * 32)
+    posts = _testnet_faucet(
+        monkeypatch, _granted, limits={"faucet": {"status": "paused"}}
+    )
+    result = asyncio.run(faucet.collect_if_due(signer, TESTNET, now=1))
     assert not result.granted and result.reason == "faucet_closed"
+    assert posts == []
 
 
 # ---- testnet agent claims --------------------------------------------------------------
@@ -493,133 +468,6 @@ def test_claim_nonces_are_canonical_decimals():
         faucet.agent_claim_message(TESTNET.genesis_hash, ADDRESS, "1" * 20)
 
 
-# ---- gateway ------------------------------------------------------------------------
-
-
-def test_gateway_enrollment_signs_the_challenge_and_stores_the_key(monkeypatch):
-    signer = LocalFlopSigner(bytes(range(1, 33)))
-    message = f"api.flop.network wants you to enroll\n{signer.address}\n\nNonce: 1"
-    seen = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.host == "api.flop.network"
-        if request.url.path.endswith("/enroll/wallet/challenge"):
-            assert request.url.params["address"] == signer.address
-            return httpx.Response(200, json={"message": message, "nonce": "1"})
-        seen.update(json.loads(request.content))
-        return httpx.Response(
-            201,
-            json={
-                "key": "flop_secret",
-                "model": "m",
-                "remaining_quota": 1,
-                "expires_at": 9_999_999_999_000,
-            },
-        )
-
-    _fake_http(monkeypatch, gateway, handler)
-    public = asyncio.run(gateway.enroll(signer))
-    assert public == {"model": "m", "expires_at": 9_999_999_999}
-    digest = hashlib.blake2b(message.encode(), digest_size=32).digest()
-    signature = eth_keys.Signature(bytes.fromhex(seen["signature"][2:]))
-    recovered = signature.recover_public_key_from_msg_hash(digest).to_compressed_bytes()
-    assert account.account_id_from_public_key(recovered) == signer.account_id
-    assert seen["message"] == message and seen["address"] == signer.address
-    assert gateway.stored_key(signer.address)["key"] == "flop_secret"
-    assert gateway.stored_key(signer.address, now=9_999_999_999) is None
-
-
-def test_gateway_chat_waits_out_a_full_pool_then_returns(monkeypatch):
-    statuses = iter([429, 200])
-    keys = []
-    waits = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers["authorization"] == "Bearer k"
-        keys.append(request.headers["idempotency-key"])
-        if next(statuses) == 429:
-            return httpx.Response(
-                429, json={"error": {"code": "overloaded", "message": "full"}}
-            )
-        return httpx.Response(
-            200,
-            json={
-                "choices": [{"message": {"content": "pong"}}],
-                "usage": {
-                    "prompt_tokens": 7,
-                    "completion_tokens": 1,
-                    "cost_flop": 0.066,
-                },
-                "x_flop_receipt": {"channelId": "0x01", "miner": "5F"},
-            },
-        )
-
-    async def sleep(seconds):
-        waits.append(seconds)
-
-    _fake_http(monkeypatch, gateway, handler)
-    reply = asyncio.run(
-        gateway.chat(
-            "k",
-            "m",
-            [{"role": "user", "content": "ping"}],
-            max_tokens=4,
-            max_cost_flop=1,
-            sleep=sleep,
-        )
-    )
-    assert (
-        reply.text == "pong"
-        and reply.cost_flop == 0.066
-        and reply.receipt["miner"] == "5F"
-    )
-    assert waits == [gateway.OVERLOAD_WAIT_SECONDS]
-    assert len(set(keys)) == 2
-
-
-def test_gateway_chat_gives_up_on_other_errors(monkeypatch):
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            402, json={"error": {"code": "max_cost_exceeded", "message": "too dear"}}
-        )
-
-    _fake_http(monkeypatch, gateway, handler)
-    with pytest.raises(gateway.GatewayError) as caught:
-        asyncio.run(gateway.chat("k", "m", [], max_tokens=1, max_cost_flop=1))
-    assert caught.value.code == "max_cost_exceeded"
-
-
-def test_gateway_body_that_is_not_json_is_a_gateway_error(monkeypatch):
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(502, text="<html>bad gateway</html>")
-
-    _fake_http(monkeypatch, gateway, handler)
-    with pytest.raises(gateway.GatewayError) as caught:
-        asyncio.run(gateway.models())
-    assert (caught.value.status, caught.value.code) == (502, "invalid_response")
-
-
-def test_gateway_enrollment_refusal_keeps_its_code_and_sentence(monkeypatch):
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/challenge"):
-            return httpx.Response(200, json={"message": "challenge"})
-        return httpx.Response(
-            503,
-            json={
-                "error": "wallet_enrollment_unavailable",
-                "message": "Wallet enrollment is temporarily unavailable.",
-            },
-        )
-
-    signer = LocalFlopSigner(bytes.fromhex("11" * 32))
-    _fake_http(monkeypatch, gateway, handler)
-    with pytest.raises(gateway.GatewayError) as caught:
-        asyncio.run(gateway.enroll(signer))
-    assert caught.value.code == "wallet_enrollment_unavailable"
-    assert caught.value.message == "Wallet enrollment is temporarily unavailable."
-    assert gateway.stored_key(signer.address) is None
-
-
 # ---- signing freshness ---------------------------------------------------------------
 
 
@@ -750,15 +598,14 @@ def test_signing_is_refused_when_the_block_time_cannot_be_read():
         (403, {"error": "faucet paused", "reason": "paused"}, False),
     ],
 )
-def test_a_per_ip_faucet_refusal_points_to_the_panel(monkeypatch, status, body, per_ip):
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(status, json=body)
-
-    _fake_http(monkeypatch, faucet, handler)
-    refused = asyncio.run(faucet.fund(ADDRESS, DEVNET, now=1))
+def test_a_per_ip_faucet_refusal_says_the_address_is_shared(
+    monkeypatch, status, body, per_ip
+):
+    signer = LocalFlopSigner(bytes([12]) * 32)
+    _testnet_faucet(monkeypatch, lambda b, request: httpx.Response(status, json=body))
+    refused = asyncio.run(faucet.collect_if_due(signer, TESTNET, now=1))
     assert not refused.granted
-    assert (refused.action == "use_flop_panel_faucet") is per_ip
-    assert ("FLOP panel" in refused.message) is per_ip
+    assert ("Shells share outbound addresses" in refused.message) is per_ip
 
 
 # ---- waiting for inclusion -------------------------------------------------------------

@@ -11,12 +11,10 @@ from substrateinterface import ExtrinsicReceipt, SubstrateInterface
 from substrateinterface.exceptions import SubstrateRequestException
 from websocket import WebSocketException
 
-from wayfinder_paths.core.flop.networks import DEVNET
+from wayfinder_paths.core.flop.networks import TESTNET
 from wayfinder_paths.core.flop.signer import FlopSigner
 from wayfinder_paths.core.flop.wire import ModelIdentity, blake2_256, u32le
 
-DEVNET_RPC_URL = DEVNET.rpc_url
-DEVNET_GENESIS_HASH = DEVNET.genesis_hash
 ECDSA_SIGNATURE_VERSION = 2
 # Transactions are mortal: valid for this many blocks from a finalized checkpoint, so
 # one that is not included in time can never land later.
@@ -24,7 +22,7 @@ MORTAL_ERA_PERIOD = 64
 # A node whose finalized head is further from the local clock than this share of the
 # era would sign a transaction that expires early (or is already dead): refuse instead.
 STALE_HEAD_FRACTION = 4
-# The public devnet RPC's finalized head usually trails the clock by 8-15 s against a
+# The public RPC's finalized head usually trails the clock by 8-15 s against a
 # 16 s limit (1 s blocks), with spikes past it: a stale head is waited out for this long,
 # re-read every poll, before signing is refused.
 STALE_HEAD_WAIT_SECONDS = 30
@@ -124,8 +122,8 @@ def _compact(value: int) -> bytes:
 class FlopChain:
     def __init__(
         self,
-        rpc_url: str = DEVNET_RPC_URL,
-        expected_genesis_hash: str = DEVNET_GENESIS_HASH,
+        rpc_url: str = TESTNET.rpc_url,
+        expected_genesis_hash: str = TESTNET.genesis_hash,
     ) -> None:
         self.rpc_url = rpc_url
         self.expected_genesis_hash = expected_genesis_hash.lower()
@@ -269,6 +267,21 @@ class FlopChain:
                 current_cap=current_cap,
             ),
         )
+
+    async def verified_models(self) -> list[str]:
+        """Names of the models the registry lists as verified, at the finalized head."""
+
+        def read(s: SubstrateInterface) -> list[str]:
+            head = s.get_chain_finalised_head()
+            names = [
+                _text(entry.value["model_name"])
+                for _, entry in s.query_map("ModelRegistry", "Models", block_hash=head)
+                if entry.value is not None
+                and _variant(entry.value["status"]) == "Verified"
+            ]
+            return sorted(names, key=str.lower)
+
+        return await self._run(read)
 
     async def resolve_model_identity(
         self, model: str, *, advertised: ModelIdentity | None = None

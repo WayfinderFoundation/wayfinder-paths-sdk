@@ -8,32 +8,23 @@ import httpx
 import pytest
 
 from wayfinder_paths.core import config
-from wayfinder_paths.core.flop import faucet, gateway, jobs, recovery, service, state
+from wayfinder_paths.core.flop import faucet, jobs, recovery, service, state
 from wayfinder_paths.core.flop.chain import Channel, ChannelView, FlopChainError
-from wayfinder_paths.core.flop.networks import DEVNET, TESTNET
+from wayfinder_paths.core.flop.networks import TESTNET
 from wayfinder_paths.core.flop.session import DirectSessionError
 from wayfinder_paths.mcp.tools import flop as tools
 
 ADDRESS = "5CY2922WBXSso1pELFnqQWZy7DeKvLS63P6Cz488X2h1NFzq"
 ACCOUNT = {
     "connected": True,
-    "network": "devnet",
-    "genesis_hash": DEVNET.genesis_hash,
+    "network": "testnet",
+    "genesis_hash": TESTNET.genesis_hash,
     "flop_address": ADDRESS,
     "account_id": "0x" + "11" * 32,
     "wallet_address": "0x283b000000000000000000000000000000000000",
     "session_expires_at": 1_900_000_000,
     "limits": {"per_call": "5", "daily": "50"},
 }
-MODELS = [
-    {
-        "id": "qwen/qwen3-14b",
-        "context_length": 32768,
-        "top_provider": {"max_completion_tokens": 8192},
-        "pricing": {"prompt": "0.006", "completion": "0.006"},
-        "supported_parameters": ["max_tokens"],
-    }
-]
 MINER = "5H1qRPoPZAL4wa6VAdcFnzwCUKVEoaMD7UtrW3R9pDBjpsNG"
 CHANNEL = "0x" + "ab" * 32
 
@@ -45,7 +36,6 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(
         service.FLOP_CLIENT, "get_account", AsyncMock(return_value=ACCOUNT)
     )
-    monkeypatch.setattr(gateway, "models", AsyncMock(return_value=MODELS))
 
 
 def _set_flop_config(monkeypatch, **flop):
@@ -83,31 +73,11 @@ def _fake_chain(monkeypatch, **methods):
 # ---- inference routing and caps -----------------------------------------------------
 
 
-def test_infer_uses_the_gateway_when_no_miner_is_configured(monkeypatch):
-    monkeypatch.setattr(
-        gateway,
-        "ensure_key",
-        AsyncMock(return_value={"key": "k", "model": MODELS[0]["id"]}),
-    )
-    chat = AsyncMock(
-        return_value=gateway.GatewayReply(
-            "pong",
-            MODELS[0]["id"],
-            "rid",
-            7,
-            1,
-            0.066,
-            {"channelId": "0x01", "miner": "5F"},
-        )
-    )
-    monkeypatch.setattr(gateway, "chat", chat)
+def test_inference_without_a_miner_says_testnet_has_no_gateway():
     result = asyncio.run(tools.flop_infer("ping"))
-    assert result["ok"]
-    assert result["result"]["paid_by"] == "gateway_operator"
-    assert result["result"]["mode"] == "gateway"
-    assert chat.await_args.kwargs["max_cost_flop"] == 1.0
-    logged = state.read_state()["activity"][-1]
-    assert logged["kind"] == "inference" and "text" not in logged
+    assert result["ok"] is False
+    assert result["error"]["code"] == "flop_no_miner_endpoint"
+    assert "no inference gateway" in result["error"]["message"]
 
 
 def test_infer_opens_a_channel_from_the_own_account_when_a_miner_is_configured(
@@ -123,10 +93,11 @@ def test_infer_opens_a_channel_from_the_own_account_when_a_miner_is_configured(
     assert result["result"]["channel_id"] == CHANNEL
     kwargs = run.await_args.kwargs
     assert kwargs["miner"] == MINER and kwargs["endpoint"] == "https://miner.example"
-    # The escrow is the price offered, so it comes from the listed price, not the cap:
-    # ceil(4 chars / 3) = 2 prompt tokens + 16 completion tokens at 0.006 FLOP each.
-    assert kwargs["max_flop_raw"] == 108 * 10**15
+    # Testnet lists no prices: each turn offers the fixed escrow, under the per-call cap.
+    assert kwargs["max_flop_raw"] == 5 * 10**16
     assert state.spent_today() == 10**16
+    logged = state.read_state()["activity"][-1]
+    assert logged["kind"] == "inference" and "text" not in logged
 
 
 def test_direct_escrow_never_exceeds_the_per_call_cap(monkeypatch):
@@ -147,11 +118,6 @@ def test_infer_refuses_once_the_daily_cap_is_spent(monkeypatch):
     assert not result["ok"] and result["error"]["code"] == "flop_daily_cap_reached"
 
 
-def test_direct_mode_without_a_miner_endpoint_is_an_error():
-    result = asyncio.run(tools.flop_infer("ping", mode="direct"))
-    assert result["error"]["code"] == "flop_no_miner_endpoint"
-
-
 def test_a_loopback_miner_endpoint_is_refused_before_anything_is_signed(monkeypatch):
     _set_flop_config(monkeypatch, miners={MINER: "http://127.0.0.1:3096"})
     run = AsyncMock()
@@ -159,16 +125,6 @@ def test_a_loopback_miner_endpoint_is_refused_before_anything_is_signed(monkeypa
     result = asyncio.run(tools.flop_infer("ping"))
     assert result["error"]["code"] == "flop_miner_endpoint_not_https"
     run.assert_not_awaited()
-
-
-def test_gateway_key_scoped_to_another_model_is_reported(monkeypatch):
-    monkeypatch.setattr(
-        gateway,
-        "ensure_key",
-        AsyncMock(return_value={"key": "k", "model": "other/model"}),
-    )
-    result = asyncio.run(tools.flop_infer("ping"))
-    assert result["error"]["code"] == "flop_gateway_model_scope"
 
 
 def test_infer_reports_not_connected(monkeypatch):
@@ -301,7 +257,7 @@ def test_recovery_forgets_a_closed_channel_without_submitting():
 
 
 def _inference(text):
-    return service.Inference(text, "m", "gateway", "gateway_operator", 1, 1, "0.01")
+    return service.Inference(text, "m", "own_account", 1, 1, "0.01")
 
 
 def test_subagent_drafts_then_reviews_and_stops_when_the_review_agrees(monkeypatch):
@@ -331,7 +287,7 @@ def test_subagent_step_count_is_bounded():
 
 
 def test_connect_creates_a_dedicated_strategy_wallet_and_schedules_the_job(monkeypatch):
-    get_account = AsyncMock(return_value={"connected": False, "network": "devnet"})
+    get_account = AsyncMock(return_value={"connected": False, "network": "testnet"})
     connect = AsyncMock(return_value=ACCOUNT)
     monkeypatch.setattr(tools.FLOP_CLIENT, "get_account", get_account)
     monkeypatch.setattr(tools.FLOP_CLIENT, "connect", connect)
@@ -466,6 +422,7 @@ def test_job_run_collects_the_grant_and_recovers_pending_channels(monkeypatch):
     _fake_chain(
         monkeypatch,
         balance=AsyncMock(return_value=SimpleNamespace(free=25 * 10**18, reserved=0)),
+        inference_supply=AsyncMock(return_value=(0, 0)),
     )
     recover = AsyncMock(return_value=[{"channel_id": CHANNEL, "outcome": "timeout"}])
     monkeypatch.setattr(recovery, "recover_channels", recover)
@@ -475,7 +432,7 @@ def test_job_run_collects_the_grant_and_recovers_pending_channels(monkeypatch):
     assert outcome["notices"] == []
 
 
-TESTNET_ACCOUNT = ACCOUNT | {"network": "testnet", "genesis_hash": TESTNET.genesis_hash}
+TESTNET_ACCOUNT = ACCOUNT
 
 
 def _testnet_job(
@@ -605,33 +562,16 @@ def test_testnet_job_does_not_spend_on_a_miner_that_cannot_serve(
     assert state.last_spend_at() == 0
 
 
-@pytest.mark.parametrize(
-    ("account", "model"),
-    [(ACCOUNT, "qwen/qwen3-14b"), (TESTNET_ACCOUNT, "Qwen/Qwen3-30B-A3B-FP8")],
-)
-def test_inference_defaults_to_the_strongest_model_on_the_network(
-    monkeypatch, account, model
-):
-    monkeypatch.setattr(
-        service.FLOP_CLIENT, "get_account", AsyncMock(return_value=account)
-    )
+def test_inference_defaults_to_the_strongest_testnet_model(monkeypatch):
+    model = "Qwen/Qwen3-30B-A3B-FP8"
     _set_flop_config(monkeypatch, miners={MINER: "https://miner.example"})
     _fake_chain(monkeypatch)
     session = AsyncMock(return_value=_session_result(payable=3 * 10**16))
     monkeypatch.setattr(service, "run_direct_session", session)
-    result = asyncio.run(tools.flop_infer("ping", mode="direct"))
+    result = asyncio.run(tools.flop_infer("ping"))
     assert result["ok"], result
     assert session.await_args.kwargs["model"] == model
     assert result["result"]["model"] == model
-
-
-def test_testnet_inference_without_a_miner_says_there_is_no_gateway(monkeypatch):
-    monkeypatch.setattr(
-        service.FLOP_CLIENT, "get_account", AsyncMock(return_value=TESTNET_ACCOUNT)
-    )
-    result = asyncio.run(tools.flop_infer("hello"))
-    assert result["ok"] is False
-    assert result["error"]["code"] == "flop_no_gateway"
 
 
 def test_job_warns_once_about_an_expiring_session_and_a_low_balance(monkeypatch):
@@ -671,7 +611,7 @@ def test_job_run_does_nothing_when_no_account_is_connected(monkeypatch):
     collect.assert_not_awaited()
 
 
-def test_status_never_returns_the_gateway_key(monkeypatch):
+def test_status_reports_balance_caps_and_the_faucet_job(monkeypatch):
     monkeypatch.setattr(
         tools.FLOP_CLIENT, "get_account", AsyncMock(return_value=ACCOUNT)
     )
@@ -679,27 +619,48 @@ def test_status_never_returns_the_gateway_key(monkeypatch):
         monkeypatch,
         balance=AsyncMock(return_value=SimpleNamespace(free=25 * 10**18, reserved=0)),
     )
-    state.update_state(
-        gateway={
-            ADDRESS: {"key": "flop_secret", "model": "m", "expires_at": 9_999_999_999}
-        }
-    )
     monkeypatch.setattr(
         jobs, "ensure_faucet_job", lambda: {"scheduled": True, "created": False}
     )
     result = asyncio.run(tools.flop_status())
     assert result["ok"] and result["result"]["balance_flop"] == "25"
+    assert result["result"]["network"] == "testnet"
     assert result["result"]["faucet_job"]["scheduled"]
-    assert result["result"]["gateway_key"] == {
-        "model": "m",
-        "expires_at": 9_999_999_999,
-    }
-    assert "flop_secret" not in str(result)
+    assert result["result"]["direct_miners_configured"] == 0
+    assert "gateway_key" not in result["result"]
 
 
-def test_estimate_uses_the_listed_price():
-    result = asyncio.run(tools.flop_estimate("abcdef", max_tokens=10))
-    assert result["result"]["max_cost_flop"] == pytest.approx(12 * 0.006)
+def test_models_lists_the_verified_registry_and_marks_the_default(monkeypatch):
+    _fake_chain(
+        monkeypatch,
+        verified_models=AsyncMock(
+            return_value=["Qwen/Qwen3-14B", "Qwen/Qwen3-30B-A3B-FP8"]
+        ),
+    )
+    result = asyncio.run(tools.flop_models())
+    assert result["result"] == [
+        {"id": "Qwen/Qwen3-14B", "default": False},
+        {"id": "Qwen/Qwen3-30B-A3B-FP8", "default": True},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("config", "spent", "cap", "expected"),
+    [
+        ({}, 0, None, "0.05"),
+        ({}, 0, "0.01", "0.01"),
+        ({"per_call_flop": "0.02"}, 0, None, "0.02"),
+        ({"daily_flop": "1"}, 99 * 10**16, None, "0.01"),
+    ],
+)
+def test_estimate_is_the_escrow_one_call_offers(
+    monkeypatch, config, spent, cap, expected
+):
+    _set_flop_config(monkeypatch, **config)
+    if spent:
+        state.add_spend(spent)
+    result = asyncio.run(tools.flop_estimate(**({"max_cost_flop": cap} if cap else {})))
+    assert result["result"] == {"max_cost_flop": expected}
 
 
 def test_flop_tools_are_registered_on_an_instance(monkeypatch):
