@@ -498,7 +498,7 @@ def test_testnet_job_spends_once_a_day_when_miners_are_live(monkeypatch):
     assert outcome["spend"]["spent"] and outcome["spend"]["cost_flop"] == "0.03"
     assert session.await_args.kwargs["miner"] == MINER
     # The spend uses the network's own default model.
-    assert session.await_args.kwargs["model"] == "Qwen/Qwen3-30B-A3B-FP8"
+    assert session.await_args.kwargs["model"] == "Qwen/Qwen3-14B"
     assert state.last_spend_at() > 0
     again = asyncio.run(jobs.collect_faucet_grant())
     assert again["spend"] == {"spent": False, "reason": "spent_recently"}
@@ -563,7 +563,7 @@ def test_testnet_job_does_not_spend_on_a_miner_that_cannot_serve(
 
 
 def test_inference_defaults_to_the_strongest_testnet_model(monkeypatch):
-    model = "Qwen/Qwen3-30B-A3B-FP8"
+    model = "Qwen/Qwen3-14B"
     _set_flop_config(monkeypatch, miners={MINER: "https://miner.example"})
     _fake_chain(monkeypatch)
     session = AsyncMock(return_value=_session_result(payable=3 * 10**16))
@@ -639,8 +639,8 @@ def test_models_lists_the_verified_registry_and_marks_the_default(monkeypatch):
     )
     result = asyncio.run(tools.flop_models())
     assert result["result"] == [
-        {"id": "Qwen/Qwen3-14B", "default": False},
-        {"id": "Qwen/Qwen3-30B-A3B-FP8", "default": True},
+        {"id": "Qwen/Qwen3-14B", "default": True},
+        {"id": "Qwen/Qwen3-30B-A3B-FP8", "default": False},
     ]
 
 

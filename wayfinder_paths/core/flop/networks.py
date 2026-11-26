@@ -30,8 +30,10 @@ TESTNET = FlopNetwork(
     genesis_hash="0x918abd58fb16306b30ef3886514cfaebffecb4de43e82b6f8ec4795c43cfd800",
     rpc_url="wss://testnet.flop.network",
     faucet_url="https://faucet.flop.network",
-    # The largest of its verified models (all Qwen, 1.7B to 30B).
-    default_model="Qwen/Qwen3-30B-A3B-FP8",
+    # The strongest model miners actually serve. Testnet registers eight models (Qwen,
+    # 1.7B to 30B), but only Qwen3-14B and Qwen3-8B are served (FLOP's own Testnet
+    # gateway lists just those two), so a larger registered model may find no miner.
+    default_model="Qwen/Qwen3-14B",
 )
 NETWORKS = (TESTNET,)
 
